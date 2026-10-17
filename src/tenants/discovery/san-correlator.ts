@@ -28,8 +28,8 @@
  */
 
 import { JSONParser } from '@streamparser/json-whatwg';
-import type { CtCoverage, CtSourceAttempt, CtSourceOutcome } from '../../lib/ct-coverage';
-import { buildCtCoverage } from '../../lib/ct-coverage';
+import type { CtCoverage, CtSourceAttempt, CtSourceOutcome, OwnedIndexCoverage } from '../../lib/ct-coverage';
+import { buildCtCoverage, ownedIndexIsPartial, parseOwnedIndexCoverage } from '../../lib/ct-coverage';
 import { isPublicSuffixApex } from '../../lib/public-suffix';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 import { safeFetch } from '../../lib/safe-fetch';
@@ -155,6 +155,10 @@ interface CertstreamSansResponse {
 	timedOut: boolean;
 	cached: boolean;
 	error?: string;
+	/** Owned CT index only: the page held more than it returned. */
+	truncated?: boolean;
+	/** Owned CT index only (`bv-ct-index`); absent from a legacy upstream. Parsed by {@link parseOwnedIndexCoverage}. */
+	coverage?: unknown;
 }
 
 export interface SanCorrelationResult {
@@ -246,13 +250,16 @@ function defaultSleep(ms: number): Promise<void> {
  * `error` field set, or `timedOut: true`. The worker handles its own crt.sh
  * timeout (default 30s, longer than bv-mcp's 15s) — we apply a single
  * outer timeout here matching the caller's budget.
+ *
+ * `owned` is the owned CT index's own coverage statement (`bv-ct-index`), null for a
+ * legacy upstream. The caller decides from it whether the answer is final.
  */
 async function attemptCertstreamSans(
 	seedLower: string,
 	timeoutMs: number,
 	certstream: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
-): Promise<SanAnswer | null> {
+): Promise<{ answer: SanAnswer; owned: OwnedIndexCoverage | null } | null> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -288,24 +295,33 @@ async function attemptCertstreamSans(
 	const certificateProvenance = [
 		buildSanCertificateProvenance({ source: 'certstream', candidateDomains: siblings, responseComplete: false }),
 	];
+	const parsedOwned = parseOwnedIndexCoverage(data.coverage);
+	const owned = parsedOwned && data.truncated === true ? { ...parsedOwned, truncated: true } : parsedOwned;
 	if (data.timedOut) {
 		return siblings.length > 0
 			? {
-					seedDomain: seedLower,
-					coOwnedDomains: siblings,
-					certificateProvenance,
-					certIds: [],
-					queryStatus: 'partial',
+					answer: {
+						seedDomain: seedLower,
+						coOwnedDomains: siblings,
+						certificateProvenance,
+						certIds: [],
+						queryStatus: 'partial',
+					},
+					owned,
 				}
 			: null;
 	}
 
 	return {
-		seedDomain: seedLower,
-		coOwnedDomains: siblings,
-		certificateProvenance,
-		certIds: [],
-		queryStatus: 'ok',
+		answer: {
+			seedDomain: seedLower,
+			coOwnedDomains: siblings,
+			certificateProvenance,
+			certIds: [],
+			// A truncated owned-index page is an incomplete answer, not a clean one.
+			queryStatus: owned?.truncated ? 'partial' : 'ok',
+		},
+		owned,
 	};
 }
 
@@ -639,6 +655,29 @@ function answerOutcome(answer: SanAnswer): CtSourceOutcome {
 }
 
 /**
+ * Union a held-back young/truncated owned-index answer with what crt.sh / Certspotter
+ * said on the same call. The owned answer already counts as "a backend answered", so a
+ * later backend failure never downgrades the status below the owned answer's own
+ * (`partial` when its page was truncated, else `ok`); a later answer can only add
+ * siblings and provenance.
+ */
+function mergeSanAnswers(owned: SanAnswer, other: SanAnswer): SanAnswer {
+	const otherAnswered = other.queryStatus === 'ok' || other.queryStatus === 'partial';
+	const provenance = [...(owned.certificateProvenance ?? []), ...(other.certificateProvenance ?? [])];
+	const provenanceCapped = provenance.length > MAX_SAN_PROVENANCE_OBSERVATIONS;
+	return {
+		seedDomain: owned.seedDomain,
+		coOwnedDomains: Array.from(new Set([...owned.coOwnedDomains, ...other.coOwnedDomains])).sort(),
+		certIds: other.certIds,
+		queryStatus: owned.queryStatus === 'partial' || (otherAnswered && other.queryStatus === 'partial') ? 'partial' : 'ok',
+		...(provenance.length > 0 ? { certificateProvenance: provenance.slice(0, MAX_SAN_PROVENANCE_OBSERVATIONS) } : {}),
+		...(provenanceCapped || owned.certificateProvenanceTruncated || other.certificateProvenanceTruncated
+			? { certificateProvenanceTruncated: true }
+			: {}),
+	};
+}
+
+/**
  * Certspotter failover (#1189). Reuses `fetchCertspotterEntries` from
  * `discover-subdomains.ts` — one HTTP/pagination/403-classification implementation
  * for both tools — and feeds its entries through the SAME sibling filter crt.sh
@@ -726,11 +765,26 @@ export async function correlateSans(seedDomain: string, options: SanCorrelationO
 
 	// Per-source attempt log → coverage record (same shape discover_subdomains builds).
 	const attempts = new Map<string, CtSourceAttempt>();
-	const record = (source: string, outcome: CtSourceOutcome, contributed: boolean, indexExhausted?: boolean): void => {
-		attempts.set(source, { source, outcome, contributed, ...(indexExhausted === undefined ? {} : { indexExhausted }) });
+	const record = (
+		source: string,
+		outcome: CtSourceOutcome,
+		contributed: boolean,
+		indexExhausted?: boolean,
+		ownedIndex?: OwnedIndexCoverage,
+	): void => {
+		attempts.set(source, {
+			source,
+			outcome,
+			contributed,
+			...(indexExhausted === undefined ? {} : { indexExhausted }),
+			...(ownedIndex ? { ownedIndex } : {}),
+		});
 	};
+	// A young or truncated owned-index (`bv-ct-index`) answer, held back instead of returned (US-12):
+	// it contributes to the final answer but is not exhaustive, so crt.sh / Certspotter still run.
+	let ownedPartial: SanAnswer | null = null;
 	const withCoverage = (answer: SanAnswer): SanCorrelationResult => ({
-		...answer,
+		...(ownedPartial ? mergeSanAnswers(ownedPartial, answer) : answer),
 		coverage: buildCtCoverage(SAN_SOURCE_ORDER.filter((name) => attempts.has(name)).map((name) => attempts.get(name) as CtSourceAttempt)),
 	});
 
@@ -748,11 +802,19 @@ export async function correlateSans(seedDomain: string, options: SanCorrelationO
 		if (certstreamTimeoutMs > 0) {
 			const csResult = await attemptCertstreamSans(seedLower, certstreamTimeoutMs, options.certstream, options.certstreamAuthToken);
 			if (csResult !== null) {
-				record('certstream', answerOutcome(csResult), csResult.coOwnedDomains.length > 0, csResult.queryStatus === 'ok');
-				return withCoverage(csResult);
+				const { answer, owned } = csResult;
+				const outcome = answerOutcome(answer);
+				if (owned && ownedIndexIsPartial(owned)) {
+					record('certstream', outcome, answer.coOwnedDomains.length > 0, false, owned);
+					ownedPartial = answer;
+				} else {
+					record('certstream', outcome, answer.coOwnedDomains.length > 0, answer.queryStatus === 'ok', owned ?? undefined);
+					return withCoverage(answer);
+				}
+			} else {
+				// `attemptCertstreamSans` folds every failure into null, so the reason is unknown.
+				record('certstream', 'error', false);
 			}
-			// `attemptCertstreamSans` folds every failure into null, so the reason is unknown.
-			record('certstream', 'error', false);
 		}
 	}
 

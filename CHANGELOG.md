@@ -8,6 +8,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- `discover_subdomains` and the SAN correlator report the owned CT index (`bv-ct-index`, answering behind the `certstream` binding) honestly. A response carrying `coverage.source === 'bv-ct-index'` maps the `certstream` source to the new `historyWindow: 'forward-from'`, with `indexStartedAt` and `freshThrough` on the per-source coverage record and in the caveat ("owned CT index, names observed since <date>"). A legacy upstream with no `coverage` keeps `historyWindow: 'unknown'`. Discover tools are unscored: scoring model 1.40.0 (unchanged), no `@blackveil/dns-checks` change.
+- A young (under 200 days since `indexStartedAt`) or truncated owned-index answer now counts as contributing but NOT exhaustive: crt.sh and CertSpotter are still consulted within the existing 24 s budget, the names are merged, and both sources appear in `coverage.perSource`. Previously any non-null `certstream` answer, even one with zero names or zero siblings, ended the ladder. A mature (200 days or older), untruncated answer keeps the short-circuit, and `countBasis` / `indexExhausted` are unchanged for every other source. A 503 from the index remains a source failure that falls through to crt.sh, never a zero result.
+
 ## [3.98.3] - 2026-10-11
 
 ### Fixed

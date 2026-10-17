@@ -677,3 +677,161 @@ describe('correlateSans — Certspotter failover and CT coverage (#1189)', () =>
 		expect(result.coverage.perSource.find((s) => s.source === 'crtsh')).toMatchObject({ outcome: 'timeout' });
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Owned CT index (`bv-ct-index`, US-12 / SQ-345): honest coverage, no partial short-circuit
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+const daysAgo = (days: number): string => new Date(Date.now() - days * DAY_MS).toISOString();
+
+/** A `/sans` body from the owned index. `coverage` omitted = a legacy certstream upstream. */
+function ownedSans(names: string[], coverage?: Record<string, unknown>) {
+	return {
+		domain: 'foo.com',
+		names,
+		certificateCount: names.length,
+		timedOut: false,
+		truncated: false,
+		cached: false,
+		...(coverage ? { coverage } : {}),
+	};
+}
+
+function ownedCoverage(indexAgeDays: number, extra: Record<string, unknown> = {}) {
+	return {
+		source: 'bv-ct-index',
+		indexStartedAt: daysAgo(indexAgeDays),
+		freshThrough: daysAgo(0),
+		historyWindow: 'forward-from',
+		truncated: false,
+		...extra,
+	};
+}
+
+describe('correlateSans — owned CT index (bv-ct-index) honest coverage (SQ-345)', () => {
+	it('(a) a bv-ct-index answer is labelled forward-from, with indexStartedAt and freshThrough in the caveat', async () => {
+		const coverage = ownedCoverage(300);
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans(['sibling.com'], coverage)));
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: vi.fn() as unknown as typeof fetch, maxRetries: 0 });
+
+		const cs = result.coverage.perSource.find((s) => s.source === 'certstream');
+		expect(cs).toMatchObject({
+			historyWindow: 'forward-from',
+			outcome: 'ok',
+			contributed: true,
+			indexExhausted: true,
+			indexStartedAt: coverage.indexStartedAt,
+			freshThrough: coverage.freshThrough,
+		});
+		expect(result.coverage.caveat).toContain(`names observed since ${coverage.indexStartedAt}`);
+		expect(result.coverage.caveat).toContain(`fresh through ${coverage.freshThrough}`);
+	});
+
+	it('(b) a young index answer with zero siblings does not short-circuit: crt.sh AND Certspotter are still consulted', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans([], ownedCoverage(30))));
+		const routed = routedFetch({
+			crtsh: () => jsonResponse([{ id: 1, name_value: 'foo.com' }]),
+			certspotter: () => certspotterIssuances([['foo.com', 'late-sibling.net']]),
+		});
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.crtshCalls()).toBe(1);
+		expect(routed.certspotterCalls()).toBe(1);
+		expect(result.coOwnedDomains).toEqual(['late-sibling.net']);
+		// Both are on the record, in ladder order; the index contributed nothing and is not exhaustive.
+		expect(result.coverage.perSource.map((s) => s.source)).toEqual(['certstream', 'crtsh', 'certspotter']);
+		expect(result.coverage.perSource[0]).toMatchObject({ outcome: 'empty', contributed: false, indexExhausted: false, historyWindow: 'forward-from' });
+		expect(result.coverage.contributing).toEqual(['certspotter']);
+	});
+
+	it('(b) a young index that DID name siblings contributes them and is merged with the direct sources', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans(['idx-sibling.com'], ownedCoverage(30))));
+		const routed = routedFetch({
+			crtsh: () => jsonResponse([{ id: 7, name_value: 'foo.com', common_name: 'crt-sibling.org' }]),
+		});
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(result.coOwnedDomains).toEqual(['crt-sibling.org', 'idx-sibling.com']);
+		expect(result.certIds).toEqual([7]);
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coverage.contributing).toEqual(['certstream', 'crtsh']);
+		expect(result.coverage.perSource[0]).toMatchObject({ source: 'certstream', contributed: true, indexExhausted: false });
+		// crt.sh revealed a sibling, so the existing "no second source needed" rule still applies.
+		expect(routed.certspotterCalls()).toBe(0);
+	});
+
+	it('(b) a young index answer survives every direct source failing (it is a floor, not an error)', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans(['idx-sibling.com'], ownedCoverage(30))));
+		const routed = routedFetch({
+			crtsh: () => new Response('boom', { status: 500 }),
+			certspotter: () => new Response('boom', { status: 500 }),
+		});
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep, maxRetries: 0 });
+
+		expect(result.coOwnedDomains).toEqual(['idx-sibling.com']);
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coverage.contributing).toEqual(['certstream']);
+		expect(result.coverage.degraded).toBe(true);
+	});
+
+	it('a truncated page from an otherwise MATURE index is partial and still consults the direct sources', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
+			Response.json(ownedSans(['idx-sibling.com'], ownedCoverage(400, { truncated: true }))),
+		);
+		const routed = routedFetch({
+			crtsh: () => jsonResponse([{ id: 1, name_value: 'foo.com' }]),
+			certspotter: () => certspotterIssuances([['foo.com']]),
+		});
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.crtshCalls()).toBe(1);
+		expect(result.coOwnedDomains).toEqual(['idx-sibling.com']);
+		expect(result.queryStatus).toBe('partial');
+		expect(result.coverage.perSource[0]).toMatchObject({ source: 'certstream', indexExhausted: false });
+	});
+
+	it("(c) a mature index (>200 days) keeps today's short-circuit even with zero siblings", async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans([], ownedCoverage(250))));
+		const routed = routedFetch({ crtsh: () => jsonResponse([]) });
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.urls).toEqual([]);
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual([]);
+		expect(result.coverage.perSource).toHaveLength(1);
+		expect(result.coverage.perSource[0]).toMatchObject({ source: 'certstream', historyWindow: 'forward-from', indexExhausted: true });
+		expect(result.coverage.notConsulted).toEqual(['crtsh', 'certspotter']);
+	});
+
+	it("(d) a legacy answer WITHOUT coverage keeps today's behaviour: short-circuit, historyWindow unknown", async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans([])));
+		const routed = routedFetch({ crtsh: () => jsonResponse([]) });
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.urls).toEqual([]);
+		expect(result.coverage.perSource).toEqual([
+			{ source: 'certstream', outcome: 'empty', contributed: false, indexExhausted: true, historyWindow: 'unknown' },
+		]);
+	});
+
+	it('a foreign coverage.source is not trusted as the owned index', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(ownedSans([], { ...ownedCoverage(30), source: 'someone-else' })));
+		const routed = routedFetch({ crtsh: () => jsonResponse([]) });
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.urls).toEqual([]);
+		expect(result.coverage.perSource[0]?.historyWindow).toBe('unknown');
+	});
+
+	it('a 503 from the index is a source failure that falls through to crt.sh, never "no siblings"', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: 'ct_index_unavailable' }, { status: 503 }));
+		const routed = routedFetch({ crtsh: () => jsonResponse([{ id: 1, name_value: 'foo.com', common_name: 'crt-sibling.org' }]) });
+		const result = await correlateSans('foo.com', { certstream: { fetch: csFetch }, fetchFn: routed.fetchFn, sleepFn: noSleep });
+
+		expect(routed.crtshCalls()).toBe(1);
+		expect(result.coOwnedDomains).toEqual(['crt-sibling.org']);
+		expect(result.coverage.perSource[0]).toMatchObject({ source: 'certstream', outcome: 'error', contributed: false });
+		expect(result.coverage.unavailable).toContain('certstream');
+	});
+});

@@ -35,8 +35,8 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { cacheGet, cacheSet } from '../lib/cache';
-import type { CtCoverage, CtSourceAttempt, CtSourceOutcome } from '../lib/ct-coverage';
-import { buildCtCoverage, formatCoverageLine } from '../lib/ct-coverage';
+import type { CtCoverage, CtSourceAttempt, CtSourceOutcome, OwnedIndexCoverage } from '../lib/ct-coverage';
+import { buildCtCoverage, formatCoverageLine, ownedIndexIsPartial, parseOwnedIndexCoverage } from '../lib/ct-coverage';
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
@@ -573,6 +573,12 @@ interface EnumerationMeta {
 	sourceIndexExhausted?: boolean;
 	/** Per-source attempt log; folded into {@link SubdomainDiscoveryResult.coverage}. */
 	attempts?: CtSourceAttempt[];
+	/**
+	 * Names from a source that carries no per-certificate metadata (the owned CT
+	 * index's name list). Merged into the entry-derived set under the same domain
+	 * filter; a name already seen with certificate data keeps that data.
+	 */
+	extraNames?: string[];
 }
 
 /**
@@ -650,6 +656,10 @@ interface CertstreamEnumerateResponse {
 	cached: boolean;
 	cacheAgeMinutes?: number;
 	error?: string;
+	/** Owned CT index only: this page is not the whole set (`cursor` would continue it). */
+	truncated?: boolean;
+	/** Owned CT index only (`bv-ct-index`); absent from a legacy certstream upstream. Parsed by {@link parseOwnedIndexCoverage}. */
+	coverage?: unknown;
 }
 
 /** Response shape from bv-certstream-worker /sans endpoint. */
@@ -662,6 +672,8 @@ interface CertstreamSansResponse {
 	cached: boolean;
 	cacheAgeMinutes?: number;
 	error?: string;
+	/** Owned CT index only (`bv-ct-index`); see {@link CertstreamEnumerateResponse.coverage}. */
+	coverage?: unknown;
 }
 
 /**
@@ -696,14 +708,24 @@ export async function discoverSubdomains(
 
 	// Fast path: certstream service binding (bv-certstream-worker; itself
 	// multi-source + short-cached). On a clean result, prime the LKG cache.
+	// A young or truncated owned-index answer (US-12) is held here instead of returned:
+	// it contributes, but it is not exhaustive, so crt.sh / CertSpotter are still consulted.
+	let ownedSupplement: OwnedIndexSupplement | undefined;
 	if (certstream) {
 		const fastPath = await queryCertstream(domain, certstream, certstreamAuthToken, options);
 		if (fastPath.attempt) certstreamAttempts.push(fastPath.attempt);
-		if (fastPath.result) {
+		if (fastPath.result && !fastPath.supplement) {
 			await cacheSuccess(domain, fastPath.result, options);
 			return fastPath.result;
 		}
-		// Fall through to the direct public sources if the binding failed.
+		ownedSupplement = fastPath.supplement;
+		// Fall through to the direct public sources if the binding failed (or answered partially).
+	}
+
+	// Budget gone with an owned-index answer in hand: serve it (a floor, with the direct
+	// sources reported as not consulted) rather than discarding live names for a stale read.
+	if (ownedSupplement && ownedSupplement.names.length > 0 && deadlineExceeded(options)) {
+		return mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, NO_DIRECT_ANSWER);
 	}
 
 	// Deadline gate before the (slowest) direct-source stage. A budget trip after
@@ -721,6 +743,11 @@ export async function discoverSubdomains(
 	// Direct public CT sources, tried in order with per-source health logging
 	// and a bounded retry: crt.sh (rich metadata) → Certspotter (names + dates).
 	const direct = await queryDirectSources(domain, options);
+	if (ownedSupplement && (direct.available || ownedSupplement.names.length > 0)) {
+		const merged = mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, direct);
+		await cacheSuccess(domain, merged, options);
+		return merged;
+	}
 	if (direct.available) {
 		const meta: EnumerationMeta = {
 			sources: direct.sources,
@@ -741,6 +768,48 @@ export async function discoverSubdomains(
 	if (stale) return stale;
 
 	return emptyResult(domain, true, false, { attempts: [...certstreamAttempts, ...direct.attempts] });
+}
+
+/** What {@link queryDirectSources} returned. */
+type DirectSourcesResult = Awaited<ReturnType<typeof queryDirectSources>>;
+
+/** Stand-in for "the direct sources were never asked" (budget gone): no entries, no attempts, so they read as `notConsulted`. */
+const NO_DIRECT_ANSWER: DirectSourcesResult = { available: false, entries: [], attempts: [] };
+
+/**
+ * Merge a young or truncated owned-index (`bv-ct-index`) answer with whatever the
+ * direct sources (crt.sh → Certspotter) produced on this call.
+ *
+ * The index keeps source label `certstream` (it names the binding, not the vendor)
+ * and is reported as contributing but NOT index-exhausted. The merged count is
+ * exhaustive only when the index page was complete AND a direct source answered and
+ * read its own index to the end — otherwise it is a floor. `perSource` lists the
+ * certstream attempt first, then each direct attempt, so both are on the record.
+ * Names keep crt.sh / Certspotter's per-certificate metadata where they have it.
+ */
+function mergeOwnedIndexWithDirect(
+	domain: string,
+	index: OwnedIndexSupplement,
+	certstreamAttempts: CtSourceAttempt[],
+	direct: DirectSourcesResult,
+): SubdomainDiscoveryResult {
+	const directSources = direct.sources ?? [];
+	const attempts = [...certstreamAttempts, ...direct.attempts];
+	const indexContributed = certstreamAttempts.some((a) => a.source === 'certstream' && a.contributed);
+	const meta: EnumerationMeta = {
+		sources: [...(indexContributed ? ['certstream'] : []), ...directSources],
+		sourceIndexExhausted: !index.truncated && directSources.length > 0 && (direct.sourceIndexExhausted ?? true),
+		attempts,
+		extraNames: index.names,
+	};
+	const merged = buildResultFromEntries(domain, direct.entries, meta);
+	if (merged.totalSubdomains === 0) {
+		// Nothing from the index and nothing from the direct sources: an unconfirmed zero, never a confident one.
+		return emptyResult(domain, false, false, meta);
+	}
+	// The index reports distinct names read; crt.sh counts certificates. They overlap by an
+	// unknown amount, so the larger of the two is the only count that is not an overstatement.
+	return { ...merged, totalCertificates: Math.max(merged.totalCertificates, index.certificateCount ?? 0) };
 }
 
 /**
@@ -812,6 +881,24 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 				});
 			}
 		}
+	}
+
+	// Names with no certificate metadata (the owned CT index). Same domain filter as
+	// above; a name crt.sh/Certspotter already described keeps its richer record.
+	const domainLower = domain.toLowerCase();
+	for (const raw of meta?.extraNames ?? []) {
+		const name = raw.trim().toLowerCase().replace(/\.$/, '');
+		if (!name || name === domainLower || !name.endsWith(domainSuffix) || trackers.has(name)) continue;
+		trackers.set(name, {
+			subdomain: name,
+			firstSeen: '',
+			lastSeen: '',
+			latestNotAfter: '',
+			latestIssuer: '',
+			certCount: 1,
+			isWildcard: name.startsWith('*.'),
+			allExpired: false,
+		});
 	}
 
 	// Build subdomain list from trackers
@@ -1643,15 +1730,25 @@ async function queryCertstream(
 
 	if (enumerateOk && enumerate.data) {
 		const data = enumerate.data;
+		const owned = ownedIndexFromResponse(data);
 		if (!data.timedOut) {
-			return { result: buildCertstreamResult(domain, data.subdomains, data.certificateCount), attempt: certstreamAttempt('ok', true) };
+			// A young or truncated owned index contributes but is NOT exhaustive: the orchestrator
+			// must still consult crt.sh / CertSpotter instead of treating this as the answer.
+			if (owned && ownedIndexIsPartial(owned)) return ownedPartialFastPath(domain, data.subdomains, data.certificateCount, owned);
+			return {
+				result: buildCertstreamResult(domain, data.subdomains, data.certificateCount, undefined, owned ?? undefined),
+				attempt: certstreamAttempt('ok', true, owned ?? undefined),
+			};
 		}
 		// #575's partial semantics, now also carrying #573's upstream metadata so the
 		// timed-out enumeration is reported incomplete rather than merely `partial`.
 		if (data.subdomains.length > 0) {
 			return {
-				result: { ...buildCertstreamResult(domain, data.subdomains, data.certificateCount, { timedOut: true }), partial: true },
-				attempt: certstreamAttempt('ok', true),
+				result: {
+					...buildCertstreamResult(domain, data.subdomains, data.certificateCount, { timedOut: true }, owned ?? undefined),
+					partial: true,
+				},
+				attempt: certstreamAttempt('ok', true, owned ?? undefined),
 			};
 		}
 		// timedOut:true with an empty list — fall through to /sans below rather
@@ -1676,19 +1773,27 @@ async function queryCertstream(
 
 	if (!sansOk || !sans.data) return { result: null, attempt: certstreamAttempt(outcome, false) };
 	const data = sans.data;
+	const sansOwned = ownedIndexFromResponse(data);
 	if (!data.timedOut) {
+		if (sansOwned && ownedIndexIsPartial(sansOwned)) return ownedPartialFastPath(domain, data.names, data.certificateCount, sansOwned);
 		return {
-			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }),
-			attempt: certstreamAttempt('ok', true),
+			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }, sansOwned ?? undefined),
+			attempt: certstreamAttempt('ok', true, sansOwned ?? undefined),
 		};
 	}
 	if (data.names.length > 0) {
 		return {
 			result: {
-				...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }),
+				...buildCertstreamResult(
+					domain,
+					data.names,
+					data.certificateCount,
+					{ truncated: data.truncated, timedOut: true },
+					sansOwned ?? undefined,
+				),
 				partial: true,
 			},
-			attempt: certstreamAttempt('ok', true),
+			attempt: certstreamAttempt('ok', true, sansOwned ?? undefined),
 		};
 	}
 	// timedOut:true with an empty list — no result so the orchestrator falls
@@ -1718,10 +1823,41 @@ interface CertstreamEndpointOutcome<T> {
 interface CertstreamFastPath {
 	result: SubdomainDiscoveryResult | null;
 	attempt?: CtSourceAttempt;
+	/**
+	 * Present only for a young or truncated owned-index answer (US-12): `result` is then a
+	 * standalone fallback, NOT a final answer — the orchestrator still consults crt.sh /
+	 * CertSpotter and merges these names into theirs.
+	 */
+	supplement?: OwnedIndexSupplement;
 }
 
-function certstreamAttempt(outcome: CtSourceOutcome, contributed: boolean): CtSourceAttempt {
-	return { source: 'certstream', outcome, contributed };
+/** The owned index's raw name list, kept so it can be merged with the direct sources' entries. */
+interface OwnedIndexSupplement {
+	names: string[];
+	certificateCount?: number;
+	/** The index returned only a page of what it holds. */
+	truncated: boolean;
+}
+
+function certstreamAttempt(outcome: CtSourceOutcome, contributed: boolean, ownedIndex?: OwnedIndexCoverage): CtSourceAttempt {
+	return { source: 'certstream', outcome, contributed, ...(ownedIndex ? { ownedIndex } : {}) };
+}
+
+/** `coverage` from an owned-index response, with the route's own top-level `truncated` folded in. */
+function ownedIndexFromResponse(data: { coverage?: unknown; truncated?: boolean }): OwnedIndexCoverage | null {
+	const owned = parseOwnedIndexCoverage(data.coverage);
+	return owned && data.truncated === true ? { ...owned, truncated: true } : owned;
+}
+
+/** A young/truncated owned-index answer: contributes its names, claims no exhaustiveness. */
+function ownedPartialFastPath(domain: string, names: string[], certificateCount: number | undefined, owned: OwnedIndexCoverage): CertstreamFastPath {
+	const result = buildCertstreamResult(domain, names, certificateCount, { truncated: true }, owned);
+	const contributed = result.totalSubdomains > 0;
+	return {
+		result,
+		attempt: { ...certstreamAttempt(contributed ? 'ok' : 'empty', contributed, owned), indexExhausted: false },
+		supplement: { names, certificateCount, truncated: owned.truncated },
+	};
 }
 
 /**
@@ -1841,6 +1977,7 @@ function buildCertstreamResult(
 	names: string[],
 	certificateCount: number | undefined,
 	upstream?: { truncated?: boolean; timedOut?: boolean },
+	owned?: OwnedIndexCoverage,
 ): SubdomainDiscoveryResult {
 	const domainLower = domain.toLowerCase();
 	const domainSuffix = `.${domainLower}`;
@@ -1922,7 +2059,13 @@ function buildCertstreamResult(
 	// Certspotter — `buildCtCoverage` turns that into an explicit `notConsulted`
 	// list rather than letting a single opinion read as consensus.
 	const flags = enumerationFlags(dedupedAll.length, deduped.length, ['certstream'], sourceIndexExhausted, [
-		{ source: 'certstream', outcome: dedupedAll.length === 0 ? 'empty' : 'ok', contributed: true, indexExhausted: sourceIndexExhausted },
+		{
+			source: 'certstream',
+			outcome: dedupedAll.length === 0 ? 'empty' : 'ok',
+			contributed: true,
+			indexExhausted: sourceIndexExhausted,
+			...(owned ? { ownedIndex: owned } : {}),
+		},
 	]);
 	// A timed-out / truncated upstream read is `sourceIndexExhausted: false`, so
 	// the floor is decided here even though `partial: true` is spread on later.

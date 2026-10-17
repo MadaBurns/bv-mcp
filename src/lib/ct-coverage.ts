@@ -80,10 +80,71 @@ export type CtSourceOutcome =
  *  - `unexpired-only`  — only currently-valid certificates are visible (crt.sh
  *                        as queried, i.e. with `exclude=expired`).
  *  - `recent-window`   — a rolling recent window only (Certspotter's free tier).
+ *  - `forward-from`    — the owned CT index (`bv-ct-index`, US-12): it only holds
+ *                        names it OBSERVED since `indexStartedAt`; nothing issued
+ *                        and logged before then is visible, and it has no backfill.
  *  - `unknown`         — an upstream aggregator whose retention we do not
- *                        control or publish (the certstream worker).
+ *                        control or publish (a legacy certstream worker).
  */
-export type CtHistoryWindow = 'unexpired-only' | 'recent-window' | 'unknown';
+export type CtHistoryWindow = 'unexpired-only' | 'recent-window' | 'forward-from' | 'unknown';
+
+/** The `coverage.source` value an owned-index response carries. */
+export const OWNED_CT_INDEX_SOURCE = 'bv-ct-index';
+
+/**
+ * Days after `indexStartedAt` at which the owned index is treated as covering the
+ * unexpired certificate population (SQ-340: ~87% at d90, ~97% at d180, ~100% at
+ * d200). A younger index is a CONTRIBUTING but NOT exhaustive source, so it must
+ * never suppress crt.sh / CertSpotter.
+ */
+export const OWNED_INDEX_MATURITY_DAYS = 200;
+
+/** What an owned-index (`bv-ct-index`) response says about its own coverage. */
+export interface OwnedIndexCoverage {
+	/** ISO instant the index began observing; absent when the response omitted or garbled it. */
+	indexStartedAt?: string;
+	/** ISO instant of the newest indexed batch. */
+	freshThrough?: string;
+	/** The route returned only a page of what it holds (`/enumerate` caps at 500 names). */
+	truncated: boolean;
+}
+
+function isoOrUndefined(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const ms = Date.parse(value);
+	return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
+}
+
+/**
+ * Read the `coverage` object of a certstream-binding response. Returns null for a
+ * legacy upstream (no `coverage`, or a different `source`), which keeps today's
+ * behaviour. Dates are re-serialised, never echoed, because they reach
+ * caller-visible prose.
+ */
+export function parseOwnedIndexCoverage(raw: unknown): OwnedIndexCoverage | null {
+	if (typeof raw !== 'object' || raw === null) return null;
+	const c = raw as Record<string, unknown>;
+	if (c.source !== OWNED_CT_INDEX_SOURCE) return null;
+	const indexStartedAt = isoOrUndefined(c.indexStartedAt);
+	const freshThrough = isoOrUndefined(c.freshThrough);
+	return {
+		...(indexStartedAt ? { indexStartedAt } : {}),
+		...(freshThrough ? { freshThrough } : {}),
+		truncated: c.truncated === true,
+	};
+}
+
+/**
+ * True when an owned-index answer must NOT be treated as exhaustive: the page was
+ * truncated, or the index is younger than {@link OWNED_INDEX_MATURITY_DAYS}. An
+ * unknown or future start date counts as young — no proof of maturity is not
+ * maturity.
+ */
+export function ownedIndexIsPartial(c: OwnedIndexCoverage, nowMs: number = Date.now()): boolean {
+	if (c.truncated || !c.indexStartedAt) return true;
+	const ageDays = (nowMs - Date.parse(c.indexStartedAt)) / 86_400_000;
+	return !(ageDays >= OWNED_INDEX_MATURITY_DAYS);
+}
 
 /** What one CT source contributed to this answer. */
 export interface CtSourceCoverage {
@@ -99,6 +160,10 @@ export interface CtSourceCoverage {
 	indexExhausted?: boolean;
 	/** The slice of CT history this source can see even in the best case. */
 	historyWindow: CtHistoryWindow;
+	/** Owned index only: when it began observing (`historyWindow: 'forward-from'`). */
+	indexStartedAt?: string;
+	/** Owned index only: commit time of its newest indexed batch. */
+	freshThrough?: string;
 }
 
 /**
@@ -153,6 +218,8 @@ export interface CtSourceAttempt {
 	outcome: CtSourceOutcome;
 	contributed: boolean;
 	indexExhausted?: boolean;
+	/** Set when the source answered from the owned CT index: its history window becomes `forward-from`. */
+	ownedIndex?: OwnedIndexCoverage;
 }
 
 /**
@@ -167,7 +234,9 @@ export function buildCtCoverage(attempts: CtSourceAttempt[]): CtCoverage {
 		outcome: a.outcome,
 		contributed: a.contributed,
 		...(a.indexExhausted === undefined ? {} : { indexExhausted: a.indexExhausted }),
-		historyWindow: historyWindowFor(a.source),
+		historyWindow: a.ownedIndex ? 'forward-from' : historyWindowFor(a.source),
+		...(a.ownedIndex?.indexStartedAt ? { indexStartedAt: a.ownedIndex.indexStartedAt } : {}),
+		...(a.ownedIndex?.freshThrough ? { freshThrough: a.ownedIndex.freshThrough } : {}),
 	}));
 
 	const contributing = perSource.filter((s) => s.contributed).map((s) => s.source);
@@ -204,16 +273,25 @@ function coverageCaveat(contributing: string[], unavailable: string[], notConsul
 	if (unavailable.length > 0) parts.push(`Attempted but returned nothing usable: ${unavailable.join(', ')}.`);
 	if (notConsulted.length > 0) parts.push(`Not consulted on this call: ${notConsulted.join(', ')}.`);
 
+	// An owned index that answered "nothing" is still bounded evidence: it saw nothing SINCE its start.
 	const bounds = perSource
-		.filter((s) => s.contributed && s.historyWindow !== 'unknown')
-		.map((s) =>
-			s.historyWindow === 'unexpired-only'
-				? `${s.source} shows currently-valid certificates only`
-				: `${s.source} covers a recent rolling window only`,
-		);
+		.filter((s) => (s.contributed || (s.historyWindow === 'forward-from' && s.outcome === 'empty')) && s.historyWindow !== 'unknown')
+		.map((s) => {
+			if (s.historyWindow === 'unexpired-only') return `${s.source} shows currently-valid certificates only`;
+			if (s.historyWindow === 'forward-from') return forwardFromBound(s);
+			return `${s.source} covers a recent rolling window only`;
+		});
 	if (bounds.length > 0) parts.push(`Source history bounds: ${bounds.join('; ')}.`);
 
 	return parts.join(' ');
+}
+
+/** Prose for an owned-index source: names it observed since its start, and how fresh it is. */
+function forwardFromBound(s: CtSourceCoverage): string {
+	const since = s.indexStartedAt ? `names observed since ${s.indexStartedAt}` : 'names observed since an unknown start date';
+	const fresh = s.freshThrough ? `, fresh through ${s.freshThrough}` : '';
+	const partial = s.indexExhausted === false ? '; its answer is partial, so older or unindexed issuance is not covered' : '';
+	return `${s.source} is the owned CT index, ${since}${fresh}${partial}`;
 }
 
 /**

@@ -635,3 +635,240 @@ describe('discover_subdomains — a declared provider restriction is not a retry
 		expect(result.issues.some((i) => i.type === 'unconfirmed_zero')).toBe(true);
 	});
 });
+
+// US-12 / SQ-345 — the owned CT index (`bv-ct-index`) is repointed behind the `certstream`
+// binding. It only holds names it OBSERVED since `indexStartedAt`, so until it is ~200 days
+// old it is a contributing but NOT exhaustive source: it must be labelled `forward-from`,
+// and a young (or truncated) answer must never suppress the crt.sh / CertSpotter fallbacks.
+describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (SQ-345)', () => {
+	const DAY_MS = 86_400_000;
+	const daysAgo = (days: number): string => new Date(Date.now() - days * DAY_MS).toISOString();
+
+	function ownedCoverage(indexAgeDays: number, extra: Record<string, unknown> = {}) {
+		return {
+			source: 'bv-ct-index',
+			indexStartedAt: daysAgo(indexAgeDays),
+			freshThrough: daysAgo(0),
+			historyWindow: 'forward-from',
+			truncated: false,
+			...extra,
+		};
+	}
+
+	/** A certstream binding whose `/enumerate` answers with `body` (owned index or legacy). */
+	function enumerateBinding(subdomains: string[], coverage?: Record<string, unknown>) {
+		return vi.fn(async () =>
+			Response.json({
+				domain: 'example.com',
+				subdomains,
+				certificateCount: subdomains.length,
+				timedOut: false,
+				cached: false,
+				...(coverage ? { coverage, truncated: coverage.truncated === true } : {}),
+			}),
+		);
+	}
+
+	/** A global fetch serving crt.sh / Certspotter, recording which backends were asked. */
+	function directBackends(handlers: { crtsh: () => Response; certspotter?: () => Response }) {
+		const asked: string[] = [];
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) {
+				asked.push('crtsh');
+				return handlers.crtsh();
+			}
+			if (s.includes('certspotter.com')) {
+				asked.push('certspotter');
+				return handlers.certspotter ? handlers.certspotter() : Response.json([], { status: 200 });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		return asked;
+	}
+
+	const certstreamSource = (result: { coverage?: { perSource: Array<{ source: string }> } }) =>
+		result.coverage?.perSource.find((s) => s.source === 'certstream');
+
+	beforeEach(() => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	it('(a) maps a bv-ct-index answer to historyWindow forward-from with indexStartedAt and freshThrough in the caveat', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const coverage = ownedCoverage(300);
+		const binding = enumerateBinding(['api.example.com', 'vpn.example.com'], coverage);
+		const asked = directBackends({ crtsh: () => Response.json([], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(certstreamSource(result)).toMatchObject({
+			historyWindow: 'forward-from',
+			indexStartedAt: coverage.indexStartedAt,
+			freshThrough: coverage.freshThrough,
+			indexExhausted: true,
+		});
+		expect(result.coverage?.caveat).toContain(`names observed since ${coverage.indexStartedAt}`);
+		expect(result.coverage?.caveat).toContain(`fresh through ${coverage.freshThrough}`);
+		// The label names the binding, not the vendor.
+		expect(result.sources).toEqual(['certstream']);
+		expect(asked).toEqual([]);
+	});
+
+	it('(b) a young index answer is contributing but not exhaustive and STILL consults crt.sh, merging both', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com'], ownedCoverage(30));
+		const asked = directBackends({
+			crtsh: () => Response.json([entry('old-host.example.com', 0), entry('api.example.com', 1)], { status: 200 }),
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual(['crtsh']);
+		// Union of the two: the index's name and crt.sh's historic one; shared names are deduped.
+		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'old-host.example.com']);
+		// crt.sh's richer record wins for a name both know.
+		expect(result.subdomains.find((s) => s.subdomain === 'api.example.com')?.issuer).toBe('R3');
+		expect(result.sources).toEqual(['certstream', 'crtsh']);
+		expect(result.coverage?.perSource.map((s) => s.source)).toEqual(['certstream', 'crtsh']);
+		expect(certstreamSource(result)).toMatchObject({ outcome: 'ok', contributed: true, indexExhausted: false, historyWindow: 'forward-from' });
+		expect(result.coverage?.contributing).toEqual(['certstream', 'crtsh']);
+		// crt.sh read its index to the end, so the merged answer is as exhaustive as crt.sh is.
+		expect(result.sourceIndexExhausted).toBe(true);
+	});
+
+	it('(b) a young index answer with ZERO names is not a confident zero: crt.sh is consulted and its names are served', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding([], ownedCoverage(30));
+		const asked = directBackends({ crtsh: () => Response.json([entry('www.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual(['crtsh']);
+		expect(result.totalSubdomains).toBe(1);
+		expect(certstreamSource(result)).toMatchObject({ outcome: 'empty', contributed: false, indexExhausted: false });
+		expect(result.coverage?.contributing).toEqual(['crtsh']);
+		// An index that saw nothing is still bounded evidence.
+		expect(result.coverage?.caveat).toMatch(/owned CT index, names observed since/);
+	});
+
+	it('(b) falls through to Certspotter when crt.sh fails, and records the failure beside the index', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com'], ownedCoverage(30));
+		const asked = directBackends({
+			crtsh: () => Response.json({}, { status: 502 }),
+			certspotter: () => Response.json([issuance(1, ['vpn.example.com'])], { status: 200 }),
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual(['crtsh', 'certspotter']);
+		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
+		expect(result.coverage?.perSource.map((s) => `${s.source}=${s.outcome}`)).toEqual(['certstream=ok', 'crtsh=http_error', 'certspotter=ok']);
+		// crt.sh failed, so this is a floor (#866).
+		expect(result.countBasis).toBe('floor');
+	});
+
+	it('(b) keeps the index names as a floor when every direct source fails', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com'], ownedCoverage(30));
+		directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(result.sourceUnavailable).toBeFalsy();
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+		expect(result.countBasis).toBe('floor');
+		expect(result.sourceIndexExhausted).toBe(false);
+		expect(result.coverage?.unavailable).toEqual(expect.arrayContaining(['crtsh', 'certspotter']));
+	});
+
+	it('a TRUNCATED page from a mature index is a floor and still consults crt.sh (contract v2 a)', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com'], ownedCoverage(400, { truncated: true }));
+		const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual(['crtsh']);
+		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'extra.example.com']);
+		expect(certstreamSource(result)).toMatchObject({ indexExhausted: false });
+		expect(result.countBasis).toBe('floor');
+		expect(result.sourceIndexExhausted).toBe(false);
+		expect(result.minSubdomainsObserved).toBe(2);
+	});
+
+	it('(c) a mature index (>200 days) keeps today\'s short-circuit: crt.sh and Certspotter are never asked', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com'], ownedCoverage(250));
+		const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual([]);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+		expect(result.coverage?.notConsulted).toEqual(expect.arrayContaining(['crtsh', 'certspotter']));
+		expect(certstreamSource(result)).toMatchObject({ historyWindow: 'forward-from', indexExhausted: true });
+		expect(result.countBasis).toBe('sample');
+	});
+
+	it('(d) a legacy answer WITHOUT coverage is unchanged: short-circuit, historyWindow unknown', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = enumerateBinding(['api.example.com']);
+		const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual([]);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+		expect(certstreamSource(result)).toEqual({
+			source: 'certstream',
+			outcome: 'ok',
+			contributed: true,
+			indexExhausted: true,
+			historyWindow: 'unknown',
+		});
+		expect(result.countBasis).toBe('sample');
+	});
+
+	it('a 503 from the index on both routes is a source failure, never "zero results": crt.sh serves the answer (contract v2 b)', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = vi.fn(async () => Response.json({ error: 'ct_index_unavailable' }, { status: 503 }));
+		const asked = directBackends({ crtsh: () => Response.json([entry('www.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(binding).toHaveBeenCalledTimes(2);
+		expect(asked).toEqual(['crtsh']);
+		expect(result.totalSubdomains).toBe(1);
+		const cs = certstreamSource(result);
+		expect(cs).toMatchObject({ outcome: 'http_error', contributed: false });
+		expect(result.coverage?.unavailable).toContain('certstream');
+		expect(result.countBasis).toBe('floor');
+	});
+
+	it('a 503 with every direct source also down reports an outage, not an empty result', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = vi.fn(async () => Response.json({ error: 'index_not_ready' }, { status: 503 }));
+		directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(result.sourceUnavailable).toBe(true);
+		expect(result.totalSubdomains).toBe(0);
+	});
+
+	it('renders forward-from in the human-readable text, never as an inventory claim', async () => {
+		const { discoverSubdomains, formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+		const coverage = ownedCoverage(30);
+		const binding = enumerateBinding(['api.example.com'], coverage);
+		directBackends({ crtsh: () => Response.json([], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+		const text = formatSubdomainDiscovery(result, 'full');
+
+		expect(text).toContain(`names observed since ${coverage.indexStartedAt}`);
+		expect(result).not.toHaveProperty('enumerationComplete');
+	});
+});

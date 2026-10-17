@@ -87,6 +87,92 @@ describe('CT failover budget invariant (#738)', () => {
 	});
 });
 
+// SQ-345 — a young owned CT index (`bv-ct-index`) no longer ends the ladder, so the
+// budget arithmetic above must still hold when it answers FIRST: the extra fallback
+// consult may not starve Certspotter, and an exhausted budget must still skip the
+// direct sources rather than start a fetch it cannot finish.
+describe('CT failover budget with a young owned index in front (SQ-345)', () => {
+	const youngIndex = (subdomains: string[]) =>
+		vi.fn(async () =>
+			Response.json({
+				domain: 'example.com',
+				subdomains,
+				certificateCount: subdomains.length,
+				timedOut: false,
+				cached: false,
+				truncated: false,
+				coverage: {
+					source: 'bv-ct-index',
+					indexStartedAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+					freshThrough: new Date().toISOString(),
+					historyWindow: 'forward-from',
+					truncated: false,
+				},
+			}),
+		) as unknown as typeof fetch;
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('still reaches Certspotter after the index answered and crt.sh burned its whole timeout', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const consulted: string[] = [];
+		vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('crt.sh')) {
+				consulted.push('crtsh');
+				return await new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+				});
+			}
+			if (url.includes('certspotter.com')) {
+				consulted.push('certspotter');
+				return Response.json([{ id: '1', dns_names: ['api.example.com'], not_before: '', not_after: '' }], { status: 200 });
+			}
+			return Response.json({}, { status: 404 });
+		});
+
+		let result: Awaited<ReturnType<typeof discoverSubdomains>>;
+		vi.useFakeTimers();
+		try {
+			const pending = discoverSubdomains('example.com', { fetch: youngIndex(['idx.example.com']) }, undefined, {
+				deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+			});
+			await vi.advanceTimersByTimeAsync(CT_SOURCE_TIMEOUT_MS + CT_FAILOVER_HEADROOM_MS);
+			result = await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+
+		expect(consulted).toEqual(['crtsh', 'certspotter']);
+		expect(result.coverage?.perSource.map((s) => s.source)).toEqual(['certstream', 'crtsh', 'certspotter']);
+		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'idx.example.com']);
+	});
+
+	it('serves the index names without asking crt.sh when the budget is already spent', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const fetchSpy = vi.fn(async () => Response.json({}, { status: 404 }));
+		vi.stubGlobal('fetch', fetchSpy);
+		const slowIndex = youngIndex(['idx.example.com']);
+		const binding = vi.fn(async (...args: Parameters<typeof fetch>) => {
+			await new Promise((r) => setTimeout(r, 120));
+			return (slowIndex as unknown as (...a: Parameters<typeof fetch>) => Promise<Response>)(...args);
+		}) as unknown as typeof fetch;
+
+		const result = await discoverSubdomains('example.com', { fetch: binding }, undefined, { deadlineMs: Date.now() + 60 });
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['idx.example.com']);
+		// Not asked is not failed: the direct sources read as notConsulted, and the count is a floor.
+		expect(result.coverage?.notConsulted).toEqual(expect.arrayContaining(['crtsh', 'certspotter']));
+		expect(result.countBasis).toBe('floor');
+		expect(result.sourceUnavailable).toBeFalsy();
+	});
+});
+
 // SQ-2 — a 403 refusal is still a FAILOVER, not an abort.
 //
 // Classifying the refusal distinctly (`provider_restricted`) changes what the
