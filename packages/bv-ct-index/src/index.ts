@@ -7,8 +7,15 @@
  * `batch.queue`), and the query API (src/api/) behind `fetch`. Until then only GET /health answers.
  */
 
+import type { CompactionJob } from './indexer/compact';
+import { runCompactionBatch } from './indexer/compact';
+import { COMPACTION_CRON, runCompactionCron } from './indexer/plan';
+import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
 import type { ObservationBatch } from './types';
+
+export const ENTRIES_QUEUE = 'bv-ct-index-entries';
+export const COMPACT_QUEUE = 'bv-ct-index-compact';
 
 export interface Env {
 	/** R2 bucket `bv-ct-index`: the sorted runs (codec.ts). */
@@ -20,8 +27,8 @@ export interface Env {
 	CURSORS: D1Database;
 	/** Queue `bv-ct-index-entries`: produced by the tailer, consumed by the indexer. */
 	ENTRIES: Queue<ObservationBatch>;
-	/** Queue `bv-ct-index-compact`: compaction jobs, one key range each. The compaction ticket pins the message shape. */
-	COMPACT: Queue<unknown>;
+	/** Queue `bv-ct-index-compact`: compaction jobs (src/indexer/compact.ts), produced by the hourly planner. */
+	COMPACT: Queue<CompactionJob>;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 }
@@ -42,7 +49,14 @@ export default {
 				console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
 				break;
 			}
+			case COMPACTION_CRON:
+				await runCompactionCron(env, controller.scheduledTime);
+				break;
 		}
 	},
-	async queue() {},
+	async queue(batch, env) {
+		if (batch.queue === ENTRIES_QUEUE) await indexEntries(batch, env);
+		else if (batch.queue === COMPACT_QUEUE) await runCompactionBatch(batch, env);
+		else throw new Error(`bv-ct-index has no consumer for queue ${batch.queue}`);
+	},
 } satisfies ExportedHandler<Env, unknown>;
