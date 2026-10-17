@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * bv-ct-index sidecar Worker entrypoint (US-12 wave 1 stub).
+ * bv-ct-index sidecar Worker entrypoint (US-12).
  *
- * Wave 2 fills disjoint modules: the tailer (src/tailer/) and compaction planner behind `scheduled`,
- * the indexer and compaction jobs behind `queue` (one handler for both queues, told apart by
- * `batch.queue`), and the query API (src/api/) behind `fetch`. Until then only GET /health answers.
+ * `scheduled`: the tailer (src/tailer/) and the compaction planner. `queue`: the indexer and compaction jobs (one
+ * handler for both queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the bearer-authenticated
+ * query API (src/api/).
  */
 
+import { handleApiRequest } from './api/handler';
 import type { CompactionJob } from './indexer/compact';
 import { runCompactionBatch } from './indexer/compact';
 import { COMPACTION_CRON, runCompactionCron } from './indexer/plan';
+import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
 import type { ObservationBatch } from './types';
@@ -34,12 +36,13 @@ export interface Env {
 }
 
 export default {
-	async fetch(request) {
+	async fetch(request, env) {
 		const { pathname } = new URL(request.url);
 		if (request.method === 'GET' && pathname === '/health') {
 			return Response.json({ ok: true, worker: 'bv-ct-index' });
 		}
-		return Response.json({ error: 'not_implemented' }, { status: 501 });
+		// /enumerate, /sans and /cert-meta (src/api/): bearer-authenticated, answered from the run index.
+		return handleApiRequest(request, env, { reader: createReader(env) });
 	},
 	async scheduled(controller, env) {
 		switch (controller.cron) {
