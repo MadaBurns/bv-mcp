@@ -93,7 +93,7 @@ export interface IndexOutcome {
 /** Consumes one `bv-ct-index-entries` batch. `nowMs` is the clock (tests pin it). */
 export async function indexEntries(batch: MessageBatch<unknown>, env: Env, nowMs = Date.now()): Promise<IndexOutcome> {
 	const db = env.CURSORS;
-	if (await isKilled(db, nowMs)) {
+	if (await isKilled(db)) {
 		batch.retryAll({ delaySeconds: KILLED_RETRY_DELAY_SECONDS });
 		return { killed: true, names: 0, siblings: 0, rejected: 0 };
 	}

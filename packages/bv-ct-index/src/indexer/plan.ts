@@ -181,7 +181,7 @@ export interface CronOutcome {
 
 /** The `17 * * * *` branch of `scheduled`. */
 export async function runCompactionCron(env: Env, nowMs: number): Promise<CronOutcome> {
-	if (await isKilled(env.CURSORS, nowMs)) return { killed: true, snapshot: null, jobs: [] };
+	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
 	const snapshot = await maybeSnapshot(env, nowMs);
 	const jobs = await planCompactions(env.CURSORS, nowMs);
 	await sendJobs(env.COMPACT, jobs);

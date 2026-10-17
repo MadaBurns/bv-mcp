@@ -161,7 +161,7 @@ export async function runCompactionJob(
 	nowMs = Date.now(),
 ): Promise<JobOutcome> {
 	const db = env.CURSORS;
-	if (await isKilled(db, nowMs)) return 'killed';
+	if (await isKilled(db)) return 'killed';
 	const inputKeys = job.inputs.map(r2KeyOfRunId);
 	const outputPrefix = `${RUNS_PREFIX}t${job.tier}/${job.id}`;
 

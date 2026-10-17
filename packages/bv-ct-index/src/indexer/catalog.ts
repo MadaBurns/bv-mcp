@@ -61,15 +61,13 @@ export interface Ops {
 }
 
 /**
- * Adds `ops` to the ledger row of the UTC day of `nowMs`. A new day's row inherits the latest earlier row's
- * `killed`, so the kill switch stays on across midnight until an operator clears it. Columns an operator
- * left NULL (e.g. a row inserted with only `killed = 1`) count as 0.
+ * Adds `ops` to the ledger row of the UTC day of `nowMs`. Columns an operator left NULL (e.g. a row inserted
+ * with only `killed = 1`) count as 0.
  */
 export function ledgerStatement(db: D1Database, nowMs: number, ops: Ops): D1PreparedStatement {
 	return db
 		.prepare(
-			`INSERT INTO ops_ledger (day, r2_class_a, r2_class_b, d1_rows, killed)
-			 VALUES (?1, ?2, ?3, ?4, COALESCE((SELECT killed FROM ops_ledger WHERE day < ?1 ORDER BY day DESC LIMIT 1), 0))
+			`INSERT INTO ops_ledger (day, r2_class_a, r2_class_b, d1_rows) VALUES (?1, ?2, ?3, ?4)
 			 ON CONFLICT (day) DO UPDATE SET
 				r2_class_a = COALESCE(r2_class_a, 0) + excluded.r2_class_a,
 				r2_class_b = COALESCE(r2_class_b, 0) + excluded.r2_class_b,
@@ -79,14 +77,12 @@ export function ledgerStatement(db: D1Database, nowMs: number, ops: Ops): D1Prep
 }
 
 /**
- * The kill switch: `killed = 1` on the latest ledger row up to today stops every writer (the T0 indexer,
- * the compaction planner and jobs, the weekly snapshot). Reads continue.
+ * The kill switch: `killed = 1` on ANY ledger row stops every writer (the T0 indexer, the compaction planner
+ * and jobs, the weekly snapshot), so a kill outlives UTC midnight until an operator clears it with
+ * `UPDATE ops_ledger SET killed = 0`. The tailer uses the same predicate (story log, SQ-342). Reads continue.
  */
-export async function isKilled(db: D1Database, nowMs: number): Promise<boolean> {
-	const row = await db
-		.prepare('SELECT killed FROM ops_ledger WHERE day <= ?1 ORDER BY day DESC LIMIT 1')
-		.bind(utcDay(nowMs))
-		.first<{ killed: number | null }>();
+export async function isKilled(db: D1Database): Promise<boolean> {
+	const row = await db.prepare('SELECT MAX(killed) AS killed FROM ops_ledger').first<{ killed: number | null }>();
 	return Number(row?.killed ?? 0) === 1;
 }
 

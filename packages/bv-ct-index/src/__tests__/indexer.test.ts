@@ -132,7 +132,7 @@ describe('kill switch', () => {
 		expect(plannedBeforeKill).toHaveLength(1);
 		await env.CURSORS.prepare('UPDATE ops_ledger SET killed = 1').run();
 
-		// Next UTC day: no ledger row yet, so the latest row's kill applies.
+		// Next UTC day: the kill set on an earlier day's row still applies.
 		const nextDay = T + DAY_MS;
 		const batch = await ingest(env, nextDay, [obs('new.example.com')]);
 		expect(batch.retriedAll).toEqual({ delaySeconds: KILLED_RETRY_DELAY_SECONDS });
@@ -145,10 +145,12 @@ describe('kill switch', () => {
 			'www.example.com',
 		]);
 
-		// A new day's ledger row inherits the kill; clearing the latest row resumes the writers.
+		// A fresh row for today does not clear an earlier kill; clearing every row resumes the writers.
 		await env.CURSORS.prepare('INSERT INTO ops_ledger (day, killed) VALUES (?1, 0)')
 			.bind(new Date(nextDay).toISOString().slice(0, 10))
 			.run();
+		expect((await ingest(env, nextDay, [obs('new.example.com')])).ackedAll).toBe(false);
+		await env.CURSORS.prepare('UPDATE ops_ledger SET killed = 0').run();
 		expect((await ingest(env, nextDay, [obs('new.example.com')])).ackedAll).toBe(true);
 	});
 });
