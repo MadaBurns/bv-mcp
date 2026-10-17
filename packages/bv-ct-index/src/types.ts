@@ -1,55 +1,74 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * Shared bv-ct-index data shapes (US-12 contract, "Shared surface").
+ * Shared bv-ct-index data shapes (US-12 contract v2, "Data model" and "Read seam").
  *
- * The tailer (src/tailer/), indexer and compactor (src/indexer/) and query API (src/api/)
- * are built in parallel against these. Changing one is a contract change.
+ * The tailer, indexer/compactor and query API are built in parallel against these. Changing one is a
+ * contract change.
  */
 
-/** One (name, certificate) observation from a CT log entry. */
-export interface NameRecord {
-	/** A DNS name on the certificate. */
+// key = reversed labels joined by '\x01', e.g. 'nz\x01govt\x01dia\x01www' — every domain/suffix is a contiguous key range
+export interface NameObservation {
+	key: string;
 	name: string;
-	/** Registrable domain (eTLD+1) of `name`. `partitionOf(apex)` selects the partition. */
 	apex: string;
-	/** First 16 bytes of sha256(leaf certificate DER), lowercase hex. */
-	certHash: string;
-	/** Epoch seconds. */
-	notBefore: number;
-	/** Epoch seconds. */
-	notAfter: number;
-	/** Issuer CN, or O when there is no CN. */
+	firstSeen: number;
+	notAfter: number /* epoch s, max seen */;
 	issuer: string;
-	/** The OTHER registrable domains on the same certificate, at most 32. */
-	sanApexes: string[];
+	wildcard: boolean;
 }
-
-/** One Queue message from the tailer to the indexer: records parsed from one log, starting at `startIndex`. */
-export interface EntryBatch {
+export interface SiblingObservation {
+	key: string /* 's\x00' + reversed(apex) + '\x00' + sibling */;
+	apex: string;
+	sibling: string;
+	firstSeen: number;
+	notAfter: number;
+}
+// merge rule (idempotent, order-free): firstSeen=min, notAfter=max, issuer=from the row with the larger notAfter; drop rows with notAfter < now on any rewrite
+export interface ObservationBatch {
 	logId: string;
 	startIndex: number;
-	records: NameRecord[];
+	endIndex: number;
+	names: NameObservation[];
+	siblings: SiblingObservation[];
 }
 
-export interface IndexMeta {
-	/** ISO timestamp of the first ingest. The index is forward-only from here. */
-	indexStartedAt: string;
-	logsTracked: number;
-	lastCompactedAt: string | null;
+export interface ScanPage {
+	names: NameObservation[];
+	truncated: boolean;
+	cursor: string | null;
+}
+export interface IndexReader {
+	scan(domain: string, opts: { limit: number; cursor?: string | null }): Promise<ScanPage>; // all names == domain or under it, merged across tiers, expired dropped
+	siblings(apex: string, opts: { limit: number }): Promise<{ siblings: SiblingObservation[]; truncated: boolean }>;
+	meta(): Promise<{ indexStartedAt: string | null; freshThrough: string | null; generation: number }>;
+}
+
+/** One row of a sorted run. A run holds one kind only: name keys never start with the sibling prefix 's\x00'. */
+export type RunRow = NameObservation | SiblingObservation;
+
+/** One deflate-raw block of a run: the key of its first row, and its byte range in the R2 object. */
+export interface BlockIndexEntry {
+	firstKey: string;
+	offset: number;
+	length: number;
 }
 
 /**
- * The read seam between the indexer and the query API. The indexer ticket implements it over R2;
- * the API ticket takes it by injection.
- *
- * Each read returns base plus pending deltas merged, deduped on (name, certHash) keeping the
- * greatest `notAfter`, with expired records (`notAfter` before now) dropped.
+ * One row of the D1 `runs` catalog table (migrations/0002_catalog.sql), column for column, so
+ * `prepare(...).all<RunDescriptor>()` returns it as is. `block_index` holds `serializeBlockIndex` output;
+ * read it back with `parseBlockIndex`, which accepts every shape D1 hands a BLOB back as.
  */
-export interface IndexReader {
-	/** Records for one partition, `0 <= p < PARTITIONS`. */
-	readPartition(p: number): Promise<NameRecord[]>;
-	/** Records for one allowlisted public suffix in `SUFFIX_ROLLUPS`. */
-	readRollup(suffix: string): Promise<NameRecord[]>;
-	/** Null before the first ingest. */
-	readMeta(): Promise<IndexMeta | null>;
+export interface RunDescriptor {
+	id: string;
+	generation: number;
+	tier: 0 | 1 | 2 | 3;
+	/** Smallest and largest row key in the run, both inclusive. */
+	key_lo: string;
+	key_hi: string;
+	r2_key: string;
+	rows: number;
+	bytes: number;
+	block_index: ArrayBuffer | ArrayBufferView | number[];
+	/** ISO timestamp. */
+	created_at: string;
 }

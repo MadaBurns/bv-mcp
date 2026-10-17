@@ -39,15 +39,26 @@
 			{
 				"binding": "ENTRIES",
 				"queue": "bv-ct-index-entries"
+			},
+			{
+				"binding": "COMPACT",
+				"queue": "bv-ct-index-compact"
 			}
 		],
 		"consumers": [
 			{
-				// Conservative starting values: small batches bound one indexer invocation's CPU and R2 writes.
-				// The indexer ticket (US-12 W2b) tunes these.
+				// Contract v2: batch 100. Each indexer invocation writes exactly one T0 run (one R2 put), so a
+				// bigger batch means fewer, larger runs.
 				"queue": "bv-ct-index-entries",
-				"max_batch_size": 10,
+				"max_batch_size": 100,
 				"max_batch_timeout": 30,
+				"max_retries": 3
+			},
+			{
+				// One compaction job (one key range) per invocation, so each job gets the whole isolate.
+				"queue": "bv-ct-index-compact",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
 				"max_retries": 3
 			}
 		]

@@ -11,6 +11,9 @@
 		"dev": "cf dev",
 		"deploy": "cf deploy"
 	},
+	"dependencies": {
+		"tldts": "^7.4.16"
+	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.4.0",
 		"@cloudflare/workers-types": "^5.20260929.1",

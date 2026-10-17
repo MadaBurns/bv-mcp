@@ -2,20 +2,25 @@
 /**
  * bv-ct-index sidecar Worker entrypoint (US-12 wave 1 stub).
  *
- * Wave 2 fills disjoint modules: the tailer (src/tailer/) and compactor (src/indexer/) behind
- * `scheduled`, the indexer (src/indexer/) behind `queue`, and the query API (src/api/) behind
- * `fetch`. Until then only GET /health answers.
+ * Wave 2 fills disjoint modules: the tailer (src/tailer/) and compaction planner behind `scheduled`,
+ * the indexer and compaction jobs behind `queue` (one handler for both queues, told apart by
+ * `batch.queue`), and the query API (src/api/) behind `fetch`. Until then only GET /health answers.
  */
 
-import type { EntryBatch } from './types';
+import type { ObservationBatch } from './types';
 
 export interface Env {
-	/** R2 bucket `bv-ct-index`: partition and suffix-rollup segments (key helpers in codec.ts). */
+	/** R2 bucket `bv-ct-index`: the sorted runs (codec.ts). */
 	INDEX: R2Bucket;
-	/** D1 database `bv-ct-index-cursors`: one cursor per CT log (migrations/0001_log_cursors.sql). */
+	/**
+	 * D1 database `bv-ct-index-cursors`: one cursor per CT log (migrations/0001_log_cursors.sql), plus the run
+	 * catalog, `meta` and `ops_ledger` (migrations/0002_catalog.sql).
+	 */
 	CURSORS: D1Database;
 	/** Queue `bv-ct-index-entries`: produced by the tailer, consumed by the indexer. */
-	ENTRIES: Queue<EntryBatch>;
+	ENTRIES: Queue<ObservationBatch>;
+	/** Queue `bv-ct-index-compact`: compaction jobs, one key range each. The compaction ticket pins the message shape. */
+	COMPACT: Queue<unknown>;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 }
@@ -30,4 +35,4 @@ export default {
 	},
 	async scheduled() {},
 	async queue() {},
-} satisfies ExportedHandler<Env, EntryBatch>;
+} satisfies ExportedHandler<Env, unknown>;

@@ -148,8 +148,11 @@ describe('infra probe wrangler wiring', () => {
 	describe('packages/bv-ct-index/cloudflare.config.ts (cf deploy) parity with wrangler.jsonc', () => {
 		const src = ctIndexCfConfigSource;
 		const one = (re: RegExp) => re.exec(src)?.slice(1) ?? [];
-		const consumerSource = /\btriggers\.queue\((\{[^}]*\})\)/.exec(src)?.[1] ?? '';
-		const consumerField = (field: string) => Number(new RegExp(`\\b${field}:\\s*(\\d+)`).exec(consumerSource)?.[1]);
+		// Every `triggers.queue({...})` consumer in the cf config, keyed by queue name, in source order.
+		const cfConsumers = new Map(
+			[...src.matchAll(/\btriggers\.queue\((\{[^}]*\})\)/g)].map((m) => [/\bname:\s*['"]([^'"]+)['"]/.exec(m[1]!)?.[1], m[1]!] as const),
+		);
+		const consumerField = (consumerSource: string, field: string) => Number(new RegExp(`\\b${field}:\\s*(\\d+)`).exec(consumerSource)?.[1]);
 
 		it('deploys exactly the Worker named bv-ct-index, as the test config does', () => {
 			// US-12 hard constraint: deploy is upsert-by-name, so any other name would create or overwrite a different Worker.
@@ -170,7 +173,7 @@ describe('infra probe wrangler wiring', () => {
 			expect(cfCrons).toEqual(ctIndexConfig.triggers?.crons);
 		});
 
-		it('binds the same R2 bucket, D1 database (same id) and queue producer as the test config', () => {
+		it('binds the same R2 bucket, D1 database (same id) and queue producers as the test config', () => {
 			expect(ctIndexConfig.r2_buckets).toEqual([{ binding: 'INDEX', bucket_name: 'bv-ct-index' }]);
 			expect(one(/\bINDEX:\s*bindings\.r2\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index']);
 
@@ -183,21 +186,28 @@ describe('infra probe wrangler wiring', () => {
 				d1[0]?.database_id,
 			]);
 
-			expect(ctIndexConfig.queues?.producers).toEqual([{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' }]);
+			expect(ctIndexConfig.queues?.producers).toEqual([
+				{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' },
+				{ binding: 'COMPACT', queue: 'bv-ct-index-compact' },
+			]);
 			expect(one(/\bENTRIES:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-entries']);
+			expect(one(/\bCOMPACT:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-compact']);
 		});
 
-		it('consumes its own queue with the same bounded batch settings as the test config', () => {
+		it('consumes both of its queues with the same bounded batch settings as the test config', () => {
 			const consumers = ctIndexConfig.queues?.consumers ?? [];
-			expect(consumers).toHaveLength(1);
-			const [consumer] = consumers;
-			expect(consumer?.queue).toBe('bv-ct-index-entries');
-			expect(one(/\btriggers\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual([consumer?.queue]);
-			expect(consumer?.max_batch_size).toBeGreaterThan(0);
-			expect(consumer?.max_batch_timeout).toBeGreaterThan(0);
-			expect(consumerField('maxBatchSize')).toBe(consumer?.max_batch_size);
-			expect(consumerField('maxBatchTimeout')).toBe(consumer?.max_batch_timeout);
-			expect(consumerField('maxRetries')).toBe(consumer?.max_retries);
+			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact']);
+			expect([...cfConsumers.keys()]).toEqual(consumers.map((c) => c.queue));
+			for (const consumer of consumers) {
+				const cfConsumer = cfConsumers.get(consumer.queue) ?? '';
+				expect(consumer.max_batch_size, consumer.queue).toBeGreaterThan(0);
+				expect(consumer.max_batch_timeout, consumer.queue).toBeGreaterThan(0);
+				expect(consumerField(cfConsumer, 'maxBatchSize'), consumer.queue).toBe(consumer.max_batch_size);
+				expect(consumerField(cfConsumer, 'maxBatchTimeout'), consumer.queue).toBe(consumer.max_batch_timeout);
+				expect(consumerField(cfConsumer, 'maxRetries'), consumer.queue).toBe(consumer.max_retries);
+			}
+			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
+			expect(consumers[0]?.max_batch_size).toBe(100);
 		});
 
 		it('requires the CT_INDEX_ADMIN_KEY secret in both configs', () => {
