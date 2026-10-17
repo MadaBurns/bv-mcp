@@ -7,6 +7,7 @@
  * `batch.queue`), and the query API (src/api/) behind `fetch`. Until then only GET /health answers.
  */
 
+import { runTailer } from './tailer';
 import type { ObservationBatch } from './types';
 
 export interface Env {
@@ -33,6 +34,15 @@ export default {
 		}
 		return Response.json({ error: 'not_implemented' }, { status: 501 });
 	},
-	async scheduled() {},
+	async scheduled(controller, env) {
+		switch (controller.cron) {
+			case '* * * * *': {
+				// The tailer (src/tailer/): CT log entries -> ObservationBatch messages on ENTRIES.
+				const summary = await runTailer(env, { scheduledTime: controller.scheduledTime });
+				console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
+				break;
+			}
+		}
+	},
 	async queue() {},
 } satisfies ExportedHandler<Env, unknown>;
