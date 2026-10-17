@@ -76,6 +76,10 @@ does not hold. Neither sidecar deploy runs `check:sidecar-freshness`: that gate 
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 
+A third sidecar, `bv-ct-index` (the owned Certificate Transparency names index behind `BV_CERTSTREAM`), ships with
+`npm run deploy:ct-index`. It has its own provisioning, benchmark and cut-over steps, and a kill switch: see
+[`bv-ct-index-runbook.md`](./bv-ct-index-runbook.md).
+
 The gates use their existing one-shot overrides, same as `deploy:prod`:
 `BV_ALLOW_STALE_DEPLOY=1` bypasses the freshness check, and
 `BV_ALLOW_UNPINNED_DEPLOY=1` bypasses the release-tag check. Both warn loudly

@@ -37,7 +37,7 @@ export interface SidecarTarget {
 	worker: string;
 	/**
 	 * Repo-relative config that declares this Worker (shown in the block message; the audit proves it
-	 * exists and names `worker`). Both sidecars are `cf migrate` packages, so this is each package's
+	 * exists and names `worker`). Every sidecar is a cf package, so this is each package's
 	 * `cloudflare.config.ts`, which Wrangler itself cannot load.
 	 */
 	configPath: string;
@@ -121,6 +121,23 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 			'packages/bv-infra-probe/package.json',
 		],
 		deployCommand: 'npm run deploy:infra-probe',
+	},
+	{
+		worker: 'bv-ct-index',
+		configPath: 'packages/bv-ct-index/cloudflare.config.ts',
+		// Pinned next to the config like the two above; the audit proves it equals the `name` in cloudflare.config.ts.
+		deploymentsSelector: ['--name', 'bv-ct-index'],
+		// Self-contained package (no dns-checks import): its source, its deploy config and the wrangler.jsonc test
+		// config, and its manifest. migrations/ is NOT watched: D1 migrations are applied with `wrangler d1 migrations
+		// apply`, not shipped by `cf deploy`, so a migration commit is not drift that deploy:ct-index could fix.
+		watchPaths: [
+			'packages/bv-ct-index/src',
+			'packages/bv-ct-index/cloudflare.config.ts',
+			'packages/bv-ct-index/wrangler.config.ts',
+			'packages/bv-ct-index/wrangler.jsonc',
+			'packages/bv-ct-index/package.json',
+		],
+		deployCommand: 'npm run deploy:ct-index',
 	},
 ];
 

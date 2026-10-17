@@ -250,6 +250,7 @@ See [**docs/scoring.md**](docs/scoring.md) for the grade scales and the evidence
 
 - **Generic Scoring Engine**: Runtime-agnostic, string-keyed three-tier scoring with configurable weights
 - **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies live DNS-over-TCP/53 authoritative DNS and root-server evidence for the authoritative DNS infrastructure profile
+- **CT Index Binding**: Optional `BV_CERTSTREAM` service binding supplies Certificate Transparency names for `discover_subdomains` and SAN correlation. Operator deployments point it at the owned `bv-ct-index` sidecar (`packages/bv-ct-index`), a forward-only names index built from the public CT logs; source order stays binding, then crt.sh, then CertSpotter, then the last-known-good cache, so the direct sources remain the fallback. See [`docs/bv-ct-index-runbook.md`](docs/bv-ct-index-runbook.md)
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Protocol Enforcement**: Unsupported MCP versions fail closed; notifications and SSE connections use the same session-validity rules as other post-initialize requests

@@ -239,8 +239,8 @@ describe('#945 regression fixture — the real measured drift', () => {
 });
 
 describe('SIDECAR_TARGETS shape', () => {
-	it('covers both known sidecars with a deploy command each', () => {
-		expect(SIDECAR_TARGETS.map((t) => t.worker).sort()).toEqual(['bv-infra-probe', 'bv-whois']);
+	it('covers the three known sidecars with a deploy command each', () => {
+		expect(SIDECAR_TARGETS.map((t) => t.worker).sort()).toEqual(['bv-ct-index', 'bv-infra-probe', 'bv-whois']);
 		for (const target of SIDECAR_TARGETS) {
 			expect(target.configPath).toMatch(/wrangler[\w.-]*\.jsonc$|cloudflare\.config\.ts$/);
 			expect(target.watchPaths.length).toBeGreaterThan(0);

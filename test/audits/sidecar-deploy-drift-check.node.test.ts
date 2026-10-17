@@ -435,6 +435,18 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 		expect(SIDECAR_TARGETS.map((t) => t.worker)).not.toContain(MAIN_WORKER_NAME);
 	});
 
+	// Throwaway benchmark Workers that no deploy chain ships: the operator deploys and deletes them by hand from a
+	// runbook, so the freshness gate must NOT probe them (a deleted Worker would block deploy:prod). Each exemption
+	// is pinned to one exact config path AND Worker name, so it cannot hide a real sidecar.
+	const BENCH_ONLY_WORKERS = [{ worker: 'bv-ct-index-bench', configPath: 'packages/bv-ct-index/bench/wrangler.jsonc' }] as const;
+
+	it('bench-only exemptions name real configs and are not sidecars', () => {
+		for (const bench of BENCH_ONLY_WORKERS) {
+			expect(wranglerName(bench.configPath), `${bench.configPath} name must match ${bench.worker}`).toBe(bench.worker);
+			expect(SIDECAR_TARGETS.map((t) => t.worker)).not.toContain(bench.worker);
+		}
+	});
+
 	it('covers EVERY tracked Wrangler config that names a non-main Worker', () => {
 		// The whole defect class: a Worker with a deploy command that nothing
 		// invokes. A third sidecar added later must fail here rather than quietly
@@ -450,6 +462,7 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 			const name = wranglerName(path);
 			// Overlay/example fragments carry no `name` and are not deployable alone.
 			if (name === undefined || name === MAIN_WORKER_NAME) return false;
+			if (BENCH_ONLY_WORKERS.some((bench) => bench.configPath === path && bench.worker === name)) return false;
 			// Match by WORKER NAME, not path: a sidecar can have several tracked configs naming it (bv-whois
 			// keeps wrangler.jsonc as its test-only config beside cloudflare.config.ts). A Worker that is
 			// not listed still fails.

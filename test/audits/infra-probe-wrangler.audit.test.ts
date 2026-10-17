@@ -7,6 +7,9 @@ import infraProbeCfConfigSource from '../../packages/bv-infra-probe/cloudflare.c
 import infraProbeWranglerToolingSource from '../../packages/bv-infra-probe/wrangler.config.ts?raw';
 import whoisCfConfigSource from '../../packages/bv-whois/cloudflare.config.ts?raw';
 import whoisWranglerToolingSource from '../../packages/bv-whois/wrangler.config.ts?raw';
+import ctIndexWranglerSource from '../../packages/bv-ct-index/wrangler.jsonc?raw';
+import ctIndexCfConfigSource from '../../packages/bv-ct-index/cloudflare.config.ts?raw';
+import ctIndexWranglerToolingSource from '../../packages/bv-ct-index/wrangler.config.ts?raw';
 import packageLockSource from '../../package-lock.json?raw';
 import deployWorkflowSource from '../../.github/workflows/deploy-prod.yml?raw';
 
@@ -18,11 +21,23 @@ interface WranglerConfig {
 	preview_urls?: boolean;
 	services?: Array<{ binding?: string; service?: string }>;
 	kv_namespaces?: Array<{ binding?: string; id?: string }>;
+	main?: string;
+	routes?: unknown;
+	route?: unknown;
+	triggers?: { crons?: string[] };
+	r2_buckets?: Array<{ binding?: string; bucket_name?: string }>;
+	d1_databases?: Array<{ binding?: string; database_name?: string; database_id?: string }>;
+	queues?: {
+		producers?: Array<{ binding?: string; queue?: string }>;
+		consumers?: Array<{ queue?: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number }>;
+	};
+	secrets?: { required?: string[] };
 }
 
 const mainConfig = JSON.parse(mainWranglerSource) as WranglerConfig;
 // bv-whois/wrangler.jsonc carries leading `//` comment lines (test-only config note), which JSON.parse rejects.
 const whoisConfig = JSON.parse(whoisWranglerSource.replace(/^\s*\/\/.*$/gm, '')) as WranglerConfig;
+const ctIndexConfig = JSON.parse(ctIndexWranglerSource.replace(/^\s*\/\/.*$/gm, '')) as WranglerConfig;
 
 describe('infra probe wrangler wiring', () => {
 	it('keeps the bv-whois sidecar off public workers.dev and preview routes', () => {
@@ -125,6 +140,105 @@ describe('infra probe wrangler wiring', () => {
 		// Same constraint as bv-infra-probe: cf finds wrangler only at <package>/node_modules/wrangler.
 		it('keeps a nested wrangler install so cf can discover it', () => {
 			expect(packageLockSource).toContain('"packages/bv-whois/node_modules/wrangler"');
+		});
+	});
+
+	// `deploy:ct-index` runs `cf deploy` from packages/bv-ct-index/. Same split as bv-whois: cloudflare.config.ts deploys,
+	// wrangler.jsonc is the TEST-ONLY config, so the two must agree on everything that matters at runtime.
+	describe('packages/bv-ct-index/cloudflare.config.ts (cf deploy) parity with wrangler.jsonc', () => {
+		const src = ctIndexCfConfigSource;
+		const one = (re: RegExp) => re.exec(src)?.slice(1) ?? [];
+		// Every `triggers.queue({...})` consumer in the cf config, keyed by queue name, in source order.
+		const cfConsumers = new Map(
+			[...src.matchAll(/\btriggers\.queue\((\{[^}]*\})\)/g)].map((m) => [/\bname:\s*['"]([^'"]+)['"]/.exec(m[1]!)?.[1], m[1]!] as const),
+		);
+		const consumerField = (consumerSource: string, field: string) => Number(new RegExp(`\\b${field}:\\s*(\\d+)`).exec(consumerSource)?.[1]);
+
+		it('deploys exactly the Worker named bv-ct-index, as the test config does', () => {
+			// US-12 hard constraint: deploy is upsert-by-name, so any other name would create or overwrite a different Worker.
+			expect(one(/\bname:\s*['"]([^'"]+)['"]/)[0]).toBe('bv-ct-index');
+			expect(ctIndexConfig.name).toBe('bv-ct-index');
+		});
+
+		it('keeps the compatibility date and flags of the test config and the MCP worker', () => {
+			expect(one(/\bcompatibilityDate:\s*['"]([^'"]+)['"]/)[0]).toBe(ctIndexConfig.compatibility_date);
+			expect(ctIndexConfig.compatibility_date).toBe(mainConfig.compatibility_date);
+			const cfFlags = [...(one(/\bcompatibilityFlags:\s*\[([^\]]*)\]/)[0] ?? '').matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+			expect(cfFlags).toEqual(ctIndexConfig.compatibility_flags);
+		});
+
+		it('runs the tailer cron every minute and the compactor hourly, in both configs', () => {
+			const cfCrons = [...src.matchAll(/\btriggers\.scheduled\(\{\s*schedule:\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
+			expect(ctIndexConfig.triggers?.crons).toEqual(['* * * * *', '17 * * * *']);
+			expect(cfCrons).toEqual(ctIndexConfig.triggers?.crons);
+		});
+
+		it('binds the same R2 bucket, D1 database (id injected at deploy time) and queue producers as the test config', () => {
+			expect(ctIndexConfig.r2_buckets).toEqual([{ binding: 'INDEX', bucket_name: 'bv-ct-index' }]);
+			expect(one(/\bINDEX:\s*bindings\.r2\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index']);
+
+			const d1 = ctIndexConfig.d1_databases ?? [];
+			expect(d1).toHaveLength(1);
+			expect(d1[0]?.binding).toBe('CURSORS');
+			expect(d1[0]?.database_name).toBe('bv-ct-index-cursors');
+			// The id is NOT in the cf config: a real account resource id must not be committed, and the deploy tree must stay clean.
+			// It comes from BV_CT_INDEX_D1_ID through resolveCtIndexD1Id (fails closed); the test config keeps the YOUR_* placeholder.
+			expect(one(/\bCURSORS:\s*bindings\.d1\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual([d1[0]?.database_name]);
+			expect(src).toMatch(/\bid:\s*resolveCtIndexD1Id\(process\.env\[CT_INDEX_D1_ID_ENV\]\)/);
+			expect(src).not.toContain('YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID');
+			expect(d1[0]?.database_id).toBe('YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID');
+
+			expect(ctIndexConfig.queues?.producers).toEqual([
+				{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' },
+				{ binding: 'COMPACT', queue: 'bv-ct-index-compact' },
+			]);
+			expect(one(/\bENTRIES:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-entries']);
+			expect(one(/\bCOMPACT:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-compact']);
+		});
+
+		it('consumes both of its queues with the same bounded batch settings as the test config', () => {
+			const consumers = ctIndexConfig.queues?.consumers ?? [];
+			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact']);
+			expect([...cfConsumers.keys()]).toEqual(consumers.map((c) => c.queue));
+			for (const consumer of consumers) {
+				const cfConsumer = cfConsumers.get(consumer.queue) ?? '';
+				expect(consumer.max_batch_size, consumer.queue).toBeGreaterThan(0);
+				expect(consumer.max_batch_timeout, consumer.queue).toBeGreaterThan(0);
+				expect(consumerField(cfConsumer, 'maxBatchSize'), consumer.queue).toBe(consumer.max_batch_size);
+				expect(consumerField(cfConsumer, 'maxBatchTimeout'), consumer.queue).toBe(consumer.max_batch_timeout);
+				expect(consumerField(cfConsumer, 'maxRetries'), consumer.queue).toBe(consumer.max_retries);
+			}
+			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
+			expect(consumers[0]?.max_batch_size).toBe(100);
+		});
+
+		it('requires the CT_INDEX_ADMIN_KEY secret in both configs', () => {
+			expect(ctIndexConfig.secrets?.required).toEqual(['CT_INDEX_ADMIN_KEY']);
+			expect(src).toMatch(/\bCT_INDEX_ADMIN_KEY:\s*bindings\.secret\(\)/);
+		});
+
+		it('stays off workers.dev, preview URLs and routes', () => {
+			expect(ctIndexConfig.workers_dev).toBe(false);
+			expect(ctIndexConfig.preview_urls).toBe(false);
+			expect(ctIndexConfig.routes).toBeUndefined();
+			expect(ctIndexConfig.route).toBeUndefined();
+			expect(src).toMatch(/\bworkersDev:\s*false\b/);
+			expect(src).toMatch(/\bpreviewUrls:\s*false\b/);
+			expect(src).not.toMatch(/\b(routes|domains)\s*:/);
+		});
+
+		it('points at the same entry as the test config', () => {
+			expect(ctIndexConfig.main).toBe('src/index.ts');
+			expect(src).toMatch(/\bentrypoint:\s*['"]src\/index\.ts['"]/);
+		});
+
+		it('uploads source maps via the wrangler tooling config', () => {
+			expect(ctIndexWranglerToolingSource).toMatch(/\buploadSourceMaps:\s*true\b/);
+		});
+
+		// Same constraint as bv-whois: cf finds wrangler only at <package>/node_modules/wrangler.
+		it('keeps a nested wrangler install so cf can discover it', () => {
+			expect(packageLockSource).toContain('"packages/bv-ct-index/node_modules/wrangler"');
 		});
 	});
 

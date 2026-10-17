@@ -1,0 +1,25 @@
+{
+	"name": "@blackveil/bv-ct-index",
+	"version": "0.1.0",
+	"description": "Owned Certificate Transparency names index sidecar Worker that serves bv-mcp's BV_CERTSTREAM route contract",
+	"license": "BUSL-1.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"dev": "cf dev",
+		"deploy": "cf deploy"
+	},
+	"dependencies": {
+		"tldts": "^7.4.16"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-plugin": "^1.4.0",
+		"@cloudflare/workers-types": "^5.20260929.1",
+		"cf": "1.0.0-beta.14",
+		"typescript": "^6.0.0",
+		"vitest": "4.1.11",
+		"wrangler": "4.149.0"
+	}
+}

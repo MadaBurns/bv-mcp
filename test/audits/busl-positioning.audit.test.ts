@@ -10,6 +10,7 @@ import vscodeLicense from '../../extensions/vscode/LICENSE?raw';
 import packageJsonText from '../../package.json?raw';
 import dnsChecksPackageJsonText from '../../packages/dns-checks/package.json?raw';
 import bvWhoisPackageJsonText from '../../packages/bv-whois/package.json?raw';
+import bvCtIndexPackageJsonText from '../../packages/bv-ct-index/package.json?raw';
 import vscodePackageJsonText from '../../extensions/vscode/package.json?raw';
 import dnsChecksReadme from '../../packages/dns-checks/README.md?raw';
 import scoringConfig from '../../packages/dns-checks/src/scoring/config.ts?raw';
@@ -22,6 +23,7 @@ const WORKSPACE_MANIFESTS: Record<string, string> = {
 	'package.json': packageJsonText,
 	'packages/dns-checks/package.json': dnsChecksPackageJsonText,
 	'packages/bv-whois/package.json': bvWhoisPackageJsonText,
+	'packages/bv-ct-index/package.json': bvCtIndexPackageJsonText,
 	'extensions/vscode/package.json': vscodePackageJsonText,
 };
 

@@ -151,6 +151,8 @@ generate_*.py
 
 # Local deploy overrides (real KV IDs, custom domains)
 .dev
+# bv-ct-index: throwaway copy of the test config with the real D1 id, used only for remote migrations (scripts/ct-index-provision.mjs)
+packages/bv-ct-index/.wrangler.migrate.jsonc
 .mcp.json
 !.mcp.json
 .mcp-registry-key.pem

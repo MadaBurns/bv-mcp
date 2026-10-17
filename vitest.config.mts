@@ -5,9 +5,13 @@ import { isKnownWorkerdPoolShutdownError } from './scripts/vitest-unhandled-erro
 import { NODE_POOL_AUDIT_TESTS } from './scripts/vitest-node-suites.mjs';
 
 /**
- * Two projects, one command. `npm test` runs both:
+ * Three projects, one command. `npm test` runs all of them:
  *
  * - `workers` — the product suite, inside workerd via @cloudflare/vitest-plugin.
+ * - `bv-ct-index` — the CT index sidecar package. Its specs need the package's own bindings (D1 +
+ *               migrations, R2, queues) from packages/bv-ct-index/wrangler.jsonc, so it runs under its
+ *               own vitest config. CI runs only this root suite (no per-package test step), so listing
+ *               it here is what puts it in CI and in the `--shard` split.
  * - `node`    — audit suites that shell out to repo scripts with Node built-ins
  *               (`node:child_process`, `node:os`, real `node:fs`). workerd only has
  *               those under `nodejs_compat`, which this Worker deliberately does not
@@ -96,6 +100,9 @@ export default defineConfig({
 						// Deliberately broad (all of scripts/) so it also covers future scripts
 						// (e.g. scripts/ci/verify-deploy.test.mjs).
 						'scripts/**',
+						// Owned by the `bv-ct-index` project below: its specs need the package's CURSORS D1,
+						// INDEX R2 and queue bindings, which this project does not declare.
+						'packages/bv-ct-index/**',
 					],
 					// No coverage config: the @vitest/coverage-v8 provider can't run under the
 					// @cloudflare/vitest-plugin runtime (workerd lacks `node:inspector`,
@@ -104,6 +111,7 @@ export default defineConfig({
 					// invariants), not by line-coverage numbers.
 				},
 			},
+			'packages/bv-ct-index',
 			{
 				test: {
 					name: 'node',
