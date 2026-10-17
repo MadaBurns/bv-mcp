@@ -173,7 +173,7 @@ describe('infra probe wrangler wiring', () => {
 			expect(cfCrons).toEqual(ctIndexConfig.triggers?.crons);
 		});
 
-		it('binds the same R2 bucket, D1 database (same id) and queue producers as the test config', () => {
+		it('binds the same R2 bucket, D1 database (id injected at deploy time) and queue producers as the test config', () => {
 			expect(ctIndexConfig.r2_buckets).toEqual([{ binding: 'INDEX', bucket_name: 'bv-ct-index' }]);
 			expect(one(/\bINDEX:\s*bindings\.r2\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index']);
 
@@ -181,10 +181,12 @@ describe('infra probe wrangler wiring', () => {
 			expect(d1).toHaveLength(1);
 			expect(d1[0]?.binding).toBe('CURSORS');
 			expect(d1[0]?.database_name).toBe('bv-ct-index-cursors');
-			expect(one(/\bCURSORS:\s*bindings\.d1\(\{\s*name:\s*['"]([^'"]+)['"],\s*id:\s*['"]([^'"]+)['"]/)).toEqual([
-				d1[0]?.database_name,
-				d1[0]?.database_id,
-			]);
+			// The id is NOT in the cf config: a real account resource id must not be committed, and the deploy tree must stay clean.
+			// It comes from BV_CT_INDEX_D1_ID through resolveCtIndexD1Id (fails closed); the test config keeps the YOUR_* placeholder.
+			expect(one(/\bCURSORS:\s*bindings\.d1\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual([d1[0]?.database_name]);
+			expect(src).toMatch(/\bid:\s*resolveCtIndexD1Id\(process\.env\[CT_INDEX_D1_ID_ENV\]\)/);
+			expect(src).not.toContain('YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID');
+			expect(d1[0]?.database_id).toBe('YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID');
 
 			expect(ctIndexConfig.queues?.producers).toEqual([
 				{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' },

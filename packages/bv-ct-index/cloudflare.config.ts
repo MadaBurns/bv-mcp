@@ -6,7 +6,15 @@
 // asserted by test/audits/infra-probe-wrangler.audit.test.ts.
 // The Worker name is exactly `bv-ct-index` (US-12 hard constraint): deploy is upsert-by-name, so a different name would create or
 // overwrite some other Worker on the account.
+// The D1 database id is an account resource id, so it is NOT committed: the operator exports BV_CT_INDEX_D1_ID (printed by
+// `npm run provision:ct-index`) and `cf deploy` evaluates this file in Node with that environment. resolveCtIndexD1Id THROWS on a
+// missing, empty, placeholder or non-UUID value, so a deploy without it fails before upload. wrangler.jsonc, the test-only config,
+// keeps the YOUR_* placeholder.
 import { bindings, defineConfig, triggers } from 'cf/config';
+// cf evaluates this file with Node's native ESM loader, which needs the explicit `.ts` extension; this package's tsconfig does not set
+// allowImportingTsExtensions (adding it is the root fix; until then the TS5097 on the next line is suppressed).
+// @ts-expect-error TS5097
+import { CT_INDEX_D1_ID_ENV, resolveCtIndexD1Id } from '../../scripts/ct-index-deploy-ready.ts';
 
 export default defineConfig({
 	worker: {
@@ -28,8 +36,8 @@ export default defineConfig({
 		],
 		env: {
 			INDEX: bindings.r2({ name: 'bv-ct-index' }),
-			// Placeholder until the operator creates the database; identical to packages/bv-ct-index/wrangler.jsonc.
-			CURSORS: bindings.d1({ name: 'bv-ct-index-cursors', id: 'YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID' }),
+			// Resolved at deploy time from BV_CT_INDEX_D1_ID; see the note at the top of this file.
+			CURSORS: bindings.d1({ name: 'bv-ct-index-cursors', id: resolveCtIndexD1Id(process.env[CT_INDEX_D1_ID_ENV]) }),
 			ENTRIES: bindings.queue({ name: 'bv-ct-index-entries' }),
 			COMPACT: bindings.queue({ name: 'bv-ct-index-compact' }),
 			CT_INDEX_ADMIN_KEY: bindings.secret(),
