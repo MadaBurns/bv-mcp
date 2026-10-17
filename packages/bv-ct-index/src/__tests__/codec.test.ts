@@ -134,7 +134,7 @@ describe('siblingKey', () => {
 });
 
 describe('rangeFor', () => {
-	it('is the key of the domain up to key + \\x01\\uffff', () => {
+	it('is the key of the domain up to key + \\x01 + U+FFFF', () => {
 		expect(rangeFor('govt.nz')).toEqual({ lo: 'nz\x01govt', hi: `nz\x01govt\x01${MAX}` });
 		expect(rangeFor('Example.COM.')).toEqual({ lo: 'com\x01example', hi: `com\x01example\x01${MAX}` });
 		expect(rangeFor('*.example.com')).toEqual(rangeFor('example.com'));
