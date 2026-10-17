@@ -772,6 +772,10 @@ describe('correlateSans — owned CT index (bv-ct-index) honest coverage (SQ-345
 		expect(result.coOwnedDomains).toEqual(['idx-sibling.com']);
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coverage.contributing).toEqual(['certstream']);
+		// Both direct sources were ASKED and failed; at HEAD the short-circuit left them notConsulted.
+		expect(result.coverage.perSource.map((s) => s.source)).toEqual(['certstream', 'crtsh', 'certspotter']);
+		expect(result.coverage.unavailable).toEqual(['crtsh', 'certspotter']);
+		expect(result.coverage.notConsulted).toEqual([]);
 		expect(result.coverage.degraded).toBe(true);
 	});
 
