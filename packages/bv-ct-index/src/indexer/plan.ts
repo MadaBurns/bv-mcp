@@ -8,6 +8,7 @@
  * - T1 -> T2: every T1 run created on a UTC day that has ended, per day and key range, in the same bounded jobs.
  * - T2 + T3 -> T3: per key range, the range's T3 shards with its oldest T2 runs, in one job per range of at most
  *   MAX_T3_JOB_ROWS rows; T2 runs past the budget wait for the next cron (SQ-363).
+ * - T2 -> T2 re-cut: a T2 run that spans a cut is rewritten at the current cuts first, in the same bounded jobs.
  *
  * Key ranges come from "cuts": keys every job closes its output runs at. The cuts are T3 shard boundaries
  * chosen by content (a shard's first key is a cut when its hash is 0 mod GROUP_SHARDS, or after
@@ -32,6 +33,13 @@
  * 300 s limit but without a 2x margin. A 6M-row job is ~84 s; a first-day range now drains over a few crons.
  * Deferring is safe: reads merge every tier with the commutative `mergeObservations`, so a row in T2 or in T3
  * reads the same, and a re-planned job over the same inputs only repeats a swap the guard refuses.
+ *
+ * Re-cut (SQ-363): a T2 run is cut at the cuts of its plan time. The first day's T2 runs saw only the fixed cuts, so
+ * each spans about half the name keyspace; once T3 shards add cuts, those runs straddle them and `components` joins
+ * every range they touch into one T3 job, which then rewrites all of that keyspace's shards for about one T2 run a
+ * cron (rehearsed on the 2026-10-17 data: ~17 crons of ~7M rows). So a straddling T2 run never goes to T3: a bounded
+ * T2 -> T2 job rewrites it closed at today's cuts, and the next cron merges each range's pieces in parallel. Cuts
+ * that move later can make a run straddle again; it is simply re-cut again.
  */
 
 import { SIBLING_PREFIX } from '../codec';
@@ -106,6 +114,11 @@ export function cutsFor(t3: ReadonlyArray<{ key_lo: string; rows?: number }>, ma
 		rangeRows += rowsOf(shard);
 	}
 	return [...cuts].sort(compareText);
+}
+
+/** True when a run spans more than one cut range. */
+function straddles(run: { key_lo: string; key_hi: string }, cuts: readonly string[]): boolean {
+	return rangeIndex(cuts, run.key_lo) !== rangeIndex(cuts, run.key_hi);
 }
 
 /** The index of the cut range holding `key`: the number of cuts <= key. */
@@ -239,7 +252,12 @@ export async function planCompactions(db: D1Database, nowMs: number, limits: Pla
 		}
 	}
 
-	for (const component of components([...tier(2), ...tier(3)], cuts)) {
+	const straddling = tier(2).filter((run) => straddles(run, cuts));
+	for (const component of components(straddling, cuts)) {
+		for (const chunk of boundedChunks(component.runs, limits)) jobs.push(await makeJob(generation, 2, chunk, component.cuts, now));
+	}
+	const settled = tier(2).filter((run) => !straddles(run, cuts));
+	for (const component of components([...settled, ...tier(3)], cuts)) {
 		const inputs = t3JobInputs(component.runs, limits);
 		if (inputs.length > 0) jobs.push(await makeJob(generation, 3, inputs, component.cuts, now));
 	}
