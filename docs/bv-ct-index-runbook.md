@@ -217,8 +217,18 @@ rewrites only its own range. Partial progress is safe: reads merge T2 and T3 wit
 reads the same in either tier, and a job planned again over the same inputs returns `stale`. Readers see one consistent
 generation, because each swap is one guarded D1 batch.
 
+**Re-cut of straddling T2 runs (SQ-363 follow-up).** A real-data rehearsal on the 2026-10-17 catalog (all 214 T1 runs fetched
+read-only, planned with the deployed planner, merged with the deployed codec under a 128 MB heap) showed every planned job fits:
+18 T2 jobs at most 28 s CPU and 55 MB, and the first T3 cron's largest job 109 s and 42 MB. But the first day's T2 runs are cut
+only at the fixed cuts, so each spans about half the name keyspace. Once T3 shards add cuts, those runs straddle them, and the
+planner joined every range they touch back into one T3 job. That job rewrote all of that keyspace's shards for about one T2 run a
+cron: about 17 crons of about 7M rows each to finish day 1. Now a T2 run that spans a cut never goes to T3. A bounded T2 -> T2
+job (`MAX_JOB_INPUTS` / `MAX_JOB_ROWS`) first rewrites it closed at the current cuts, and the next cron merges each range's pieces
+in its own T3 job. On the rehearsal catalog, the second T3 cron plans 4 re-cut jobs (each at most 1.47M rows) plus a T3 job for
+the one range that was already settled. If cuts move later, a run that straddles again is simply re-cut again.
+
 Watch after the deploy: at 00:17Z, `ct_compaction_plan` should list tier-2 jobs, with no `exceeded` lines. From 01:17Z, tier-3
-jobs should start, with at most one per range per cron, and tier 2 should shrink over the next few crons. The step-6 probe above
+jobs should start, with at most one per range per cron. From 02:17Z, expect tier-2 re-cut jobs alongside them (the straddling first-day runs), then several tier-3 jobs a cron. Tier 2 should shrink over the next few crons. The step-6 probe above
 shows tier 2 rows draining.
 
 ## 7. Benchmark and latency gate (before the repoint)

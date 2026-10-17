@@ -351,7 +351,8 @@ describe('bounded T3 jobs (SQ-363)', () => {
 			const pass = await planAndDrain(env, at(1, 1 + crons, 17), budget);
 			expect(pass.jobs.length).toBeGreaterThan(0);
 			expect(pass.outcomes.every((outcome) => outcome === 'applied')).toBe(true);
-			for (const job of pass.jobs) expect(job.tier).toBe(3);
+			// Tier 3 merges, plus tier-2 re-cuts of runs that straddle a cut the new shards added.
+			for (const job of pass.jobs) expect([2, 3]).toContain(job.tier);
 			await assertCatalogInvariants();
 			const now = Math.floor(at(1, 1 + crons, 17) / 1000);
 			// Partial progress reads the same as the full merge: T2 and T3 rows fold at read time.
@@ -362,6 +363,54 @@ describe('bounded T3 jobs (SQ-363)', () => {
 		// The first-day merge took more than one cron: some T2 runs were deferred.
 		expect(crons).toBeGreaterThan(1);
 		expect((await runsOf(3)).length).toBeGreaterThan(0);
+	});
+
+	it('re-cuts T2 runs that straddle a cut instead of joining ranges into one T3 job, and drains with reads intact', async () => {
+		const env = testEnv();
+		const names: NameObservation[] = [];
+		for (let i = 0; i < 3; i++) {
+			const batch = many(300, `r${i}`);
+			names.push(...batch);
+			await ingest(env, at(0, 1, 5 + i), batch);
+		}
+		const oneRunPerJob = { ...DEFAULT_PLAN_LIMITS, maxInputs: 1 };
+		await planAndDrain(env, at(0, 2, 17), oneRunPerJob);
+		// Day 1, 00:17: T2 runs cut only at the fixed cuts, each spanning its whole side of the sibling keyspace.
+		await planAndDrain(env, at(1, 0, 17), oneRunPerJob);
+		const budget = { ...DEFAULT_PLAN_LIMITS, maxT3Rows: 200 };
+		const straddlesCut = (run: { key_lo: string; key_hi: string }, cuts: string[]) =>
+			cuts.some((cut) => cut > run.key_lo && cut <= run.key_hi);
+
+		let recuts = 0;
+		let crons = 0;
+		while ((await runsOf(2)).length > 0) {
+			const before = await catalog();
+			const cuts = cutsFor(
+				before.filter((run) => run.tier === 3),
+				budget.maxT3Rows / 2,
+			);
+			const tierOf = new Map(before.map((run) => [run.id, run]));
+			const pass = await planAndDrain(env, at(1, 1 + crons, 17), budget);
+			for (const job of pass.jobs) {
+				const inputs = job.inputs.map((id) => tierOf.get(id)!);
+				if (job.tier === 2) {
+					// A re-cut: only straddling T2 runs, rewritten closed at the cuts they span.
+					expect(inputs.every((run) => run.tier === 2 && straddlesCut(run, cuts))).toBe(true);
+					recuts++;
+				} else {
+					expect(job.tier).toBe(3);
+					// No straddling T2 run ever joins ranges into one T3 job.
+					expect(inputs.some((run) => run.tier === 2 && straddlesCut(run, cuts))).toBe(false);
+				}
+			}
+			expect(pass.outcomes.every((outcome) => outcome === 'applied')).toBe(true);
+			await assertCatalogInvariants();
+			const now = Math.floor(at(1, 1 + crons, 17) / 1000);
+			expect((await readAll(at(1, 1 + crons, 17))).names).toEqual(expectedRows(names, now));
+			crons++;
+			expect(crons).toBeLessThan(20);
+		}
+		expect(recuts).toBeGreaterThan(0);
 	});
 
 	it('t3JobInputs takes every T3 shard and the oldest T2 runs within the budget, and always at least one T2 run', () => {
