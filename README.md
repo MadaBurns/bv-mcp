@@ -13,6 +13,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20us-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/madaburns)
+[![MCP Queen operational grade](https://mcpqueen.com/badge/com.blackveilsecurity/dns.svg)](https://mcpqueen.com/s/com.blackveilsecurity/dns)
 
 ![DNS Security](https://dns-mcp.blackveilsecurity.com/badge/blackveilsecurity.com)
 
