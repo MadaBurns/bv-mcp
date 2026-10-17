@@ -182,6 +182,45 @@ and tier 0 drains to the current hour within that hour. A job re-planned by a la
 harmless: the first swap wins and the duplicate returns `stale`. The T1 runs it writes are stamped with the cron time, so the whole
 backlog reaches T2 at the next UTC midnight, in jobs capped the same way. Watch it with check c in step 6.
 
+**T3 job size and the run writer's heap (SQ-363).** Measured before the first day's T3 merge (01:17Z on 2026-10-18), in V8 on
+synthetic T2 layers calibrated like SQ-362's (the Sidequest verification folder, `SQ-363/measure-t3.mts`; heap capped at 128 MB, workstation load
+average 7 to 43 during the runs):
+
+| Codec | Input rows (overlapping T2 layers) | Result |
+| --- | --- | --- |
+| main 8d097bf8 | 1.2M (1), about one T2 job | out of memory at 128 MB |
+| fixed | 1.2M (1) | 15 s CPU, 41 MB peak |
+| fixed | 4.8M (4) | 61 s CPU, 36 MB peak |
+| fixed | 9.6M (8), a first-day T3 range | 134 s CPU, 49 MB peak |
+
+Two findings:
+
+1. **Memory, every tier.** `createRunWriter` kept each output block's first key as a slice of the decoded input block. V8 keeps
+   a sliced string's parent alive, so every output block pinned about one input block's text (~64 KB), and `OutputSink` holds
+   every block index until the commit. A job's heap grew by about 110 bytes per output row, whatever its input count. A T2 job at
+   the 1.5M-row cap could not fit 128 MB, and neither could a T3 job. The writer now copies the keys it keeps (`detached` in
+   `src/codec.ts`), and the heap stays flat at about 15 MB through 2M output rows. **Without this deploy, the 00:17Z T2 jobs and
+   the 01:17Z T3 jobs fail on memory.** A failed job is retried 3 times and then dropped, but nothing is lost: its inputs stay in the
+   catalog, and every later cron plans them again.
+2. **CPU, T3.** On the first day there are no T3 shards, so `cutsFor` returns only the fixed cuts, and one range holds a whole day
+   of T2 for its keyspace: about 10M rows at the 2026-10-17 ingest rate. That is about 134 s of CPU, inside the 300 s limit but
+   without a 2x margin. The bound: a T3 job takes every T3 shard of its range plus the oldest T2 runs, up to `MAX_T3_JOB_ROWS`
+   (6M rows, about 84 s) and at least one T2 run. `cutsFor` also closes a range once its shards reach `MAX_T3_RANGE_ROWS`
+   (3M rows), so the shards never use up a job's budget. T2 runs past the budget wait for the next cron. A first-day range drains in
+   a few crons.
+
+Why sequential bounded merges (option b) rather than more fixed cuts (a) or splitting T3 output by rows (c): (a) bounds the first
+day only by guessing how keys are distributed. `.com` alone outweighs every other suffix, and a fixed cut never adapts. (c) bounds
+the output runs but not the job, which still reads every row of the range. (b) bounds every T3 job by a measured row budget, on
+every day, and it keeps the invariants. T3 shards stay key-disjoint, because a job replaces every shard of its range. A job
+rewrites only its own range. Partial progress is safe: reads merge T2 and T3 with the commutative `mergeObservations`, so a row
+reads the same in either tier, and a job planned again over the same inputs returns `stale`. Readers see one consistent
+generation, because each swap is one guarded D1 batch.
+
+Watch after the deploy: at 00:17Z, `ct_compaction_plan` should list tier-2 jobs, with no `exceeded` lines. From 01:17Z, tier-3
+jobs should start, with at most one per range per cron, and tier 2 should shrink over the next few crons. The step-6 probe above
+shows tier 2 rows draining.
+
 ## 7. Benchmark and latency gate (before the repoint)
 
 Both gates must pass before step 8. If either fails, **STOP**: that is the contract's "Reopen if" clause, and the repoint does not happen.
