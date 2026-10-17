@@ -263,10 +263,143 @@ describe('runTailer', () => {
 		const net = fakeNetwork();
 		const original = net.fetch;
 		net.fetch = (async (input: RequestInfo | URL) =>
-			String(input).includes('get-entries?start=988') ? new Response('busy', { status: 429 }) : original(input)) as typeof fetch;
+			String(input).includes('get-entries?start=988') ? new Response('busy', { status: 503 }) : original(input)) as typeof fetch;
 		await run(net, fakeQueue());
 
-		expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 988, last_error: expect.stringContaining('HTTP 429') });
+		expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 988, last_error: expect.stringContaining('HTTP 503') });
+	});
+
+	// SQ-355: the prod error shapes of 2026-10-17. A log that has not served the next entries yet, or that rate
+	// limits, defers: the visit ends, progress stands, no last_error, and the next tick picks up from the cursor.
+	describe('deferrals (SQ-355)', () => {
+		/** Wraps the fake network: `answer` may replace the response for a URL. */
+		const intercept = (net: ReturnType<typeof fakeNetwork>, answer: (url: string) => Response | undefined) => {
+			const original = net.fetch;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				const replaced = answer(url);
+				if (!replaced) return original(input, init);
+				net.calls.push(url);
+				return replaced;
+			}) as typeof fetch;
+			return net;
+		};
+
+		it('defers a single-entry range at the tree tip that comes back empty (Sectigo Tiger2027h2 31011-31011), then reads it next tick', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 999);
+			const lagging = intercept(fakeNetwork(), (url) =>
+				url.includes('get-entries?start=999&end=999') ? Response.json({ entries: [] }) : undefined,
+			);
+			const summary = await run(lagging, fakeQueue());
+
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 999, tree_size: 1_000, last_error: null });
+			expect(summary.errors).toEqual({});
+			expect(summary.deferred).toEqual({ [RFC.log_id]: 'get-entries 999-999: no entries served yet' });
+
+			resetLogListMemo();
+			const next = await run(fakeNetwork(), fakeQueue());
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000, last_error: null });
+			expect(next).toMatchObject({ entries: 1, deferred: {} });
+		});
+
+		it('advances by a short page and defers at the empty one after it (Sectigo Elephant2026h2, 204 of 256)', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 400);
+			const net = intercept(fakeNetwork({ pageCap: 256 }), (url) => {
+				const query = new URL(url).searchParams;
+				if (!url.includes('get-entries?')) return undefined;
+				const start = Number(query.get('start'));
+				// The replica holds entries below 604: a 204-entry page from 400, then nothing.
+				const entries = Array.from({ length: Math.max(0, Math.min(Number(query.get('end')), 603) - start + 1) }, () => ({
+					leaf_input: RFC6962_PRECERT_LEAF_INPUT,
+					extra_data: '',
+				}));
+				return Response.json({ entries });
+			});
+			const summary = await run(net, fakeQueue());
+
+			expect(net.calls.filter((url) => url.includes('get-entries'))).toEqual([
+				`${RFC.url}ct/v1/get-entries?start=400&end=655`,
+				`${RFC.url}ct/v1/get-entries?start=604&end=859`,
+			]);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 604, last_error: null });
+			expect(summary).toMatchObject({ entries: 204, errors: {}, deferred: { [RFC.log_id]: 'get-entries 604-859: no entries served yet' } });
+		});
+
+		it('still records an error for an entries array longer than the range asked for', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 999);
+			const net = intercept(fakeNetwork(), (url) =>
+				url.includes('get-entries?') ? Response.json({ entries: [{ leaf_input: RFC6962_PRECERT_LEAF_INPUT }, { leaf_input: RFC6962_PRECERT_LEAF_INPUT }] }) : undefined,
+			);
+			const summary = await run(net, fakeQueue());
+
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 999, last_error: 'get-entries 999-999: bad entries array' });
+			expect(summary.deferred).toEqual({});
+		});
+
+		it('defers a checkpoint-covered data tile the CDN still answers 404 for (TrustAsia Luoshu2027), then reads it next tick', async () => {
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 3 * TILE_WIDTH);
+			const tile4 = `${STATIC.monitoring_url}tile/data/${tilePath(4)}`;
+			const cached404 = intercept(fakeNetwork(), (url) => (url === tile4 ? new Response('404', { status: 404 }) : undefined));
+			const summary = await run(cached404, fakeQueue());
+
+			// Tile 3 is read and kept; tile 4 (full per the checkpoint of 5 * 256 + 17) defers.
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 4 * TILE_WIDTH, tree_size: 5 * TILE_WIDTH + 17, last_error: null });
+			expect(summary.errors).toEqual({});
+			expect(summary.deferred).toEqual({ [STATIC.log_id]: 'data tile 4: HTTP 404, not served yet' });
+
+			resetLogListMemo();
+			await run(fakeNetwork(), fakeQueue());
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH, last_error: null });
+		});
+
+		it('still records an error for a 404 on the checkpoint itself', async () => {
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 3 * TILE_WIDTH);
+			await run(fakeNetwork({ failures: new Map([[`${STATIC.monitoring_url}checkpoint`, 404]]) }), fakeQueue());
+			expect(await cursor(STATIC.log_id)).toMatchObject({
+				next_index: 3 * TILE_WIDTH,
+				last_error: `HTTP 404 from ${STATIC.monitoring_url}checkpoint`,
+			});
+		});
+
+		it('skips the rest of the tick on HTTP 429 (TrustAsia log2026a), keeping the pages read before it and recording no error', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const net = intercept(fakeNetwork(), (url) => (url.includes('get-entries?start=988') ? new Response('', { status: 429 }) : undefined));
+			const summary = await run(net, fakeQueue());
+
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 988, last_error: null });
+			expect(net.calls.filter((url) => url.includes('get-entries?start=988'))).toHaveLength(1);
+			expect(summary.errors).toEqual({});
+			expect(summary.deferred).toEqual({ [RFC.log_id]: `rate limited: HTTP 429 from ${RFC.url}ct/v1/get-entries?start=988&end=999` });
+		});
+
+		it('defers a log whose head answers 429 without inventing or moving its cursor', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const summary = await run(fakeNetwork({ failures: new Map([[`${RFC.url}ct/v1/get-sth`, 429]]) }), fakeQueue());
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980, tree_size: 980, last_error: null });
+			expect(Object.keys(summary.deferred)).toEqual([RFC.log_id]);
+		});
+
+		it('a log that hangs until the fetch timeout (Microsec Eszigno2026h2) records a named timeout and does not stall the other log', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 3 * TILE_WIDTH);
+			const net = fakeNetwork();
+			const original = net.fetch;
+			const hanging = `${RFC.url}ct/v1/get-entries?start=980`;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				if (!url.startsWith(hanging)) return original(input, init);
+				net.calls.push(url);
+				const signal = init!.signal!;
+				return new Promise<Response>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+			}) as typeof fetch;
+			// Tick 0 visits the RFC log first, so the hang starts before the static log is read.
+			const summary = await runTailer({ CURSORS: db, ENTRIES: fakeQueue().queue }, { scheduledTime: 0, now: NOW, fetch: net.fetch, fetchTimeoutMs: 50 });
+
+			expect(net.calls.filter((url) => url.startsWith(hanging))).toHaveLength(1);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980, last_error: expect.stringMatching(/timeout.*\(https:\/\/rfc\.ct\.test\/2027h1\/ct\/v1\/get-entries\?start=980&end=999\)$/i) });
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH, last_error: null });
+			expect(Object.keys(summary.errors)).toEqual([RFC.log_id]);
+		});
 	});
 
 	it('records a head failure for a new log without inventing a cursor, and starts it once the head answers', async () => {

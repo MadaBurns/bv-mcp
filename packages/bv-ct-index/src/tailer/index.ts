@@ -17,6 +17,12 @@
  *
  * A fetch or parse error in one log is recorded in its last_error / last_error_at and never fails the other
  * logs. An entry whose leaf or certificate does not parse is skipped and counted, so it cannot wedge a log.
+ *
+ * Three answers are not errors but a deferral: the visit ends, progress so far stands, nothing goes to
+ * last_error, and the next tick retries from the cursor (TickSummary.deferred names them). They are an empty
+ * get-entries page (a log serves a range from a replica that does not hold it yet: Sectigo answers 200 with
+ * no entries), a 404 for a data tile the checkpoint covers (a CDN serves a 404 it cached before the tile was
+ * published: TrustAsia Luoshu, for about a minute), and an HTTP 429 (TrustAsia, with no Retry-After).
  */
 
 import type { Env } from '../index';
@@ -71,6 +77,8 @@ export interface TailerOptions {
 	fetch?: typeof fetch;
 	/** Overrides FETCH_PHASE_MS. */
 	fetchPhaseMs?: number;
+	/** Overrides FETCH_TIMEOUT_MS. */
+	fetchTimeoutMs?: number;
 }
 
 export interface TickSummary {
@@ -92,6 +100,8 @@ export interface TickSummary {
 	d1Rows: number;
 	/** logId -> error, for the logs that recorded one. */
 	errors: Record<string, string>;
+	/** logId -> why its visit ended early without an error (not served yet, rate limited); not written to D1. */
+	deferred: Record<string, string>;
 }
 
 interface LogState {
@@ -103,11 +113,13 @@ interface LogState {
 	treeSize: number | null;
 	observations: ObservationSet;
 	error: string | null;
+	deferred: string | null;
 }
 
 interface Tick {
 	fetch: typeof fetch;
 	fetchUntil: number;
+	fetchTimeoutMs: number;
 	states: LogState[];
 	fetches: number;
 	sends: number;
@@ -120,6 +132,19 @@ interface Tick {
 	batches: number;
 	skips: SkipCounts;
 }
+
+/** A non-2xx answer other than 429. */
+class HttpError extends Error {
+	constructor(
+		readonly status: number,
+		url: string,
+	) {
+		super(`HTTP ${status} from ${url}`);
+	}
+}
+
+/** Ends a visit without an error: the log has not served the next entries yet, or asked us to slow down. */
+class Deferral extends Error {}
 
 let logListMemo: { fetchedAt: number; logs: TailedLog[] } | undefined;
 
@@ -143,26 +168,41 @@ function canFetch(tick: Tick): boolean {
 	return held < MAX_TICK_OBSERVATIONS;
 }
 
-async function get(tick: Tick, url: string): Promise<Response> {
+/**
+ * GETs `url` and reads its body with `read`, both inside the fetch timeout. A 429 is a Deferral, any other
+ * non-2xx an HttpError; a network failure or timeout names the URL (the bare abort message does not).
+ */
+async function get<T>(tick: Tick, url: string, read: (response: Response) => Promise<T>): Promise<T> {
 	tick.fetches++;
-	const response = await tick.fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+	const named = (error: unknown) => new Error(`${describe(error)} (${url})`);
+	let response: Response;
+	try {
+		response = await tick.fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(tick.fetchTimeoutMs) });
+	} catch (error) {
+		throw named(error);
+	}
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new Error(`HTTP ${response.status} from ${url}`);
+		if (response.status === 429) throw new Deferral(`rate limited: HTTP 429 from ${url}`);
+		throw new HttpError(response.status, url);
 	}
-	return response;
+	try {
+		return await read(response);
+	} catch (error) {
+		throw named(error);
+	}
 }
 
 async function loadLogs(tick: Tick, now: number): Promise<TailedLog[]> {
 	if (logListMemo && now - logListMemo.fetchedAt < LOG_LIST_TTL_MS) return logListMemo.logs;
-	const logs = selectLogs(await (await get(tick, LOG_LIST_URL)).json(), now);
+	const logs = selectLogs(await get(tick, LOG_LIST_URL, (response) => response.json()), now);
 	logListMemo = { fetchedAt: now, logs };
 	return logs;
 }
 
 async function readHead(tick: Tick, log: TailedLog): Promise<number> {
-	if (log.kind === 'static') return checkpointTreeSize(await (await get(tick, `${log.url}checkpoint`)).text());
-	const { tree_size: size } = await (await get(tick, `${log.url}ct/v1/get-sth`)).json<{ tree_size?: unknown }>();
+	if (log.kind === 'static') return checkpointTreeSize(await get(tick, `${log.url}checkpoint`, (response) => response.text()));
+	const { tree_size: size } = await get(tick, `${log.url}ct/v1/get-sth`, (response) => response.json<{ tree_size?: unknown }>());
 	if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0)
 		throw new Error(`get-sth: bad tree_size ${JSON.stringify(size)}`);
 	return size;
@@ -185,10 +225,12 @@ function observeEntry(tick: Tick, state: LogState, readTbs: () => Uint8Array | n
 async function readEntries(tick: Tick, state: LogState): Promise<void> {
 	const start = state.next!;
 	const end = Math.min(start + RFC6962_PAGE, state.treeSize!) - 1;
-	const { entries } = await (await get(tick, `${state.log.url}ct/v1/get-entries?start=${start}&end=${end}`)).json<{ entries?: unknown }>();
-	if (!Array.isArray(entries) || entries.length === 0 || entries.length > end - start + 1) {
-		throw new Error(`get-entries ${start}-${end}: bad entries array`);
-	}
+	const url = `${state.log.url}ct/v1/get-entries?start=${start}&end=${end}`;
+	const { entries } = await get(tick, url, (response) => response.json<{ entries?: unknown }>());
+	if (!Array.isArray(entries) || entries.length > end - start + 1) throw new Error(`get-entries ${start}-${end}: bad entries array`);
+	// Fewer entries than asked is normal (RFC 6962 section 4.6); none at all means the replica that answered
+	// does not hold the range yet, although the tree head covers it.
+	if (entries.length === 0) throw new Deferral(`get-entries ${start}-${end}: no entries served yet`);
 	for (const entry of entries) {
 		observeEntry(tick, state, () => {
 			const leafInput = (entry as { leaf_input?: unknown } | null)?.leaf_input;
@@ -202,7 +244,15 @@ async function readEntries(tick: Tick, state: LogState): Promise<void> {
 /** The full data tile holding the cursor; entries before the cursor (a new log's start) are skipped. */
 async function readTile(tick: Tick, state: LogState): Promise<void> {
 	const tile = Math.floor(state.next! / TILE_WIDTH);
-	const entries = parseDataTile(new Uint8Array(await (await get(tick, `${state.log.url}tile/data/${tilePath(tile)}`)).arrayBuffer()));
+	let body: ArrayBuffer;
+	try {
+		body = await get(tick, `${state.log.url}tile/data/${tilePath(tile)}`, (response) => response.arrayBuffer());
+	} catch (error) {
+		// The checkpoint covers this tile, so a 404 is a CDN replaying one it cached before the tile was published.
+		if (error instanceof HttpError && error.status === 404) throw new Deferral(`data tile ${tile}: HTTP 404, not served yet`);
+		throw error;
+	}
+	const entries = parseDataTile(new Uint8Array(body));
 	if (entries.length !== TILE_WIDTH) throw new Error(`data tile ${tile}: ${entries.length} entries, expected ${TILE_WIDTH}`);
 	for (let i = state.next! - tile * TILE_WIDTH; i < TILE_WIDTH; i++) observeEntry(tick, state, () => entries[i] ?? null);
 	state.next = (tile + 1) * TILE_WIDTH;
@@ -239,7 +289,8 @@ async function fetchPhase(tick: Tick, order: LogState[]): Promise<void> {
 				if (await visit(tick, state)) queue.push(state);
 			} catch (error) {
 				// Progress up to the last complete page or tile stands; the cursor still advances to it.
-				state.error = describe(error);
+				if (error instanceof Deferral) state.deferred = error.message;
+				else state.error = describe(error);
 			}
 		}
 	};
@@ -282,7 +333,11 @@ async function sendPhase(env: Pick<Env, 'ENTRIES'>, tick: Tick, order: LogState[
 
 function summarize(tick: Tick, killed: boolean, cursorsWritten: number): TickSummary {
 	const errors: Record<string, string> = {};
-	for (const state of tick.states) if (state.error) errors[state.log.logId] = state.error;
+	const deferred: Record<string, string> = {};
+	for (const state of tick.states) {
+		if (state.error) errors[state.log.logId] = state.error;
+		if (state.deferred) deferred[state.log.logId] = state.deferred;
+	}
 	return {
 		killed,
 		logs: tick.states.length,
@@ -298,6 +353,7 @@ function summarize(tick: Tick, killed: boolean, cursorsWritten: number): TickSum
 		subrequests: tick.fetches + tick.sends,
 		d1Rows: tick.d1Rows,
 		errors,
+		deferred,
 	};
 }
 
@@ -306,6 +362,7 @@ export async function runTailer(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options: 
 	const tick: Tick = {
 		fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
 		fetchUntil: Date.now() + (options.fetchPhaseMs ?? FETCH_PHASE_MS),
+		fetchTimeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
 		states: [],
 		fetches: 0,
 		sends: 0,
@@ -331,7 +388,7 @@ export async function runTailer(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options: 
 	const offset = logs.length > 0 ? Math.floor(options.scheduledTime / 60_000) % logs.length : 0;
 	tick.states = [...logs.slice(offset), ...logs.slice(0, offset)].map((log) => {
 		const at = cursorAt.get(log.logId) ?? null;
-		return { log, cursorAt: at, next: at, treeSize: null, observations: newObservationSet(), error: null };
+		return { log, cursorAt: at, next: at, treeSize: null, observations: newObservationSet(), error: null, deferred: null };
 	});
 
 	await fetchPhase(tick, tick.states);
