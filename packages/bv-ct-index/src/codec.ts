@@ -31,6 +31,15 @@ const EPOCH = /^-?\d+$/;
 const encoder = new TextEncoder();
 const strictDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
 
+/**
+ * A fresh copy of `text`. A key parsed from a block is a slice of that block's whole decoded text, and V8 keeps
+ * the parent alive for as long as the slice lives. Held keys (block index entries, run bounds) must not pin it:
+ * one pinned input block per output block grew a job's heap with its whole output (SQ-363).
+ */
+function detached(text: string): string {
+	return text.split('').join('');
+}
+
 /** Code-unit order, not localeCompare: the order must not depend on the runtime's locale. */
 function compareText(a: string, b: string): number {
 	return a < b ? -1 : a > b ? 1 : 0;
@@ -232,10 +241,10 @@ export function createRunWriter(): RunWriter {
 			}
 			const line = encoder.encode(rowLine(row));
 			if (openBytes > 0 && openBytes + line.byteLength > BLOCK_TARGET_BYTES) await closeBlock();
-			if (open.length === 0) openFirstKey = row.key;
+			if (open.length === 0) openFirstKey = detached(row.key);
 			open.push(line);
 			openBytes += line.byteLength;
-			if (rows === 0) keyLo = row.key;
+			if (rows === 0) keyLo = detached(row.key);
 			keyHi = row.key;
 			rows++;
 		},
@@ -247,7 +256,7 @@ export function createRunWriter(): RunWriter {
 				bytes.set(block, at);
 				at += block.byteLength;
 			}
-			return { bytes, blockIndex, keyLo, keyHi, rows };
+			return { bytes, blockIndex, keyLo, keyHi: detached(keyHi), rows };
 		},
 	};
 }

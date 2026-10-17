@@ -6,7 +6,8 @@
  * - T0 -> T1: every T0 run created in an hour that ended at least ~10 min ago, in jobs of at most
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`).
  * - T1 -> T2: every T1 run created on a UTC day that has ended, per day and key range, in the same bounded jobs.
- * - T2 + T3 -> T3: every T2 run, with the T3 shards of the key ranges it touches, one job per key range.
+ * - T2 + T3 -> T3: per key range, the range's T3 shards with its oldest T2 runs, in one job per range of at most
+ *   MAX_T3_JOB_ROWS rows; T2 runs past the budget wait for the next cron (SQ-363).
  *
  * Key ranges come from "cuts": keys every job closes its output runs at. The cuts are T3 shard boundaries
  * chosen by content (a shard's first key is a cut when its hash is 0 mod GROUP_SHARDS, or after
@@ -22,6 +23,15 @@
  * ingest rate) does not fit a 128 MB isolate: the same merge in V8 runs out of a 96 MB heap and takes ~34 s
  * CPU, while the go-live hour's job (~50 runs, ~0.8M rows) fit. So T1 and T2 jobs are capped; an hour or a day
  * becomes several jobs, whose outputs overlap the way T0 runs do until the next tier merges them.
+ *
+ * T3 job size (SQ-363): a T3 job must take every T3 shard of its range, or its output would overlap the shards it
+ * left out, so the bound works on both sides. `cutsFor` also cuts once a range's shards reach MAX_T3_RANGE_ROWS,
+ * and the job takes T2 runs, oldest first, only while the total stays within MAX_T3_JOB_ROWS (always at least
+ * one, so every range progresses). On the first day there are no shards and only the fixed cuts, so one range
+ * held a whole day of T2: ~10M rows, measured at ~134 s CPU in V8 for 9.6M rows (~14 us a row), inside the
+ * 300 s limit but without a 2x margin. A 6M-row job is ~84 s; a first-day range now drains over a few crons.
+ * Deferring is safe: reads merge every tier with the commutative `mergeObservations`, so a row in T2 or in T3
+ * reads the same, and a re-planned job over the same inputs only repeats a swap the guard refuses.
  */
 
 import { SIBLING_PREFIX } from '../codec';
@@ -47,13 +57,19 @@ export const MAX_JOB_INPUTS = 32;
  * input row in Node on a loaded workstation, so a full job stays well inside even the 30 s default CPU limit.
  */
 export const MAX_JOB_ROWS = 1_500_000;
+/** At most this many input rows (T3 shards plus T2 runs) per T3 job, unless one T2 run alone exceeds it. */
+export const MAX_T3_JOB_ROWS = 6_000_000;
+/** A range closes once its T3 shards hold this many rows, leaving at least half of a T3 job for T2 runs. */
+export const MAX_T3_RANGE_ROWS = MAX_T3_JOB_ROWS / 2;
 
 export interface PlanLimits {
 	maxInputs: number;
 	maxRows: number;
+	/** MAX_T3_JOB_ROWS; ranges close at half of it. */
+	maxT3Rows: number;
 }
 
-export const DEFAULT_PLAN_LIMITS: PlanLimits = { maxInputs: MAX_JOB_INPUTS, maxRows: MAX_JOB_ROWS };
+export const DEFAULT_PLAN_LIMITS: PlanLimits = { maxInputs: MAX_JOB_INPUTS, maxRows: MAX_JOB_ROWS, maxT3Rows: MAX_T3_JOB_ROWS };
 
 interface PlanRun {
 	id: string;
@@ -73,17 +89,21 @@ function fnv1a(text: string): number {
 	return hash >>> 0;
 }
 
-/** The cut keys for the current T3 shards, sorted. */
-export function cutsFor(t3: ReadonlyArray<{ key_lo: string }>): string[] {
+/** The cut keys for the current T3 shards, sorted. A range also closes before its shards pass `maxRangeRows`. */
+export function cutsFor(t3: ReadonlyArray<{ key_lo: string; rows?: number }>, maxRangeRows = MAX_T3_RANGE_ROWS): string[] {
 	const cuts = new Set(FIXED_CUTS);
 	const shards = [...t3].sort((a, b) => compareText(a.key_lo, b.key_lo));
+	const rowsOf = (shard: { rows?: number }) => Number(shard.rows) || 0;
 	let sinceCut = 0;
+	let rangeRows = shards.length > 0 ? rowsOf(shards[0]!) : 0;
 	for (const shard of shards.slice(1)) {
 		sinceCut++;
-		if (fnv1a(shard.key_lo) % GROUP_SHARDS === 0 || sinceCut >= GROUP_MAX_SHARDS) {
+		if (fnv1a(shard.key_lo) % GROUP_SHARDS === 0 || sinceCut >= GROUP_MAX_SHARDS || rangeRows + rowsOf(shard) > maxRangeRows) {
 			cuts.add(shard.key_lo);
 			sinceCut = 0;
+			rangeRows = 0;
 		}
+		rangeRows += rowsOf(shard);
 	}
 	return [...cuts].sort(compareText);
 }
@@ -152,6 +172,28 @@ export function boundedChunks<T extends { id: string; rows: number; created_at: 
 	return chunks;
 }
 
+/**
+ * The inputs of one range's T3 job: every T3 shard (the output must replace them all to stay disjoint from the
+ * rest of tier 3), then T2 runs oldest first while the total stays within `limits.maxT3Rows` rows and
+ * `limits.maxInputs` T2 runs. At least one T2 run is taken, so a range always progresses.
+ */
+export function t3JobInputs<T extends { id: string; tier: number; rows: number; created_at: string }>(
+	runs: readonly T[],
+	limits: PlanLimits,
+): T[] {
+	const shards = runs.filter((run) => Number(run.tier) === 3);
+	const t2 = runs.filter((run) => Number(run.tier) === 2);
+	let rows = shards.reduce((sum, run) => sum + (Number(run.rows) || 0), 0);
+	const taken: T[] = [];
+	for (const run of [...t2].sort((a, b) => compareText(a.created_at, b.created_at) || compareText(a.id, b.id))) {
+		const size = Number(run.rows) || 0;
+		if (taken.length > 0 && (taken.length >= limits.maxInputs || rows + size > limits.maxT3Rows)) break;
+		taken.push(run);
+		rows += size;
+	}
+	return taken.length > 0 ? [...shards, ...taken] : [];
+}
+
 function groupBy<T>(items: readonly T[], keyOf: (item: T) => string): Map<string, T[]> {
 	const groups = new Map<string, T[]>();
 	for (const item of items) {
@@ -179,7 +221,7 @@ export async function planCompactions(db: D1Database, nowMs: number, limits: Pla
 		.all<PlanRun>();
 	const now = Math.floor(nowMs / 1000);
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
-	const cuts = cutsFor(tier(3));
+	const cuts = cutsFor(tier(3), limits.maxT3Rows / 2);
 	const jobs: CompactionJob[] = [];
 
 	const hourEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / HOUR_MS) * HOUR_MS;
@@ -198,7 +240,8 @@ export async function planCompactions(db: D1Database, nowMs: number, limits: Pla
 	}
 
 	for (const component of components([...tier(2), ...tier(3)], cuts)) {
-		if (component.runs.some((run) => Number(run.tier) === 2)) jobs.push(await makeJob(generation, 3, component.runs, component.cuts, now));
+		const inputs = t3JobInputs(component.runs, limits);
+		if (inputs.length > 0) jobs.push(await makeJob(generation, 3, inputs, component.cuts, now));
 	}
 	return jobs;
 }

@@ -12,10 +12,13 @@ import {
 	DEFAULT_PLAN_LIMITS,
 	GROUP_MAX_SHARDS,
 	MAX_JOB_INPUTS,
+	MAX_T3_JOB_ROWS,
+	MAX_T3_RANGE_ROWS,
 	boundedChunks,
 	components,
 	cutsFor,
 	runCompactionCron,
+	t3JobInputs,
 } from '../indexer/plan';
 import type { PlanLimits } from '../indexer/plan';
 import { createReader } from '../indexer/read';
@@ -277,14 +280,14 @@ describe('bounded job sizes (SQ-362)', () => {
 			await ingest(env, at(0, 1, 5 + i), batch);
 		}
 		// 40 + 40 > 70 rows: each T0 run is its own T1 job.
-		const t1 = await planAndDrain(env, at(0, 2, 17), { maxInputs: 100, maxRows: 70 });
+		const t1 = await planAndDrain(env, at(0, 2, 17), { ...DEFAULT_PLAN_LIMITS, maxInputs: 100, maxRows: 70 });
 		expect(t1.jobs.map((job) => job.inputs.length)).toEqual([1, 1, 1]);
 		expect(t1.outcomes).toEqual(['applied', 'applied', 'applied']);
 		// Every T1 job wrote a run below the sibling keyspace (com, org) and one above it (se, uk).
 		expect((await catalog()).filter((run) => run.tier === 1)).toHaveLength(6);
 
 		// Day 1: three T1 runs per key range, at most two per T2 job.
-		const t2 = await planAndDrain(env, at(1, 0, 17), { maxInputs: 2, maxRows: 1_000_000 });
+		const t2 = await planAndDrain(env, at(1, 0, 17), { ...DEFAULT_PLAN_LIMITS, maxInputs: 2, maxRows: 1_000_000 });
 		expect(t2.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([
 			[2, 2],
 			[2, 1],
@@ -305,12 +308,92 @@ describe('bounded job sizes (SQ-362)', () => {
 	it('boundedChunks keeps creation order and gives an oversized run its own chunk', () => {
 		const run = (id: string, rows: number, created_at = '2026-10-17T07:00:00.000Z') => ({ id, rows, created_at });
 		const runs = [run('c', 5), run('a', 5, '2026-10-17T06:59:00.000Z'), run('b', 50), run('d', 5), run('e', 5)];
-		expect(boundedChunks(runs, { maxInputs: 2, maxRows: 20 }).map((chunk) => chunk.map((r) => r.id))).toEqual([
+		expect(boundedChunks(runs, { ...DEFAULT_PLAN_LIMITS, maxInputs: 2, maxRows: 20 }).map((chunk) => chunk.map((r) => r.id))).toEqual([
 			['a'],
 			['b'],
 			['c', 'd'],
 			['e'],
 		]);
+	});
+});
+
+describe('bounded T3 jobs (SQ-363)', () => {
+	async function planAndDrain(env: ReturnType<typeof testEnv>, nowMs: number, plan: PlanLimits) {
+		const before = env.queue.sent.length;
+		await runCompactionCron(env, nowMs, plan);
+		const jobs = env.queue.sent.slice(before);
+		const outcomes = [];
+		for (const job of jobs) outcomes.push(await runCompactionJob(env, job, SMALL, nowMs));
+		return { jobs, outcomes };
+	}
+	const runsOf = async (tier: number) => (await catalog()).filter((run) => run.tier === tier);
+
+	it('defers the T2 runs of a first-day range past the row budget to later crons, and reads match the full merge', async () => {
+		const env = testEnv();
+		const names: NameObservation[] = [];
+		for (let i = 0; i < 3; i++) {
+			// Shared names across batches: the deferred T3 merges must still fold them.
+			const batch = [...many(40, `r${i}`), ...many(5, 'shared', () => ({ notAfter: T_S + (i + 1) * 30 * DAY_S }))];
+			names.push(...batch);
+			await ingest(env, at(0, 1, 5 + i), batch);
+		}
+		const oneRunPerJob = { ...DEFAULT_PLAN_LIMITS, maxInputs: 1 };
+		await planAndDrain(env, at(0, 2, 17), oneRunPerJob);
+		// Day 1, 00:17: three T2 runs per key range (one per T2 job), and no T3 shards yet: only the fixed cuts.
+		await planAndDrain(env, at(1, 0, 17), oneRunPerJob);
+		const t2 = await runsOf(2);
+		expect(t2.length).toBeGreaterThanOrEqual(6);
+		const budget = { ...DEFAULT_PLAN_LIMITS, maxT3Rows: 50 };
+
+		// Each range's T2 runs hold ~22 rows, so the first T3 job per range may take two, and later ones fewer.
+		let crons = 0;
+		while ((await runsOf(2)).length > 0) {
+			const pass = await planAndDrain(env, at(1, 1 + crons, 17), budget);
+			expect(pass.jobs.length).toBeGreaterThan(0);
+			expect(pass.outcomes.every((outcome) => outcome === 'applied')).toBe(true);
+			for (const job of pass.jobs) expect(job.tier).toBe(3);
+			await assertCatalogInvariants();
+			const now = Math.floor(at(1, 1 + crons, 17) / 1000);
+			// Partial progress reads the same as the full merge: T2 and T3 rows fold at read time.
+			expect((await readAll(at(1, 1 + crons, 17))).names).toEqual(expectedRows(names, now));
+			crons++;
+			expect(crons).toBeLessThan(10);
+		}
+		// The first-day merge took more than one cron: some T2 runs were deferred.
+		expect(crons).toBeGreaterThan(1);
+		expect((await runsOf(3)).length).toBeGreaterThan(0);
+	});
+
+	it('t3JobInputs takes every T3 shard and the oldest T2 runs within the budget, and always at least one T2 run', () => {
+		const run = (id: string, tier: number, rows: number, created_at = '2026-10-18T00:17:00.000Z') => ({ id, tier, rows, created_at });
+		const limits = { ...DEFAULT_PLAN_LIMITS, maxT3Rows: 100 };
+		const ids = (runs: Array<{ id: string }>) => runs.map((r) => r.id);
+		const shards = [run('s1', 3, 30), run('s2', 3, 30)];
+		const t2 = [run('c', 2, 20), run('a', 2, 20, '2026-10-17T00:17:00.000Z'), run('b', 2, 20), run('d', 2, 20)];
+		expect(ids(t3JobInputs([...t2, ...shards], limits))).toEqual(['s1', 's2', 'a', 'b']);
+		// Shards alone past the budget still take one T2 run.
+		expect(ids(t3JobInputs([run('big', 3, 500), ...t2], limits))).toEqual(['big', 'a']);
+		// A T2 run over the budget on its own still gets a job.
+		expect(ids(t3JobInputs([run('huge', 2, 1000)], limits))).toEqual(['huge']);
+		// Nothing to merge without T2.
+		expect(t3JobInputs(shards, limits)).toEqual([]);
+		expect(ids(t3JobInputs(t2, { ...limits, maxInputs: 2, maxT3Rows: 1e9 }))).toEqual(['a', 'b']);
+		expect(MAX_T3_RANGE_ROWS).toBe(MAX_T3_JOB_ROWS / 2);
+	});
+
+	it('cutsFor closes a range before its shards pass the row cap', () => {
+		// Keys chosen so no shard key is a hash cut: only the row cap can cut.
+		const shards = ['b', 'c', 'd', 'e', 'f', 'g'].map((key) => ({ key_lo: `com\x01${key}`, rows: 40 }));
+		const hashCuts = cutsFor(shards, Number.POSITIVE_INFINITY);
+		const rowCuts = cutsFor(shards, 100);
+		// Every range of the row-capped cuts holds at most 100 rows (2 shards of 40).
+		const added = rowCuts.filter((cut) => !hashCuts.includes(cut));
+		expect(added.length).toBeGreaterThan(0);
+		const bounds = ['', ...rowCuts, '\uffff'];
+		for (let i = 0; i < bounds.length - 1; i++) {
+			const inRange = shards.filter((s) => s.key_lo >= bounds[i]! && s.key_lo < bounds[i + 1]!);
+			expect(inRange.reduce((sum, s) => sum + s.rows, 0)).toBeLessThanOrEqual(100);
+		}
 	});
 });
 
