@@ -130,7 +130,14 @@
  * `san_recursive` mutual inclusion each fail as discriminators (the same
  * shared cert answers both directions). The older "0 of 3300" figure was a
  * crt.sh search artifact — `name_value` lists only query-matched names — and
- * is not evidence either way. The signal is fetched by `discover_brand_domains`
+ * is not evidence either way. Re-measured on CURRENT certificates (SQ-337,
+ * 2026-10-17, 8,697 unexpired certs sampled from two CT logs): shared
+ * platform certs pairing a customer with an unrelated CDN/host domain occur at
+ * 2-5 registrable domains (e.g. `<hex>.sni.cloudflaressl.com` + one customer,
+ * still issued with 2027 expiry; `mybluehost.me` temporary domains), while
+ * same-owner certs span 2-8 — so no fan-out cap separates them, and the
+ * signal was declined even as wording-only corroboration.
+ * The signal is fetched by `discover_brand_domains`
  * at weight 0.1 and is deliberately not an input here.
  *
  * Residual, stated not hidden: a seed that is itself a DMARC report-
@@ -396,7 +403,10 @@ export interface ClassifyOwnershipInput {
 	 * (`mxRoutedIntoSeed`), which excludes gateway-relayed portfolios.
 	 * KNOWN UNATTRIBUTED SHAPE: a regional sibling on its own DNS platform
 	 * behind a managed mail gateway (e.g. `*.pphosted.com`) has NO reachable
-	 * path to `owned_by_seed` today (#1192) — do not file it again.
+	 * path to `owned_by_seed`, BY DESIGN (operator ruling 2026-10-17 on #1188 /
+	 * #1192) — do not file it again. It stays `unattributed`; certificate SAN
+	 * co-listing cannot rescue it even as wording-only corroboration (SQ-337,
+	 * see the CT SAN note in the file header).
 	 */
 }
 
