@@ -146,6 +146,42 @@ What good looks like in the first hour:
 
 If a kill-switch or generation problem appears, see steps 9 and 10.
 
+### 6a. Compaction stalled: tier 0 grows and tier 1 does not (SQ-362)
+
+Seen on 2026-10-17: only the first `:17` cron after the 06:46Z go-live produced tier-1 runs. The planner made one T1 job per
+clock hour with every T0 run of that hour. The go-live hour was a 14-minute partial hour: about 50 runs and 0.8M rows, and that
+job fit. A full hour is about 235 runs and 3.4M rows. A T1 merge opens every input at once, because all T0 runs span the whole
+keyspace. Measured in V8 on synthetic rows, that merge runs out of a 96 MB heap and takes about 34 s of CPU, so it cannot finish
+inside the Worker's 128 MB isolate or its 30 s default CPU limit. The queue then retries it 3 times and drops it, since there is no
+DLQ. The next hour re-plans the same oversized hours plus one more. The fix caps every T1 and T2 job at `MAX_JOB_INPUTS` (32) runs
+and `MAX_JOB_ROWS` (1.5M) rows (`src/indexer/plan.ts`), and raises `limits.cpu_ms` to 300000. A 32-run job measured 4.5 s of CPU
+and fit the 96 MB heap.
+
+Open point: the 13:17Z tail showed no compact-consumer invocation at all, not failed ones. Confirm which it was with the probe
+below. After the fix deploys, each `:17` cron logs one `ct_compaction_plan` line (`jobs`, `tiers`, `inputs`), and each job logs a
+`ct_compaction_job` line before it starts. A job that then dies on a limit is still named in the tail.
+
+Read-only probe (operator-run):
+
+```bash
+D1="npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc"
+# Job sizes the old planner would build: T0 runs and rows per clock hour.
+$D1 --command "SELECT substr(created_at, 1, 13) AS hour, COUNT(*) AS runs, SUM(rows) AS rows FROM runs WHERE tier = 0 GROUP BY hour ORDER BY hour"
+# Kill switch across ALL ledger rows (isKilled reads MAX(killed), not today's row only)
+$D1 --command "SELECT MAX(killed) AS killed FROM ops_ledger"
+# Queue backlog and consumer
+npx wrangler queues info bv-ct-index-compact
+# Across one :17 mark: the plan line, job starts, and any non-ok outcome
+npx wrangler tail bv-ct-index --format json | grep --line-buffered -E 'ct_compaction_plan|ct_compaction_job|bv-ct-index-compact|exceeded'
+```
+
+Catch-up: no manual step. The first `:17` cron after the deploy plans every T0 run older than the last full hour. At about
+235 runs an hour, that is about 8 jobs of at most 32 runs per backlog hour. For example, 30 backlog hours become about 220 jobs,
+sent 100 per `sendBatch`. The consumer takes one job per invocation and scales out. Each job writes its own T1 runs, so tier 1 grows
+and tier 0 drains to the current hour within that hour. A job re-planned by a later cron while it still waits in the queue is
+harmless: the first swap wins and the duplicate returns `stale`. The T1 runs it writes are stamped with the cron time, so the whole
+backlog reaches T2 at the next UTC midnight, in jobs capped the same way. Watch it with check c in step 6.
+
 ## 7. Benchmark and latency gate (before the repoint)
 
 Both gates must pass before step 8. If either fails, **STOP**: that is the contract's "Reopen if" clause, and the repoint does not happen.

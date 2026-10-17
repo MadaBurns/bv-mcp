@@ -13,6 +13,11 @@
 		"global_fetch_strictly_public"
 	],
 	"upload_source_maps": true,
+	// Compaction jobs need more than the 30 s default CPU (a first T3 merge reads a whole day of T2), and 5 min is the
+	// queue-consumer maximum. It applies Worker-wide; the planner's job caps (src/indexer/plan.ts) keep T1/T2 jobs far below it.
+	"limits": {
+		"cpu_ms": 300000
+	},
 	"triggers": {
 		// Tailer every minute; compactor hourly at :17.
 		"crons": [

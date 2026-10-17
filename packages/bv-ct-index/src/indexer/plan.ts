@@ -3,8 +3,9 @@
  * The `17 * * * *` cron: the weekly generation snapshot (generations.ts), then the compaction planner, which
  * reads the catalog of the current generation and enqueues jobs (compact.ts) to `COMPACT`:
  *
- * - T0 -> T1: every T0 run created in an hour that ended at least ~10 min ago, one job per hour.
- * - T1 -> T2: every T1 run created on a UTC day that has ended, one job per day and key range.
+ * - T0 -> T1: every T0 run created in an hour that ended at least ~10 min ago, in jobs of at most
+ *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`).
+ * - T1 -> T2: every T1 run created on a UTC day that has ended, per day and key range, in the same bounded jobs.
  * - T2 + T3 -> T3: every T2 run, with the T3 shards of the key ranges it touches, one job per key range.
  *
  * Key ranges come from "cuts": keys every job closes its output runs at. The cuts are T3 shard boundaries
@@ -15,6 +16,12 @@
  * grown shard and merges shrunken neighbours. A boundary that moves only moves the cuts next to it, and a run
  * planned against older cuts that now straddles one simply joins the neighbouring range's job (`components`),
  * so jobs never share an input.
+ *
+ * Job size (SQ-362): every T0 run spans the whole keyspace, so a T1 job opens all of its inputs at once, each
+ * holding a read window and a decoded block. One job per clock hour (~235 runs, ~3.4M rows at the 2026-10-17
+ * ingest rate) does not fit a 128 MB isolate: the same merge in V8 runs out of a 96 MB heap and takes ~34 s
+ * CPU, while the go-live hour's job (~50 runs, ~0.8M rows) fit. So T1 and T2 jobs are capped; an hour or a day
+ * becomes several jobs, whose outputs overlap the way T0 runs do until the next tier merges them.
  */
 
 import { SIBLING_PREFIX } from '../codec';
@@ -33,12 +40,27 @@ const FIXED_CUTS = [SIBLING_PREFIX, 's\x01'];
 /** Queues: at most 100 messages and 256 KB per sendBatch. */
 const SEND_BATCH_MESSAGES = 100;
 const SEND_BATCH_BYTES = 200 * 1024;
+/** At most this many input runs per T1 or T2 job: bounds the merge's open inputs, and so its memory. */
+export const MAX_JOB_INPUTS = 32;
+/**
+ * At most this many input rows per T1 or T2 job (catalog `rows`): bounds its CPU. The merge measured ~9 us per
+ * input row in Node on a loaded workstation, so a full job stays well inside even the 30 s default CPU limit.
+ */
+export const MAX_JOB_ROWS = 1_500_000;
+
+export interface PlanLimits {
+	maxInputs: number;
+	maxRows: number;
+}
+
+export const DEFAULT_PLAN_LIMITS: PlanLimits = { maxInputs: MAX_JOB_INPUTS, maxRows: MAX_JOB_ROWS };
 
 interface PlanRun {
 	id: string;
 	tier: number;
 	key_lo: string;
 	key_hi: string;
+	rows: number;
 	created_at: string;
 }
 
@@ -107,6 +129,29 @@ export function components<T extends { key_lo: string; key_hi: string }>(
 	return out;
 }
 
+/**
+ * Splits runs, oldest first, into consecutive chunks of at most `maxInputs` runs and `maxRows` rows. A run over
+ * `maxRows` on its own still gets a chunk, so nothing is left unplanned.
+ */
+export function boundedChunks<T extends { id: string; rows: number; created_at: string }>(runs: readonly T[], limits: PlanLimits): T[][] {
+	const sorted = [...runs].sort((a, b) => compareText(a.created_at, b.created_at) || compareText(a.id, b.id));
+	const chunks: T[][] = [];
+	let chunk: T[] = [];
+	let rows = 0;
+	for (const run of sorted) {
+		const size = Number(run.rows) || 0;
+		if (chunk.length > 0 && (chunk.length >= limits.maxInputs || rows + size > limits.maxRows)) {
+			chunks.push(chunk);
+			chunk = [];
+			rows = 0;
+		}
+		chunk.push(run);
+		rows += size;
+	}
+	if (chunk.length > 0) chunks.push(chunk);
+	return chunks;
+}
+
 function groupBy<T>(items: readonly T[], keyOf: (item: T) => string): Map<string, T[]> {
 	const groups = new Map<string, T[]>();
 	for (const item of items) {
@@ -126,10 +171,10 @@ async function makeJob(generation: number, tier: 1 | 2 | 3, runs: readonly PlanR
 }
 
 /** Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. */
-export async function planCompactions(db: D1Database, nowMs: number): Promise<CompactionJob[]> {
+export async function planCompactions(db: D1Database, nowMs: number, limits: PlanLimits = DEFAULT_PLAN_LIMITS): Promise<CompactionJob[]> {
 	const generation = await currentGeneration(db);
 	const { results } = await db
-		.prepare('SELECT id, tier, key_lo, key_hi, created_at FROM runs WHERE generation = ?1')
+		.prepare('SELECT id, tier, key_lo, key_hi, rows, created_at FROM runs WHERE generation = ?1')
 		.bind(generation)
 		.all<PlanRun>();
 	const now = Math.floor(nowMs / 1000);
@@ -140,13 +185,16 @@ export async function planCompactions(db: D1Database, nowMs: number): Promise<Co
 	const hourEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / HOUR_MS) * HOUR_MS;
 	const dueT0 = tier(0).filter((run) => Date.parse(run.created_at) < hourEnd);
 	// T0 runs span the whole keyspace, so a T1 job takes every cut (a few hundred keys at full size).
-	for (const runs of groupBy(dueT0, (run) => run.created_at.slice(0, 13)).values())
-		jobs.push(await makeJob(generation, 1, runs, cuts, now));
+	for (const runs of groupBy(dueT0, (run) => run.created_at.slice(0, 13)).values()) {
+		for (const chunk of boundedChunks(runs, limits)) jobs.push(await makeJob(generation, 1, chunk, cuts, now));
+	}
 
 	const dayEnd = Math.floor(nowMs / DAY_MS) * DAY_MS;
 	const dueT1 = tier(1).filter((run) => Date.parse(run.created_at) < dayEnd);
 	for (const runs of groupBy(dueT1, (run) => run.created_at.slice(0, 10)).values()) {
-		for (const component of components(runs, cuts)) jobs.push(await makeJob(generation, 2, component.runs, component.cuts, now));
+		for (const component of components(runs, cuts)) {
+			for (const chunk of boundedChunks(component.runs, limits)) jobs.push(await makeJob(generation, 2, chunk, component.cuts, now));
+		}
 	}
 
 	for (const component of components([...tier(2), ...tier(3)], cuts)) {
@@ -180,10 +228,10 @@ export interface CronOutcome {
 }
 
 /** The `17 * * * *` branch of `scheduled`. */
-export async function runCompactionCron(env: Env, nowMs: number): Promise<CronOutcome> {
+export async function runCompactionCron(env: Env, nowMs: number, limits: PlanLimits = DEFAULT_PLAN_LIMITS): Promise<CronOutcome> {
 	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
 	const snapshot = await maybeSnapshot(env, nowMs);
-	const jobs = await planCompactions(env.CURSORS, nowMs);
+	const jobs = await planCompactions(env.CURSORS, nowMs, limits);
 	await sendJobs(env.COMPACT, jobs);
 	return { killed: false, snapshot, jobs };
 }

@@ -240,6 +240,8 @@ export async function runCompactionBatch(batch: MessageBatch<unknown>, env: Env)
 		if (job === null) {
 			console.error(`bv-ct-index compaction: dropping malformed job message ${message.id}`);
 		} else {
+			// Logged before the work, so an invocation that dies on a CPU or memory limit still names its job.
+			console.log(JSON.stringify({ event: 'ct_compaction_job', id: job.id, tier: job.tier, inputs: job.inputs.length }));
 			const outcome = await runCompactionJob(env, job);
 			if (outcome !== 'applied') console.log(`bv-ct-index compaction: job ${job.id} (tier ${job.tier}) ${outcome}`);
 		}
