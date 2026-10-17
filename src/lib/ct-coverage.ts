@@ -71,7 +71,14 @@
  * is never re-emitted to a caller.
  */
 export type CtSourceOutcome =
-	'ok' | 'empty' | 'http_error' | 'rate_limited' | 'provider_restricted' | 'access_denied' | 'timeout' | 'error';
+	| 'ok'
+	| 'empty'
+	| 'http_error'
+	| 'rate_limited'
+	| 'provider_restricted'
+	| 'access_denied'
+	| 'timeout'
+	| 'error';
 
 /**
  * How much of CT history a source can see AT ALL, independent of whether we
@@ -109,7 +116,7 @@ export interface OwnedIndexCoverage {
 	truncated: boolean;
 }
 
-function isoOrUndefined(value: unknown): string | undefined {
+export function isoOrUndefined(value: unknown): string | undefined {
 	if (typeof value !== 'string') return undefined;
 	const ms = Date.parse(value);
 	return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();

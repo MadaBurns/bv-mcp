@@ -152,6 +152,58 @@ describe('CT failover budget with a young owned index in front (SQ-345)', () => 
 		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'idx.example.com']);
 	});
 
+	// SQ-357: the zero-latency test above cannot exercise the 2 s headroom (8 + 14 + 2 = 24). A SLOW index
+	// eats into it: after a 6 s answer only 18 s remain, crt.sh (8 s) still fits, Certspotter (14 s) no longer
+	// does. The honest outcome is to NOT start a fetch it cannot finish, report Certspotter as never
+	// consulted (not failed), serve the index names as a floor, and return inside the handler budget.
+	it('respects the 24 s budget when the index itself takes 6 s: crt.sh runs, Certspotter is skipped, nothing overruns', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const consulted: string[] = [];
+		vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('crt.sh')) {
+				consulted.push('crtsh');
+				return await new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+				});
+			}
+			if (url.includes('certspotter.com')) {
+				consulted.push('certspotter');
+				return Response.json([{ id: '1', dns_names: ['late.example.com'], not_before: '', not_after: '' }], { status: 200 });
+			}
+			return Response.json({}, { status: 404 });
+		});
+		const index = youngIndex(['idx.example.com']) as unknown as (...a: Parameters<typeof fetch>) => Promise<Response>;
+		const slowBinding = (async (...args: Parameters<typeof fetch>) => {
+			await new Promise((r) => setTimeout(r, 6_000));
+			return index(...args);
+		}) as unknown as typeof fetch;
+
+		let result: Awaited<ReturnType<typeof discoverSubdomains>>;
+		let elapsedMs = 0;
+		vi.useFakeTimers();
+		try {
+			const startedAt = Date.now();
+			const pending = discoverSubdomains('example.com', { fetch: slowBinding }, undefined, {
+				deadlineMs: startedAt + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+			});
+			await vi.advanceTimersByTimeAsync(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS);
+			result = await pending;
+			elapsedMs = Date.now() - startedAt;
+		} finally {
+			vi.useRealTimers();
+		}
+
+		expect(consulted).toContain('crtsh');
+		expect(consulted).not.toContain('certspotter');
+		expect(elapsedMs).toBeLessThanOrEqual(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['idx.example.com']);
+		expect(result.sourceUnavailable).toBeFalsy();
+		expect(result.countBasis).toBe('floor');
+		expect(result.coverage?.notConsulted).toContain('certspotter');
+		expect(result.coverage?.perSource.find((s) => s.source === 'certstream')).toMatchObject({ outcome: 'ok', contributed: true });
+	});
+
 	it('serves the index names without asking crt.sh when the budget is already spent', async () => {
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		const fetchSpy = vi.fn(async () => Response.json({}, { status: 404 }));

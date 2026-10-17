@@ -172,9 +172,17 @@ describe('discover_subdomains — per-source coverage record', () => {
 		// it swallowed the whole `!response.ok` branch plus every throw — so the lock is
 		// the INVARIANT across failure modes, not one literal status.
 		const failureModes: Array<{ label: string; respond: () => Promise<Response>; outcome: string }> = [
-			{ label: '404 (wrong worker deployed at that name)', respond: async () => Response.json({ error: 'Not found' }, { status: 404 }), outcome: 'http_error' },
+			{
+				label: '404 (wrong worker deployed at that name)',
+				respond: async () => Response.json({ error: 'Not found' }, { status: 404 }),
+				outcome: 'http_error',
+			},
 			{ label: '500 (upstream fault)', respond: async () => Response.json({ error: 'boom' }, { status: 500 }), outcome: 'http_error' },
-			{ label: '429 (quota spent)', respond: async () => Response.json({ error: 'rate limited' }, { status: 429 }), outcome: 'rate_limited' },
+			{
+				label: '429 (quota spent)',
+				respond: async () => Response.json({ error: 'rate limited' }, { status: 429 }),
+				outcome: 'rate_limited',
+			},
 		];
 
 		for (const mode of failureModes) {
@@ -403,9 +411,7 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 		async function renderUnavailable(perSource: Array<{ source: string; outcome: string }>, notConsulted: string[] = []) {
 			const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
 			const { buildCtCoverage } = await import('../src/lib/ct-coverage');
-			const coverage = buildCtCoverage(
-				perSource.map((s) => ({ source: s.source, outcome: s.outcome as never, contributed: false })),
-			);
+			const coverage = buildCtCoverage(perSource.map((s) => ({ source: s.source, outcome: s.outcome as never, contributed: false })));
 			return formatSubdomainDiscovery(
 				{
 					domain: 'meta.com',
@@ -656,7 +662,7 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 	}
 
 	/** A certstream binding whose `/enumerate` answers with `body` (owned index or legacy). */
-	function enumerateBinding(subdomains: string[], coverage?: Record<string, unknown>) {
+	function enumerateBinding(subdomains: string[], coverage?: Record<string, unknown>, extra: Record<string, unknown> = {}) {
 		return vi.fn(async () =>
 			Response.json({
 				domain: 'example.com',
@@ -665,9 +671,47 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 				timedOut: false,
 				cached: false,
 				...(coverage ? { coverage, truncated: coverage.truncated === true } : {}),
+				...extra,
 			}),
 		);
 	}
+
+	/** Minimal in-memory KV (get/put/delete) — all the subdomain cache touches. */
+	function makeKv() {
+		const store = new Map<string, string>();
+		const kv = {
+			store,
+			get: async (key: string, type?: string) => {
+				const raw = store.get(key);
+				return raw === undefined ? null : type === 'json' ? JSON.parse(raw) : raw;
+			},
+			put: async (key: string, value: string) => {
+				store.set(key, value);
+			},
+			delete: async (key: string) => {
+				store.delete(key);
+			},
+		};
+		return { kv: kv as unknown as KVNamespace, store };
+	}
+
+	/** Backdate every cached entry, so it leaves the 1 h fresh window but stays a last-known-good. */
+	function ageCache(store: Map<string, string>, ms: number) {
+		for (const [key, raw] of store) {
+			const entry = JSON.parse(raw) as { cachedAt?: number };
+			if (typeof entry.cachedAt === 'number') store.set(key, JSON.stringify({ ...entry, cachedAt: entry.cachedAt - ms }));
+		}
+	}
+
+	/** An `/enumerate` `entries[]` row, shaped per docs/design/bv-ct-index-query-api.md. */
+	const indexEntry = (name: string, firstSeen: string, extra: Record<string, unknown> = {}) => ({
+		name,
+		firstSeen,
+		notAfter: new Date(Date.now() + 60 * DAY_MS).toISOString(),
+		issuer: 'R11',
+		wildcard: false,
+		...extra,
+	});
 
 	/** A global fetch serving crt.sh / Certspotter, recording which backends were asked. */
 	function directBackends(handlers: { crtsh: () => Response; certspotter?: () => Response }) {
@@ -732,7 +776,12 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 		expect(result.subdomains.find((s) => s.subdomain === 'api.example.com')?.issuer).toBe('R3');
 		expect(result.sources).toEqual(['certstream', 'crtsh']);
 		expect(result.coverage?.perSource.map((s) => s.source)).toEqual(['certstream', 'crtsh']);
-		expect(certstreamSource(result)).toMatchObject({ outcome: 'ok', contributed: true, indexExhausted: false, historyWindow: 'forward-from' });
+		expect(certstreamSource(result)).toMatchObject({
+			outcome: 'ok',
+			contributed: true,
+			indexExhausted: false,
+			historyWindow: 'forward-from',
+		});
 		expect(result.coverage?.contributing).toEqual(['certstream', 'crtsh']);
 		// crt.sh read its index to the end, so the merged answer is as exhaustive as crt.sh is.
 		expect(result.sourceIndexExhausted).toBe(true);
@@ -765,7 +814,11 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 
 		expect(asked).toEqual(['crtsh', 'certspotter']);
 		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
-		expect(result.coverage?.perSource.map((s) => `${s.source}=${s.outcome}`)).toEqual(['certstream=ok', 'crtsh=http_error', 'certspotter=ok']);
+		expect(result.coverage?.perSource.map((s) => `${s.source}=${s.outcome}`)).toEqual([
+			'certstream=ok',
+			'crtsh=http_error',
+			'certspotter=ok',
+		]);
 		// crt.sh failed, so this is a floor (#866).
 		expect(result.countBasis).toBe('floor');
 	});
@@ -799,7 +852,7 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 		expect(result.minSubdomainsObserved).toBe(2);
 	});
 
-	it('(c) a mature index (>200 days) keeps today\'s short-circuit: crt.sh and Certspotter are never asked', async () => {
+	it("(c) a mature index (>200 days) keeps today's short-circuit: crt.sh and Certspotter are never asked", async () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		const binding = enumerateBinding(['api.example.com'], ownedCoverage(250));
 		const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
@@ -857,6 +910,251 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 
 		expect(result.sourceUnavailable).toBe(true);
 		expect(result.totalSubdomains).toBe(0);
+	});
+
+	// ---- SQ-357: repairs from review SQ-356 --------------------------------------------------
+
+	describe('a partial owned index never suppresses the fallbacks through the cache (M1/M2)', () => {
+		const CACHE_KEY = 'cache:subdomains-lkg:example.com';
+
+		it('M1: a young index with BOTH direct sources down leaves NO fresh cache entry, and the next call asks crt.sh again', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const { kv, store } = makeKv();
+			const binding = enumerateBinding(['api.example.com'], ownedCoverage(30));
+			directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+			const first = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch }, undefined, { cacheKv: kv });
+
+			expect(first.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+			expect(first.countBasis).toBe('floor');
+			expect(store.has(CACHE_KEY)).toBe(false);
+
+			// crt.sh recovers a minute later: the repeat caller must reach it, not be handed the floor for an hour.
+			const asked = directBackends({ crtsh: () => Response.json([entry('old-host.example.com', 0)], { status: 200 }) });
+			const second = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch }, undefined, { cacheKv: kv });
+
+			expect(asked).toEqual(['crtsh']);
+			expect(second.cached).toBeFalsy();
+			expect(second.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'old-host.example.com']);
+		});
+
+		it('M1 control: when a direct source DID answer, the merge is cached as before (the KV mock works)', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const { kv, store } = makeKv();
+			const binding = enumerateBinding(['api.example.com'], ownedCoverage(30));
+			directBackends({ crtsh: () => Response.json([entry('old-host.example.com', 0)], { status: 200 }) });
+
+			await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch }, undefined, { cacheKv: kv });
+
+			expect(store.has(CACHE_KEY)).toBe(true);
+		});
+
+		it('M2: a spent budget unions the index names with the last-known-good cache and flags the result partial', async () => {
+			const { discoverSubdomains, formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+			const { kv, store } = makeKv();
+			// Seed a 7-day last-known-good the way production does: a clean crt.sh enumeration.
+			directBackends({ crtsh: () => Response.json([entry('old-host.example.com', 0), entry('legacy.example.com', 1)], { status: 200 }) });
+			await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+			expect(store.has(CACHE_KEY)).toBe(true);
+			ageCache(store, 2 * 60 * 60 * 1000); // out of the 1 h fresh window, well inside the 7-day net
+
+			const fetchSpy = vi.fn(async () => Response.json({}, { status: 404 }));
+			globalThis.fetch = fetchSpy as unknown as typeof fetch;
+			const slow = enumerateBinding(['api.example.com'], ownedCoverage(30));
+			const binding = vi.fn(async (...args: Parameters<typeof fetch>) => {
+				await new Promise((r) => setTimeout(r, 120));
+				return (slow as unknown as (...a: Parameters<typeof fetch>) => Promise<Response>)(...args);
+			}) as unknown as typeof fetch;
+
+			const result = await discoverSubdomains('example.com', { fetch: binding }, undefined, { cacheKv: kv, deadlineMs: Date.now() + 60 });
+
+			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'legacy.example.com', 'old-host.example.com']);
+			expect(result.partial).toBe(true);
+			expect(result.stale).toBeFalsy();
+			expect(result.countBasis).toBe('floor');
+			expect(result.coverage?.notConsulted).toEqual(expect.arrayContaining(['crtsh', 'certspotter']));
+			expect(formatSubdomainDiscovery(result, 'full')).toContain('PARTIAL RESULT');
+			// A floor is not a cacheable answer: the 7-day net still holds the original enumeration, not this merge.
+			expect(JSON.parse(store.get(CACHE_KEY) as string).result.subdomains.map((s: { subdomain: string }) => s.subdomain)).not.toContain(
+				'api.example.com',
+			);
+		});
+
+		it('M2: with no last-known-good the spent-budget path still serves the index names, partial', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const { kv } = makeKv();
+			const fetchSpy = vi.fn(async () => Response.json({}, { status: 404 }));
+			globalThis.fetch = fetchSpy as unknown as typeof fetch;
+			const slow = enumerateBinding(['api.example.com'], ownedCoverage(30));
+			const binding = vi.fn(async (...args: Parameters<typeof fetch>) => {
+				await new Promise((r) => setTimeout(r, 120));
+				return (slow as unknown as (...a: Parameters<typeof fetch>) => Promise<Response>)(...args);
+			}) as unknown as typeof fetch;
+
+			const result = await discoverSubdomains('example.com', { fetch: binding }, undefined, { cacheKv: kv, deadlineMs: Date.now() + 60 });
+
+			expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+			expect(result.partial).toBe(true);
+			expect(result.sourceUnavailable).toBeFalsy();
+		});
+	});
+
+	it('M3: a MATURE index whose /enumerate faults but whose /sans answers is a source failure, never a confident zero', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const asked: string[] = [];
+		const binding = vi.fn(async (input: string | URL | Request) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('/enumerate')) {
+				asked.push('enumerate');
+				return Response.json({ error: 'ct_index_timeout' }, { status: 503 });
+			}
+			asked.push('sans');
+			// The owned index's /sans lists OTHER-apex co-listed names, none under the domain asked about.
+			return Response.json({
+				domain: 'example.com',
+				apex: 'example.com',
+				names: ['sibling-brand.org'],
+				certificateCount: 1,
+				timedOut: false,
+				cached: false,
+				truncated: false,
+				coverage: ownedCoverage(400),
+			});
+		});
+		const backends = directBackends({ crtsh: () => Response.json([entry('www.example.com', 0)], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(asked).toEqual(['enumerate', 'sans']);
+		expect(backends).toEqual(['crtsh']);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['www.example.com']);
+		expect(certstreamSource(result)).toMatchObject({ outcome: 'http_error', contributed: false });
+		expect(result.coverage?.unavailable).toContain('certstream');
+		expect(result.sources).toEqual(['crtsh']);
+	});
+
+	it('M3 control: a LEGACY certstream (no coverage) still serves /sans as the enumeration when /enumerate faults', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const binding = vi.fn(async (input: string | URL | Request) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('/enumerate')) return Response.json({ error: 'boom' }, { status: 500 });
+			return Response.json({
+				domain: 'example.com',
+				names: ['legacy.example.com'],
+				certificateCount: 1,
+				timedOut: false,
+				truncated: false,
+				cached: false,
+			});
+		});
+		const backends = directBackends({ crtsh: () => Response.json([], { status: 200 }) });
+
+		const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['legacy.example.com']);
+		expect(backends).toEqual([]);
+	});
+
+	describe('what counts as a partial owned index on /enumerate (never a short-circuit)', () => {
+		const cases: Array<{ label: string; binding: () => ReturnType<typeof enumerateBinding> }> = [
+			{
+				label: 'a MISSING indexStartedAt',
+				binding: () => enumerateBinding(['api.example.com'], { ...ownedCoverage(400), indexStartedAt: undefined }),
+			},
+			{
+				label: 'an INVALID indexStartedAt',
+				binding: () => enumerateBinding(['api.example.com'], { ...ownedCoverage(400), indexStartedAt: 'yesterday-ish' }),
+			},
+			{ label: 'a FUTURE indexStartedAt', binding: () => enumerateBinding(['api.example.com'], ownedCoverage(-5)) },
+			{ label: 'an index just short of the 200-day boundary', binding: () => enumerateBinding(['api.example.com'], ownedCoverage(199.99)) },
+			{
+				label: 'a top-level-only `truncated` (coverage.truncated is false)',
+				binding: () => enumerateBinding(['api.example.com'], ownedCoverage(400), { truncated: true }),
+			},
+		];
+		for (const c of cases) {
+			it(`${c.label} consults crt.sh, merges, and claims no completeness`, async () => {
+				const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+				const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
+
+				const result = await discoverSubdomains('example.com', { fetch: c.binding() as unknown as typeof fetch });
+
+				expect(asked).toEqual(['crtsh']);
+				expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'extra.example.com']);
+				expect(certstreamSource(result)).toMatchObject({ contributed: true, indexExhausted: false });
+			});
+		}
+
+		it('an index exactly 200 days old is mature: it keeps the short-circuit', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const asked = directBackends({ crtsh: () => Response.json([entry('extra.example.com', 0)], { status: 200 }) });
+
+			const result = await discoverSubdomains('example.com', {
+				fetch: enumerateBinding(['api.example.com'], ownedCoverage(200)) as unknown as typeof fetch,
+			});
+
+			expect(asked).toEqual([]);
+			expect(certstreamSource(result)).toMatchObject({ indexExhausted: true });
+		});
+	});
+
+	describe('index-only names carry /enumerate entries[] timing (L3)', () => {
+		it('sorts a fresh index name ahead of older crt.sh names and flags it as a shadow subdomain', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const fresh = daysAgo(2);
+			const binding = enumerateBinding(['zz-new-host.example.com'], ownedCoverage(30), {
+				entries: [indexEntry('zz-new-host.example.com', fresh)],
+			});
+			directBackends({ crtsh: () => Response.json([entry('old-host.example.com', 0)], { status: 200 }) });
+
+			const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+			expect(result.subdomains.map((s) => s.subdomain)).toEqual(['zz-new-host.example.com', 'old-host.example.com']);
+			expect(result.subdomains[0]).toMatchObject({ firstSeen: fresh, lastSeen: fresh, issuer: 'R11', isExpired: false });
+			expect(result.issues.some((i) => i.type === 'shadow_subdomain' && i.detail.includes('zz-new-host.example.com'))).toBe(true);
+		});
+
+		it('treats an index entry whose latest certificate has expired as expired', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const binding = enumerateBinding(['gone.example.com'], ownedCoverage(30), {
+				entries: [indexEntry('gone.example.com', daysAgo(25), { notAfter: daysAgo(3) })],
+			});
+			directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+			const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+			expect(result.subdomains[0]).toMatchObject({ subdomain: 'gone.example.com', isExpired: true });
+			expect(result.expiredCerts).toBe(1);
+		});
+
+		it('keeps the NEWEST names when the 500-name display cap bites', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const names = Array.from({ length: 600 }, (_, i) => `h${String(i).padStart(3, '0')}.example.com`);
+			// h000 is the freshest, h599 the oldest; the listing order is deliberately reversed.
+			const entries = names.map((n, i) => indexEntry(n, daysAgo(1 + i * 0.01)));
+			const binding = enumerateBinding([...names].reverse(), ownedCoverage(30), { entries });
+			directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+			const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+			expect(result.totalSubdomains).toBe(600);
+			expect(result.subdomains).toHaveLength(500);
+			expect(result.subdomains[0]?.subdomain).toBe('h000.example.com');
+			expect(result.subdomains.map((s) => s.subdomain)).not.toContain('h599.example.com');
+		});
+
+		it('ignores malformed entries[] rows instead of trusting them', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const binding = enumerateBinding(['api.example.com'], ownedCoverage(30), {
+				entries: [null, 7, { name: 5 }, { name: 'api.example.com', firstSeen: 'not-a-date', notAfter: {}, issuer: 42 }],
+			});
+			directBackends({ crtsh: () => Response.json({}, { status: 503 }), certspotter: () => Response.json({}, { status: 503 }) });
+
+			const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch });
+
+			expect(result.subdomains[0]).toMatchObject({ subdomain: 'api.example.com', firstSeen: '', lastSeen: '', issuer: '' });
+		});
 	});
 
 	it('renders forward-from in the human-readable text, never as an inventory claim', async () => {

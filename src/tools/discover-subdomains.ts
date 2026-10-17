@@ -36,7 +36,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import { cacheGet, cacheSet } from '../lib/cache';
 import type { CtCoverage, CtSourceAttempt, CtSourceOutcome, OwnedIndexCoverage } from '../lib/ct-coverage';
-import { buildCtCoverage, formatCoverageLine, ownedIndexIsPartial, parseOwnedIndexCoverage } from '../lib/ct-coverage';
+import { buildCtCoverage, formatCoverageLine, isoOrUndefined, ownedIndexIsPartial, parseOwnedIndexCoverage } from '../lib/ct-coverage';
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
@@ -574,11 +574,27 @@ interface EnumerationMeta {
 	/** Per-source attempt log; folded into {@link SubdomainDiscoveryResult.coverage}. */
 	attempts?: CtSourceAttempt[];
 	/**
-	 * Names from a source that carries no per-certificate metadata (the owned CT
-	 * index's name list). Merged into the entry-derived set under the same domain
-	 * filter; a name already seen with certificate data keeps that data.
+	 * Names from a source that carries no per-certificate records (the owned CT
+	 * index's name list, a last-known-good cache). Merged into the entry-derived
+	 * set under the same domain filter; a name already seen with certificate data
+	 * keeps that data. Any timing metadata the source did give rides along, so the
+	 * display sort, the return cap and the shadow-subdomain check treat these names
+	 * like any other instead of sorting them last.
 	 */
-	extraNames?: string[];
+	extraNames?: ExtraName[];
+}
+
+/** One name from a metadata-poor source; see {@link EnumerationMeta.extraNames}. */
+interface ExtraName {
+	name: string;
+	firstSeen?: string;
+	lastSeen?: string;
+	/** Latest certificate expiry the source knows; a past instant makes the name expired. */
+	notAfter?: string;
+	issuer?: string;
+	/** Already-derived expiry, for sources (the cache) that stored the verdict not the date. */
+	expired?: boolean;
+	certCount?: number;
 }
 
 /**
@@ -658,6 +674,8 @@ interface CertstreamEnumerateResponse {
 	error?: string;
 	/** Owned CT index only: this page is not the whole set (`cursor` would continue it). */
 	truncated?: boolean;
+	/** Owned CT index only: per-name `{name, firstSeen, notAfter, issuer, wildcard}`; read by {@link parseOwnedEntries}. */
+	entries?: unknown;
 	/** Owned CT index only (`bv-ct-index`); absent from a legacy certstream upstream. Parsed by {@link parseOwnedIndexCoverage}. */
 	coverage?: unknown;
 }
@@ -724,8 +742,12 @@ export async function discoverSubdomains(
 
 	// Budget gone with an owned-index answer in hand: serve it (a floor, with the direct
 	// sources reported as not consulted) rather than discarding live names for a stale read.
+	// The index only holds names observed since it started, so the last-known-good cache is
+	// unioned in, not discarded — and the result is `partial`, never a clean answer.
 	if (ownedSupplement && ownedSupplement.names.length > 0 && deadlineExceeded(options)) {
-		return mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, NO_DIRECT_ANSWER);
+		const lastKnownGood = await readLastKnownGood(domain, options);
+		const floor = mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, NO_DIRECT_ANSWER, lastKnownGood);
+		if (floor.totalSubdomains > 0) return { ...floor, partial: true };
 	}
 
 	// Deadline gate before the (slowest) direct-source stage. A budget trip after
@@ -745,7 +767,11 @@ export async function discoverSubdomains(
 	const direct = await queryDirectSources(domain, options);
 	if (ownedSupplement && (direct.available || ownedSupplement.names.length > 0)) {
 		const merged = mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, direct);
-		await cacheSuccess(domain, merged, options);
+		// Only an answer a direct source actually gave may be served back as fresh for an hour.
+		// An index-only floor (crt.sh and Certspotter both down) cached here would be returned by
+		// `readFreshCache` before ANY upstream call, so a young index would suppress the very
+		// fallbacks it exists to supplement until the entry aged out.
+		if (direct.available) await cacheSuccess(domain, merged, options);
 		return merged;
 	}
 	if (direct.available) {
@@ -786,12 +812,18 @@ const NO_DIRECT_ANSWER: DirectSourcesResult = { available: false, entries: [], a
  * read its own index to the end — otherwise it is a floor. `perSource` lists the
  * certstream attempt first, then each direct attempt, so both are on the record.
  * Names keep crt.sh / Certspotter's per-certificate metadata where they have it.
+ *
+ * `lastKnownGood` (budget-spent path only) adds the 7-day cached enumeration's names
+ * UNDER the index's: the index is forward-only, so the cache is usually the richer
+ * list. Its provenance stays that of the call that cached it, so it contributes names
+ * only, never coverage.
  */
 function mergeOwnedIndexWithDirect(
 	domain: string,
 	index: OwnedIndexSupplement,
 	certstreamAttempts: CtSourceAttempt[],
 	direct: DirectSourcesResult,
+	lastKnownGood?: SubdomainDiscoveryResult | null,
 ): SubdomainDiscoveryResult {
 	const directSources = direct.sources ?? [];
 	const attempts = [...certstreamAttempts, ...direct.attempts];
@@ -800,7 +832,7 @@ function mergeOwnedIndexWithDirect(
 		sources: [...(indexContributed ? ['certstream'] : []), ...directSources],
 		sourceIndexExhausted: !index.truncated && directSources.length > 0 && (direct.sourceIndexExhausted ?? true),
 		attempts,
-		extraNames: index.names,
+		extraNames: [...ownedExtraNames(index), ...(lastKnownGood ? lastKnownGood.subdomains.map(cachedExtraName) : [])],
 	};
 	const merged = buildResultFromEntries(domain, direct.entries, meta);
 	if (merged.totalSubdomains === 0) {
@@ -810,6 +842,55 @@ function mergeOwnedIndexWithDirect(
 	// The index reports distinct names read; crt.sh counts certificates. They overlap by an
 	// unknown amount, so the larger of the two is the only count that is not an overstatement.
 	return { ...merged, totalCertificates: Math.max(merged.totalCertificates, index.certificateCount ?? 0) };
+}
+
+/** The index's names, each carrying its `/enumerate` `entries[]` timing when the index sent one. */
+function ownedExtraNames(index: OwnedIndexSupplement): ExtraName[] {
+	return index.names.map((name) => {
+		// A `*.x` row is the wildcard form of the entry listed as `x`.
+		const key = name.trim().toLowerCase().replace(/\.$/, '').replace(/^\*\./, '');
+		return { name, ...index.entries.get(key) };
+	});
+}
+
+/** A cached subdomain row as an {@link ExtraName}. */
+function cachedExtraName(sd: DiscoveredSubdomain): ExtraName {
+	return {
+		name: sd.subdomain,
+		firstSeen: sd.firstSeen,
+		lastSeen: sd.lastSeen,
+		issuer: sd.issuer,
+		certCount: sd.certCount,
+		expired: sd.isExpired,
+	};
+}
+
+/**
+ * Read `/enumerate` `entries[]` ({name, firstSeen, notAfter, issuer, wildcard}; see
+ * docs/design/bv-ct-index-query-api.md) into per-name timing. Everything is optional
+ * and re-validated: dates are re-serialised, never echoed, and a row of the wrong shape
+ * is skipped rather than trusted. Absent or malformed `entries` yield an empty map, so
+ * the names then carry no timing, exactly as before.
+ */
+function parseOwnedEntries(raw: unknown): Map<string, Omit<ExtraName, 'name'>> {
+	const out = new Map<string, Omit<ExtraName, 'name'>>();
+	if (!Array.isArray(raw)) return out;
+	for (const row of raw) {
+		if (typeof row !== 'object' || row === null) continue;
+		const r = row as Record<string, unknown>;
+		if (typeof r.name !== 'string') continue;
+		const firstSeen = isoOrUndefined(r.firstSeen);
+		const lastSeen = isoOrUndefined(r.lastSeen);
+		const notAfter = isoOrUndefined(r.notAfter);
+		const issuer = typeof r.issuer === 'string' && r.issuer.trim() ? extractIssuerCN(r.issuer).slice(0, 128) : undefined;
+		out.set(r.name.trim().toLowerCase().replace(/\.$/, ''), {
+			...(firstSeen ? { firstSeen } : {}),
+			...(lastSeen ? { lastSeen } : {}),
+			...(notAfter ? { notAfter } : {}),
+			...(issuer ? { issuer } : {}),
+		});
+	}
+	return out;
 }
 
 /**
@@ -886,18 +967,21 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 	// Names with no certificate metadata (the owned CT index). Same domain filter as
 	// above; a name crt.sh/Certspotter already described keeps its richer record.
 	const domainLower = domain.toLowerCase();
-	for (const raw of meta?.extraNames ?? []) {
-		const name = raw.trim().toLowerCase().replace(/\.$/, '');
+	for (const extra of meta?.extraNames ?? []) {
+		const name = extra.name.trim().toLowerCase().replace(/\.$/, '');
 		if (!name || name === domainLower || !name.endsWith(domainSuffix) || trackers.has(name)) continue;
+		const firstSeen = extra.firstSeen ?? '';
 		trackers.set(name, {
 			subdomain: name,
-			firstSeen: '',
-			lastSeen: '',
-			latestNotAfter: '',
-			latestIssuer: '',
-			certCount: 1,
+			firstSeen,
+			// A source that never says when it last saw a name is dated by when it first did — the
+			// only real instant it gave. An empty string would sort these names last and cut them first.
+			lastSeen: extra.lastSeen ?? firstSeen,
+			latestNotAfter: extra.notAfter ?? '',
+			latestIssuer: extra.issuer ?? '',
+			certCount: extra.certCount ?? 1,
 			isWildcard: name.startsWith('*.'),
-			allExpired: false,
+			allExpired: extra.expired ?? (extra.notAfter ? new Date(extra.notAfter) < now : false),
 		});
 	}
 
@@ -1097,7 +1181,8 @@ function sampleCaveatIssue(
 		const failed = coverage.perSource.filter((s) => sourceFailed(s.outcome)).map((s) => s.source);
 		const lead = `At least ${total} subdomains observed (${concreteWildcardSplit(total, wildcardCerts)}) — a FLOOR, not a count: recall was cut on this call.`;
 		const why =
-			whyOverride ?? (failed.length > 0 ? ` Failed: ${failed.join(', ')}; answered: ${answered}.` : ` Answered: ${answered}; index not read to the end.`);
+			whyOverride ??
+			(failed.length > 0 ? ` Failed: ${failed.join(', ')}; answered: ${answered}.` : ` Answered: ${answered}; index not read to the end.`);
 		return {
 			type: 'ct_sample_not_inventory',
 			severity: 'low',
@@ -1172,7 +1257,11 @@ async function sourceCooldownActive(source: string, options?: DiscoverSubdomains
 	}
 }
 
-async function rememberSourceCooldown(source: string, retryAfterSeconds: number | undefined, options?: DiscoverSubdomainsOptions): Promise<void> {
+async function rememberSourceCooldown(
+	source: string,
+	retryAfterSeconds: number | undefined,
+	options?: DiscoverSubdomainsOptions,
+): Promise<void> {
 	if (!options?.cacheKv || source !== 'certspotter') return;
 	const ttl = Math.max(1, Math.min(retryAfterSeconds ?? CT_SOURCE_DEFAULT_COOLDOWN_SECONDS, CT_SOURCE_MAX_COOLDOWN_SECONDS));
 	const write = cacheSet(ctSourceCooldownKey(source), { until: Date.now() + ttl * 1000 }, options.cacheKv, ttl).catch(() => {
@@ -1734,7 +1823,9 @@ async function queryCertstream(
 		if (!data.timedOut) {
 			// A young or truncated owned index contributes but is NOT exhaustive: the orchestrator
 			// must still consult crt.sh / CertSpotter instead of treating this as the answer.
-			if (owned && ownedIndexIsPartial(owned)) return ownedPartialFastPath(domain, data.subdomains, data.certificateCount, owned);
+			if (owned && ownedIndexIsPartial(owned)) {
+				return ownedPartialFastPath(domain, data.subdomains, data.certificateCount, owned, data.entries);
+			}
 			return {
 				result: buildCertstreamResult(domain, data.subdomains, data.certificateCount, undefined, owned ?? undefined),
 				attempt: certstreamAttempt('ok', true, owned ?? undefined),
@@ -1773,27 +1864,24 @@ async function queryCertstream(
 
 	if (!sansOk || !sans.data) return { result: null, attempt: certstreamAttempt(outcome, false) };
 	const data = sans.data;
-	const sansOwned = ownedIndexFromResponse(data);
+	// The owned index's `/sans` is NOT an enumeration of this domain: it lists the OTHER-apex names that
+	// share a certificate with it (the sibling question san-correlator asks). `buildCertstreamResult`
+	// drops every name outside the domain, so accepting it here would turn an `/enumerate` fault into a
+	// confident zero and end the ladder before crt.sh. An index that cannot enumerate is a failed source.
+	if (ownedIndexFromResponse(data)) return { result: null, attempt: certstreamAttempt(outcome, false) };
 	if (!data.timedOut) {
-		if (sansOwned && ownedIndexIsPartial(sansOwned)) return ownedPartialFastPath(domain, data.names, data.certificateCount, sansOwned);
 		return {
-			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }, sansOwned ?? undefined),
-			attempt: certstreamAttempt('ok', true, sansOwned ?? undefined),
+			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }),
+			attempt: certstreamAttempt('ok', true),
 		};
 	}
 	if (data.names.length > 0) {
 		return {
 			result: {
-				...buildCertstreamResult(
-					domain,
-					data.names,
-					data.certificateCount,
-					{ truncated: data.truncated, timedOut: true },
-					sansOwned ?? undefined,
-				),
+				...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }),
 				partial: true,
 			},
-			attempt: certstreamAttempt('ok', true, sansOwned ?? undefined),
+			attempt: certstreamAttempt('ok', true),
 		};
 	}
 	// timedOut:true with an empty list — no result so the orchestrator falls
@@ -1834,6 +1922,8 @@ interface CertstreamFastPath {
 /** The owned index's raw name list, kept so it can be merged with the direct sources' entries. */
 interface OwnedIndexSupplement {
 	names: string[];
+	/** Per-name timing from `/enumerate` `entries[]`, keyed by the bare (non-`*.`) name. */
+	entries: Map<string, Omit<ExtraName, 'name'>>;
 	certificateCount?: number;
 	/** The index returned only a page of what it holds. */
 	truncated: boolean;
@@ -1850,13 +1940,19 @@ function ownedIndexFromResponse(data: { coverage?: unknown; truncated?: boolean 
 }
 
 /** A young/truncated owned-index answer: contributes its names, claims no exhaustiveness. */
-function ownedPartialFastPath(domain: string, names: string[], certificateCount: number | undefined, owned: OwnedIndexCoverage): CertstreamFastPath {
+function ownedPartialFastPath(
+	domain: string,
+	names: string[],
+	certificateCount: number | undefined,
+	owned: OwnedIndexCoverage,
+	rawEntries: unknown,
+): CertstreamFastPath {
 	const result = buildCertstreamResult(domain, names, certificateCount, { truncated: true }, owned);
 	const contributed = result.totalSubdomains > 0;
 	return {
 		result,
 		attempt: { ...certstreamAttempt(contributed ? 'ok' : 'empty', contributed, owned), indexExhausted: false },
-		supplement: { names, certificateCount, truncated: owned.truncated },
+		supplement: { names, entries: parseOwnedEntries(rawEntries), certificateCount, truncated: owned.truncated },
 	};
 }
 

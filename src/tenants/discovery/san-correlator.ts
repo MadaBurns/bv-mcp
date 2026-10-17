@@ -656,10 +656,12 @@ function answerOutcome(answer: SanAnswer): CtSourceOutcome {
 
 /**
  * Union a held-back young/truncated owned-index answer with what crt.sh / Certspotter
- * said on the same call. The owned answer already counts as "a backend answered", so a
- * later backend failure never downgrades the status below the owned answer's own
- * (`partial` when its page was truncated, else `ok`); a later answer can only add
- * siblings and provenance.
+ * said on the same call. The owned answer is young or truncated, so it is only ever a
+ * floor: the merge is `ok` solely when a direct source then answered cleanly. When
+ * crt.sh and Certspotter both failed (or left no answer), the siblings the index did
+ * name are kept but the status is `partial`, never a clean `ok` — a young index that
+ * named nobody, with nothing to corroborate it, is not "no siblings". A later answer
+ * can only add siblings and provenance.
  */
 function mergeSanAnswers(owned: SanAnswer, other: SanAnswer): SanAnswer {
 	const otherAnswered = other.queryStatus === 'ok' || other.queryStatus === 'partial';
@@ -669,7 +671,7 @@ function mergeSanAnswers(owned: SanAnswer, other: SanAnswer): SanAnswer {
 		seedDomain: owned.seedDomain,
 		coOwnedDomains: Array.from(new Set([...owned.coOwnedDomains, ...other.coOwnedDomains])).sort(),
 		certIds: other.certIds,
-		queryStatus: owned.queryStatus === 'partial' || (otherAnswered && other.queryStatus === 'partial') ? 'partial' : 'ok',
+		queryStatus: !otherAnswered || owned.queryStatus === 'partial' || other.queryStatus === 'partial' ? 'partial' : 'ok',
 		...(provenance.length > 0 ? { certificateProvenance: provenance.slice(0, MAX_SAN_PROVENANCE_OBSERVATIONS) } : {}),
 		...(provenanceCapped || owned.certificateProvenanceTruncated || other.certificateProvenanceTruncated
 			? { certificateProvenanceTruncated: true }
