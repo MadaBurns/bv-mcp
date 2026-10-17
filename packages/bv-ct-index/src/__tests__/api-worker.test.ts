@@ -8,6 +8,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import worker from '../index';
 import { T, applyCatalog, ingest, obs, sib, testEnv, withFault } from './indexer-harness';
 
+/** Response-body shape the assertions read; fields are optional because each route returns a subset. */
+interface ApiBody {
+	domain?: string;
+	subdomains?: string[];
+	names?: string[];
+	entries?: Array<Record<string, unknown>>;
+	issuer?: string | null;
+	error?: string;
+	cursor?: string | null;
+	truncated?: boolean;
+	coverage: { source?: string; historyWindow?: string; truncated?: boolean; indexStartedAt?: string | null; freshThrough?: string | null };
+}
+
 beforeEach(applyCatalog);
 
 const authed = (path: string) =>
@@ -31,16 +44,16 @@ describe('bv-ct-index query API over the real reader', () => {
 		// A later observation of example.com with a larger notAfter wins the issuer.
 		await ingest(env, T + 1000, [obs('example.com', { issuer: 'New CA', notAfter: Math.floor(T / 1000) + 90 * 86_400 })]);
 
-		const suffix = await (await worker.fetch(authed('/enumerate?domain=govt.nz'), env)).json<Record<string, any>>();
+		const suffix = await (await worker.fetch(authed('/enumerate?domain=govt.nz'), env)).json<ApiBody>();
 		expect(suffix.subdomains).toEqual(['dia.govt.nz', 'www.dia.govt.nz', 'health.govt.nz']);
 		expect(suffix.coverage).toMatchObject({ source: 'bv-ct-index', historyWindow: 'forward-from', truncated: false });
 		expect(typeof suffix.coverage.indexStartedAt).toBe('string');
 		expect(typeof suffix.coverage.freshThrough).toBe('string');
 
-		const siblings = await (await worker.fetch(authed('/sans?domain=www.example.com'), env)).json<Record<string, any>>();
+		const siblings = await (await worker.fetch(authed('/sans?domain=www.example.com'), env)).json<ApiBody>();
 		expect(siblings.names).toEqual(['example.org']);
 
-		const meta = await (await worker.fetch(authed('/cert-meta?domain=example.com'), env)).json<Record<string, any>>();
+		const meta = await (await worker.fetch(authed('/cert-meta?domain=example.com'), env)).json<ApiBody>();
 		expect(meta.issuer).toBe('New CA');
 	});
 

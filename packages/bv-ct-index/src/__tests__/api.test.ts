@@ -10,6 +10,19 @@ import { isAuthorized } from '../api/auth';
 import { nameKey, siblingKey } from '../codec';
 import type { IndexReader, NameObservation, ScanPage, SiblingObservation } from '../types';
 
+/** Response-body shape the assertions read; fields are optional because each route returns a subset. */
+interface ApiBody {
+	domain?: string;
+	subdomains?: string[];
+	names?: string[];
+	entries?: Array<Record<string, unknown>>;
+	issuer?: string | null;
+	error?: string;
+	cursor?: string | null;
+	truncated?: boolean;
+	coverage: { source?: string; historyWindow?: string; truncated?: boolean; indexStartedAt?: string | null; freshThrough?: string | null };
+}
+
 const KEY = 'test-admin-key';
 const META = { indexStartedAt: '2026-10-17T00:00:00.000Z', freshThrough: '2026-10-17T05:00:00.000Z', generation: 1 };
 const NOT_AFTER = 1_800_000_000; // 2027-01-15T08:00:00.000Z
@@ -77,7 +90,7 @@ async function call(reader: IndexReader, path: string, init: { key?: string | nu
 		{ CT_INDEX_ADMIN_KEY: KEY },
 		{ reader, budgetMs: init.budgetMs },
 	);
-	return { response, body: (await response.json()) as Record<string, any> };
+	return { response, body: (await response.json()) as ApiBody };
 }
 
 describe('GET /enumerate', () => {
@@ -92,7 +105,7 @@ describe('GET /enumerate', () => {
 		// A wildcard row also lists `*.name`, because bv-mcp counts wildcards from the `*.` prefix.
 		expect(body.subdomains).toEqual(['example.com', 'api.example.com', 'dev.example.com', '*.dev.example.com']);
 		expect(body).toMatchObject({ certificateCount: 3, timedOut: false, cached: false, truncated: false, cursor: null });
-		expect(body.entries[2]).toEqual({
+		expect(body.entries?.[2]).toEqual({
 			name: 'dev.example.com',
 			firstSeen: '2026-09-21T14:13:20.000Z',
 			notAfter: '2027-01-15T08:00:00.000Z',
