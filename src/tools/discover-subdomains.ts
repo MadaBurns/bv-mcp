@@ -742,12 +742,9 @@ export async function discoverSubdomains(
 
 	// Budget gone with an owned-index answer in hand: serve it (a floor, with the direct
 	// sources reported as not consulted) rather than discarding live names for a stale read.
-	// The index only holds names observed since it started, so the last-known-good cache is
-	// unioned in, not discarded — and the result is `partial`, never a clean answer.
 	if (ownedSupplement && ownedSupplement.names.length > 0 && deadlineExceeded(options)) {
-		const lastKnownGood = await readLastKnownGood(domain, options);
-		const floor = mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, NO_DIRECT_ANSWER, lastKnownGood);
-		if (floor.totalSubdomains > 0) return { ...floor, partial: true };
+		const floor = await ownedIndexFloor(domain, ownedSupplement, certstreamAttempts, NO_DIRECT_ANSWER, options);
+		if (floor) return floor;
 	}
 
 	// Deadline gate before the (slowest) direct-source stage. A budget trip after
@@ -766,12 +763,19 @@ export async function discoverSubdomains(
 	// and a bounded retry: crt.sh (rich metadata) → Certspotter (names + dates).
 	const direct = await queryDirectSources(domain, options);
 	if (ownedSupplement && (direct.available || ownedSupplement.names.length > 0)) {
+		// Both direct sources failed. The production budget never reaches the deadline branch above,
+		// so the last-known-good union has to happen here too.
+		if (!direct.available) {
+			const floor = await ownedIndexFloor(domain, ownedSupplement, certstreamAttempts, direct, options);
+			if (floor) return floor;
+		}
 		const merged = mergeOwnedIndexWithDirect(domain, ownedSupplement, certstreamAttempts, direct);
-		// Only an answer a direct source actually gave may be served back as fresh for an hour.
-		// An index-only floor (crt.sh and Certspotter both down) cached here would be returned by
-		// `readFreshCache` before ANY upstream call, so a young index would suppress the very
-		// fallbacks it exists to supplement until the entry aged out.
-		if (direct.available) await cacheSuccess(domain, merged, options);
+		// Only an answer a direct source POSITIVELY gave (`sources` is set on an `ok` outcome only) may
+		// be served back as fresh for an hour. An index-only floor cached here would be returned by
+		// `readFreshCache` before ANY upstream call, so a young index would suppress the very fallbacks
+		// it exists to supplement until the entry aged out. That includes crt.sh answering `[]` while
+		// Certspotter failed or was skipped: `available` is true, but nothing corroborated the floor.
+		if ((direct.sources?.length ?? 0) > 0) await cacheSuccess(domain, merged, options);
 		return merged;
 	}
 	if (direct.available) {
@@ -803,6 +807,26 @@ type DirectSourcesResult = Awaited<ReturnType<typeof queryDirectSources>>;
 const NO_DIRECT_ANSWER: DirectSourcesResult = { available: false, entries: [], attempts: [] };
 
 /**
+ * The owned index's names as a floor when no direct source answered (budget spent, or crt.sh and
+ * Certspotter both down), or null when that floor would be empty.
+ *
+ * The index only holds names observed since it started, so the 7-day last-known-good cache is
+ * unioned in rather than discarded, and the result is `partial`: never a clean answer, and
+ * `cacheSuccess` refuses to store it, so it cannot become a fresh cache hit either.
+ */
+async function ownedIndexFloor(
+	domain: string,
+	index: OwnedIndexSupplement,
+	certstreamAttempts: CtSourceAttempt[],
+	direct: DirectSourcesResult,
+	options?: DiscoverSubdomainsOptions,
+): Promise<SubdomainDiscoveryResult | null> {
+	const lastKnownGood = await readLastKnownGood(domain, options);
+	const floor = mergeOwnedIndexWithDirect(domain, index, certstreamAttempts, direct, lastKnownGood);
+	return floor.totalSubdomains > 0 ? { ...floor, partial: true } : null;
+}
+
+/**
  * Merge a young or truncated owned-index (`bv-ct-index`) answer with whatever the
  * direct sources (crt.sh → Certspotter) produced on this call.
  *
@@ -813,7 +837,7 @@ const NO_DIRECT_ANSWER: DirectSourcesResult = { available: false, entries: [], a
  * certstream attempt first, then each direct attempt, so both are on the record.
  * Names keep crt.sh / Certspotter's per-certificate metadata where they have it.
  *
- * `lastKnownGood` (budget-spent path only) adds the 7-day cached enumeration's names
+ * `lastKnownGood` (the no-direct-answer floor only, see {@link ownedIndexFloor}) adds the 7-day cached enumeration's names
  * UNDER the index's: the index is forward-only, so the cache is usually the richer
  * list. Its provenance stays that of the call that cached it, so it contributes names
  * only, never coverage.

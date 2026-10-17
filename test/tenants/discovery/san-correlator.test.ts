@@ -838,6 +838,17 @@ describe('correlateSans — owned CT index (bv-ct-index) honest coverage (SQ-345
 		const cases: Array<{ label: string; body: () => Record<string, unknown> }> = [
 			{ label: 'a MISSING indexStartedAt', body: () => ownedSans([], { ...ownedCoverage(400), indexStartedAt: undefined }) },
 			{ label: 'an INVALID indexStartedAt', body: () => ownedSans([], { ...ownedCoverage(400), indexStartedAt: 'not-a-date' }) },
+			// `Date.parse` alone reads these as dates in the distant past, i.e. as a MATURE index (SQ-359).
+			{ label: 'a bare-number indexStartedAt ("1")', body: () => ownedSans([], { ...ownedCoverage(400), indexStartedAt: '1' }) },
+			{ label: 'a year-only indexStartedAt ("2026")', body: () => ownedSans([], { ...ownedCoverage(400), indexStartedAt: '2026' }) },
+			{ label: 'a date-only indexStartedAt', body: () => ownedSans([], { ...ownedCoverage(400), indexStartedAt: '2024-01-01' }) },
+			// A mature index must also be FRESH: a stalled tailer must not keep claiming completeness (SQ-359).
+			{ label: 'a MISSING freshThrough on a mature index', body: () => ownedSans([], { ...ownedCoverage(400), freshThrough: undefined }) },
+			{ label: 'an INVALID freshThrough ("1") on a mature index', body: () => ownedSans([], { ...ownedCoverage(400), freshThrough: '1' }) },
+			{
+				label: 'a freshThrough 7 hours old on a mature index',
+				body: () => ownedSans([], ownedCoverage(400, { freshThrough: new Date(Date.now() - 7 * 3_600_000).toISOString() })),
+			},
 			{ label: 'a FUTURE indexStartedAt', body: () => ownedSans([], ownedCoverage(-5)) },
 			{ label: 'an index just short of the 200-day boundary', body: () => ownedSans([], ownedCoverage(199.99)) },
 			{

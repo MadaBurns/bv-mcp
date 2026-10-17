@@ -106,6 +106,14 @@ export const OWNED_CT_INDEX_SOURCE = 'bv-ct-index';
  */
 export const OWNED_INDEX_MATURITY_DAYS = 200;
 
+/**
+ * How old `freshThrough` may be before a MATURE owned index stops claiming completeness (SQ-359).
+ * `freshThrough` is the commit time of the newest indexed batch, so it only ages when the tailer
+ * stalls or the `ops_ledger` kill switch has stopped it. A stalled index is still a useful
+ * contributor, but it must not short-circuit crt.sh / CertSpotter.
+ */
+export const OWNED_INDEX_MAX_STALENESS_MS = 6 * 60 * 60 * 1000;
+
 /** What an owned-index (`bv-ct-index`) response says about its own coverage. */
 export interface OwnedIndexCoverage {
 	/** ISO instant the index began observing; absent when the response omitted or garbled it. */
@@ -116,8 +124,11 @@ export interface OwnedIndexCoverage {
 	truncated: boolean;
 }
 
+/** An ISO-8601 instant: date, time, optional fraction and an explicit zone. `Date.parse` alone accepts `"1"` (as 2000-12-31). */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 export function isoOrUndefined(value: unknown): string | undefined {
-	if (typeof value !== 'string') return undefined;
+	if (typeof value !== 'string' || !ISO_INSTANT.test(value)) return undefined;
 	const ms = Date.parse(value);
 	return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
@@ -143,14 +154,16 @@ export function parseOwnedIndexCoverage(raw: unknown): OwnedIndexCoverage | null
 
 /**
  * True when an owned-index answer must NOT be treated as exhaustive: the page was
- * truncated, or the index is younger than {@link OWNED_INDEX_MATURITY_DAYS}. An
- * unknown or future start date counts as young — no proof of maturity is not
- * maturity.
+ * truncated, the index is younger than {@link OWNED_INDEX_MATURITY_DAYS}, or its
+ * newest batch is older than {@link OWNED_INDEX_MAX_STALENESS_MS}. An unknown or
+ * future start date counts as young, and a missing or invalid `freshThrough` counts
+ * as stale: no proof of maturity or freshness is not maturity or freshness.
  */
 export function ownedIndexIsPartial(c: OwnedIndexCoverage, nowMs: number = Date.now()): boolean {
-	if (c.truncated || !c.indexStartedAt) return true;
+	if (c.truncated || !c.indexStartedAt || !c.freshThrough) return true;
 	const ageDays = (nowMs - Date.parse(c.indexStartedAt)) / 86_400_000;
-	return !(ageDays >= OWNED_INDEX_MATURITY_DAYS);
+	if (!(ageDays >= OWNED_INDEX_MATURITY_DAYS)) return true;
+	return nowMs - Date.parse(c.freshThrough) > OWNED_INDEX_MAX_STALENESS_MS;
 }
 
 /** What one CT source contributed to this answer. */
