@@ -183,6 +183,7 @@ describe('deploy:prod pipeline integrity', () => {
 		// A gate that names a command package.json does not define is a dead end.
 		expect(pkg.scripts?.['deploy:whois'] ?? '').toContain('npm -w packages/bv-whois run deploy');
 		expect(pkg.scripts?.['deploy:infra-probe'] ?? '').toContain('npm -w packages/bv-infra-probe run deploy');
+		expect(pkg.scripts?.['deploy:ct-index'] ?? '').toContain('npm -w packages/bv-ct-index run deploy');
 	});
 
 	// #1082: deploy:whois and deploy:infra-probe used to hand off straight to
@@ -198,6 +199,7 @@ describe('deploy:prod pipeline integrity', () => {
 	describe.each([
 		['deploy:whois', 'npm -w packages/bv-whois run deploy'],
 		['deploy:infra-probe', 'npm -w packages/bv-infra-probe run deploy'],
+		['deploy:ct-index', 'npm -w packages/bv-ct-index run deploy'],
 	])('%s gate chain', (scriptName, deployCommand) => {
 		const script = pkg.scripts?.[scriptName] ?? '';
 

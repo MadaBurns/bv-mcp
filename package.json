@@ -60,6 +60,7 @@
 		"deploy:prod:triggers": "npm -w packages/dns-checks run build && npm -w packages/bv-dns-security-mcp run deploy:triggers",
 		"deploy:infra-probe": "npm run check:deploy-freshness && npm run check:release-integrity:sidecar && npm -w packages/dns-checks run build && npm -w packages/bv-infra-probe run deploy",
 		"deploy:whois": "npm run check:deploy-freshness && npm run check:release-integrity:sidecar && npm -w packages/dns-checks run build && npm -w packages/bv-whois run deploy",
+		"deploy:ct-index": "npm run check:deploy-freshness && npm run check:release-integrity:sidecar && npm -w packages/bv-ct-index run deploy",
 		"pretest": "npm -w packages/dns-checks run build",
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"pretypecheck": "npm -w packages/dns-checks run build",

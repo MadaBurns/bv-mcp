@@ -1,0 +1,63 @@
+// TEST-ONLY config: cloudflareTest's `wrangler.configPath` loads this file (it cannot load a cf config). Deploy goes through cf:
+// `npm -w packages/bv-ct-index run deploy` uses cloudflare.config.ts. Keep the two in sync (asserted by test/audits/infra-probe-wrangler.audit.test.ts).
+// The R2 bucket, D1 database and queue are not created yet. The operator creates them (US-12 runbook) and replaces the D1
+// placeholder id below and in cloudflare.config.ts; until then `cf deploy` fails on the placeholder rather than binding a guess.
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "bv-ct-index",
+	"main": "src/index.ts",
+	"workers_dev": false,
+	"preview_urls": false,
+	"compatibility_date": "2026-07-29",
+	"compatibility_flags": [
+		"global_fetch_strictly_public"
+	],
+	"upload_source_maps": true,
+	"triggers": {
+		// Tailer every minute; compactor hourly at :17.
+		"crons": [
+			"* * * * *",
+			"17 * * * *"
+		]
+	},
+	"r2_buckets": [
+		{
+			"binding": "INDEX",
+			"bucket_name": "bv-ct-index"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "CURSORS",
+			"database_name": "bv-ct-index-cursors",
+			"database_id": "YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID",
+			"migrations_dir": "migrations"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "ENTRIES",
+				"queue": "bv-ct-index-entries"
+			}
+		],
+		"consumers": [
+			{
+				// Conservative starting values: small batches bound one indexer invocation's CPU and R2 writes.
+				// The indexer ticket (US-12 W2b) tunes these.
+				"queue": "bv-ct-index-entries",
+				"max_batch_size": 10,
+				"max_batch_timeout": 30,
+				"max_retries": 3
+			}
+		]
+	},
+	"secrets": {
+		"required": [
+			"CT_INDEX_ADMIN_KEY"
+		]
+	},
+	"observability": {
+		"enabled": true
+	}
+}
