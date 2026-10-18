@@ -436,7 +436,7 @@ Static API keys via `Authorization: Bearer` authenticate as a specific tier:
 | developer | 500 scans/day, 10 concurrent | OAuth + Developer plan | Subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + Enterprise plan | Sales-led subscription (bv-web) |
 
-Free hosted usage keeps core DNS and email checks open for trial traffic, while high-cost or private-probe tools have tighter unauthenticated limits: `check_fast_flux` to 3/day, `check_lookalikes` and `check_shadow_domains` to 5/day, and `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` to 25/day. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier.
+Free hosted usage keeps core DNS and email checks open for trial traffic, while private-probe tools have per-tool unauthenticated limits: `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` at 25/day. `check_fast_flux`, `check_lookalikes` and `check_shadow_domains` are paid-only (developer tier or higher): free, unauthenticated and agent-tier callers get an HTTP 403 upgrade-required response. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier; their status and report pollers (`brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`) have no unauthenticated allowance and return HTTP 429 without a key.
 
 **Agent tier** is intended for:
 - **CI/CD pipelines**: Commit-on-push DNS scans as part of security checks

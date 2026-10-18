@@ -60,7 +60,9 @@ The distinction is where the hostname came from, not how the URL is spelled.
 **Paid-only tools**: offensive / recon / multi-domain tools listed in
 `GATED_PAID_ONLY_TOOLS` (`lib/config.ts`) are developer+ only —
 free/unauth/agent get HTTP **403** `UPGRADE_REQUIRED` (`-32003`). OSINT and
-bucket pollers stay free. The SSOT is audited by
+bucket pollers stay free. ⚠️ The four brand pollers (`brand_audit_status`,
+`brand_audit_get_report`, `discover_brand_domains_*`) are NOT in that set but
+are `0` in `FREE_TOOL_DAILY_LIMITS`, so anonymous calls get **429**, not 403. The SSOT is audited by
 `gated-tools-ssot.audit.test.ts`, so adding a tool to the list without updating
 the audit's expectations fails the build.
 
