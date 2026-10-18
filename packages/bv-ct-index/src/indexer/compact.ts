@@ -51,8 +51,8 @@ export interface CompactionJob {
 	now: number;
 }
 
-/** ~20 MB of compressed output per run: TSV rows deflate about 3.5x (story log #9, #11). */
-export const TARGET_RAW_BYTES = 72 * 1024 * 1024;
+/** ~10 MB of compressed output per run (TSV rows deflate about 3.5x): halved from 72 MB raw after 00:17Z 2026-10-18 showed 1.4M-row jobs at the 128 MB edge (SQ-363). */
+export const TARGET_RAW_BYTES = 36 * 1024 * 1024;
 /** Read buffer shared by a job's open runs; each run's window is clamped to [MIN_WINDOW_BYTES, MAX_WINDOW_BYTES]. */
 const READ_BUDGET_BYTES = 16 * 1024 * 1024;
 const MIN_WINDOW_BYTES = 64 * 1024;

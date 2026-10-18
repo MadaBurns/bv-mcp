@@ -30,7 +30,7 @@
  * and the job takes T2 runs, oldest first, only while the total stays within MAX_T3_JOB_ROWS (always at least
  * one, so every range progresses). On the first day there are no shards and only the fixed cuts, so one range
  * held a whole day of T2: ~10M rows, measured at ~134 s CPU in V8 for 9.6M rows (~14 us a row), inside the
- * 300 s limit but without a 2x margin. A 6M-row job is ~84 s; a first-day range now drains over a few crons.
+ * 300 s limit but without a 2x margin. Memory, not CPU, binds first: at 00:17Z 2026-10-18 the ~1.4M-row T2 jobs ran out of the 128 MB isolate on 1-2 of their attempts, so jobs are capped at 1.5M (T3) and 750k (T1/T2) rows.
  * Deferring is safe: reads merge every tier with the commutative `mergeObservations`, so a row in T2 or in T3
  * reads the same, and a re-planned job over the same inputs only repeats a swap the guard refuses.
  *
@@ -64,9 +64,9 @@ export const MAX_JOB_INPUTS = 32;
  * At most this many input rows per T1 or T2 job (catalog `rows`): bounds its CPU. The merge measured ~9 us per
  * input row in Node on a loaded workstation, so a full job stays well inside even the 30 s default CPU limit.
  */
-export const MAX_JOB_ROWS = 1_500_000;
+export const MAX_JOB_ROWS = 750_000;
 /** At most this many input rows (T3 shards plus T2 runs) per T3 job, unless one T2 run alone exceeds it. */
-export const MAX_T3_JOB_ROWS = 6_000_000;
+export const MAX_T3_JOB_ROWS = 1_500_000;
 /** A range closes once its T3 shards hold this many rows, leaving at least half of a T3 job for T2 runs. */
 export const MAX_T3_RANGE_ROWS = MAX_T3_JOB_ROWS / 2;
 
