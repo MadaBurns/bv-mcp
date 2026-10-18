@@ -14,7 +14,7 @@ applyTo: src/schemas/**/*.ts
 ## Key patterns
 
 ### Passthrough policy
-All tool argument schemas use `.passthrough()` — preserves unknown properties for forward compatibility with different MCP client versions. Do not use `.strict()` or `.strip()`.
+Tool argument schemas use `.passthrough()` — preserves unknown properties for forward compatibility with different MCP client versions. Do not use `.strict()` or `.strip()` on them. The exceptions are the recon schemas (`ScanBuckets{Start,Status,Findings}Args`, `OsintInvestigateArgs`, `OsintInvestigationIdArgs`), which are `.strict()` because their arguments are forwarded to bv-recon.
 
 ### Enum normalization
 Use `.transform().pipe()` for case-insensitive enum matching:

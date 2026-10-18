@@ -88,8 +88,8 @@ src/lib/         — scoring (model/engine/config), context-profiles, adaptive-w
                    cache, session, rate-limiter, json-rpc, auth, analytics, client-detection, fuzzing-*, log,
                    db/schema (Drizzle)
 test/            — Flat by source file. Pyramid layer = filename suffix (.spec.ts, .integration.test.ts,
-                   .audit.test.ts, .contract.test.ts, .chaos.test.ts). Subdirs: helpers/, schemas/, oauth/,
-                   audits/, contracts/, chaos/
+                   .audit.test.ts, .contract.test.ts, .chaos.test.ts). Subdirs include helpers/, schemas/,
+                   oauth/, audits/, contracts/, chaos/, tenants/, tools/, lib/
 packages/dns-checks/  — Runtime-agnostic core: scoring/ + checks/ + schemas/
 ```
 
@@ -102,7 +102,7 @@ path (currently gated off — #719).
 
 **Request flow**:
 
-- **Streamable HTTP**: `POST /mcp → Origin → Auth → Body → JSON-RPC validate → mcp/execute → handlers/tools → src/tools/check-* → lib/dns → DoH (empty → bv-dns → Google)`
+- **Streamable HTTP**: `POST /mcp → Origin → Auth → Body → JSON-RPC validate → mcp/execute → handlers/tools → src/tools/check-* → lib/dns → DoH (empty → bv-dns ∥ Google, raced)`
 - **SSE**: `GET /mcp` opens the notification stream (gate details in **`bv-mcp-security-surface`**)
 - **Stdio**: `stdin → src/stdio → mcp/execute → handlers/tools → stdout`
 - **Internal binding**: `POST /internal/tools/{call,batch} → guard (reject public) → handlers/tools → JSON (no MCP framing)`
@@ -216,7 +216,7 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
 
 - **Required checks are exactly four**: `build-and-test`, `Secret & PII scan`,
   `Dependency audit`, `File hygiene check`. Everything else (`contract`,
-  `fast-checks`, `typecheck-tests`, `dns-scan`, `registry-drift-check`) is
+  `fast-checks`, `typecheck-tests`, `dogfood-scan`) is
   advisory — a green-but-`BLOCKED` PR waits on one of the four.
 - **Branch protection (SETTLED 2026-08-23)**: those four + `strict=true`, **NO
   required reviews** (deliberate — solo maintainer), `enforce_admins=true`,
@@ -242,8 +242,8 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
   exclude for file discovery.
 - **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative
   path. `deploy-prod.yml` is dispatch-only and disarmed by default. ⚠️
-  `deploy:prod` deploys the MCP Worker ONLY — the two sidecars ship via `npm run
-  deploy:whois` and `npm run deploy:infra-probe`. Since #945 the
+  `deploy:prod` deploys the MCP Worker ONLY — the three sidecars ship via `npm run
+  deploy:whois`, `deploy:infra-probe` and `deploy:ct-index`. Since #945 the
   `check:sidecar-freshness` gate runs early in both deploy chains and **BLOCKS**,
   fail-closed, when a sidecar's live deployment predates its source (override
   `BV_ALLOW_STALE_SIDECARS=1`).

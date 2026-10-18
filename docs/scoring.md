@@ -38,7 +38,7 @@ Controls whose absence creates direct, exploitable risk. Missing-control rule ap
 | SSL | 8 |
 | Authoritative DNS Infrastructure | 0 |
 
-> **Core weights are per-profile.** The table shows the default `mail_enabled` values from `PROFILE_WEIGHTS` (`packages/dns-checks/src/scoring/profiles.ts`), which is the single source of weight values — `scan_domain` always scores through one of the six profile tables. Other profiles differ: DMARC is 20 in `enterprise_mail` and 0 in `web_only`, and DNSSEC ranges from 5 (`minimal`) to 20 (`authoritative_dns_infra`). A weight is only meaningful alongside the profile that selected it.
+> **Core weights are per-profile.** The table shows the default `mail_enabled` values from `PROFILE_WEIGHTS` (`packages/dns-checks/src/scoring/profiles.ts`), which is the single source of weight values — `scan_domain` always scores through one of the six profile tables. Other profiles differ: DMARC is 20 in `enterprise_mail` and 3 in `web_only` (it was 0 there until scoring model 1.20.0), and DNSSEC ranges from 5 (`minimal`) to 20 (`authoritative_dns_infra`). A weight is only meaningful alongside the profile that selected it.
 >
 > **Correction (2026-08):** an earlier revision listed a different set here (DMARC 22, DKIM 16, DNSSEC 7, SSL 5) as "production weights set via `SCORING_CONFIG`". Those were a `coreWeights` override, and `coreWeights` is **not read on the `scan_domain` path**: `buildGenericContext()` consults it only in the branch taken when no domain context is supplied, and `scan_domain` always supplies one. Such an override parses, validates, and changes the effective-config hash while changing no score. Weight overrides must be expressed as `SCORING_CONFIG` → `profileWeights.<profile>`; `coreWeights`/`protectiveWeights` survive only because `ScoringConfig` is a published npm surface, and an inert key now emits a warning.
 >
@@ -86,7 +86,7 @@ assert a worse result than was actually measured.
 
 Active defenses against known attack vectors.
 
-> **Correction (2026-08):** an earlier revision of this line claimed Protective findings "cannot trigger missing-control zeroing." That was wrong. Three Protective checks — **HTTP Security** (site unreachable), **MX** (no records), and **NS** (no records) — do set explicit `missingControl: true` and therefore zero their category. See [Missing-Control Rule](#missing-control-rule) for the authoritative list of all six. What is true of the Protective tier is that a zeroed category costs at most its own weight (2–4 points) rather than the much larger Core-tier contribution.
+> **Correction (2026-08):** an earlier revision of this line claimed Protective findings "cannot trigger missing-control zeroing." That was wrong. Protective checks can set explicit `missingControl: true` and therefore zero their category: today **MX** (no MX and no SPF), **NS** (no records), **Shadow Domains** (a variant with MX but no SPF and no DMARC) and **MTA-STS** (a deployed policy failing conformance). HTTP Security, named here in that earlier revision, no longer sets it. See [Missing-Control Rule](#missing-control-rule) for the authoritative list. What is true of the Protective tier is that a zeroed category costs at most its own weight (2–4 points) rather than the much larger Core-tier contribution.
 >
 > **MTA-STS was the fourth on that list and no longer is (scoring model 1.6.0).** Its absence now scores as a graded `medium` rather than zeroing the category. A 1,000-domain corpus scan (2026-08-03) measured `mta_sts` at a mean score of 3.3 with 96.5% of the 687 measured domains at exactly 0 — a control almost nobody deploys separates nobody, so it was acting as a flat constant penalty rather than a discriminator. A deployed-but-broken MTA-STS policy still produces its confident `high`/`medium` findings; only absence changed.
 
@@ -98,11 +98,11 @@ Active defenses against known attack vectors.
 | Subdomailing | 3 |
 | MX | 2 |
 | CAA | 2 |
-| NS | 2 |
+| NS | 3 |
 | Lookalikes | 2 |
 | Shadow Domains | 2 |
 
-> These are the default `mail_enabled` protective weights; they happen to match the legacy flat `protectiveWeights` map (which sums to 23 and, like `coreWeights`, is not read on the scan path). Protective weights are per-profile too. `DANE-HTTPS` (2 in `mail_enabled`) and `SVCB-HTTPS` (1) are also protective-tier in `CATEGORY_TIERS`, but their weights are carried only in `PROFILE_WEIGHTS`, which is why they are absent from the flat map.
+> These are the default `mail_enabled` protective weights. They no longer match the legacy flat `protectiveWeights` map, which still carries `ns: 2` (NS went to 3 in `mail_enabled` with the lame-delegation escalation) and which, like `coreWeights`, is not read on the scan path. Protective weights are per-profile too. `DANE-HTTPS` (2 in `mail_enabled`) and `SVCB-HTTPS` (1) are also protective-tier in `CATEGORY_TIERS`, but their weights are carried only in `PROFILE_WEIGHTS`, which is why they are absent from the flat map.
 
 ### Hardening (10% of score)
 
@@ -112,7 +112,7 @@ Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, 
 
 **Tool Annotations**: Every tool definition includes `group`, `tier` (`core`, `protective`, or `hardening`), and a `scanIncluded` flag. These annotations align with the category tiers above and are included in `tools/list` responses for structured consumption by MCP clients.
 
-Source: `CATEGORY_TIERS` and `computeScanScore()` (bridge) in `packages/dns-checks/src/scoring/engine.ts`.
+Source: `CATEGORY_TIERS` in `packages/dns-checks/src/types.ts`; `computeScanScore()` (bridge) in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Generic Scoring Engine
 
@@ -158,7 +158,7 @@ Two mechanisms detect missing controls in `buildCheckResult`:
 
 1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
 
-2. **Explicit metadata** (`missingControl: true`): For checks that measured the control and found it absent, or absence-equivalent. Set by ten scored categories — and several of them on a condition that is *not* plain absence:
+2. **Explicit metadata** (`missingControl: true`): For checks that measured the control and found it absent, or absence-equivalent. Set by eleven scored categories — and several of them on a condition that is *not* plain absence:
 
    | Category | Fires when |
    | --- | --- |
@@ -172,6 +172,7 @@ Two mechanisms detect missing controls in `buildCheckResult`:
    | DNSSEC | **Broken chain or failing validation only** — never "not enabled" (see below). |
    | `authoritative_dns_infra` | Capability failures: missing AA flag, exposed recursion, root-hint or root-server-set mismatch, route leak/hijack signal. |
    | MTA-STS | A **deployed** policy failing RFC 8461 conformance (missing/invalid `version:`, `mode:`, `mx:`, or `max_age:`). Not absence — bare absence stays graded, not zeroed (see below). |
+   | Shadow Domains | "Shadow domain fully spoofable": a variant with MX but no SPF and no DMARC (SQ-74). Other rungs stay graded. |
 
    **HTTP Security is not on this list.** It set the flag until #646 and #662 removed its last path, and now sets it on none: a probe that never reached the origin (WAF block, 401, connection failure, budget timeout) emits `inconclusive: true` with an `errorKind` instead, because asserting absence from a measurement that never completed is a claim of fact the scan did not establish. **CAA, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control. Nor does bare MTA-STS **absence** (see the paragraph below) — only its deployed-but-broken conformance findings do, as of SQ-74.
 
@@ -232,7 +233,7 @@ Source: `thresholds.criticalOverallPenalty` in `packages/dns-checks/src/scoring/
 Added when all of the following are true:
 
 - SPF is present and strong (`score >= 57`)
-- DKIM is not deterministically missing
+- DKIM is observed active (`controlPresent.dkim === true`; since model 1.35.0). Only when DKIM presence is undetermined does the older rule apply: DKIM not deterministically missing
 - DMARC is present
 
 DMARC score determines bonus tier:
@@ -254,14 +255,13 @@ Source: `src/tools/scan/post-processing.ts`.
 
 ## Provider Confidence Modifier
 
-After base weighted scoring and email bonus, `scan_domain` applies a bounded confidence modifier derived from provider detection findings (`metadata.providerConfidence`).
+A bounded modifier is derived from provider detection findings (`metadata.providerConfidence`), but it is **computed and returned for analytics only and is never applied to the overall score**.
 
 - Confidence values normalized to `[0, 1]`
-- Average confidence centered around `0.5`
-- Overall score modifier range approximately `-5` to `+5`
+- Average confidence centered around `0.5`, clamped to `-2` to `+2`
 - If no provider confidence metadata is present, modifier is `0`
 
-Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
+Source: `computeProviderModifier()` in `packages/dns-checks/src/scoring/generic.ts`.
 
 ## Grades
 
@@ -301,21 +301,21 @@ The failure mode this guards against is not the two scales coexisting; it is two
 | Profile | When Detected | Key Differences |
 | --- | --- | --- |
 | `mail_enabled` | Has MX, no enterprise provider (default) | Base three-tier weights |
-| `enterprise_mail` | MX + enterprise provider + hardening signal | Email auth slightly higher, MTA-STS/TLS-RPT elevated |
+| `enterprise_mail` | MX + enterprise provider + DMARC enforcing | Email auth slightly higher, MTA-STS elevated (3 → 4); TLS-RPT is 0 in every profile |
 | `non_mail` | No MX, no web indicators | Email auth near-zero, DNSSEC/SubdomainTakeover elevated |
 | `web_only` | No MX + CAA or SSL present | Email auth near-zero, SSL elevated |
 | `minimal` | >50% of measured checks failed | Weights spread evenly, lower total |
 | `authoritative_dns_infra` | Explicit infrastructure assessment profile | Mail/web controls are non-scoring; authoritative DNS infra, DNSSEC, NS, and zone hygiene dominate |
 
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
-- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use core categories; `non_mail`/`web_only` use `['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https']`; `minimal` uses `['ssl', 'dnssec', 'subdomain_takeover']`
+- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use `['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover']`; `non_mail`/`web_only` use `['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https']`; `minimal` uses `['ssl', 'dnssec', 'subdomain_takeover']`
 - **Authoritative DNS infra profile**: uses `['authoritative_dns_infra', 'dnssec', 'ns', 'zone_hygiene']` as critical gap categories and disables the email bonus.
 
 ### Phase 1 (Current)
 
 Auto-detection runs, is reported in the structured result (`scoringProfile`, `scoringSignals`), and selects the weight table the domain is scored against: `scan_domain` always supplies a `DomainContext`, so weights come from `profileWeights` (defaults derived from `PROFILE_WEIGHTS`) on both the auto and the explicit path — never from `config.coreWeights`/`config.protectiveWeights`, which the scan path does not read at all. An explicit `profile` parameter overrides detection and adds a per-profile cache key (`cache:v<server-version>-dc<dns-checks-version>:<domain>:profile:<profile>`); the auto path uses the same key without the profile suffix.
 
-Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + hardening) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
+Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + DMARC enforcing) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
 
 Source: `packages/dns-checks/src/scoring/profiles.ts`.
 
@@ -339,10 +339,12 @@ Source: `src/tools/check-authoritative-dns-infra.ts`, `src/tools/check-root-serv
 | Stage | Label | Criteria |
 | --- | --- | --- |
 | 0 | Unprotected | No SPF or no DMARC |
-| 1 | Basic | SPF present, DMARC present |
-| 2 | Configured | DMARC policy != none, MTA-STS present |
-| 3 | Enforcing | DMARC policy = reject/quarantine, DNSSEC present. DKIM not required. |
-| 4 | Hardened | Stage 3 + hardening signals: BIMI, DANE, MTA-STS strict, CAA, or DKIM-discovered |
+| 1 | Basic | SPF present, DMARC present (`p=none` without `rua=`) |
+| 2 | Monitoring | SPF + DMARC `p=none` with `rua=` reporting |
+| 3 | Enforcing | SPF + DMARC `p=quarantine` or `p=reject`. DNSSEC and DKIM not required. |
+| 4 | Hardened | Stage 3 + at least 2 of {MTA-STS, DNSSEC, BIMI, verified DANE, CAA, DKIM-discovered}, at least one of which is DNSSEC, MTA-STS or DANE |
+
+These are the mail-ladder labels. `web_only` and `non_mail` domains use a second ladder (Unprotected, Basic, Transport-Hardened, Defensive, Comprehensive).
 
 The stage is then capped by the **displayed** (NIST 6-band) grade, so the letter and the maturity label on a report can never contradict each other: displayed grade `F` (score < 60) caps the stage at 2, displayed grade `D` (score 60-69) caps it at 3, and a displayed `C` or better is uncapped. A capped stage is labelled `... (score-capped)`, using the wording of the ladder that produced it — a mail domain reads `Enforcing (score-capped)` / `Monitoring (score-capped)`, a `web_only` or `non_mail` domain reads `Defensive (score-capped)` / `Transport-Hardened (score-capped)`.
 

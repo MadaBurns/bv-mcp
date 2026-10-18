@@ -1,6 +1,8 @@
 # Design: `BV_TLS_PROBE` service binding — negotiated-TLS-version detection
 
-**Status:** Design (no implementation). **Author:** engineering. **Date:** 2026-05-31.
+**Status:** Implemented in #314 (consumer side: `src/lib/tls-probe-binding.ts`, `src/tools/check-ssl.ts`), then WITHDRAWN in #927
+(2026-09-08): `TLS_VERSION_ENRICHMENT_ENABLED = false`, because the probe vantage re-signs origin TLS and measures the proxy, not
+the origin (#910). **Author:** engineering. **Date:** 2026-05-31.
 **Change class:** B (internal platform) on merge; the scoring enrichment is an
 operator-only, fail-soft addition that does **not** change scores on BSL self-hosts.
 

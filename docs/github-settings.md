@@ -27,13 +27,13 @@ Configure custom secret patterns for Blackveil key shapes, private Wrangler conf
 
 ## Branch Protection
 
-Protect `main` and require pull requests before merge. Require status checks for `Security`, `Repo Hygiene`, the main test workflow, `npm run audit:repo-safety`, and `npm run audit:oss-safety`.
+Protect `main` with exactly four required status checks: `build-and-test`, `Secret & PII scan`, `Dependency audit` and `File hygiene check`. Set `strict=true` (branches must be up to date), `enforce_admins=true`, `required_conversation_resolution=true`, and block force pushes and branch deletion. There are no required reviews: the repo has a solo maintainer, so a required review could only be self-approved. `PUT .../branches/main/protection` replaces the whole object, so always re-apply the full set, never a fragment.
 
-Require branches to be up to date before merge, block force pushes, block branch deletion, and require administrator enforcement unless a documented emergency change is approved.
+`build-and-test` is reported by two workflows, `ci.yml` (the suite) and `ci-docs.yml` (docs-only PRs); their path filters are exact complements.
 
 ## Required Checks
 
-The required checks must include gitleaks, the repo safety scanner, OSS fixture safety, npm publish surface audit, and BUSL positioning audit. Do not make workflow edits that remove these gates without replacing them with an equivalent required check.
+Those four checks carry the gates: gitleaks runs in `Secret & PII scan`; the repo safety scanner, OSS fixture safety, npm publish surface audit and BUSL positioning audit run in `File hygiene check` (`npm run audit:repo-safety` and `npm run audit:oss-safety`); `Dependency audit` covers dependencies. Do not make workflow edits that remove these gates without replacing them with an equivalent required check.
 
 ## CI cost posture
 

@@ -6,7 +6,7 @@
 
 `.claude/settings.json` declares the official `eigenwise-toolshed` GitHub marketplace. Claude Code adds declared marketplaces after the project folder is trusted; registration can fetch the catalog. The declaration follows the upstream default branch rather than pinning a reviewed artifact.
 
-This change adds no `enabledPlugins`, permission rules, hook registrations, or MCP servers. Existing hooks and any enablement inherited from other settings remain unchanged. Registration is not proof that Sidequest is installed, that the repairs are available, or that workers are authorized to run.
+The marketplace declaration itself adds no `enabledPlugins`, permission rules, hook registrations, or MCP servers (the same file has since gained unrelated permission rules and hooks). Existing hooks and any enablement inherited from other settings remain unchanged. Registration is not proof that Sidequest is installed, that the repairs are available, or that workers are authorized to run.
 
 ## Operator opt-in
 

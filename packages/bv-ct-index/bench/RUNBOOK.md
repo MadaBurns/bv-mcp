@@ -1,6 +1,6 @@
 # bv-ct-index benchmark runbook (operator-run, throwaway)
 
-US-12 de-risk step (SQ-352). It measures two things before the `bv-ct-index` sidecar is deployed:
+US-12 de-risk step (SQ-352). It measures two things on throwaway resources before `BV_CERTSTREAM` is repointed at the `bv-ct-index` sidecar (runbook step 7a):
 
 - **Read path:** the latency of one query. A query is one D1 overlap SELECT on the real catalog schema, then up to 9 single-block R2 range GETs (at most 6 in flight), then decoding those blocks.
 - **Compaction:** the time and memory of `mergeSortedRuns` over 4 runs holding about 800k rows in total, as a compaction job would run it inside a Worker.

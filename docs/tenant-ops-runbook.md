@@ -11,7 +11,7 @@ procedures in ignored operator notes, not in this repository.
 Use the tenant provisioning CLI with placeholder IDs in examples:
 
 ```bash
-npm run tenants:provision -- \
+node scripts/tenants/provision-tenant.mjs \
   --super-tenant=super-tenant-example \
   --sub-tenant=tenant-example \
   --display-name="Example Tenant" \
@@ -172,8 +172,9 @@ shape):
 ```
 
 Redeploy (`npm run deploy:prod`) so `scripts/inject-private-config.cjs`
-regenerates `wrangler.production.jsonc` with the field and `wrangler deploy`
-provisions the binding.
+regenerates `wrangler.production.jsonc` with the field and the final
+`cf deploy --mode production` step (`packages/bv-dns-security-mcp/cloudflare.config.ts`)
+applies the consumer.
 
 A dead-letter queue is consumed like any other queue — Cloudflare has no
 separate "peek"/"inspect" verb for it. For a one-off look without deploying a
@@ -238,7 +239,7 @@ npx wrangler d1 execute <tenant-db-name> --remote \
 ```
 
 Re-run `npm run check:tenant-schema` after applying to confirm the drift is
-gone. A restore drill (see Data Lifecycle and Recovery above) should include
+gone. A restore drill (see Data Lifecycle and Recovery below) should include
 running this checker against the restored database before treating it as
 production-ready.
 
@@ -299,7 +300,7 @@ non-null, survived any null-skipping filter.
 
 **3. Ungraded by design: the scanner measured and declined to grade.** This is
 the dominant live case, not a defect. `buildNonResolvingResult` and
-`buildDnsBrokenResult` (`src/tools/scan-domain.ts:353-386` and `:408`) return a
+`buildDnsBrokenResult` (`src/tools/scan-domain.ts`) return a
 null score with no findings and no per-category scores when the apex does not
 resolve at all — the non-resolving gate in `computeScanScore`
 (`packages/dns-checks/src/scoring/engine.ts:476-489`) enforces the same rule

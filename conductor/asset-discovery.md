@@ -1,5 +1,7 @@
 # Asset Discovery Integration & Documentation Update
 
+**Status (2026-10-18):** steps 1 and 2 are done (`test/asset-discovery-integration.spec.ts`, `test/fixtures/asset-discovery-corpus.json`). Step 3's target, `docs/tenant-Capacity-and-Discovery-Design.md`, was removed from the repo in a20708a3 (2026-05-17), so it is retired.
+
 ## Objective
 Implement live integration tests and a ground-truth corpus for the asset discovery tools (`discoverBrandDomains`, `discoverSubdomains`, `checkShadowDomains`), and update the architecture documentation to reflect the finalized v1 implementation.
 

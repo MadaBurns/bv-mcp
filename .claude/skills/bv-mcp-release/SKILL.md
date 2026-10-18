@@ -5,7 +5,7 @@ description: "Use when bumping the version or cutting a release of the bv-mcp / 
 
 # bv-mcp Version Bump & Release
 
-A version lives in **4 hand-edited places** (plus the auto-derived `SERVER_VERSION`) that must match the tag, and the publish/registry flow has stale-prod foot-guns. Pre-bump locally, then tag — and publish the MCP Registry **only after** the prod deploy.
+A version lives on **4 surfaces** (plus the auto-derived `SERVER_VERSION`): `npm version` sets `package.json` + lock, and its lifecycle hook syncs `server.json` and the CHANGELOG heading. All four must match the tag, and the publish/registry flow has stale-prod foot-guns. Pre-bump locally, then tag — and publish the MCP Registry **only after** the prod deploy.
 
 ## dns-checks consumer promotion (#1187)
 
@@ -34,7 +34,7 @@ The consumer workflow still needs its own producer-read credential and repositor
 
 ➡️ **`SERVER_VERSION` (`src/lib/server-version.ts`) is NOT a hand-edit surface — it auto-derives** (`export const SERVER_VERSION: string = pkg.version;`). Do not `sed` it; the old sed line in this skill no longer matches and would silently no-op. Bump `package.json` and `SERVER_VERSION` follows. (Prod only advertises the new `serverInfo.version` on the _next_ `deploy:prod` after the bump — so the bump must precede the release deploy.)
 
-⚠️ **`server.json` is currently remotes-only** — it has a single top-level `version` and a `remotes` array, **no `packages` stanza**. CLAUDE.md's "TWO version fields (top-level + `packages[0].version`)" warning applies **only if** an npm `packages` stanza is re-added. The npm `packages` block was removed because the MCP Registry liveness-checks npm versions and the 3.3.x line isn't published to npm. **If you re-add a `packages` stanza, you re-introduce the two-field foot-gun — sync both.**
+⚠️ **`server.json` is currently remotes-only** — it has a single top-level `version` and a `remotes` array, **no `packages` stanza**. The "TWO version fields (top-level + `packages[0].version`)" foot-gun applies **only if** an npm `packages` stanza is re-added. The npm `packages` block was removed because the MCP Registry liveness-checks npm versions and the 3.3.x line isn't published to npm. **If you re-add a `packages` stanza, you re-introduce the two-field foot-gun — sync both.**
 
 ## `@blackveil/dns-checks` version moves in LOCKSTEP with scoring behaviour (#855)
 
@@ -115,7 +115,7 @@ npm publish --access public                      # root pkg (blackveil-dns) - on
 npm publish -w packages/dns-checks --access public  # REQUIRED TOO: the root publish does NOT ship the workspace package
 npm run check:cf-binding-parity  # runbook step 1 (first cf deploy; see bv-mcp-operations): cf build vs wrangler.production.jsonc must be identical
 npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY (via cf deploy --mode production; PRIMARY rollback: npx wrangler rollback <version-id> --name bv-dns-security-mcp -y; secondary: injector + npx wrangler rollback <version-id> --config wrangler.production.jsonc -y)
-npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
+npm run deploy:whois             # sidecar: bv-whois (cf deploy from packages/bv-whois/cloudflare.config.ts; its wrangler.jsonc is only the vitest config)
 npm run deploy:infra-probe       # sidecar: bv-infra-probe (cf deploy from packages/bv-infra-probe/; rollback: npx wrangler rollback --name bv-infra-probe)
 mcp-publisher publish            # MCP Registry, DNS-TXT-gated namespace
 ```
@@ -140,7 +140,7 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 
 ## Red flags
 
-- Bumping `package.json` only → CI version-sync audit fails. Hit all 4 surfaces (package.json + lock, server.json, CHANGELOG).
+- Bumping `package.json` only → CI version-sync audit fails. Use `npm version <X.Y.Z>`, which hits all 4 surfaces (package.json + lock, then server.json + CHANGELOG via the hook).
 - Tagging without pre-bumping → the `version-bump` gate fails the release with a per-surface `::error::` and nothing publishes. Bump all 4 surfaces, then move the tag. (It no longer tries to fix this up for you — see the 3.40.0–3.42.0 incident above.)
 - "Reformatting" `server.json` to tabs to match Prettier → harmless now, but it is the _shape_ of the bug that cost three releases. Prettier flags the file; leave it alone unless you also re-verify the release path.
 - Re-adding a `packages` stanza to `server.json` and syncing only the top-level `version` → registry/version mismatch. Sync both fields.

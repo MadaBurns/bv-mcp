@@ -118,6 +118,9 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 
   + check_subdomain_takeover (standalone tool + internal — runs inside scan_domain)
   + check_authoritative_dns_infra and check_root_server_set (authoritative DNS infrastructure profile)
+  + batch_scan_start / batch_scan_status / batch_scan_findings
+    (async start → poll → fetch sibling of batch_scan)
+  + sge_quickscan (NZ Secure Government Email readiness for one domain)
   + discover_brand_domains_start / discover_brand_domains_status / discover_brand_domains_findings
     (async start → poll → fetch sibling of discover_brand_domains, for clients that time out on the ~24s sync call)
 
@@ -139,6 +142,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
   + query_ual                    — DEPRECATED tombstone; valid, authorized calls return query_ual_deprecated with no tenant-data access
   + get_ca_policies              — retrieve Conditional Access policies for an Entra tenant
   + assess_coverage              — assess Conditional Access coverage gaps for an Entra tenant
+  + map_registrar_products       — map a domain's gaps to registrar brand-protection products
 ```
 
 ### Tool discovery metadata (`_meta`)

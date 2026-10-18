@@ -10,11 +10,9 @@ applyTo: test/**/*.spec.ts
 - Use `test/helpers/dns-mock.ts` helpers for DNS mocking.
 - Always restore fetch mocks in `afterEach`.
 - For tests that need `check_mx` mock isolation, use dynamic import inside test bodies.
-- Clear both cache levels between relevant cases:
-  - `cache:<domain>`
-  - `cache:<domain>:check:<name>`
+- Clear both cache levels between relevant cases, building the versioned keys with `buildScanCacheKey` / `buildCheckCacheKey` (`src/lib/cache.ts`) rather than hand-written strings.
 - Keep assertions aligned with MCP behavior:
-  - Rate-limit responses are HTTP 200 with JSON-RPC error code `-32029`; `retry-after` may still be set.
+  - Rate-limit responses are HTTP 429 with JSON-RPC error code `-32029` and a `retry-after` header.
   - Client-safe error text should use approved safe prefixes.
   - Tools in `format=full` (default for non-interactive) return 2 content items (text + structured JSON). Assert `toHaveLength(2)` for success paths, `toHaveLength(1)` for compact mode.
 

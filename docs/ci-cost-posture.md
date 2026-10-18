@@ -23,6 +23,8 @@ CD (`deploy-prod.yml`) is approval-gated. Before the first run, configure:
    - `CLOUDFLARE_API_TOKEN` — Workers Edit + Account Read.
    - `WRANGLER_DEPLOY_OVERLAY_B64` — `base64 -i .dev/wrangler.deploy.jsonc` (the gitignored private overlay).
    - `BV_INTERNAL_DEV_KEY` — owner-tier key for post-deploy verification.
-3. Registry publish stays a **manual** post-deploy step (`mcp-publisher publish`) — see CLAUDE.md "Release".
+3. Repository variable `DEPLOY_PROD_ENABLED=true`, set only AFTER the three secrets. Until it is set the workflow fails closed and
+   queues no deploy; the supported path stays an operator-run `npm run deploy:prod`. The workflow is dispatch-only.
+4. Registry publish stays a **manual** post-deploy step (`mcp-publisher publish`) — see CLAUDE.md "Release".
 
 `scripts/ci/verify-deploy.mjs` defaults to the `bv-dns-security-mcp.bv-edge.workers.dev` origin; self-hosters deploying under a different workers.dev subdomain can override it with the `VERIFY_URL` env var (set it in the workflow `env:` or as a `production` Environment variable).
