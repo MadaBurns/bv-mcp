@@ -5,7 +5,7 @@ import readme from '../../README.md?raw';
 import clientSetup from '../../docs/client-setup.md?raw';
 import troubleshooting from '../../docs/troubleshooting.md?raw';
 import vscodeReadme from '../../extensions/vscode/README.md?raw';
-import { FREE_TOOL_DAILY_LIMITS, TIER_DAILY_LIMITS } from '../../src/lib/config';
+import { FREE_TOOL_DAILY_LIMITS, GATED_PAID_ONLY_TOOLS, TIER_DAILY_LIMITS } from '../../src/lib/config';
 import { handleResourcesRead } from '../../src/handlers/resources';
 
 function readResource(uri: string): string {
@@ -49,5 +49,13 @@ describe('public quota surface audit', () => {
 	it('keeps VS Code README free-tier copy aligned with runtime limits', () => {
 		expect(vscodeReadme).toContain(`${FREE_TOOL_DAILY_LIMITS.scan_domain} scans/day`);
 		expect(vscodeReadme).not.toContain('No API key needed. 5 scans/day, 25 checks/day, 50 req/min.');
+	});
+
+	it('never advertises an unauthenticated daily allowance for a paid-only tool', () => {
+		// Paid-only tools answer anonymous callers with a 403, not a quota; docs/client-setup.md once promised 3-5/day for three of them.
+		for (const tool of GATED_PAID_ONLY_TOOLS) {
+			expect(FREE_TOOL_DAILY_LIMITS[tool as keyof typeof FREE_TOOL_DAILY_LIMITS] ?? 0).toBe(0);
+			for (const doc of [readme, clientSetup, troubleshooting]) expect(doc).not.toMatch(new RegExp(`\x60${tool}\x60 (?:to|at) \\d+\\/day`));
+		}
 	});
 });
