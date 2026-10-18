@@ -66,7 +66,7 @@ Generate a new HS256 symmetric signing key, rotate it in production, and verify.
    ```bash
    python3 scripts/oauth/prod-probe.py --mode=smoke
    ```
-   Should return `200 OK: got 400 with invalid_grant (expected)`.
+   Should print `OK: got 400 with invalid_grant (expected)`.
 
 5. **Customer-consent redirect test**:
    ```bash
@@ -93,11 +93,14 @@ npx wrangler secret delete OAUTH_SIGNING_SECRET --config .dev/wrangler.deploy.js
 ```
 
 Effect:
-- `/oauth/token` reverts to HTTP 500 `server_error` (missing binding).
-- Bearer-JWT path cascades to static fallback key in `tier-auth.ts`.
-- No user-visible outage on `/mcp` endpoint; existing JWTs continue to work with fallback.
+- Every OAuth route (`/oauth/*` and the root aliases) returns HTTP 503 `service_unavailable`, because `ENABLE_OAUTH=true` without a
+  valid secret resolves to `misconfigured` (`src/worker/runtime-config.ts`).
+- The Bearer-JWT branch in `tier-auth.ts` is skipped, so every outstanding JWT falls to the static-key path, which a
+  3-segment JWT cannot satisfy: JWT holders are **unauthenticated** (free tier) until a secret is restored.
+- Static `BV_API_KEY` / tier keys and anonymous `/mcp` traffic are unaffected.
 
-This is the safest rollback: OAuth registration/token exchange stops, but all existing JWT holders can still call `/mcp`.
+This stops OAuth entirely and drops every OAuth-connected customer to the free tier. It is not a no-outage rollback; prefer
+Option 2 unless the secret itself is compromised.
 
 ### Option 2: Revert Worker Deploy
 

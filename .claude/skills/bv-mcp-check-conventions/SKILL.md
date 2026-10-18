@@ -88,7 +88,7 @@ would do with that smoke's output.
 per check; `.wrap(fetchFn)` **composes** (never substitutes) each fetch with the
 remainder. Absent `budgetMs` (direct calls) → identity, i.e. unchanged
 behaviour. Budgeted checks: `ssl`, `http_security`, `mta_sts`,
-`subdomain_takeover`.
+`subdomain_takeover`, `dane_https`.
 
 ⚠️⚠️ **Budgeting a check is a CORRECTNESS change, not a latency one.** Read what
 the check does when a fetch *throws* before wiring one: a cut probe must
@@ -105,7 +105,7 @@ on the same tick, the race frequently wins, and the check throws away headers
 the graceful path had just salvaged — converting a reportable category into an
 unreportable one, the opposite of the fix.
 
-Full incident lore is in the in-code comments at those four sites; read them
+Full incident lore is in the in-code comments at those five sites; read them
 rather than re-deriving.
 
 ## Serial-DoH cost is a DIFFERENT defect — bounded parallelism, not a budget
@@ -124,8 +124,9 @@ parallelizing them is a scoring change (measured: 90 → 60). Pinned by
 
 - `cacheGet` / `cacheSet` / `cacheSetDeferred` / `runWithCache` from
   `lib/cache.ts`. `cacheSetDeferred` wraps in `ctx.waitUntil()`.
-- Keys: per-check `cache:<domain>:check:<name>` **and** top-level
-  `cache:<domain>`. 5-min TTL (`cacheTtlSeconds` override); `force_refresh` →
+- Keys: per-check **and** top-level, versioned as
+  `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>[:check:<name>|:profile:<p>]`; build them with
+  `buildCheckCacheKey` / `buildScanCacheKey`. 5-min TTL (`cacheTtlSeconds` override); `force_refresh` →
   `skipCache`. Both predicates are `!partial`.
 - **Mutating-tool request-dedup**: `handleToolsCall` wraps mutating `*_start` /
   `register_*` tools in `withRequestDedup` (`lib/request-dedup.ts`, ~90s KV

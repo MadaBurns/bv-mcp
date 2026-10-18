@@ -14,7 +14,7 @@ That's it. All 81 tools are available instantly.
 
 ## What You Get
 
-- **80+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
+- **19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, DANE-HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), and DNSKEY strength, plus standalone tools for lookalike and shadow domains, TXT hygiene, MX reputation, SRV and zone hygiene
 - **Maturity staging** — Stage 0–4 classification (Unprotected → Hardened)
 - **Trust surface analysis** — detects shared SaaS platforms and cross-references DMARC enforcement
 - **Guided remediation** — provider-aware fix plans, record generators, fix validation
@@ -91,7 +91,7 @@ Add to your VS Code settings or `.vscode/mcp.json`:
 
 ## Privacy
 
-All checks are **read-only** — they never modify a target, and no authorization is required from the target domain. Most are passive lookups of public DNS records via Cloudflare DNS-over-HTTPS; `check_authoritative_dns_infra` and `check_root_server_set` query authoritative and root nameservers directly over TCP/53, and for authenticated callers `check_authoritative_dns_infra` also tests whether a domain's nameservers refuse a zone transfer (no zone data is retrieved). No data is stored beyond 5-minute result caching.
+All checks are **read-only** — they never modify a target, and no authorization is required from the target domain. Most are passive lookups of public DNS records via Cloudflare DNS-over-HTTPS; `check_authoritative_dns_infra` and `check_root_server_set` query authoritative and root nameservers directly over TCP/53, and for authenticated callers `check_authoritative_dns_infra` also tests whether a domain's nameservers refuse a zone transfer (no zone data is retrieved). Results are cached briefly (5 minutes by default, up to an hour for a few slow tools such as `check_lookalikes`). The hosted service keeps an access log (90 days by default); see the [privacy policy](https://www.blackveilsecurity.com/privacy).
 
 ## Links
 

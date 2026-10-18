@@ -210,7 +210,7 @@ No npm install required. MCP connectors are configured on the web and auto-sync 
    - **URL**: `https://dns-mcp.blackveilsecurity.com/mcp`
 3. Save — the connector syncs automatically to Claude iOS and Android apps
 
-**With API key** — use OAuth from the hosted connector flow, or provide the API key as a Bearer token if the connector UI supports an authentication field. Hosted production rejects `?api_key=` URL credentials.
+**With API key** — use OAuth from the hosted connector flow, or provide the API key as a Bearer token if the connector UI supports an authentication field. Hosted production rejects `?api_key=` URL credentials (they are ignored and the request proceeds as free tier).
 
 **Limitations:**
 
@@ -291,7 +291,7 @@ If you need to source the key from an environment variable, keep the same bridge
 }
 ```
 
-> **Note:** Hosted production rejects `?api_key=` credentials. Self-hosted or legacy deployments can keep that fallback only by leaving `REJECT_QUERY_API_KEY` unset or false.
+> **Note:** Hosted production rejects `?api_key=` credentials (they are ignored and the request proceeds as free tier). Self-hosted or legacy deployments can keep that fallback only by leaving `REJECT_QUERY_API_KEY` unset or false.
 
 Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history. `mcp-remote` and `npx` add a local bridge process, so native HTTP is preferred for unauthenticated/free hosted usage unless you specifically need header forwarding.
 
@@ -497,7 +497,7 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 
 **Flow** (performed by the MCP client, not the user directly):
 
-1. `POST /oauth/register` with `{ "redirect_uris": [<client redirect>] }` → receive `client_id` and a one-time `client_secret`.
+1. `POST /oauth/register` with `{ "redirect_uris": [<client redirect>] }` → receive `client_id`. Clients are public (`token_endpoint_auth_method: none`); no `client_secret` is issued, and PKCE is the proof of possession.
 2. `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `state` → customer OAuth delegates to bv-web for account/Stripe entitlement checks; owner-key consent is only rendered when `ENABLE_OWNER_OAUTH=true`.
 3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
 4. Call `/mcp` with `Authorization: Bearer <access_token>`.
@@ -520,7 +520,6 @@ owner alias after that key is removed.
 **Constraints:**
 
 - PKCE is mandatory. `plain` is rejected at the schema layer — only `S256`.
-- `client_secret` is hashed in KV and is only available from the one-shot DCR response. Rotating means re-registering.
 - `OWNER_ALLOW_IPS` is enforced at the consent step for owner-tier JWT issuance. A stolen owner key from a non-allowlisted IP cannot mint an owner JWT.
 - bv-web OAuth entitlement responses are schema-validated before code issuance and cannot grant `owner` or `partner` tiers.
 - JWT revocation is by JTI. Rotation of `OAUTH_SIGNING_SECRET` invalidates every outstanding JWT at next verify.
@@ -537,7 +536,7 @@ If you are a developer troubleshooting how different MCP clients handle authenti
 python3 scripts/chaos/chaos-test-clients.py
 ```
 
-This test covers all 9 detected MCP client types across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
+This test covers 9 of the 11 detected MCP client types (`claude_mobile`, `claude_connector` and `bv_load_test` are not exercised) across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
 
 Expected assertion count:
 
@@ -618,11 +617,16 @@ Example payload:
 | POST | `/mcp/messages` | Legacy HTTP+SSE client messages |
 | DELETE | `/mcp` | Session termination |
 | GET | `/health` | Health check |
+| GET | `/badge/:domain` | SVG grade badge |
+| GET | `/reports/:auditId/:target` | Brand Audit report |
 | GET | `/.well-known/oauth-authorization-server` | OAuth 2.1 authorization server metadata (RFC 8414) |
 | GET | `/.well-known/oauth-protected-resource` | OAuth 2.1 protected resource metadata (RFC 9728) |
 | POST | `/oauth/register` | Dynamic client registration (RFC 7591) |
 | GET / POST | `/oauth/authorize` | Authorization endpoint (consent + code issuance) |
 | POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |
+| POST | `/register` | Root alias of `/oauth/register` (for connectors that skip OAuth discovery) |
+| GET / POST | `/authorize` | Root alias of `/oauth/authorize` |
+| POST | `/token` | Root alias of `/oauth/token` |
 
 On the hosted endpoint, OAuth routes serve the customer flow. On self-hosted deployments, OAuth endpoints return `404` unless the operator sets `ENABLE_OAUTH=true`. The owner API-key consent UI remains disabled unless `ENABLE_OWNER_OAUTH=true`.
 

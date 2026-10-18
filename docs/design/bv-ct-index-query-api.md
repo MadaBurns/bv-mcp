@@ -15,7 +15,7 @@ All routes are `GET`, take `?domain=<hostname>`, and need `Authorization: Bearer
 | `/sans?domain=d`      | `siblings(apexOf(d), {limit: 500})`        | `names[]`, `certificateCount`, `timedOut`, `truncated`, `cached` |
 | `/cert-meta?domain=d` | `scan(d, {limit: 1})`, exact-name row only | a non-empty string `issuer`                                      |
 
-Additive fields (bv-mcp ignores them): `truncated` and `cursor` and `entries[]` on `/enumerate`, `apex` on `/sans`,
+Additive fields (bv-mcp reads `coverage`, `truncated` and `entries[]` since SQ-345): `truncated` and `cursor` and `entries[]` on `/enumerate`, `apex` on `/sans`,
 `firstSeen`, `notAfter` and `wildcard` on `/cert-meta`, and on all three a `coverage` object:
 
 ```json
@@ -44,5 +44,5 @@ and carry no internal detail.
 
 ## Not done here
 
-bv-mcp does not yet read `truncated` from `/enumerate` or `coverage` from any route, and has no `forward-from`
-history window. Until it does, a truncated page reads as complete to the consumer.
+Done since SQ-345: bv-mcp reads `truncated` and `coverage` and has a `forward-from` history window
+(`src/lib/ct-coverage.ts`). A truncated, young (under 200 days) or stale (over 6 h) answer is partial, not final.

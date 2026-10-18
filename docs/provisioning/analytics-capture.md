@@ -5,7 +5,6 @@ Public-safe operator runbook for the enriched `mcp_access_log` analytics path
 real Cloudflare database IDs, queue names, encryption keys, account details, and
 bearer tokens in ignored deployment notes — never in this repo.
 
-Design reference: `docs/superpowers/specs/2026-06-26-detailed-analytics-capture-design.md`.
 
 ## 1. Provision the access-log database FIRST
 

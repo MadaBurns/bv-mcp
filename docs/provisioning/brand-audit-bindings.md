@@ -117,7 +117,7 @@ blocked until `PRAGMA table_info(brand_audit_watches)` shows both
 full result matching `last_classification_hash`; the latter is the exact
 pending `{ payload, currentResult }` envelope replayed after delivery failure.
 Both `npm run deploy:prod` and `scripts/deploy-private.mjs` run
-`scripts/brand-audit-schema-preflight.mjs` before Wrangler publish. That gate is
+`scripts/brand-audit-schema-preflight.mjs` before the `cf deploy` step. That gate is
 read-only and fails closed when the binding, query, or either column is absent;
 it never applies the migration for the operator.
 
