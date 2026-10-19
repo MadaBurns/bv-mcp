@@ -59,6 +59,40 @@ export function looksLikeWaf(headers: Headers): boolean {
 	return !!(headers.get('cf-ray') || headers.get('cf-mitigated') || server.includes('cloudflare') || server.includes('akamaighost'));
 }
 
+/** Interstitial "Just a moment" JS challenge, or an explicit `cf-mitigated: challenge` header. */
+function isCloudflareChallenge(cfMitigated: string | null, body: string): boolean {
+	return /just a moment/i.test(body) || cfMitigated === 'challenge';
+}
+
+/** 4xx plus a Cloudflare block-body signature or any `cf-mitigated` header. */
+function isCloudflareBlock(cfMitigated: string | null, body: string, status: number): boolean {
+	return status >= 400 && (CF_BLOCK_BODY.test(body) || !!cfMitigated);
+}
+
+/** Classify a Cloudflare-fronted response. The challenge and block checks run FIRST so a 401 keeps its more specific kind. */
+function classifyCloudflareKind(cfMitigated: string | null, body: string, status: number): WafEvent['kind'] | null {
+	if (isCloudflareChallenge(cfMitigated, body)) return 'challenge';
+	if (isCloudflareBlock(cfMitigated, body, status)) return 'block';
+	if (status === 401) return 'edge-artifact';
+	return null;
+}
+
+function detectCloudflareEvent(
+	server: string,
+	cfRay: string | null,
+	cfMitigated: string | null,
+	body: string,
+	status: number,
+): WafEvent | null {
+	if (!(cfRay || cfMitigated || server.includes('cloudflare'))) return null;
+	const kind = classifyCloudflareKind(cfMitigated, body, status);
+	return kind ? { provider: 'cloudflare', kind } : null;
+}
+
+function detectAkamaiEvent(server: string, body: string, status: number): WafEvent | null {
+	return server.includes('akamaighost') && status >= 400 && AKAMAI_BLOCK_BODY.test(body) ? { provider: 'akamai', kind: 'block' } : null;
+}
+
 /**
  * Detect a WAF interception (challenge or block) from response headers, optional body, and status.
  *
@@ -84,19 +118,10 @@ export function looksLikeWaf(headers: Headers): boolean {
  */
 export function detectWafEvent(headers: Headers, body: string | undefined, status: number): WafEvent | null {
 	const server = (headers.get('server') ?? '').toLowerCase();
-	const cfRay = headers.get('cf-ray');
-	const cfMitigated = headers.get('cf-mitigated');
 	const b = body ?? '';
-
-	if (cfRay || cfMitigated || server.includes('cloudflare')) {
-		if (/just a moment/i.test(b) || cfMitigated === 'challenge') return { provider: 'cloudflare', kind: 'challenge' };
-		if (status >= 400 && (CF_BLOCK_BODY.test(b) || !!cfMitigated)) return { provider: 'cloudflare', kind: 'block' };
-		if (status === 401) return { provider: 'cloudflare', kind: 'edge-artifact' };
-	}
-	if (server.includes('akamaighost') && status >= 400 && AKAMAI_BLOCK_BODY.test(b)) {
-		return { provider: 'akamai', kind: 'block' };
-	}
-	return null;
+	const cloudflare = detectCloudflareEvent(server, headers.get('cf-ray'), headers.get('cf-mitigated'), b, status);
+	if (cloudflare) return cloudflare;
+	return detectAkamaiEvent(server, b, status);
 }
 
 /**
