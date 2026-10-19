@@ -75,6 +75,34 @@ describe('session KV failure logging', () => {
 		}
 	});
 
+	it('fails open but logs when the KV tombstone probe throws for a live in-memory session', async () => {
+		const logModule = await import('../src/lib/log');
+		const logErrorSpy = vi.spyOn(logModule, 'logError');
+
+		const { createSession, validateSession, resetSessions } = await import('../src/lib/session');
+
+		try {
+			const id = await createSession();
+
+			const kv = {
+				get: vi.fn().mockRejectedValue(new Error('KV read failed')),
+				put: vi.fn().mockResolvedValue(undefined),
+				delete: vi.fn().mockResolvedValue(undefined),
+			} as unknown as KVNamespace;
+
+			// The unreadable tombstone probe must not deny a live in-memory session...
+			expect(await validateSession(id, kv)).toBe(true);
+
+			// ...but the fail-open must be visible in logs.
+			expect(logErrorSpy).toHaveBeenCalledWith(
+				'[session] KV tombstone read failed; failing open',
+				expect.objectContaining({ category: 'session' }),
+			);
+		} finally {
+			resetSessions();
+		}
+	});
+
 	it('session is still usable in-memory after KV create failure (intentional single-isolate degradation)', async () => {
 		const { createSession, validateSession, resetSessions } = await import('../src/lib/session');
 
