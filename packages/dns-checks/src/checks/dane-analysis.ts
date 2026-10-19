@@ -684,11 +684,6 @@ function buildUnverifiableVerdict(name: string, validRecords: TlsaRecord[], veri
 	};
 }
 
-function mismatchDetail(name: string, cert: ServedCertificate, served: ServedMetadata, pinned: string[]): string {
-	const count = pinned.length;
-	return `${count === 1 ? 'The TLSA association' : `Each of the ${count} TLSA associations`} published at ${name} was compared against the certificate ${cert.host} serves on port ${cert.port}${capturedSuffix(cert)} and none of them match it: pinned ${pinned.join('; ')}; served leaf SPKI SHA-256 ${served.servedLeafSpkiSha256 ?? 'unavailable'}, leaf SHA-256 ${served.servedLeafSha256 ?? 'unavailable'}. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.`;
-}
-
 /** Every association was compared against the served certificate and none matched: a MEASURED defect. */
 function buildMismatchVerdict(
 	name: string,
@@ -698,11 +693,12 @@ function buildMismatchVerdict(
 	served: ServedMetadata,
 ): Finding {
 	const pinned = verification.unmatched.map(describeAssociation);
+	const count = pinned.length;
 	return createFinding(
 		'dane',
 		`DANE TLSA pin does not match the served certificate for ${name}`,
 		'high',
-		mismatchDetail(name, cert, served, pinned),
+		`${count === 1 ? 'The TLSA association' : `Each of the ${count} TLSA associations`} published at ${name} was compared against the certificate ${cert.host} serves on port ${cert.port}${capturedSuffix(cert)} and none of them match it: pinned ${pinned.join('; ')}; served leaf SPKI SHA-256 ${served.servedLeafSpkiSha256 ?? 'unavailable'}, leaf SHA-256 ${served.servedLeafSha256 ?? 'unavailable'}. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.`,
 		{
 			...served,
 			name,
