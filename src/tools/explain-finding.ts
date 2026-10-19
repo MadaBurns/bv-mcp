@@ -120,80 +120,117 @@ function getNarrativeFromEntry(entry: ExplanationEntry | undefined): ImpactNarra
 	};
 }
 
-/**
- * Resolve impact/adverse-consequence narrative for a finding context.
- * Uses explicit explanation entries first, then category, then severity fallback.
- */
-export function resolveImpactNarrative(params: {
+/** Narrative from the `${checkType}_${suffix}` EXPLANATIONS entry; undefined when either part is empty or the entry has none. */
+function lookupEntryNarrative(checkType: string | undefined, suffix: string | undefined): ImpactNarrative | undefined {
+	if (!checkType || !suffix) return undefined;
+	return getNarrativeFromEntry(EXPLANATIONS[`${checkType}_${suffix}`]);
+}
+
+/** Explicit explanation entry for the supplied check type first, then for the category-derived one. */
+function lookupEntryNarrativeEither(
+	checkType: string | undefined,
+	derivedCheckType: string | undefined,
+	suffix: string | undefined,
+): ImpactNarrative | undefined {
+	return lookupEntryNarrative(checkType, suffix) ?? lookupEntryNarrative(derivedCheckType, suffix);
+}
+
+/** Inputs of {@link resolveImpactNarrative}. */
+interface ImpactNarrativeParams {
 	checkType?: string;
 	category?: string;
 	status?: string;
 	severity?: string;
 	title?: string;
 	detail?: string;
-}): ImpactNarrative {
-	const normalizedCheckType = params.checkType?.toUpperCase();
-	const normalizedStatus = params.status?.toUpperCase();
-	const normalizedSeverity = params.severity?.toLowerCase();
-	const derivedCheckType = params.category ? CATEGORY_TO_CHECKTYPE[params.category.toLowerCase()] : undefined;
+}
 
-	// A recognised finding signature is the most precise source available: it
-	// describes THIS finding rather than the bucket it falls into, so it outranks
-	// even the exact TYPE_STATUS entry (whose narrative describes the bucket's
-	// enumerated example causes).
-	const signatureType = normalizedCheckType ?? derivedCheckType;
-	if (signatureType) {
-		const signature = resolveDetailSignature(signatureType, params.status ?? params.severity, params.detail);
-		if (signature) {
-			return {
-				impact: signature.template.impact,
-				adverseConsequences: signature.template.adverseConsequences,
-			};
-		}
-	}
+/** {@link ImpactNarrativeParams} plus the normalised forms every precedence tier reads. */
+interface ImpactNarrativeContext {
+	params: ImpactNarrativeParams;
+	checkType: string | undefined;
+	derivedCheckType: string | undefined;
+	status: string | undefined;
+	severity: string | undefined;
+}
 
-	if (normalizedCheckType && normalizedStatus) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedStatus}`]);
-		if (narrative) return narrative;
-	}
+function buildImpactNarrativeContext(params: ImpactNarrativeParams): ImpactNarrativeContext {
+	return {
+		params,
+		checkType: params.checkType?.toUpperCase(),
+		derivedCheckType: deriveCheckType(params.category),
+		status: params.status?.toUpperCase(),
+		severity: params.severity?.toLowerCase(),
+	};
+}
 
-	if (derivedCheckType && normalizedStatus) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedStatus}`]);
-		if (narrative) return narrative;
-	}
+function deriveCheckType(category: string | undefined): string | undefined {
+	return category ? CATEGORY_TO_CHECKTYPE[category.toLowerCase()] : undefined;
+}
 
-	// Title/detail-aware specific rules are MORE precise than the generic
-	// per-(type,severity) EXPLANATIONS entries, so resolve them before the
-	// severity-keyed lookup below.
-	const specificNarrative = resolveSpecificNarrative({
-		checkType: normalizedCheckType ?? derivedCheckType,
-		title: params.title,
-		detail: params.detail,
+// A recognised finding signature is the most precise source available: it
+// describes THIS finding rather than the bucket it falls into, so it outranks
+// even the exact TYPE_STATUS entry (whose narrative describes the bucket's
+// enumerated example causes).
+function signatureTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	const signatureType = ctx.checkType ?? ctx.derivedCheckType;
+	if (!signatureType) return undefined;
+	const signature = resolveDetailSignature(signatureType, ctx.params.status ?? ctx.params.severity, ctx.params.detail);
+	if (!signature) return undefined;
+	return {
+		impact: signature.template.impact,
+		adverseConsequences: signature.template.adverseConsequences,
+	};
+}
+
+function statusEntryTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	return lookupEntryNarrativeEither(ctx.checkType, ctx.derivedCheckType, ctx.status);
+}
+
+// Title/detail-aware specific rules are MORE precise than the generic
+// per-(type,severity) EXPLANATIONS entries, so they resolve before the
+// severity-keyed lookup.
+function specificRuleTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	return resolveSpecificNarrative({
+		checkType: ctx.checkType ?? ctx.derivedCheckType,
+		title: ctx.params.title,
+		detail: ctx.params.detail,
 	});
-	if (specificNarrative) return specificNarrative;
+}
 
-	if (normalizedCheckType && normalizedSeverity) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedSeverity.toUpperCase()}`]);
+function severityEntryTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	return lookupEntryNarrativeEither(ctx.checkType, ctx.derivedCheckType, ctx.severity?.toUpperCase());
+}
+
+function categoryFallbackTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	const fallbackType = [ctx.checkType, ctx.derivedCheckType].find((type) => type && CATEGORY_FALLBACK_IMPACT[type]);
+	return fallbackType ? CATEGORY_FALLBACK_IMPACT[fallbackType] : undefined;
+}
+
+function severityFallbackTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
+	return ctx.severity ? SEVERITY_FALLBACK_IMPACT[ctx.severity] : undefined;
+}
+
+/** Narrative sources, most precise first. The first tier that yields a narrative wins. */
+const IMPACT_NARRATIVE_TIERS: Array<(ctx: ImpactNarrativeContext) => ImpactNarrative | undefined> = [
+	signatureTier,
+	statusEntryTier,
+	specificRuleTier,
+	severityEntryTier,
+	categoryFallbackTier,
+	severityFallbackTier,
+];
+
+/**
+ * Resolve impact/adverse-consequence narrative for a finding context.
+ * Uses explicit explanation entries first, then category, then severity fallback.
+ */
+export function resolveImpactNarrative(params: ImpactNarrativeParams): ImpactNarrative {
+	const ctx = buildImpactNarrativeContext(params);
+	for (const tier of IMPACT_NARRATIVE_TIERS) {
+		const narrative = tier(ctx);
 		if (narrative) return narrative;
 	}
-
-	if (derivedCheckType && normalizedSeverity) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedSeverity.toUpperCase()}`]);
-		if (narrative) return narrative;
-	}
-
-	if (normalizedCheckType && CATEGORY_FALLBACK_IMPACT[normalizedCheckType]) {
-		return CATEGORY_FALLBACK_IMPACT[normalizedCheckType];
-	}
-
-	if (derivedCheckType && CATEGORY_FALLBACK_IMPACT[derivedCheckType]) {
-		return CATEGORY_FALLBACK_IMPACT[derivedCheckType];
-	}
-
-	if (normalizedSeverity && SEVERITY_FALLBACK_IMPACT[normalizedSeverity]) {
-		return SEVERITY_FALLBACK_IMPACT[normalizedSeverity];
-	}
-
 	return {};
 }
 

@@ -828,69 +828,85 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	return { domain, dependencies, signals, summary, ...(unmeasured.length > 0 ? { unmeasured } : {}) };
 }
 
+type UnmeasuredSources = NonNullable<SupplyChainMap['unmeasured']>;
+
+const TRUST_ICON: Record<TrustLevel, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+
+const SIGNAL_ICON: Record<Signal['severity'], string> = { high: '🔴', medium: '🟠', low: '🟡', info: 'ℹ️' };
+
+function trustBreakdown(summary: SupplyChainMap['summary']): string {
+	return `(${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low)`;
+}
+
+function compactUnmeasuredLines(unmeasured: UnmeasuredSources): string[] {
+	if (unmeasured.length === 0) return [];
+	return [
+		`Not measured: ${unmeasured.map((u) => u.source).join(', ')} lookups did not conclude; dependencies from these sources are unknown.`,
+	];
+}
+
+function compactSignalLines(signals: Signal[]): string[] {
+	if (signals.length === 0) return [];
+	return ['', 'Signals:', ...signals.map((signal) => `- [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 200)}`)];
+}
+
+function formatSupplyChainCompact(result: SupplyChainMap): string[] {
+	return [
+		`Supply Chain: ${result.domain} — ${result.summary.totalProviders} providers ${trustBreakdown(result.summary)}`,
+		...result.dependencies.map(
+			(dep) => `- [${dep.trustLevel.toUpperCase()}] ${sanitizeOutputText(dep.provider, 80)}: ${dep.roles.join(', ')}`,
+		),
+		...compactUnmeasuredLines(result.unmeasured ?? []),
+		...compactSignalLines(result.signals),
+	];
+}
+
+function fullDependencyLines(dep: Dependency): string[] {
+	return [
+		`${TRUST_ICON[dep.trustLevel] ?? '🟢'} **${sanitizeOutputText(dep.provider, 80)}** [${dep.trustLevel.toUpperCase()}]`,
+		`  Roles: ${dep.roles.join(', ')}`,
+		`  Sources: ${dep.sources.join(', ')}`,
+		'',
+	];
+}
+
+function fullDependencySection(dependencies: Dependency[], unmeasured: UnmeasuredSources): string[] {
+	if (dependencies.length > 0) return ['## Dependencies', ...dependencies.flatMap(fullDependencyLines)];
+	if (unmeasured.length > 0) return ['Not assessed: no dependencies could be mapped because some DNS lookups did not conclude.', ''];
+	return ['No third-party dependencies detected from DNS data.', ''];
+}
+
+function fullUnmeasuredLines(unmeasured: UnmeasuredSources): string[] {
+	if (unmeasured.length === 0) return [];
+	return [
+		`Not measured: ${unmeasured.map((u) => `${u.source} (${u.reason})`).join(', ')}. Dependencies from these sources are unknown, not absent.`,
+		'',
+	];
+}
+
+function fullSignalLines(signals: Signal[]): string[] {
+	if (signals.length === 0) return [];
+	return [
+		'## Risk Signals',
+		...signals.map(
+			(signal) => `${SIGNAL_ICON[signal.severity] ?? 'ℹ️'} [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 300)}`,
+		),
+	];
+}
+
+function formatSupplyChainFull(result: SupplyChainMap): string[] {
+	const unmeasured = result.unmeasured ?? [];
+	return [
+		`# Supply Chain Map: ${result.domain}`,
+		`Total Providers: ${result.summary.totalProviders} ${trustBreakdown(result.summary)}`,
+		'',
+		...fullDependencySection(result.dependencies, unmeasured),
+		...fullUnmeasuredLines(unmeasured),
+		...fullSignalLines(result.signals),
+	];
+}
+
 /** Format supply chain map as human-readable text. */
 export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat = 'full'): string {
-	if (format === 'compact') {
-		const lines: string[] = [];
-		lines.push(
-			`Supply Chain: ${result.domain} — ${result.summary.totalProviders} providers (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`,
-		);
-		for (const dep of result.dependencies) {
-			lines.push(`- [${dep.trustLevel.toUpperCase()}] ${sanitizeOutputText(dep.provider, 80)}: ${dep.roles.join(', ')}`);
-		}
-		if (result.unmeasured && result.unmeasured.length > 0) {
-			lines.push(
-				`Not measured: ${result.unmeasured.map((u) => u.source).join(', ')} lookups did not conclude; dependencies from these sources are unknown.`,
-			);
-		}
-		if (result.signals.length > 0) {
-			lines.push('');
-			lines.push('Signals:');
-			for (const signal of result.signals) {
-				lines.push(`- [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 200)}`);
-			}
-		}
-		return lines.join('\n');
-	}
-
-	const lines: string[] = [];
-	lines.push(`# Supply Chain Map: ${result.domain}`);
-	lines.push(
-		`Total Providers: ${result.summary.totalProviders} (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`,
-	);
-	lines.push('');
-
-	if (result.dependencies.length > 0) {
-		lines.push('## Dependencies');
-		for (const dep of result.dependencies) {
-			const trustIcon = dep.trustLevel === 'critical' ? '🔴' : dep.trustLevel === 'high' ? '🟠' : dep.trustLevel === 'medium' ? '🟡' : '🟢';
-			lines.push(`${trustIcon} **${sanitizeOutputText(dep.provider, 80)}** [${dep.trustLevel.toUpperCase()}]`);
-			lines.push(`  Roles: ${dep.roles.join(', ')}`);
-			lines.push(`  Sources: ${dep.sources.join(', ')}`);
-			lines.push('');
-		}
-	} else if (result.unmeasured && result.unmeasured.length > 0) {
-		lines.push('Not assessed: no dependencies could be mapped because some DNS lookups did not conclude.');
-		lines.push('');
-	} else {
-		lines.push('No third-party dependencies detected from DNS data.');
-		lines.push('');
-	}
-
-	if (result.unmeasured && result.unmeasured.length > 0) {
-		lines.push(
-			`Not measured: ${result.unmeasured.map((u) => `${u.source} (${u.reason})`).join(', ')}. Dependencies from these sources are unknown, not absent.`,
-		);
-		lines.push('');
-	}
-
-	if (result.signals.length > 0) {
-		lines.push('## Risk Signals');
-		for (const signal of result.signals) {
-			const icon = signal.severity === 'high' ? '🔴' : signal.severity === 'medium' ? '🟠' : signal.severity === 'low' ? '🟡' : 'ℹ️';
-			lines.push(`${icon} [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 300)}`);
-		}
-	}
-
-	return lines.join('\n');
+	return (format === 'compact' ? formatSupplyChainCompact(result) : formatSupplyChainFull(result)).join('\n');
 }

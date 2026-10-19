@@ -322,6 +322,89 @@ function formatEvidenceValue(value: string | boolean | number | undefined): stri
 	return value === undefined ? 'undefined' : sanitizeOutputText(String(value), 120);
 }
 
+type SgeControlRow = SgeQuickscanReport['controls'][number];
+type SgeAdvisoryRow = SgeQuickscanReport['advisories'][number];
+
+/** The report's caveats that apply, in display order. */
+function activeCaveats(report: SgeQuickscanReport): string[] {
+	return [report.caveat, report.transportTlsCaveat, report.subdomainCoverageCaveat].filter((caveat): caveat is string => Boolean(caveat));
+}
+
+function tallyLine(report: SgeQuickscanReport): string {
+	const { satisfied, notSatisfied, notMeasured } = report.counts;
+	return `${satisfied} satisfied | ${notSatisfied} not satisfied | ${notMeasured} not measured (of ${report.controls.length})`;
+}
+
+/** `  - Evidence: signal = value` lines, shared by control and advisory blocks. */
+function evidenceLines(evidence: SgeControlRow['evidence']): string[] {
+	return evidence.map((e) => `  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
+}
+
+function compactControlLine(c: SgeControlRow): string {
+	const reason = c.notMeasuredReason ? ` — ${NOT_MEASURED_REASON_TEXT[c.notMeasuredReason]}` : '';
+	return `${STATUS_ICON_COMPACT[c.status]} ${sanitizeOutputText(c.label, 40)}: ${STATUS_LABEL[c.status]}${reason}`;
+}
+
+function compactAdvisoryLines(advisories: SgeAdvisoryRow[]): string[] {
+	if (advisories.length === 0) return [];
+	return [
+		'',
+		SGE_ADVISORY_SECTION_CAVEAT,
+		...advisories.map((a) => `${ADVISORY_ICON[a.severity]} ${sanitizeOutputText(a.label, 80)}: ${sanitizeOutputText(a.summary, 600)}`),
+	];
+}
+
+function formatSgeCompact(report: SgeQuickscanReport, domain: string): string[] {
+	return [
+		`NZ SGE: ${domain} — ${VERDICT_HEADLINE[report.verdict]}`,
+		tallyLine(report),
+		...activeCaveats(report),
+		'',
+		...report.controls.map(compactControlLine),
+		...compactAdvisoryLines(report.advisories),
+	];
+}
+
+function fullControlLines(c: SgeControlRow): string[] {
+	const lines = [
+		`${STATUS_ICON_FULL[c.status]} **${sanitizeOutputText(c.label, 40)}** — ${STATUS_LABEL[c.status]}`,
+		`  - Requirement: ${sanitizeOutputText(c.requirement, 200)}`,
+	];
+	if (c.notMeasuredReason) {
+		lines.push(`  - Why not measured: ${NOT_MEASURED_REASON_TEXT[c.notMeasuredReason]}`);
+	}
+	lines.push(...evidenceLines(c.evidence), '');
+	return lines;
+}
+
+function fullAdvisoryLines(a: SgeAdvisoryRow): string[] {
+	return [
+		`${ADVISORY_ICON[a.severity]} **${sanitizeOutputText(a.label, 80)}** — ${ADVISORY_LABEL[a.severity]}`,
+		`  - Related control: ${sanitizeOutputText(a.relatedControl, 40)} (status UNCHANGED by this advisory)`,
+		`  - ${sanitizeOutputText(a.summary, 600)}`,
+		...evidenceLines(a.evidence),
+		'',
+	];
+}
+
+function fullAdvisorySection(advisories: SgeAdvisoryRow[]): string[] {
+	if (advisories.length === 0) return [];
+	return ['## Additional findings', `> **${SGE_ADVISORY_SECTION_CAVEAT}**`, '', ...advisories.flatMap(fullAdvisoryLines)];
+}
+
+function formatSgeFull(report: SgeQuickscanReport, domain: string): string[] {
+	return [
+		`# NZ Secure Government Email (SGE): ${domain}`,
+		`**Verdict:** ${VERDICT_HEADLINE[report.verdict]}`,
+		`**Controls:** ${tallyLine(report)}`,
+		`**Inbound mail transport:** ${MAIL_TRANSPORT_TEXT[report.mailTransport]}`,
+		...activeCaveats(report).map((caveat) => `> **${caveat}**`),
+		'',
+		...report.controls.flatMap(fullControlLines),
+		...fullAdvisorySection(report.advisories),
+	];
+}
+
 /**
  * Format an SGE quick-scan report for display.
  *
@@ -330,68 +413,7 @@ function formatEvidenceValue(value: string | boolean | number | undefined): stri
  * evidence, so the verdict is re-derivable from the output alone.
  */
 export function formatSgeQuickscan(report: SgeQuickscanReport, format: OutputFormat = 'full'): string {
-	const lines: string[] = [];
 	const domain = sanitizeOutputText(report.domain, 253);
-	const { satisfied, notSatisfied, notMeasured } = report.counts;
-	const tally = `${satisfied} satisfied | ${notSatisfied} not satisfied | ${notMeasured} not measured (of ${report.controls.length})`;
-
-	if (format === 'compact') {
-		lines.push(`NZ SGE: ${domain} — ${VERDICT_HEADLINE[report.verdict]}`);
-		lines.push(tally);
-		if (report.caveat) lines.push(report.caveat);
-		if (report.transportTlsCaveat) lines.push(report.transportTlsCaveat);
-		if (report.subdomainCoverageCaveat) lines.push(report.subdomainCoverageCaveat);
-		lines.push('');
-
-		for (const c of report.controls) {
-			const reason = c.notMeasuredReason ? ` — ${NOT_MEASURED_REASON_TEXT[c.notMeasuredReason]}` : '';
-			lines.push(`${STATUS_ICON_COMPACT[c.status]} ${sanitizeOutputText(c.label, 40)}: ${STATUS_LABEL[c.status]}${reason}`);
-		}
-
-		if (report.advisories.length > 0) {
-			lines.push('');
-			lines.push(SGE_ADVISORY_SECTION_CAVEAT);
-			for (const a of report.advisories) {
-				lines.push(`${ADVISORY_ICON[a.severity]} ${sanitizeOutputText(a.label, 80)}: ${sanitizeOutputText(a.summary, 600)}`);
-			}
-		}
-	} else {
-		lines.push(`# NZ Secure Government Email (SGE): ${domain}`);
-		lines.push(`**Verdict:** ${VERDICT_HEADLINE[report.verdict]}`);
-		lines.push(`**Controls:** ${tally}`);
-		lines.push(`**Inbound mail transport:** ${MAIL_TRANSPORT_TEXT[report.mailTransport]}`);
-		if (report.caveat) lines.push(`> **${report.caveat}**`);
-		if (report.transportTlsCaveat) lines.push(`> **${report.transportTlsCaveat}**`);
-		if (report.subdomainCoverageCaveat) lines.push(`> **${report.subdomainCoverageCaveat}**`);
-		lines.push('');
-
-		for (const c of report.controls) {
-			lines.push(`${STATUS_ICON_FULL[c.status]} **${sanitizeOutputText(c.label, 40)}** — ${STATUS_LABEL[c.status]}`);
-			lines.push(`  - Requirement: ${sanitizeOutputText(c.requirement, 200)}`);
-			if (c.notMeasuredReason) {
-				lines.push(`  - Why not measured: ${NOT_MEASURED_REASON_TEXT[c.notMeasuredReason]}`);
-			}
-			for (const e of c.evidence) {
-				lines.push(`  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
-			}
-			lines.push('');
-		}
-
-		if (report.advisories.length > 0) {
-			lines.push('## Additional findings');
-			lines.push(`> **${SGE_ADVISORY_SECTION_CAVEAT}**`);
-			lines.push('');
-			for (const a of report.advisories) {
-				lines.push(`${ADVISORY_ICON[a.severity]} **${sanitizeOutputText(a.label, 80)}** — ${ADVISORY_LABEL[a.severity]}`);
-				lines.push(`  - Related control: ${sanitizeOutputText(a.relatedControl, 40)} (status UNCHANGED by this advisory)`);
-				lines.push(`  - ${sanitizeOutputText(a.summary, 600)}`);
-				for (const e of a.evidence) {
-					lines.push(`  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
-				}
-				lines.push('');
-			}
-		}
-	}
-
+	const lines = format === 'compact' ? formatSgeCompact(report, domain) : formatSgeFull(report, domain);
 	return lines.join('\n').trimEnd();
 }
