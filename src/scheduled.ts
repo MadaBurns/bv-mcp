@@ -1205,32 +1205,11 @@ export const CLIENT_IP_ALERT_COOLDOWN_KEY = 'client-ip-audit:alerted';
  * makes the regression visible.
  */
 export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void> {
-	if (!env.INTELLIGENCE_DB) return;
-	// Same gate as every other alerting handler: no webhook → alerting is off.
-	const webhookUrl = await resolveAlertWebhookUrl(env);
-	if (!webhookUrl) return;
+	const loaded = await loadClientIpHeaderAudit(env);
+	if (!loaded) return;
+	const { webhookUrl, assessment, windowHours } = loaded;
 
-	const escalated = await queryClientIpHeaderAuditEscalating(env.INTELLIGENCE_DB);
-	if (!escalated) return;
-	const { assessment, windowHours } = escalated;
-
-	const ratio = assessment.missingRatio ?? null;
-	const ratioRounded = ratio === null ? null : Math.round(ratio * 1000) / 1000;
-	const logDetails = {
-		message: 'client_ip_header_audit',
-		status: assessment.status,
-		reason: assessment.reason,
-		total: assessment.total,
-		missing: assessment.missing,
-		missingRatio: ratioRounded,
-		windowHours,
-		// True when the 24h window was below the floor and the wider window answered
-		// instead (#1066) — a `healthy` read over 168h is a weaker statement about
-		// today than the same verdict over 24h, so the two must stay greppable apart.
-		widenedWindow: windowHours !== CLIENT_IP_AUDIT_WINDOW_HOURS,
-		minSamples: CLIENT_IP_AUDIT_MIN_SAMPLES,
-		maxMissingRatio: CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
-	};
+	const logDetails = clientIpAuditLogDetails(assessment, windowHours);
 
 	if (assessment.status !== 'degraded') {
 		// `unknown` is logged as unknown — a quiet lane must be greppable, and an
@@ -1245,17 +1224,115 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 		return;
 	}
 
-	// Per-lane cooldown, same mechanism as the fuzzing scan. Fail-soft on KV
-	// errors: paging twice beats staying silent on a transient KV blip.
-	let alreadyAlerted = false;
-	if (env.RATE_LIMIT) {
-		try {
-			alreadyAlerted = (await env.RATE_LIMIT.get(CLIENT_IP_ALERT_COOLDOWN_KEY)) !== null;
-		} catch {
-			// KV down — proceed with alert (fail-loud rather than silent).
-		}
-	}
+	await alertOnClientIpHeaderDegradation(env, webhookUrl, assessment, windowHours, logDetails);
+}
 
+/**
+ * Gate + measure for the alerting lane: needs the D1 binding and an alert
+ * webhook (same gate as every other alerting handler: no webhook → alerting is
+ * off), then runs the escalating read. `undefined` means "nothing to report".
+ */
+async function loadClientIpHeaderAudit(
+	env: ScheduledEnv,
+): Promise<{ webhookUrl: string; assessment: ClientIpAuditAssessment; windowHours: number } | undefined> {
+	if (!env.INTELLIGENCE_DB) return undefined;
+	const webhookUrl = await resolveAlertWebhookUrl(env);
+	if (!webhookUrl) return undefined;
+
+	const escalated = await queryClientIpHeaderAuditEscalating(env.INTELLIGENCE_DB);
+	return escalated && { webhookUrl, ...escalated };
+}
+
+function roundMissingRatio(ratio: number | null): number | null {
+	return ratio === null ? null : Math.round(ratio * 1000) / 1000;
+}
+
+function clientIpAuditLogDetails(assessment: ClientIpAuditAssessment, windowHours: number) {
+	return {
+		message: 'client_ip_header_audit',
+		status: assessment.status,
+		reason: assessment.reason,
+		total: assessment.total,
+		missing: assessment.missing,
+		missingRatio: roundMissingRatio(assessment.missingRatio ?? null),
+		windowHours,
+		// True when the 24h window was below the floor and the wider window answered
+		// instead (#1066) — a `healthy` read over 168h is a weaker statement about
+		// today than the same verdict over 24h, so the two must stay greppable apart.
+		widenedWindow: windowHours !== CLIENT_IP_AUDIT_WINDOW_HOURS,
+		minSamples: CLIENT_IP_AUDIT_MIN_SAMPLES,
+		maxMissingRatio: CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
+	};
+}
+
+/**
+ * Per-lane cooldown, same mechanism as the fuzzing scan. Fail-soft on KV
+ * errors: paging twice beats staying silent on a transient KV blip.
+ */
+async function isClientIpAlertCoolingDown(env: ScheduledEnv): Promise<boolean> {
+	if (!env.RATE_LIMIT) return false;
+	try {
+		return (await env.RATE_LIMIT.get(CLIENT_IP_ALERT_COOLDOWN_KEY)) !== null;
+	} catch {
+		// KV down — proceed with alert (fail-loud rather than silent).
+		return false;
+	}
+}
+
+function clientIpAlertSeverity(ratio: number | null): 'critical' | 'warning' {
+	// Above half the traffic every per-IP control (rate limits, quotas,
+	// owner-tier gate) is effectively collapsed onto one 'unknown' bucket.
+	return ratio !== null && ratio > 0.5 ? 'critical' : 'warning';
+}
+
+function buildClientIpHeaderAlertPayload(assessment: ClientIpAuditAssessment, windowHours: number) {
+	const ratio = assessment.missingRatio ?? null;
+	const total = assessment.total ?? 0;
+	const pct = ratio === null ? 'n/a' : `${(ratio * 100).toFixed(1)}%`;
+	return buildAlertPayload({
+		title: `cf-connecting-ip missing on ${pct} of ${total} public-door calls (last ${windowHours}h) — zone-config regression, see #896`,
+		severity: clientIpAlertSeverity(ratio),
+		metrics: {
+			alert_kind: CLIENT_IP_HEADER_MISSING_ALERT_KIND,
+			total_public_calls: total,
+			missing_header: assessment.missing ?? 0,
+			missing_ratio: roundMissingRatio(ratio),
+			window_hours: windowHours,
+			// #1066: this string is what a paged operator actually types, so it has to run
+			// as printed. The bare form exited `unknown` / `audit_failed` EVERY time,
+			// because the script requires both flags — a guaranteed non-answer wearing the
+			// same word as the real low-sample verdict. The npm script now supplies these
+			// defaults; they are named here too so the command survives a changed default.
+			runbook:
+				'npm run audit:client-ip-headers -- --config wrangler.production.jsonc --database INTELLIGENCE_DB (SSOT: src/lib/client-ip-audit.ts)',
+		},
+		threshold: `${CLIENT_IP_HEADER_MISSING_ALERT_KIND}: missing/total > ${CLIENT_IP_AUDIT_MAX_MISSING_RATIO} with total >= ${CLIENT_IP_AUDIT_MIN_SAMPLES}`,
+	});
+}
+
+/**
+ * Arm the cooldown ONLY on an accepted (2xx) delivery — the caller gates on
+ * `sendAlert`'s boolean for exactly this. A rejected/unreachable webhook leaves
+ * the marker unset so the next tick retries and the page lands as soon as the
+ * webhook recovers, instead of being swallowed for six hours.
+ */
+async function armClientIpAlertCooldown(env: ScheduledEnv): Promise<void> {
+	if (!env.RATE_LIMIT) return;
+	try {
+		await env.RATE_LIMIT.put(CLIENT_IP_ALERT_COOLDOWN_KEY, '1', { expirationTtl: CLIENT_IP_ALERT_COOLDOWN_SECONDS });
+	} catch {
+		// KV write failed — next tick will alert again, acceptable degradation.
+	}
+}
+
+async function alertOnClientIpHeaderDegradation(
+	env: ScheduledEnv,
+	webhookUrl: string,
+	assessment: ClientIpAuditAssessment,
+	windowHours: number,
+	logDetails: ReturnType<typeof clientIpAuditLogDetails>,
+): Promise<void> {
+	const alreadyAlerted = await isClientIpAlertCoolingDown(env);
 	logEvent({
 		timestamp: new Date().toISOString(),
 		category: 'scheduled',
@@ -1265,46 +1342,8 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 	});
 	if (alreadyAlerted) return;
 
-	const total = assessment.total ?? 0;
-	const missing = assessment.missing ?? 0;
-	const pct = ratio === null ? 'n/a' : `${(ratio * 100).toFixed(1)}%`;
-	const delivered = await sendAlert(
-		webhookUrl,
-		buildAlertPayload({
-			title: `cf-connecting-ip missing on ${pct} of ${total} public-door calls (last ${windowHours}h) — zone-config regression, see #896`,
-			// Above half the traffic every per-IP control (rate limits, quotas,
-			// owner-tier gate) is effectively collapsed onto one 'unknown' bucket.
-			severity: ratio !== null && ratio > 0.5 ? 'critical' : 'warning',
-			metrics: {
-				alert_kind: CLIENT_IP_HEADER_MISSING_ALERT_KIND,
-				total_public_calls: total,
-				missing_header: missing,
-				missing_ratio: ratioRounded,
-				window_hours: windowHours,
-				// #1066: this string is what a paged operator actually types, so it has to run
-				// as printed. The bare form exited `unknown` / `audit_failed` EVERY time,
-				// because the script requires both flags — a guaranteed non-answer wearing the
-				// same word as the real low-sample verdict. The npm script now supplies these
-				// defaults; they are named here too so the command survives a changed default.
-				runbook:
-					'npm run audit:client-ip-headers -- --config wrangler.production.jsonc --database INTELLIGENCE_DB (SSOT: src/lib/client-ip-audit.ts)',
-			},
-			threshold: `${CLIENT_IP_HEADER_MISSING_ALERT_KIND}: missing/total > ${CLIENT_IP_AUDIT_MAX_MISSING_RATIO} with total >= ${CLIENT_IP_AUDIT_MIN_SAMPLES}`,
-		}),
-		alertOptions(env),
-	);
-
-	// Arm the cooldown ONLY on an accepted (2xx) delivery — `sendAlert` returns
-	// that boolean for exactly this. A rejected/unreachable webhook leaves the
-	// marker unset so the next tick retries and the page lands as soon as the
-	// webhook recovers, instead of being swallowed for six hours.
-	if (delivered && env.RATE_LIMIT) {
-		try {
-			await env.RATE_LIMIT.put(CLIENT_IP_ALERT_COOLDOWN_KEY, '1', { expirationTtl: CLIENT_IP_ALERT_COOLDOWN_SECONDS });
-		} catch {
-			// KV write failed — next tick will alert again, acceptable degradation.
-		}
-	}
+	const delivered = await sendAlert(webhookUrl, buildClientIpHeaderAlertPayload(assessment, windowHours), alertOptions(env));
+	if (delivered) await armClientIpAlertCooldown(env);
 }
 
 /**
@@ -1525,6 +1564,111 @@ async function deterministicWatchAuditId(row: DueWatchRow): Promise<string> {
 	return `watch_${hex.slice(0, 58)}`;
 }
 
+type WatchQueue = NonNullable<BrandAuditWatchEnv['BRAND_AUDIT_QUEUE']>;
+
+/**
+ * Enumerate the due, active watches (capped at {@link MAX_WATCHES_PER_TICK}).
+ * Returns `undefined` after logging when the enumeration query fails — the
+ * tick then ends, exactly as before.
+ */
+async function fetchDueWatches(db: D1Database, now: number): Promise<DueWatchRow[] | undefined> {
+	try {
+		const result = await db
+			.prepare(
+				`SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash
+			 FROM brand_audit_watches
+			 WHERE active = 1
+			   AND interval IN ('daily', 'weekly', 'monthly')
+			   AND (
+			     last_run_at IS NULL
+			     OR (interval = 'daily' AND last_run_at <= ?)
+			     OR (interval = 'weekly' AND last_run_at <= ?)
+			     OR (interval = 'monthly' AND last_run_at <= ?)
+			   )
+			 ORDER BY last_run_at ASC NULLS FIRST, id ASC
+			 LIMIT ?`,
+			)
+			.bind(now - INTERVAL_MS.daily, now - INTERVAL_MS.weekly, now - INTERVAL_MS.monthly, MAX_WATCHES_PER_TICK)
+			.all<DueWatchRow>();
+		return result.results ?? [];
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scheduled',
+			details: { message: 'brand-audit watch enumeration failed' },
+		});
+		return undefined;
+	}
+}
+
+/** True when the re-read parent/target rows are exactly the single-target audit we just inserted. */
+function watchPersistenceMatches(persisted: PersistedWatchAuditRow | null, row: DueWatchRow): boolean {
+	return (
+		!!persisted &&
+		persisted.owner_id === row.owner_id &&
+		persisted.total_targets === 1 &&
+		persisted.format === 'json' &&
+		persisted.target === row.domain
+	);
+}
+
+/** Stage the audit rows, verify them, enqueue the one-target batch, then CAS `last_run_at`. */
+async function enqueueDueWatch(db: D1Database, queue: WatchQueue, row: DueWatchRow, now: number): Promise<void> {
+	const auditId = await deterministicWatchAuditId(row);
+	// D1 batch is transactional: the queue producer must never observe an
+	// audit message before both the parent and its exact target precondition
+	// exist. INSERT OR IGNORE makes an enqueue/update retry use the same rows.
+	await db.batch([
+		db
+			.prepare(
+				'INSERT OR IGNORE INTO brand_audits (id, owner_id, status, total_targets, completed_targets, format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+			)
+			.bind(auditId, row.owner_id, 'queued', 1, 0, 'json', now, now),
+		db
+			.prepare('INSERT OR IGNORE INTO brand_audit_targets (audit_id, target, status, created_at) VALUES (?, ?, ?, ?)')
+			.bind(auditId, row.domain, 'queued', now),
+	]);
+
+	const persisted = (await db
+		.prepare(
+			`SELECT a.owner_id, a.total_targets, a.format, t.target
+				 FROM brand_audits a
+				 JOIN brand_audit_targets t ON t.audit_id = a.id
+				 WHERE a.id = ? AND t.target = ?
+				 LIMIT 1`,
+		)
+		.bind(auditId, row.domain)
+		.first()) as PersistedWatchAuditRow | null;
+	if (!watchPersistenceMatches(persisted, row)) {
+		throw new Error('brand-audit watch persistence precondition mismatch');
+	}
+
+	// One-target batch — every watch is single-domain. A successful enqueue
+	// followed by a failed CAS is safe: the next tick reuses this audit ID and
+	// the consumer's target claim makes the duplicate delivery idempotent.
+	await queue.send({ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id }, { contentType: 'json' });
+	await db
+		.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ? AND active = 1 AND last_run_at IS ?')
+		.bind(now, row.id, row.last_run_at)
+		.run();
+}
+
+/** One watch's tick: skip corrupt intervals, otherwise enqueue; a failure is logged and isolated to this watch. */
+async function processDueWatch(db: D1Database, queue: WatchQueue, row: DueWatchRow, now: number): Promise<void> {
+	// SQL excludes corrupt intervals before LIMIT so they cannot consume the
+	// fair-share page. Keep this runtime guard for defensive fake/adaptor rows.
+	if (!Object.prototype.hasOwnProperty.call(INTERVAL_MS, row.interval)) return;
+	try {
+		await enqueueDueWatch(db, queue, row, now);
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'brand-audit watch enqueue failed', watchId: row.id },
+		});
+	}
+}
+
 /**
  * Enumerate active brand-audit watches whose `last_run_at` is older than their
  * interval (or null), enqueue a fresh `brand_audit_batch_start` for each, and
@@ -1537,90 +1681,14 @@ async function deterministicWatchAuditId(row: DueWatchRow): Promise<string> {
  * Phase-4 work-list.
  */
 export async function handleBrandAuditWatches(env: BrandAuditWatchEnv, _ctx: ExecutionContext): Promise<void> {
-	if (!env.BRAND_AUDIT_DB || !env.BRAND_AUDIT_QUEUE) return;
+	const { BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: queue } = env;
+	if (!db || !queue) return;
 	const now = Date.now();
 
-	let rows: DueWatchRow[] = [];
-	try {
-		const result = await env.BRAND_AUDIT_DB.prepare(
-			`SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash
-			 FROM brand_audit_watches
-			 WHERE active = 1
-			   AND interval IN ('daily', 'weekly', 'monthly')
-			   AND (
-			     last_run_at IS NULL
-			     OR (interval = 'daily' AND last_run_at <= ?)
-			     OR (interval = 'weekly' AND last_run_at <= ?)
-			     OR (interval = 'monthly' AND last_run_at <= ?)
-			   )
-			 ORDER BY last_run_at ASC NULLS FIRST, id ASC
-			 LIMIT ?`,
-		)
-			.bind(now - INTERVAL_MS.daily, now - INTERVAL_MS.weekly, now - INTERVAL_MS.monthly, MAX_WATCHES_PER_TICK)
-			.all<DueWatchRow>();
-		rows = result.results ?? [];
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'error',
-			category: 'scheduled',
-			details: { message: 'brand-audit watch enumeration failed' },
-		});
-		return;
-	}
+	const rows = await fetchDueWatches(db, now);
+	if (!rows) return;
 
 	for (const row of rows) {
-		// SQL excludes corrupt intervals before LIMIT so they cannot consume the
-		// fair-share page. Keep this runtime guard for defensive fake/adaptor rows.
-		if (!Object.prototype.hasOwnProperty.call(INTERVAL_MS, row.interval)) continue;
-		try {
-			const auditId = await deterministicWatchAuditId(row);
-			// D1 batch is transactional: the queue producer must never observe an
-			// audit message before both the parent and its exact target precondition
-			// exist. INSERT OR IGNORE makes an enqueue/update retry use the same rows.
-			await env.BRAND_AUDIT_DB.batch([
-				env.BRAND_AUDIT_DB.prepare(
-					'INSERT OR IGNORE INTO brand_audits (id, owner_id, status, total_targets, completed_targets, format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-				).bind(auditId, row.owner_id, 'queued', 1, 0, 'json', now, now),
-				env.BRAND_AUDIT_DB.prepare(
-					'INSERT OR IGNORE INTO brand_audit_targets (audit_id, target, status, created_at) VALUES (?, ?, ?, ?)',
-				).bind(auditId, row.domain, 'queued', now),
-			]);
-
-			const persisted = (await env.BRAND_AUDIT_DB.prepare(
-				`SELECT a.owner_id, a.total_targets, a.format, t.target
-				 FROM brand_audits a
-				 JOIN brand_audit_targets t ON t.audit_id = a.id
-				 WHERE a.id = ? AND t.target = ?
-				 LIMIT 1`,
-			)
-				.bind(auditId, row.domain)
-				.first()) as PersistedWatchAuditRow | null;
-			if (
-				!persisted ||
-				persisted.owner_id !== row.owner_id ||
-				persisted.total_targets !== 1 ||
-				persisted.format !== 'json' ||
-				persisted.target !== row.domain
-			) {
-				throw new Error('brand-audit watch persistence precondition mismatch');
-			}
-
-			// One-target batch — every watch is single-domain. A successful enqueue
-			// followed by a failed CAS is safe: the next tick reuses this audit ID and
-			// the consumer's target claim makes the duplicate delivery idempotent.
-			await env.BRAND_AUDIT_QUEUE.send(
-				{ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id },
-				{ contentType: 'json' },
-			);
-			await env.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ? AND active = 1 AND last_run_at IS ?')
-				.bind(now, row.id, row.last_run_at)
-				.run();
-		} catch (err) {
-			logError(err instanceof Error ? err : String(err), {
-				severity: 'warn',
-				category: 'scheduled',
-				details: { message: 'brand-audit watch enqueue failed', watchId: row.id },
-			});
-		}
+		await processDueWatch(db, queue, row, now);
 	}
 }
