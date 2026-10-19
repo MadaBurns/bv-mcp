@@ -49,6 +49,8 @@ afterEach(() => {
 	restore();
 	mockProfileAwareScore.mockReset();
 	mockScanScore.mockReset();
+	vi.doUnmock('../src/tools/check-mta-sts');
+	vi.resetModules();
 });
 
 describe('scanDomain — scoring-failure degradation', () => {
@@ -83,5 +85,35 @@ describe('scanDomain — scoring-failure degradation', () => {
 		// computeScanScore call and the catch-block computeProfileAwareScanScore fallback.
 		expect(mockScanScore).toHaveBeenCalled();
 		expect(mockProfileAwareScore).toHaveBeenCalled();
+	});
+
+	it('re-applies the degraded error status to a failed check when post-processing throws', async () => {
+		// The mta_sts check throws on the first attempt AND on the transient-failure retry, so it stays
+		// degraded (safeCheck -> checkStatus 'error', score 0) while every other check completes.
+		// resetModules + doMock replaces the check at the module boundary (DNS-level throws are
+		// swallowed inside the checks, so they never reach safeCheck's catch).
+		vi.resetModules();
+		vi.doMock('../src/tools/check-mta-sts', () => ({
+			checkMtaSts: vi.fn().mockRejectedValue(new Error('Simulated check failure')),
+		}));
+		installEmptyDnsFetch();
+		mockScanScore.mockImplementation(() => {
+			throw new ReferenceError('m5 is not defined');
+		});
+		mockProfileAwareScore.mockImplementation(() => {
+			throw new ReferenceError('m5 is not defined');
+		});
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('example.com');
+
+		// Post-processing and the scoring fallback both failed: unscored result, findings preserved.
+		expect(result.score.overall).toBeNull();
+		// The catch block re-applied the degraded status to the failed category only.
+		const mtaSts = result.checks.find((check) => check.category === 'mta_sts');
+		expect(mtaSts).toMatchObject({ score: 0, passed: false, checkStatus: 'error' });
+		const others = result.checks.filter((check) => check.category !== 'mta_sts');
+		expect(others.length).toBeGreaterThan(0);
+		expect(others.some((check) => check.checkStatus === 'error' || check.checkStatus === 'timeout')).toBe(false);
 	});
 });
