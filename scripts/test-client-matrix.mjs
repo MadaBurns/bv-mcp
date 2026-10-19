@@ -55,7 +55,36 @@ const MUTATING_TOOLS = new Set(['register_brand_audit_watch', 'brand_audit_batch
 // `format` arg is output-mode (json|markdown|both), not verbosity — skip Invariant B.
 const FORMAT_SPECIAL = new Set(['brand_audit_single', 'brand_audit_batch_start']);
 // Envelope may legitimately be isError (not-ready / scan-only / no-baseline) — record, don't fail.
-const RECORD_ONLY = new Set(['check_subdomain_takeover', 'brand_audit_get_report', 'analyze_drift']);
+const RECORD_ONLY = new Set([
+	'check_subdomain_takeover',
+	'brand_audit_get_report',
+	'analyze_drift',
+	// Async result fetchers: the job started in setup moments earlier may legitimately still be running.
+	'batch_scan_findings',
+	'discover_brand_domains_findings',
+	'scan_buckets_findings',
+	'osint_investigation_report',
+]);
+// Async job starters — run ONCE in setup (non-interactive), not the dual sweep, so each run starts one
+// job per tool rather than two. [tool, ctx key, structuredContent id keys]. The discover start returns
+// its operation id as `auditId` (same brand_audits row id the pollers call `operationId`).
+const STARTERS = [
+	['batch_scan_start', 'jobId', ['jobId', 'job_id']],
+	['discover_brand_domains_start', 'operationId', ['operationId', 'auditId']],
+	['scan_buckets_start', 'scanId', ['scanId']],
+	['osint_investigate_domain_start', 'investigationId', ['investigationId']],
+	['osint_investigate_infrastructure_start', null, ['investigationId']],
+	['osint_investigate_supply_chain_start', null, ['investigationId']],
+	['osint_investigate_username_start', null, ['investigationId']],
+	['osint_investigate_email_start', null, ['investigationId']],
+];
+const STARTER_TOOLS = new Set(STARTERS.map(([name]) => name));
+// People-OSINT starters run against self-owned identifiers only; override per run if needed.
+const OSINT_USERNAME = process.env.OSINT_USERNAME || 'blackveilsecurity';
+const OSINT_EMAIL = process.env.OSINT_EMAIL || `security@${TARGET}`;
+// Mirrors STRUCTURED_COMMENT_DROP_CLIENTS (src/mcp/dispatch.ts): non-interactive clients the server
+// deliberately sends WITHOUT the STRUCTURED_RESULT comment (the proxy forwards prose, never parses it).
+const COMMENT_DROP_CLIENTS = new Set(['bv_claude_dns_proxy']);
 
 // --- Pure result helpers --------------------------------------------------
 function resultText(result) {
@@ -87,11 +116,13 @@ function deepFind(obj, keys, depth = 0) {
 	return null;
 }
 
-function extractId(result, keys) {
-	const s = extractStructured(result);
-	const fromJson = s && deepFind(s, keys);
-	if (fromJson) return fromJson;
-	const text = resultText(result);
+// An id from the tool's structured payload: structuredContent (always present) or the STRUCTURED_RESULT comment.
+function idFromStructured(result, keys) {
+	// deepFind returns null for any non-object, so a missing payload falls through.
+	return deepFind(result?.structuredContent, keys) || deepFind(extractStructured(result), keys);
+}
+
+function idFromText(text, keys) {
 	for (const k of keys) {
 		// JSON form: "auditId":"<uuid>"
 		const json = text.match(new RegExp(`"${k}"\\s*:\\s*"([^"]+)"`));
@@ -101,6 +132,10 @@ function extractId(result, keys) {
 		if (kv) return kv[1];
 	}
 	return null;
+}
+
+function extractId(result, keys) {
+	return idFromStructured(result, keys) || idFromText(resultText(result), keys);
 }
 
 // callRes = { result } on success, or { error, code } on JSON-RPC error.
@@ -129,6 +164,11 @@ function classifyTool({ name, ri, rn }) {
 	if (markerN && !markerI) return { name, status: 'PASS', reason: 'format-discriminated' };
 	if (!markerN && !markerI) return { name, status: 'INVARIANT', reason: 'format-invariant (no marker in either class)' };
 	return { name, status: 'PASS' };
+}
+
+// Should this client class receive the STRUCTURED_RESULT comment?
+function expectsMarker(client, expectedClass) {
+	return expectedClass === 'non-interactive' && !COMMENT_DROP_CLIENTS.has(client);
 }
 
 // --- MCP network layer ----------------------------------------------------
@@ -222,41 +262,48 @@ async function mapConcurrent(items, limit, fn) {
 }
 
 // --- Per-tool argument map ------------------------------------------------
+// One entry per tool whose input schema differs from the { domain } default (read from tools/list).
+const ARG_BUILDERS = {
+	batch_scan: () => ({ domains: [TARGET] }),
+	compare_domains: () => ({ domains: [TARGET, 'example.com'] }),
+	compare_baseline: () => ({ domain: TARGET, baseline: { grade: 'B' } }),
+	check_root_server_set: () => ({}),
+	get_benchmark: () => ({}),
+	list_brand_audit_watches: () => ({}),
+	explain_finding: () => ({ checkType: 'SPF', status: 'fail' }),
+	get_provider_insights: () => ({ provider: 'google workspace' }),
+	validate_fix: () => ({ domain: TARGET, check: 'dmarc' }),
+	analyze_drift: () => ({ domain: TARGET, baseline: 'cached' }),
+	brand_audit_single: () => ({ domain: TARGET, format: 'json' }),
+	brand_audit_batch_start: () => ({ domains: [TARGET], format: 'json' }),
+	brand_audit_status: (ctx) => ({ auditId: ctx.auditId ?? 'unknown' }),
+	brand_audit_get_report: (ctx) => ({ auditId: ctx.auditId ?? 'unknown' }),
+	register_brand_audit_watch: () => ({ domain: TARGET, interval: 'monthly' }),
+	delete_brand_audit_watch: (ctx) => ({ watchId: ctx.watchId ?? 'unknown' }),
+	batch_scan_start: (ctx) => ({ domains: [TARGET], idempotency_key: ctx.runKey ?? 'matrix-dry-run' }),
+	batch_scan_status: (ctx) => ({ job_id: ctx.jobId ?? 'unknown' }),
+	batch_scan_findings: (ctx) => ({ job_id: ctx.jobId ?? 'unknown' }),
+	discover_brand_domains_start: () => ({ domain: TARGET, discovery_mode: 'classic' }),
+	discover_brand_domains_status: (ctx) => ({ operationId: ctx.operationId ?? 'unknown' }),
+	discover_brand_domains_findings: (ctx) => ({ operationId: ctx.operationId ?? 'unknown' }),
+	scan_buckets_start: () => ({ target: TARGET }),
+	scan_buckets_status: (ctx) => ({ scanId: ctx.scanId ?? 'unknown' }),
+	scan_buckets_findings: (ctx) => ({ scanId: ctx.scanId ?? 'unknown' }),
+	osint_investigate_domain_start: () => ({ query: TARGET }),
+	osint_investigate_infrastructure_start: () => ({ query: TARGET }),
+	osint_investigate_supply_chain_start: () => ({ query: TARGET }),
+	osint_investigate_username_start: () => ({ query: OSINT_USERNAME }),
+	osint_investigate_email_start: () => ({ query: OSINT_EMAIL }),
+	osint_investigation_status: (ctx) => ({ investigationId: ctx.investigationId ?? 'unknown' }),
+	osint_investigation_report: (ctx) => ({ investigationId: ctx.investigationId ?? 'unknown' }),
+	get_domain_rank: () => ({ domain: TARGET, score: 80 }),
+	generate: () => ({ artifact: 'dmarc_record', domain: TARGET }),
+	prioritize_portfolio_leads: () => ({ domains: [TARGET] }),
+};
+
 function buildArgs(name, ctx = {}) {
-	switch (name) {
-		case 'batch_scan':
-			return { domains: [TARGET] };
-		case 'compare_domains':
-			return { domains: [TARGET, 'example.com'] };
-		case 'compare_baseline':
-			return { domain: TARGET, baseline: { grade: 'B' } };
-		case 'check_root_server_set':
-		case 'get_benchmark':
-		case 'list_brand_audit_watches':
-			return {};
-		case 'explain_finding':
-			return { checkType: 'SPF', status: 'fail' };
-		case 'get_provider_insights':
-			return { provider: 'google workspace' };
-		case 'validate_fix':
-			return { domain: TARGET, check: 'dmarc' };
-		case 'analyze_drift':
-			return { domain: TARGET, baseline: 'cached' };
-		case 'brand_audit_single':
-			return { domain: TARGET, format: 'json' };
-		case 'brand_audit_batch_start':
-			return { domains: [TARGET], format: 'json' };
-		case 'brand_audit_status':
-			return { auditId: ctx.auditId ?? 'unknown' };
-		case 'brand_audit_get_report':
-			return { auditId: ctx.auditId ?? 'unknown' };
-		case 'register_brand_audit_watch':
-			return { domain: TARGET, interval: 'monthly' };
-		case 'delete_brand_audit_watch':
-			return { watchId: ctx.watchId ?? 'unknown' };
-		default:
-			return { domain: TARGET };
-	}
+	const build = ARG_BUILDERS[name];
+	return build ? build(ctx) : { domain: TARGET };
 }
 
 // Fetch the deployed tool list via the MCP tools/list method.
@@ -269,13 +316,23 @@ async function listTools(session) {
 }
 
 // --- Runner ---------------------------------------------------------------
+// Start each deployed async job once; capture the ids its pollers need into ctx.
+async function runStarters(session, tools, ctx, setup) {
+	for (const [name, ctxKey, idKeys] of STARTERS.filter(([n]) => tools.includes(n))) {
+		const res = await callTool(session, name, buildArgs(name, ctx));
+		const id = res.result ? extractId(res.result, idKeys) : null;
+		if (ctxKey) ctx[ctxKey] = id;
+		setup.push({ name, env: checkEnvelope(res), captured: id });
+	}
+}
+
 async function runMatrix() {
 	requireKey();
 	const started = Date.now();
 	const sessI = await createSession(REP_INTERACTIVE_UA);
 	const sessN = await createSession(REP_NONINTERACTIVE_UA);
 	const tools = await listTools(sessN);
-	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t));
+	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t) && !STARTER_TOOLS.has(t));
 
 	const ctx = {};
 	const setup = [];
@@ -287,6 +344,8 @@ async function runMatrix() {
 	const batch = await callTool(sessN, 'brand_audit_batch_start', buildArgs('brand_audit_batch_start', ctx));
 	ctx.auditId = batch.result ? extractId(batch.result, ['auditId', 'id']) : null;
 	setup.push({ name: 'brand_audit_batch_start', env: checkEnvelope(batch), captured: ctx.auditId });
+	ctx.runKey = `matrix-${started}`;
+	await runStarters(sessN, tools, ctx, setup);
 
 	let toolResults = [];
 	let clientResults = [];
@@ -310,7 +369,7 @@ async function runMatrix() {
 			const res = await callTool(session, 'check_spf', buildArgs('check_spf'));
 			const env = checkEnvelope(res);
 			const marker = res.result ? hasStructuredResult(res.result) : false;
-			const expectMarker = expectedClass === 'non-interactive';
+			const expectMarker = expectsMarker(client, expectedClass);
 			const ok = env.ok && marker === expectMarker;
 			return { client, ua, expectedClass, expectMarker, observedMarker: marker, env, ok };
 		});
@@ -373,6 +432,8 @@ function selfTest() {
 	const errEnvelope = { content: [{ type: 'text', text: 'boom' }], isError: true };
 	// brand_audit_batch_start with format:'json' emits the id only as `auditId=<uuid>` (no JSON, no STRUCTURED_RESULT).
 	const detailForm = { content: [{ type: 'text', text: '### Findings\n- Brand audit batch queued\n  auditId=2fe7d69b-1974-4d3d-9dcc-9a56a396e78c queuedAt=2026-05-24T11:58:25Z etaSeconds=180' }] };
+	const starterResult = { content: [{ type: 'text', text: 'Bucket scan started (scanId 47eb351d-29af-49f7-8a0e-52a52076c173).' }], structuredContent: { findings: [{ metadata: { scanId: '47eb351d-29af-49f7-8a0e-52a52076c173' } }] } };
+	const discoverResult = { content: [{ type: 'text', text: 'queued' }], structuredContent: { findings: [{ metadata: { auditId: 'a1b2c3d4-0000-4000-8000-000000000001' } }] } };
 	const cases = [
 		['hasStructuredResult(full) === true', hasStructuredResult(full) === true],
 		['hasStructuredResult(compact) === false', hasStructuredResult(compact) === false],
@@ -385,6 +446,14 @@ function selfTest() {
 		['classify A-violation -> FAIL', classifyTool({ name: 'check_spf', ri: { result: full }, rn: { result: full } }).status === 'FAIL'],
 		['classify no-marker -> INVARIANT', classifyTool({ name: 'generate_spf_record', ri: { result: compact }, rn: { result: compact } }).status === 'INVARIANT'],
 		['record-only -> RECORD', classifyTool({ name: 'check_subdomain_takeover', ri: { result: errEnvelope }, rn: { result: errEnvelope } }).status === 'RECORD'],
+		// Async starters carry their ids only in structuredContent (no STRUCTURED_RESULT comment), nested under findings[].metadata.
+		["extractId reads nested structuredContent id", extractId(starterResult, ['scanId']) === '47eb351d-29af-49f7-8a0e-52a52076c173'],
+		["extractId maps discover auditId -> operationId", extractId(discoverResult, ['operationId', 'auditId']) === 'a1b2c3d4-0000-4000-8000-000000000001'],
+		["buildArgs threads job_id for batch pollers", buildArgs('batch_scan_status', { jobId: 'job-1' }).job_id === 'job-1'],
+		["buildArgs gives osint starters a query", typeof buildArgs('osint_investigate_domain_start').query === 'string'],
+		['async starters are not in the dual sweep', ![...STARTER_TOOLS].some((t) => MUTATING_TOOLS.has(t)) && STARTER_TOOLS.has('scan_buckets_start')],
+		['bv_claude_dns_proxy expects NO marker (server drops it)', expectsMarker('bv_claude_dns_proxy', 'non-interactive') === false],
+		['mcp_remote still expects the marker', expectsMarker('mcp_remote', 'non-interactive') === true],
 	];
 	let pass = 0;
 	for (const [label, ok] of cases) {
@@ -411,16 +480,17 @@ async function dryRun() {
 	requireKey();
 	const session = await createSession(REP_NONINTERACTIVE_UA);
 	const tools = await listTools(session);
-	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t));
+	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t) && !STARTER_TOOLS.has(t));
 	console.log(`Endpoint: ${EP}`);
 	console.log(`Target domain: ${TARGET}`);
 	console.log(`Deployed tools: ${tools.length}`);
 	console.log(`\nTool axis (run in BOTH claude_code + mcp_remote): ${sweep.length} tools`);
 	for (const t of sweep) console.log(`  ${t.padEnd(34)} args=${JSON.stringify(buildArgs(t))}`);
 	console.log(`\nSetup/teardown (mcp_remote only): ${[...MUTATING_TOOLS].join(', ')}`);
+	console.log(`Async starters (mcp_remote only, once each): ${STARTERS.map(([n]) => `${n} args=${JSON.stringify(buildArgs(n))}`).join('\n  ')}`);
 	console.log(`\nClient axis (check_spf): ${[...Object.keys(INTERACTIVE_UAS), ...Object.keys(NONINTERACTIVE_UAS)].join(', ')}`);
-	// 3 setup/teardown calls (register, batch_start, delete) + 9 client-axis UAs (11 - 2 representatives).
-	const SETUP_CALLS = 3;
+	// Setup/teardown (register, batch_start, delete) + one call per async starter + 9 client-axis UAs (11 - 2 representatives).
+	const SETUP_CALLS = MUTATING_TOOLS.size + STARTERS.length;
 	console.log(`\nEstimated tools/call count: ${sweep.length * 2 + SETUP_CALLS + (Object.keys(INTERACTIVE_UAS).length + Object.keys(NONINTERACTIVE_UAS).length - 2)}`);
 }
 
