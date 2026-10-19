@@ -203,7 +203,9 @@ function severityEntryTier(ctx: ImpactNarrativeContext): ImpactNarrative | undef
 }
 
 function categoryFallbackTier(ctx: ImpactNarrativeContext): ImpactNarrative | undefined {
-	const fallbackType = [ctx.checkType, ctx.derivedCheckType].find((type) => type && CATEGORY_FALLBACK_IMPACT[type]);
+	const fallbackType = [ctx.checkType, ctx.derivedCheckType].find((type) => {
+		return type && CATEGORY_FALLBACK_IMPACT[type];
+	});
 	return fallbackType ? CATEGORY_FALLBACK_IMPACT[fallbackType] : undefined;
 }
 

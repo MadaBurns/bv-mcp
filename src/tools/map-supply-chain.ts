@@ -847,7 +847,10 @@ function compactUnmeasuredLines(unmeasured: UnmeasuredSources): string[] {
 
 function compactSignalLines(signals: Signal[]): string[] {
 	if (signals.length === 0) return [];
-	return ['', 'Signals:', ...signals.map((signal) => `- [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 200)}`)];
+	const signalLines = signals.map((signal) => {
+		return `- [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 200)}`;
+	});
+	return ['', 'Signals:', ...signalLines];
 }
 
 function formatSupplyChainCompact(result: SupplyChainMap): string[] {

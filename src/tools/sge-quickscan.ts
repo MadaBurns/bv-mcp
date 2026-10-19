@@ -327,7 +327,10 @@ type SgeAdvisoryRow = SgeQuickscanReport['advisories'][number];
 
 /** The report's caveats that apply, in display order. */
 function activeCaveats(report: SgeQuickscanReport): string[] {
-	return [report.caveat, report.transportTlsCaveat, report.subdomainCoverageCaveat].filter((caveat): caveat is string => Boolean(caveat));
+	const caveats = [report.caveat, report.transportTlsCaveat, report.subdomainCoverageCaveat];
+	return caveats.filter((caveat): caveat is string => {
+		return Boolean(caveat);
+	});
 }
 
 function tallyLine(report: SgeQuickscanReport): string {
@@ -337,7 +340,9 @@ function tallyLine(report: SgeQuickscanReport): string {
 
 /** `  - Evidence: signal = value` lines, shared by control and advisory blocks. */
 function evidenceLines(evidence: SgeControlRow['evidence']): string[] {
-	return evidence.map((e) => `  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
+	return evidence.map((e) => {
+		return `  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`;
+	});
 }
 
 function compactControlLine(c: SgeControlRow): string {
