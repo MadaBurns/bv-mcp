@@ -451,11 +451,10 @@ const QUOTA_SHARD_KEY_FIELD: ReadonlyMap<string, 'ip' | 'principalId' | 'shardKe
 	['evaluate', 'shardKey'],
 ]);
 
-/** The scoping key a quota payload shards on, or `null` when its kind is pinned to the singleton. */
-function quotaShardKeyFor(payload: QuotaCoordinatorRequest): string | null {
-	const field = QUOTA_SHARD_KEY_FIELD.get(payload.kind);
+/** The raw scoping value a payload shards on (even if null at runtime), read from its kind's field. */
+function quotaShardKeyFor(field: 'ip' | 'principalId' | 'shardKey', payload: QuotaCoordinatorRequest): string {
 	// The map pairs each kind with a field that exists on exactly that kind of payload.
-	return field === undefined ? null : (payload as unknown as Record<string, string>)[field];
+	return (payload as unknown as Record<string, string>)[field];
 }
 
 /**
@@ -477,8 +476,9 @@ function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardR
 	// the pre-shard behavior. global-daily + reset ALWAYS stay on the singleton even
 	// when quota sharding is on (ADAM #5: the cost ceiling is never approximated).
 	if (!routing.enabled) return COORDINATOR_NAME;
-	const shardKey = quotaShardKeyFor(payload);
-	return shardKey === null ? COORDINATOR_NAME : shardNameForKey(shardKey, routing.salt);
+	// Kinds absent from the map (global-daily, oauth-dcr-write, reset, unknown) stay on the singleton.
+	const field = QUOTA_SHARD_KEY_FIELD.get(payload.kind);
+	return field === undefined ? COORDINATOR_NAME : shardNameForKey(quotaShardKeyFor(field, payload), routing.salt);
 }
 
 function getCoordinatorStub(

@@ -125,6 +125,22 @@ describe('routingNameForPayload: quota kinds', () => {
 		});
 	}
 
+	// A null shard field is not "pinned to the singleton": the base routed it through shardNameForKey, so must we.
+	const NULL_FIELD_CALLS: Array<[string, Call]> = [
+		['scoped-rate', (ns, r) => checkScopedRateLimitWithCoordinator(null as never, 'tools', 5, 50, ns, r)],
+		['session-create', (ns, r) => checkSessionCreateRateLimitWithCoordinator(null as never, 5, 60_000, ns, r)],
+		['tool-daily', (ns, r) => checkToolDailyRateLimitWithCoordinator(null as never, 'check_spf', 5, ns, r)],
+		['distinct-domain-daily', (ns, r) => checkDistinctDomainDailyLimitWithCoordinator(null as never, 'fp', 5, ns, r)],
+		['evaluate', (ns, r) => evaluateQuotaWithCoordinator(null as never, [{ kind: 'tool-daily', principalId: 'p', toolName: 't', limit: 1 }], ns, r)],
+	];
+	for (const [label, call] of NULL_FIELD_CALLS) {
+		it(`${label} with a null shard field still routes through shardNameForKey, not the singleton`, async () => {
+			const { namespace, names } = recordingNamespace();
+			await call(namespace, ON);
+			expect(names).toEqual([shardNameForKey(null as never, SALT)]);
+		});
+	}
+
 	it('routes the same scoping key to the same name on every call (no split state)', async () => {
 		const { namespace, names } = recordingNamespace();
 		for (let i = 0; i < 5; i++) {
