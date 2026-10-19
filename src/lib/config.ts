@@ -813,41 +813,49 @@ const TOOL_POLICY_ALLOWED: ToolPolicyDecision = { allowed: true };
  *   operator sets `ENFORCE_CONTRACT_FLAG_GATE`; `owner` bypasses.
  */
 export function evaluateToolPolicy(input: ToolPolicyInput): ToolPolicyDecision {
-	const { surface, tool, authenticated, tier } = input;
-	if (!tool) return TOOL_POLICY_ALLOWED;
-	const fullInternalAuthority = surface === 'internal' && input.fullInternalAuthority === true;
+	if (!input.tool) return TOOL_POLICY_ALLOWED;
+	const fullInternalAuthority = input.surface === 'internal' && input.fullInternalAuthority === true;
 
-	if (isInternalOnlyTool(tool) && surface === 'public') {
-		return { allowed: false, block: 'internal_only' };
+	// Precedence is the ORDER of TOOL_POLICY_GATES: the first gate that blocks answers.
+	for (const gate of TOOL_POLICY_GATES) {
+		const block = gate(input, fullInternalAuthority);
+		if (block) return { allowed: false, block };
 	}
-
-	if (isAuthRequiredTool(tool)) {
-		if (surface === 'public') {
-			if (!authenticated) return { allowed: false, block: 'auth_required' };
-		} else if (!authenticated || !fullInternalAuthority) {
-			return { allowed: false, block: 'auth_required' };
-		}
-	}
-
-	if (isGatedPaidOnlyTool(tool) && !fullInternalAuthority) {
-		if (tier === null) return { allowed: false, block: 'paid_only' };
-		if (tierToolDailyLimit(tier, tool) === 0) return { allowed: false, block: 'paid_only' };
-	}
-
-	if (
-		tier !== null &&
-		contractFlagBlocks({
-			gateEnabled: input.contractFlagGateEnabled === true,
-			tier,
-			tool,
-			hasContractFlag: input.hasContractFlag === true,
-		})
-	) {
-		return { allowed: false, block: 'contract_flag' };
-	}
-
 	return TOOL_POLICY_ALLOWED;
 }
+
+type ToolPolicyGate = (input: ToolPolicyInput, fullInternalAuthority: boolean) => ToolPolicyBlock | null;
+
+/** Withdrawn from the public catalog; callable over the internal door by definition. */
+const internalOnlyGate: ToolPolicyGate = ({ surface, tool }) => (isInternalOnlyTool(tool) && surface === 'public' ? 'internal_only' : null);
+
+/** Public: any authenticated caller. Internal: only an authenticated full-authority principal. */
+const authRequiredGate: ToolPolicyGate = ({ surface, tool, authenticated }, fullInternalAuthority) => {
+	if (!isAuthRequiredTool(tool)) return null;
+	const denied = surface === 'public' ? !authenticated : !authenticated || !fullInternalAuthority;
+	return denied ? 'auth_required' : null;
+};
+
+/** A full-authority internal principal is first-party; everyone else needs a non-zero quota tier. */
+const paidOnlyGate: ToolPolicyGate = ({ tool, tier }, fullInternalAuthority) => {
+	if (!isGatedPaidOnlyTool(tool) || fullInternalAuthority) return null;
+	return tier === null || tierToolDailyLimit(tier, tool) === 0 ? 'paid_only' : null;
+};
+
+/** D2 enumeration entitlement: inert unless the operator turns the gate on; needs a resolved tier. */
+const contractFlagGate: ToolPolicyGate = (input) =>
+	input.tier !== null &&
+	contractFlagBlocks({
+		gateEnabled: input.contractFlagGateEnabled === true,
+		tier: input.tier,
+		tool: input.tool,
+		hasContractFlag: input.hasContractFlag === true,
+	})
+		? 'contract_flag'
+		: null;
+
+/** Evaluation order: internal-only, auth-required, paid-only, contract-flag. Do not reorder. */
+const TOOL_POLICY_GATES: readonly ToolPolicyGate[] = [internalOnlyGate, authRequiredGate, paidOnlyGate, contractFlagGate];
 
 /**
  * Kill switch for the three active M365 CLIENT-TENANT read tools.

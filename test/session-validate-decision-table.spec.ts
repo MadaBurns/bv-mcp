@@ -76,12 +76,15 @@ afterEach(() => {
 });
 
 describe('validateSession decision table', () => {
-	it.each(['', 'short', 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)])('1: malformed id %j is denied without touching KV', async (bad) => {
-		const k = makeKv();
-		expect(await validateSession(bad, k.kv)).toBe(false);
-		expect(k.get).not.toHaveBeenCalled();
-		expect(k.put).not.toHaveBeenCalled();
-	});
+	it.each(['', 'short', 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)])(
+		'1: malformed id %j is denied without touching KV',
+		async (bad) => {
+			const k = makeKv();
+			expect(await validateSession(bad, k.kv)).toBe(false);
+			expect(k.get).not.toHaveBeenCalled();
+			expect(k.put).not.toHaveBeenCalled();
+		},
+	);
 
 	it('2: a locally tombstoned session is denied even if an in-memory record reappears', async () => {
 		deleteSessionInMemory(ID);

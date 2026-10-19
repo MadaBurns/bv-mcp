@@ -72,7 +72,11 @@ const ORDINARY = 'check_spf';
 type Row = { name: string; input: ToolPolicyInput; expected: ToolPolicyDecision };
 
 const ROWS: Row[] = [
-	{ name: 'empty tool falls through on public', input: { surface: 'public', tool: '', authenticated: false, tier: null }, expected: ALLOWED },
+	{
+		name: 'empty tool falls through on public',
+		input: { surface: 'public', tool: '', authenticated: false, tier: null },
+		expected: ALLOWED,
+	},
 	{
 		name: 'empty tool falls through on internal',
 		input: { surface: 'internal', tool: '', authenticated: false, tier: null },

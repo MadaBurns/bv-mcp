@@ -81,9 +81,13 @@ function baseEnv(over: Env = {}): Env {
 	};
 }
 
-async function call(
-	opts: { key?: string | null; headers?: Record<string, string>; name: string; args?: Record<string, unknown>; env?: Env },
-): Promise<Response> {
+async function call(opts: {
+	key?: string | null;
+	headers?: Record<string, string>;
+	name: string;
+	args?: Record<string, unknown>;
+	env?: Env;
+}): Promise<Response> {
 	const { internalRoutes } = await import('../src/internal');
 	const headers: Record<string, string> = { 'content-type': 'application/json', ...opts.headers };
 	if (opts.key !== null) headers.authorization = `Bearer ${opts.key ?? TENANT_TOOL_KEY}`;
