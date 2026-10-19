@@ -198,6 +198,39 @@ function isPermittedScriptCombination(scripts: ReadonlySet<string>): boolean {
 }
 
 /**
+ * Scripts that contribute to mix detection, matched via Unicode property escapes (Workers supports
+ * ES2018+ regex). A character belongs to exactly one script, so the order here is not significant.
+ */
+const CLASSIFIED_SCRIPTS: ReadonlyArray<readonly [string, RegExp]> = [
+	['Latin', /\p{Script=Latin}/u],
+	['Cyrillic', /\p{Script=Cyrillic}/u],
+	['Greek', /\p{Script=Greek}/u],
+	['Armenian', /\p{Script=Armenian}/u],
+	['Georgian', /\p{Script=Georgian}/u],
+	['Han', /\p{Script=Han}/u],
+	['Hiragana', /\p{Script=Hiragana}/u],
+	['Katakana', /\p{Script=Katakana}/u],
+	['Hangul', /\p{Script=Hangul}/u],
+	['Bopomofo', /\p{Script=Bopomofo}/u],
+	['Arabic', /\p{Script=Arabic}/u],
+	['Hebrew', /\p{Script=Hebrew}/u],
+	['Devanagari', /\p{Script=Devanagari}/u],
+	['Thai', /\p{Script=Thai}/u],
+];
+
+/**
+ * The script a label character counts toward, or null when it is neutral: ASCII hyphen and digits,
+ * and any script outside CLASSIFIED_SCRIPTS or Common (symbols, emoji) do not contribute to the mix.
+ * ASCII letters a-z (already lowercased) are Latin without a property lookup.
+ */
+function classifyScript(char: string): string | null {
+	const cp = char.codePointAt(0) as number; // never undefined: `char` is one non-empty code point
+	if (cp === 0x2d || (cp >= 0x30 && cp <= 0x39)) return null;
+	if (cp >= 0x61 && cp <= 0x7a) return 'Latin';
+	return CLASSIFIED_SCRIPTS.find(([, pattern]) => pattern.test(char))?.[0] ?? null;
+}
+
+/**
  * Detect whether a single domain label (pre-punycode, NFC-normalized, lowercased)
  * mixes characters from more than one Unicode script.
  * ASCII letters a-z, digits 0-9, and hyphens are treated as Latin script.
@@ -206,46 +239,8 @@ function isPermittedScriptCombination(scripts: ReadonlySet<string>): boolean {
 function hasMixedScripts(label: string): boolean {
 	const scripts = new Set<string>();
 	for (const char of label) {
-		const cp = char.codePointAt(0);
-		if (cp === undefined) continue;
-		// ASCII hyphen, digits \u2014 neutral, skip
-		if (cp === 0x2d || (cp >= 0x30 && cp <= 0x39)) continue;
-		// ASCII letters a-z (already lowercased) \u2014 Latin
-		if (cp >= 0x61 && cp <= 0x7a) {
-			scripts.add('Latin');
-			continue;
-		}
-		// Detect script via Unicode property escapes \u2014 Workers supports ES2018+ regex
-		if (/\p{Script=Latin}/u.test(char)) {
-			scripts.add('Latin');
-		} else if (/\p{Script=Cyrillic}/u.test(char)) {
-			scripts.add('Cyrillic');
-		} else if (/\p{Script=Greek}/u.test(char)) {
-			scripts.add('Greek');
-		} else if (/\p{Script=Armenian}/u.test(char)) {
-			scripts.add('Armenian');
-		} else if (/\p{Script=Georgian}/u.test(char)) {
-			scripts.add('Georgian');
-		} else if (/\p{Script=Han}/u.test(char)) {
-			scripts.add('Han');
-		} else if (/\p{Script=Hiragana}/u.test(char)) {
-			scripts.add('Hiragana');
-		} else if (/\p{Script=Katakana}/u.test(char)) {
-			scripts.add('Katakana');
-		} else if (/\p{Script=Hangul}/u.test(char)) {
-			scripts.add('Hangul');
-		} else if (/\p{Script=Bopomofo}/u.test(char)) {
-			scripts.add('Bopomofo');
-		} else if (/\p{Script=Arabic}/u.test(char)) {
-			scripts.add('Arabic');
-		} else if (/\p{Script=Hebrew}/u.test(char)) {
-			scripts.add('Hebrew');
-		} else if (/\p{Script=Devanagari}/u.test(char)) {
-			scripts.add('Devanagari');
-		} else if (/\p{Script=Thai}/u.test(char)) {
-			scripts.add('Thai');
-		}
-		// Other scripts/common: skip (don't contribute to mix detection)
+		const script = classifyScript(char);
+		if (script) scripts.add(script);
 	}
 	return scripts.size > 1 && !isPermittedScriptCombination(scripts);
 }

@@ -50,37 +50,43 @@ export function reverseIPv6(ip: string): string {
 	return nibbles.split('').reverse().join('.');
 }
 
+/** A special-use prefix over the leading 32 bits of an address: network value + prefix length (1-32). */
+export interface Prefix32 {
+	net: number;
+	len: number;
+}
+
+/** True when the top `len` bits of `value` (an unsigned 32-bit integer) equal those of `net`. */
+export function matchesPrefix32(value: number, { net, len }: Prefix32): boolean {
+	return value >>> (32 - len) === net >>> (32 - len);
+}
+
+/** IPv4 ranges treated as private by isPrivateIP: RFC 1918, loopback and link-local only. */
+const PRIVATE_IPV4_PREFIXES: readonly Prefix32[] = [
+	{ net: 0x0a000000, len: 8 }, // 10.0.0.0/8
+	{ net: 0xac100000, len: 12 }, // 172.16.0.0/12
+	{ net: 0xc0a80000, len: 16 }, // 192.168.0.0/16
+	{ net: 0x7f000000, len: 8 }, // 127.0.0.0/8 (loopback)
+	{ net: 0xa9fe0000, len: 16 }, // 169.254.0.0/16 (link-local)
+];
+
+/** IPv6 is matched textually (exact loopback, then lowercase literal prefixes), not by parsed bits. */
+function isPrivateIPv6Text(ip: string): boolean {
+	if (ip === '::1') return true;
+	const lower = ip.toLowerCase();
+	// Link-local fe80::/10 (literal `fe80:` prefix) and ULA fc00::/7 (first byte fc or fd, binary 1111110x)
+	return lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd');
+}
+
 /**
  * Check whether an IP address is in a private/reserved range.
  * Covers RFC 1918, loopback, link-local, and IPv6 ULA.
  */
 export function isPrivateIP(ip: string): boolean {
-	// IPv6 check
-	if (ip.includes(':')) {
-		if (ip === '::1') return true;
-		const lower = ip.toLowerCase();
-		// Link-local fe80::/10
-		if (lower.startsWith('fe80:')) return true;
-		// ULA fc00::/7 — first byte is fc or fd (binary 1111110x)
-		if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-		return false;
-	}
+	if (ip.includes(':')) return isPrivateIPv6Text(ip);
 
-	// IPv4 check
 	if (!isValidIPv4(ip)) return false;
-	const parts = ip.split('.').map(Number);
-
-	const [a, b] = parts;
-	// 10.0.0.0/8
-	if (a === 10) return true;
-	// 172.16.0.0/12
-	if (a === 172 && b >= 16 && b <= 31) return true;
-	// 192.168.0.0/16
-	if (a === 192 && b === 168) return true;
-	// 127.0.0.0/8 (loopback)
-	if (a === 127) return true;
-	// 169.254.0.0/16 (link-local)
-	if (a === 169 && b === 254) return true;
-
-	return false;
+	const [a, b, c, d] = ip.split('.').map(Number);
+	const value = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+	return PRIVATE_IPV4_PREFIXES.some((prefix) => matchesPrefix32(value, prefix));
 }

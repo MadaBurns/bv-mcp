@@ -8,6 +8,7 @@
  * selected nameserver, not a recursive resolver projection.
  */
 
+import { matchesPrefix32, type Prefix32 } from '../ip-utils';
 import { queryDns } from '../dns-transport';
 import { RecordType, type RecordTypeName } from '../dns-types';
 
@@ -107,36 +108,49 @@ function parseIpv6(address: string): number[] | null {
 	return [...left, ...Array(8 - left.length - right.length).fill(0), ...right];
 }
 
+/** IPv4 special-use ranges a raw-socket destination must never fall in (denylist; everything else is routable). */
+const NON_ROUTABLE_IPV4_PREFIXES: readonly Prefix32[] = [
+	{ net: 0x00000000, len: 8 }, // 0/8 "this network"
+	{ net: 0x0a000000, len: 8 }, // 10/8
+	{ net: 0x64400000, len: 10 }, // 100.64/10 shared address space
+	{ net: 0x7f000000, len: 8 }, // 127/8 loopback
+	{ net: 0xa9fe0000, len: 16 }, // 169.254/16 link-local
+	{ net: 0xac100000, len: 12 }, // 172.16/12
+	{ net: 0xc0000000, len: 24 }, // 192.0.0/24 IETF protocol assignments
+	{ net: 0xc0000200, len: 24 }, // 192.0.2/24 TEST-NET-1
+	{ net: 0xc0586300, len: 24 }, // 192.88.99/24 deprecated 6to4 relay anycast
+	{ net: 0xc0a80000, len: 16 }, // 192.168/16
+	{ net: 0xc6120000, len: 15 }, // 198.18/15 benchmarking
+	{ net: 0xc6336400, len: 24 }, // 198.51.100/24 TEST-NET-2
+	{ net: 0xcb007100, len: 24 }, // 203.0.113/24 TEST-NET-3
+	{ net: 0xe0000000, len: 3 }, // 224/3 multicast, reserved, limited broadcast
+];
+
+/**
+ * Current global unicast allocation is 2000::/3. Staying inside that prefix is intentionally
+ * conservative for a DNS server that must be public. Prefixes are matched on the leading 32 bits.
+ */
+const GLOBAL_UNICAST_IPV6_PREFIX: Prefix32 = { net: 0x20000000, len: 3 };
+const NON_ROUTABLE_IPV6_PREFIXES: readonly Prefix32[] = [
+	{ net: 0x20010000, len: 23 }, // 2001::/23 IETF special-purpose space
+	{ net: 0x20010db8, len: 32 }, // 2001:db8::/32 documentation
+	{ net: 0x20020000, len: 16 }, // 2002::/16 deprecated 6to4
+	{ net: 0x3ffe0000, len: 16 }, // 3ffe::/16 deprecated 6bone
+];
+
 /** Conservative global-unicast allowlist for raw socket destinations. */
 export function isGloballyRoutableIp(address: string): boolean {
 	const ipv4 = parseIpv4(address);
 	if (ipv4) {
-		const [a, b, c] = ipv4;
-		if (a === 0 || a === 10 || a === 127) return false;
-		if (a === 100 && b >= 64 && b <= 127) return false; // shared address space
-		if (a === 169 && b === 254) return false;
-		if (a === 172 && b >= 16 && b <= 31) return false;
-		if (a === 192 && b === 0 && c === 0) return false;
-		if (a === 192 && b === 0 && c === 2) return false;
-		if (a === 192 && b === 88 && c === 99) return false;
-		if (a === 192 && b === 168) return false;
-		if (a === 198 && (b === 18 || b === 19)) return false;
-		if (a === 198 && b === 51 && c === 100) return false;
-		if (a === 203 && b === 0 && c === 113) return false;
-		if (a >= 224) return false; // multicast, reserved, limited broadcast
-		return true;
+		const value = ((ipv4[0] << 24) | (ipv4[1] << 16) | (ipv4[2] << 8) | ipv4[3]) >>> 0;
+		return !NON_ROUTABLE_IPV4_PREFIXES.some((prefix) => matchesPrefix32(value, prefix));
 	}
 
 	const ipv6 = parseIpv6(address);
 	if (!ipv6) return false;
-	const [first, second] = ipv6;
-	// Current global unicast allocation is 2000::/3. Staying inside that prefix
-	// is intentionally conservative for a DNS server that must be public.
-	if (first < 0x2000 || first > 0x3fff) return false;
-	if (first === 0x2001 && second <= 0x01ff) return false; // IETF special-purpose space
-	if (first === 0x2001 && second === 0x0db8) return false; // documentation
-	if (first === 0x2002 || first === 0x3ffe) return false; // deprecated 6to4 / 6bone
-	return true;
+	const head = ((ipv6[0] << 16) | ipv6[1]) >>> 0;
+	if (!matchesPrefix32(head, GLOBAL_UNICAST_IPV6_PREFIX)) return false;
+	return !NON_ROUTABLE_IPV6_PREFIXES.some((prefix) => matchesPrefix32(head, prefix));
 }
 
 function canonicalIp(address: string): string | null {
@@ -303,6 +317,35 @@ function ipv6Presentation(bytes: Uint8Array): string {
 	return groups.join(':');
 }
 
+/** SOA -> serial only, as a decimal string (skip MNAME/RNAME via decodeName). */
+function decodeSoaSerial(message: Uint8Array, view: DataView, dataOffset: number): string {
+	const mname = decodeName(message, dataOffset);
+	const rname = decodeName(message, mname.nextOffset);
+	if (rname.nextOffset + 4 > message.length) throw new Error('Truncated SOA serial');
+	return String(view.getUint32(rname.nextOffset));
+}
+
+/** TXT -> first character-string only, capped at 255 bytes (its own max length). */
+function decodeFirstTxtString(message: Uint8Array, dataOffset: number, dataLength: number): string {
+	if (dataLength < 1) return '';
+	const txtLength = Math.min(message[dataOffset], 255, dataLength - 1);
+	const txtStart = dataOffset + 1;
+	return new TextDecoder().decode(message.subarray(txtStart, txtStart + txtLength));
+}
+
+/**
+ * Decode the RDATA of the record types the probes read into a presentation string. DNSKEY / RRSIG
+ * (presence only) and every other type, plus an A record whose RDLENGTH is not 4, yield ''.
+ */
+function decodeRdata(message: Uint8Array, view: DataView, type: number, dataOffset: number, dataLength: number): string {
+	if (type === 1 && dataLength === 4) return [...message.subarray(dataOffset, dataOffset + dataLength)].join('.');
+	if (type === 28) return ipv6Presentation(message.subarray(dataOffset, dataOffset + dataLength));
+	if (type === 2 || type === 5 || type === 12) return decodeName(message, dataOffset).name;
+	if (type === 6) return decodeSoaSerial(message, view, dataOffset);
+	if (type === 16) return decodeFirstTxtString(message, dataOffset, dataLength);
+	return '';
+}
+
 function parseRecord(message: Uint8Array, startOffset: number): { record: DirectDnsRecord; nextOffset: number } {
 	const owner = decodeName(message, startOffset);
 	if (owner.nextOffset + 10 > message.length) throw new Error('Truncated DNS resource record');
@@ -313,31 +356,7 @@ function parseRecord(message: Uint8Array, startOffset: number): { record: Direct
 	const nextOffset = dataOffset + dataLength;
 	if (nextOffset > message.length) throw new Error('Truncated DNS RDATA');
 
-	let data = '';
-	if (type === 1 && dataLength === 4) {
-		data = [...message.subarray(dataOffset, nextOffset)].join('.');
-	} else if (type === 28) {
-		data = ipv6Presentation(message.subarray(dataOffset, nextOffset));
-	} else if (type === 2 || type === 5 || type === 12) {
-		data = decodeName(message, dataOffset).name;
-	} else if (type === 6) {
-		// SOA -> serial only, as a decimal string (skip MNAME/RNAME via decodeName).
-		const mname = decodeName(message, dataOffset);
-		const rname = decodeName(message, mname.nextOffset);
-		if (rname.nextOffset + 4 > message.length) throw new Error('Truncated SOA serial');
-		data = String(view.getUint32(rname.nextOffset));
-	} else if (type === 16) {
-		// TXT -> first character-string only, capped at 255 bytes (its own max length).
-		if (dataLength >= 1) {
-			const txtLength = Math.min(message[dataOffset], 255, dataLength - 1);
-			const txtStart = dataOffset + 1;
-			data = new TextDecoder().decode(message.subarray(txtStart, txtStart + txtLength));
-		}
-	} else if (type === 48 || type === 46) {
-		// DNSKEY / RRSIG -> presence only, RDATA is not decoded.
-		data = '';
-	}
-
+	const data = decodeRdata(message, view, type, dataOffset, dataLength);
 	return { record: { name: owner.name, type, data }, nextOffset };
 }
 
