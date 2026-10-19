@@ -1,0 +1,1721 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > the DANE-without-DNSSEC finding is deduplicated per host across usages 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses DANE-EE (domain-issued certificate) but DNSSEC is not validated. Without DNSSEC, DANE records can be spoofed, negating their security benefit.",
+    "metadata": {
+      "name": "mail.example.com",
+      "usage": 3,
+    },
+    "severity": "high",
+    "title": "DANE without DNSSEC",
+  },
+  {
+    "category": "dane",
+    "detail": "3 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 3,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 0 with hasDnssec=false 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 0 with hasDnssec=true 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 1 with hasDnssec=false 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 1 with hasDnssec=true 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 2 with hasDnssec=false 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses DANE-TA (trust anchor assertion) but DNSSEC is not validated. Without DNSSEC, DANE records can be spoofed, negating their security benefit.",
+    "metadata": {
+      "name": "mail.example.com",
+      "usage": 2,
+    },
+    "severity": "high",
+    "title": "DANE without DNSSEC",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 2 with hasDnssec=true 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 3 with hasDnssec=false 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses DANE-EE (domain-issued certificate) but DNSSEC is not validated. Without DNSSEC, DANE records can be spoofed, negating their security benefit.",
+    "metadata": {
+      "name": "mail.example.com",
+      "usage": 3,
+    },
+    "severity": "high",
+    "title": "DANE without DNSSEC",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > DNSSEC dependency (usage 2 and 3) > usage 3 with hasDnssec=true 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > a served certificate outranks a pending probe outcome 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > mismatch verdict (high, measured defect) > DANE-TA mismatch across every retained chain entry 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unmatchedAssociations": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > mismatch verdict (high, measured defect) > mismatch when the served cert has no capturedAt or digests ("unavailable" wording) 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 and none of them match it: pinned 3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 unavailable. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > mismatch verdict (high, measured defect) > several unmatched associations 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "Each of the 3 TLSA associations published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; 1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; 3 1 2 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "3 1 2 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "3 1 2 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "3 1 2 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      ],
+      "validRecordCount": 3,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > mismatch verdict (high, measured defect) > single unmatched association 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > mismatch verdict (high, measured defect) > subject-term smuggling in the pinned data stays declared as subject data 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 3 1 1 missing; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 missing",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 missing",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 missing",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > invalid matching type 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid matching type 3. Valid range is 0-2.",
+    "metadata": {
+      "matchingType": 3,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA matching type",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > invalid selector 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid selector value 2. Valid range is 0-1.",
+    "metadata": {
+      "selector": 2,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA selector",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > invalid usage 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid usage value 4. Valid range is 0-3.",
+    "metadata": {
+      "usage": 4,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA usage",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > malformed record 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "Could not parse TLSA record for mail.example.com: nonsense",
+    "severity": "medium",
+    "title": "Malformed TLSA record",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > matching type 0 raises the full-certificate advisory 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > mixed malformed + invalid + valid keeps finding order 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "Could not parse TLSA record for mail.example.com: bad",
+    "severity": "medium",
+    "title": "Malformed TLSA record",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid usage value 9. Valid range is 0-3.",
+    "metadata": {
+      "usage": 9,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA usage",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid selector value 7. Valid range is 0-1.",
+    "metadata": {
+      "selector": 7,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA selector",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid matching type 9. Valid range is 0-2.",
+    "metadata": {
+      "matchingType": 9,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA matching type",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses DANE-EE (domain-issued certificate) but DNSSEC is not validated. Without DNSSEC, DANE records can be spoofed, negating their security benefit.",
+    "metadata": {
+      "name": "mail.example.com",
+      "usage": 3,
+    },
+    "severity": "high",
+    "title": "DANE without DNSSEC",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > negative-looking fields are malformed-or-invalid exactly as before 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid usage value -1. Valid range is 0-3.",
+    "metadata": {
+      "usage": -1,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA usage",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid selector value -1. Valid range is 0-1.",
+    "metadata": {
+      "selector": -1,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA selector",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid matching type -1. Valid range is 0-2.",
+    "metadata": {
+      "matchingType": -1,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA matching type",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > no records yields no findings 1`] = `[]`;
+
+exports[`analyzeTlsaRecords output pin > per-record validation > wire-format record is parsed 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > a trust-anchor match inside the retained entries still verifies 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 2 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc (DANE-TA (trust anchor assertion)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "2 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "matchedCertData": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 2,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > truncated chain plus an unmatched end-entity pin lists the unmatched association 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "chainLength": 9,
+      "chainTruncated": true,
+      "name": "mail.example.com",
+      "notAssessedReason": "chain_truncated",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unverifiableAssociations": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > truncated plus an uncomparable end-entity pin takes the truncated leg 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "chainLength": 9,
+      "chainTruncated": true,
+      "name": "mail.example.com",
+      "notAssessedReason": "chain_truncated",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedPort": 25,
+      "unverifiableAssociations": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > truncation does not turn an end-entity mismatch into a withheld verdict 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > truncation without a reported chain length 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "chainTruncated": true,
+      "name": "mail.example.com",
+      "notAssessedReason": "chain_truncated",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unverifiableAssociations": [
+        "0 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > truncated chain > trust-anchor pin matching no retained entry is withheld, with chainLength 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "chainLength": 9,
+      "chainTruncated": true,
+      "name": "mail.example.com",
+      "notAssessedReason": "chain_truncated",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unverifiableAssociations": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > full-data pin with no DER at all is uncomparable 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [],
+      "unverifiableAssociations": [
+        "3 0 0 010203",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > full-data pin with undecodable base64 is uncomparable 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [],
+      "unverifiableAssociations": [
+        "3 0 0 010203",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > one uncomparable chain member withholds the mismatch verdict for a trust anchor 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [],
+      "unverifiableAssociations": [
+        "2 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > placeholder pinned data compares as a mismatch 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 3 1 1 -; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "3 1 1 -",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "3 1 1 -",
+      ],
+      "unmatchedAssociations": [
+        "3 1 1 -",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > probe omitted the digest the record needs 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedPort": 25,
+      "unmatchedAssociations": [],
+      "unverifiableAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > unverifiable verdict (falls back to present-not-verified) > unverifiable plus unmatched keeps both lists on the fallback finding 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unverifiableAssociations": [
+        "3 1 2 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      ],
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > no verification context: one record 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > no verification context: several records 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > only malformed records: no verdict at all 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "Could not parse TLSA record for mail.example.com: bad",
+    "severity": "medium",
+    "title": "Malformed TLSA record",
+  },
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com has invalid usage value 9. Valid range is 0-3.",
+    "metadata": {
+      "usage": 9,
+    },
+    "severity": "medium",
+    "title": "Invalid TLSA usage",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > probe failed with an explicit reason 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "2 DANE TLSA records present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "certificateProbe": "failed",
+      "name": "mail.example.com",
+      "notAssessedReason": "off_host_redirect",
+      "validRecordCount": 2,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > probe failed without a reason 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "certificateProbe": "failed",
+      "name": "mail.example.com",
+      "notAssessedReason": "capture_failed",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > probe pending with an explicit reason 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "certificateProbe": "pending",
+      "name": "mail.example.com",
+      "notAssessedReason": "certificate_probe_pending",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > probe pending without a reason 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "certificateProbe": "pending",
+      "name": "mail.example.com",
+      "notAssessedReason": "certificate_probe_pending",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > probe unavailable 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verdict without a served certificate > servedCertificate null falls through to the probe outcome 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record present and syntactically well-formed for mail.example.com. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.",
+    "metadata": {
+      "certificateMatchVerified": false,
+      "certificateProbe": "failed",
+      "name": "mail.example.com",
+      "notAssessedReason": "capture_failed",
+      "validRecordCount": 1,
+    },
+    "severity": "low",
+    "title": "DANE TLSA configured for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-EE (3) selector 0 matching type 0 matches the full DER 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 0 0 010203 (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 0 0 010203",
+      ],
+      "matchedCertData": "010203",
+      "matchedMatchingType": 0,
+      "matchedSelector": 0,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-EE (3) selector 0 matching type 1 matches leaf SHA-256 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-EE (3) selector 1 matching type 0 matches the full SPKI DER 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "TLSA record for mail.example.com uses matching type 0 (full certificate). SHA-256 (type 1) or SHA-512 (type 2) matching is recommended for better security and smaller records.",
+    "metadata": {
+      "matchingType": 0,
+      "name": "mail.example.com",
+    },
+    "severity": "low",
+    "title": "TLSA uses full certificate matching",
+  },
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 0 040506 (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 0 040506",
+      ],
+      "matchedCertData": "040506",
+      "matchedMatchingType": 0,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-EE (3) selector 1 matching type 1 matches leaf SPKI SHA-256 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-EE (3) selector 1 matching type 2 matches leaf SPKI SHA-512 (case-insensitive) 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 2 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 2 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      ],
+      "matchedCertData": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "matchedMatchingType": 2,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-TA (2) matches a non-leaf chain member 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 2 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc (DANE-TA (trust anchor assertion)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "2 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "matchedCertData": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 2,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > DANE-TA (2) selector 1 matches a chain member SPKI digest 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 2 1 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc (DANE-TA (trust anchor assertion)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "2 1 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "matchedCertData": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 2,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > PKIX-EE (1) binds the leaf only 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 1 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (PKIX-EE (service certificate constraint)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "1 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 1,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > PKIX-EE (1) does not match a chain member 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association published at mail.example.com was compared against the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z) and none of them match it: pinned 1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; served leaf SPKI SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, leaf SHA-256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": false,
+      "name": "mail.example.com",
+      "pinned": [
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "subjectTerms": [
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "unmatchedAssociations": [
+        "1 0 1 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      ],
+      "validRecordCount": 1,
+    },
+    "severity": "high",
+    "title": "DANE TLSA pin does not match the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > PKIX-TA (0) matches the leaf when it is also the anchor (RFC 7671 5.2) 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 0 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (PKIX-TA (CA constraint)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "0 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 0,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > PKIX-TA (0) with no chain falls back to the leaf fields 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 0 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (PKIX-TA (CA constraint)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "0 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 0,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > chain entry inherits leaf material only at index 0 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 2 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (DANE-TA (trust anchor assertion)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "2 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchedMatchingType": 1,
+      "matchedSelector": 0,
+      "matchedUsage": 2,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict by usage and selector > served certificate without capturedAt or leaf digests omits those metadata fields 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 443. Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 443,
+      "validRecordCount": 1,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict: rollover and partial comparisons > match plus an unverifiable record lists both buckets 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). 2 further associations in the RRset did not match — normal during a certificate rollover, harmless while one association matches. Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "unverifiableAssociations": [
+        "3 1 2 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      ],
+      "validRecordCount": 3,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict: rollover and partial comparisons > multiple matches report the first as the match and count the rest as matched 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "3 0 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "validRecordCount": 2,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict: rollover and partial comparisons > one match plus one unmatched record (rollover, singular wording) 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). 1 further association in the RRset did not match — normal during a certificate rollover, harmless while one association matches. Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 2,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`analyzeTlsaRecords output pin > verified verdict: rollover and partial comparisons > one match plus two unmatched records (plural wording) 1`] = `
+[
+  {
+    "category": "dane",
+    "detail": "The TLSA association 3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (DANE-EE (domain-issued certificate)) at mail.example.com matches the certificate mail.example.com serves on port 25 (captured 2026-10-01T00:00:00.000Z). 2 further associations in the RRset did not match — normal during a certificate rollover, harmless while one association matches. Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.",
+    "metadata": {
+      "capturedAt": "2026-10-01T00:00:00.000Z",
+      "certificateMatchVerified": true,
+      "matchedAssociations": [
+        "3 1 1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ],
+      "matchedCertData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchedMatchingType": 1,
+      "matchedSelector": 1,
+      "matchedUsage": 3,
+      "name": "mail.example.com",
+      "servedHost": "mail.example.com",
+      "servedLeafSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "servedLeafSpkiSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "servedPort": 25,
+      "unmatchedAssociations": [
+        "3 1 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "3 0 1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      ],
+      "validRecordCount": 3,
+    },
+    "severity": "info",
+    "title": "DANE TLSA verified against the served certificate for mail.example.com",
+  },
+]
+`;
+
+exports[`verifyTlsaAssociations output pin > accepts pre-parsed records 1`] = `
+{
+  "matched": [
+    {
+      "certData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchingType": 1,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+  "truncatedChain": [],
+  "unmatched": [],
+  "unverifiable": [],
+}
+`;
+
+exports[`verifyTlsaAssociations output pin > classifies matched, unmatched and unverifiable, dropping unparseable strings 1`] = `
+{
+  "matched": [
+    {
+      "certData": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "matchingType": 1,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+  "truncatedChain": [],
+  "unmatched": [
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+  "unverifiable": [
+    {
+      "certData": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "matchingType": 2,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+}
+`;
+
+exports[`verifyTlsaAssociations output pin > empty pinned data is uncomparable (unverifiable), never unmatched 1`] = `
+{
+  "matched": [],
+  "truncatedChain": [],
+  "unmatched": [],
+  "unverifiable": [
+    {
+      "certData": "",
+      "matchingType": 1,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+}
+`;
+
+exports[`verifyTlsaAssociations output pin > truncated-chain bucket only collects trust-anchor usages 1`] = `
+{
+  "matched": [],
+  "truncatedChain": [
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 0,
+    },
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 2,
+    },
+  ],
+  "unmatched": [
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 1,
+    },
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 3,
+    },
+  ],
+  "unverifiable": [
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 0,
+    },
+    {
+      "certData": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 2,
+    },
+  ],
+}
+`;
+
+exports[`verifyTlsaAssociations output pin > usage, selector or matching type outside the known table is unverifiable 1`] = `
+{
+  "matched": [],
+  "truncatedChain": [],
+  "unmatched": [],
+  "unverifiable": [
+    {
+      "certData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchingType": 1,
+      "selector": 1,
+      "usage": 7,
+    },
+    {
+      "certData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchingType": 1,
+      "selector": 5,
+      "usage": 3,
+    },
+    {
+      "certData": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matchingType": 9,
+      "selector": 1,
+      "usage": 3,
+    },
+  ],
+}
+`;
+
+exports[`verifyTlsaAssociations output pin > whitespace and case in pinned data are canonicalised 1`] = `
+{
+  "matched": [
+    {
+      "certData": " aaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
+      "matchingType": 1,
+      "selector": 0,
+      "usage": 3,
+    },
+  ],
+  "truncatedChain": [],
+  "unmatched": [],
+  "unverifiable": [],
+}
+`;

@@ -1,0 +1,1152 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`checkDNSSEC output pin > AD probe throws: not assessed, no further queries 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "Could not query DNSSEC status for example.com due to a transient DNS failure; this control was not assessed.",
+        "severity": "info",
+        "title": "DNSSEC not assessed",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > DNSKEY SERVFAIL with an empty answer is an unmeasured leg, not an unsigned zone 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "The DNSKEY lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > DNSKEY lookup throws while DS answered: chain not assessable 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "The DNSKEY lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > DS REFUSED with an empty answer beside a DNSKEY 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "The DS lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > DS lookup throws while DNSKEY answered: chain not assessable 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "The DS lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > DS references a different algorithm than the published DNSKEY (mismatch shape) 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com signs with DNSKEY algorithm 8 (RSA/SHA-256). This is valid per RFC 8624, but RSA produces larger keys and signatures than elliptic-curve algorithms; ECDSA (13/14) or Ed25519 (15) are preferable for smaller DNS responses and better DoS resistance.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "RSA DNSSEC algorithm in use (RSA/SHA-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 95,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > NSEC3PARAM lookup throwing is swallowed 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > NXDOMAIN on both legs is a conclusive absence 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is not configured for example.com. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC not enabled",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > algorithm tiers: RSA/SHA-256, RSA/SHA-512 and an IANA mnemonic 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com signs with DNSKEY algorithm 8 (RSA/SHA-256). This is valid per RFC 8624, but RSA produces larger keys and signatures than elliptic-curve algorithms; ECDSA (13/14) or Ed25519 (15) are preferable for smaller DNS responses and better DoS resistance.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "RSA DNSSEC algorithm in use (RSA/SHA-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 10 (RSA/SHA-512), which RFC 8624 marks as NOT RECOMMENDED for new DNSSEC deployments. Consider migrating to ECDSA (algorithm 13/14) or Ed25519 (algorithm 15).",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "DNSKEY algorithm not recommended for signing (RSA/SHA-512)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 99, which is not a commonly recognized DNSSEC algorithm. Verify this is intentional.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "medium",
+        "title": "Unknown DNSKEY algorithm (99)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 75,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > both DS and DNSKEY lookups throw 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "The DS and DNSKEY lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > broken chain: parent DS without child DNSKEY 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DS records are published for example.com in the parent zone but no DNSKEY records are available from the child zone. The chain of trust is broken — DNSSEC validation will fail.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": true,
+        },
+        "severity": "high",
+        "title": "DNSSEC chain of trust incomplete",
+      },
+    ],
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > custom timeout is passed through without extra queries 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > island of trust: DNSKEY without parent DS 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSKEY records are published for example.com, but the parent zone does not publish a DS linkage. Validating resolvers therefore treat the delegation as insecure: answers remain available, but DNSSEC provides no origin authentication until the registrar publishes the DS.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC island of trust",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > no rawQueryDNS on an unsigned zone 1`] = `
+{
+  "calls": [
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is not configured for example.com. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC not enabled",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > no rawQueryDNS: AD cannot be measured, controlPresent is undefined 1`] = `
+{
+  "calls": [
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSKEY and DS records are present for example.com but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": true,
+        },
+        "severity": "high",
+        "title": "DNSSEC validation failing",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > not registry-managed: NS sets do not overlap 1`] = `
+{
+  "calls": [
+    "raw A sub.example.com",
+    "withRcode DNSKEY sub.example.com",
+    "withRcode DS sub.example.com",
+    "queryDNS NSEC3PARAM sub.example.com",
+    "queryDNS NS sub.example.com",
+    "queryDNS NS example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "sub.example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > registry detection not consulted when AD is unset 1`] = `
+{
+  "calls": [
+    "raw A example.co.tz",
+    "withRcode DNSKEY example.co.tz",
+    "withRcode DS example.co.tz",
+    "queryDNS NSEC3PARAM example.co.tz",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSKEY and DS records are present for example.co.tz but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": true,
+        },
+        "severity": "high",
+        "title": "DNSSEC validation failing",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.co.tz uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > registry-managed ccTLD: validated chain gets the moderate deduction finding 1`] = `
+{
+  "calls": [
+    "raw A example.co.tz",
+    "withRcode DNSKEY example.co.tz",
+    "withRcode DS example.co.tz",
+    "queryDNS NSEC3PARAM example.co.tz",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "The DNSSEC chain for example.co.tz validates, but the zone is signed by its ccTLD registry rather than independently configured by the domain owner. The zone is cryptographically protected, but the owner has less direct control over key management.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "medium",
+        "title": "DNSSEC is registry-managed",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.co.tz uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 85,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > registry-managed via NS overlap with the parent zone 1`] = `
+{
+  "calls": [
+    "raw A sub.example.com",
+    "withRcode DNSKEY sub.example.com",
+    "withRcode DS sub.example.com",
+    "queryDNS NSEC3PARAM sub.example.com",
+    "queryDNS NS sub.example.com",
+    "queryDNS NS example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "The DNSSEC chain for sub.example.com validates, but the zone is signed by its ccTLD registry rather than independently configured by the domain owner. The zone is cryptographically protected, but the owner has less direct control over key management.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "medium",
+        "title": "DNSSEC is registry-managed",
+      },
+      {
+        "category": "dnssec",
+        "detail": "sub.example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 85,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > signed zone with AD set and modern algorithm 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > signed zone with NSEC3PARAM audits (excessive iterations + salt) 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses NSEC3 with 150 hash iterations. RFC 9276 §3.3 recommends 0 iterations; values above 100 enable CPU-exhaustion attacks against resolvers. Reduce to 0 immediately.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "high",
+        "title": "NSEC3 iteration count excessive (150)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses NSEC3 with a non-empty salt. RFC 9276 §3.1 recommends an empty salt (denoted "-"). Salts provide no effective protection against offline dictionary attacks on NSEC3-hashed owner names.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "NSEC3 uses non-empty salt",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 70,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > signed zone with NSEC3PARAM non-zero iterations and empty salt 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses NSEC3 with 5 hash iterations. RFC 9276 recommends 0 iterations. Non-zero values add computational overhead without meaningful security benefit.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "medium",
+        "title": "NSEC3 iteration count non-zero (5)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 85,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > unsigned zone with a transient AD=true is still unsigned 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is not configured for example.com. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC not enabled",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > unsigned zone: DNSSEC not enabled with penaltyOverride 40 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is not configured for example.com. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC not enabled",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > validated chain with no auditable material falls back to the affirmative finding 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is properly configured for example.com. DNS responses are cryptographically verified.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "DNSSEC enabled and validated",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > validation failing: DNSKEY + DS but AD not set 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "DNSKEY and DS records are present for example.com but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": true,
+        },
+        "severity": "high",
+        "title": "DNSSEC validation failing",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > weak algorithm: deprecated RSA/SHA-1 DNSKEY with SHA-1 DS digest 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 5 (RSA/SHA-1), which is deprecated per RFC 8624 and should not be used. Upgrade to ECDSA (algorithm 13/14), Ed25519 (algorithm 15), or Ed448 (algorithm 16).",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "high",
+        "title": "Deprecated DNSKEY algorithm (RSA/SHA-1)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DS digest type 1 (SHA-1), which is deprecated. Use SHA-256 (type 2) or SHA-384 (type 4) instead.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "medium",
+        "title": "Deprecated DS digest type (SHA-1)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > apex zone context behaves like no zone context 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > inherited label evaluates the apex and leads with the inheritance note (signed) 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "www.example.com is not a separately delegated zone, so its DNSSEC posture is inherited from and evaluated at the zone apex example.com — the verdict below applies to example.com.",
+        "metadata": {
+          "confidence": "deterministic",
+          "inheritedFromApex": "example.com",
+        },
+        "severity": "info",
+        "title": "DNSSEC posture inherited from zone apex",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > inherited label on an unsigned apex 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": false,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "www.example.com is not a separately delegated zone, so its DNSSEC posture is inherited from and evaluated at the zone apex example.com — the verdict below applies to example.com.",
+        "metadata": {
+          "confidence": "deterministic",
+          "inheritedFromApex": "example.com",
+        },
+        "severity": "info",
+        "title": "DNSSEC posture inherited from zone apex",
+      },
+      {
+        "category": "dnssec",
+        "detail": "DNSSEC is not configured for example.com. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "missingControl": false,
+          "penaltyOverride": 40,
+        },
+        "severity": "high",
+        "title": "DNSSEC not enabled",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 60,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > inherited label whose chain is unmeasured 1`] = `
+{
+  "calls": [
+    "raw A example.com",
+    "withRcode DNSKEY example.com",
+    "withRcode DS example.com",
+    "queryDNS NSEC3PARAM example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "www.example.com is not a separately delegated zone, so its DNSSEC posture is inherited from and evaluated at the zone apex example.com — the verdict below applies to example.com.",
+        "metadata": {
+          "confidence": "deterministic",
+          "inheritedFromApex": "example.com",
+        },
+        "severity": "info",
+        "title": "DNSSEC posture inherited from zone apex",
+      },
+      {
+        "category": "dnssec",
+        "detail": "example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+      {
+        "category": "dnssec",
+        "detail": "The DS lookup for example.com did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.",
+        "metadata": {
+          "confidence": "heuristic",
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "DNSSEC chain of trust not assessable",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "recordPresent": true,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > non-apex label with a non-inherited status is evaluated as itself 1`] = `
+{
+  "calls": [
+    "raw A sub.example.com",
+    "withRcode DNSKEY sub.example.com",
+    "withRcode DS sub.example.com",
+    "queryDNS NSEC3PARAM sub.example.com",
+    "queryDNS NS sub.example.com",
+    "queryDNS NS example.com",
+  ],
+  "result": {
+    "category": "dnssec",
+    "controlPresent": true,
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "sub.example.com uses DNSKEY algorithm 13 (ECDSA P-256), which is a modern and secure choice.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Modern DNSSEC algorithm (ECDSA P-256)",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkDNSSEC output pin > zone context > unknown delegation on a non-apex label: not assessed with no queries 1`] = `
+{
+  "calls": [],
+  "result": {
+    "category": "dnssec",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "dnssec",
+        "detail": "Could not determine the authoritative zone for www.example.com due to a transient DNS failure; DNSSEC posture was not assessed.",
+        "severity": "info",
+        "title": "DNSSEC not assessed",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "score": 0,
+  },
+}
+`;
