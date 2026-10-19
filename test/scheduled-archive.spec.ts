@@ -320,4 +320,89 @@ describe('scan_rollup prune (S2)', () => {
 
 		expect((scan.db as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare).not.toHaveBeenCalled();
 	});
+
+	it('logs the failure and resolves when the scan_rollup DELETE rejects (fail-soft)', async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+			logs.push(String(line));
+		});
+		const run = vi.fn(async () => {
+			throw new Error('D1_ERROR: scan_rollup locked');
+		});
+		const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ run })) }));
+		const env = {
+			SCAN_SCHEDULE_DB: { prepare } as unknown as D1Database,
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await expect(handleScheduled(env)).resolves.toBeUndefined();
+
+		expect(run).toHaveBeenCalledTimes(1);
+		const failure = logs.map((l) => JSON.parse(l)).find((l) => l.details?.table === 'scan_rollup');
+		expect(failure).toMatchObject({
+			severity: 'error',
+			category: 'retention',
+			error: 'D1_ERROR: scan_rollup locked',
+			details: { table: 'scan_rollup', operation: 'prune_older_than_configured' },
+		});
+	});
+});
+
+describe('access-log archive failure holds the rows (no data loss)', () => {
+	it('R2 put rejects -> logs the archive failure and SKIPS the retention DELETE', async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+			logs.push(String(line));
+		});
+		const intel = capturingIntelDb([expiringRow()]);
+		const put = vi.fn(async () => {
+			throw new Error('R2 unavailable');
+		});
+		const env = {
+			INTELLIGENCE_DB: intel.db,
+			MCP_ACCESS_LOG_ARCHIVE: { put } as unknown as R2Bucket,
+			ANALYTICS_ARCHIVE_ENABLED: 'true',
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await expect(handleScheduled(env)).resolves.toBeUndefined();
+
+		expect(put).toHaveBeenCalledTimes(1);
+		// Archive-before-delete: a failed archive must never be followed by the DELETE.
+		expect(intel.statements.some((s) => /DELETE FROM mcp_access_log/i.test(s.sql))).toBe(false);
+		const failure = logs.map((l) => JSON.parse(l)).find((l) => l.details?.operation === 'archive_before_delete');
+		expect(failure).toMatchObject({
+			severity: 'error',
+			category: 'retention',
+			error: 'R2 unavailable',
+			details: { table: 'mcp_access_log', operation: 'archive_before_delete' },
+		});
+	});
+
+	it('stringifies a non-Error archive rejection and still holds the rows', async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+			logs.push(String(line));
+		});
+		const intel = capturingIntelDb([expiringRow()]);
+		const env = {
+			INTELLIGENCE_DB: intel.db,
+			MCP_ACCESS_LOG_ARCHIVE: {
+				put: vi.fn(async () => {
+					throw 'quota exceeded';
+				}),
+			} as unknown as R2Bucket,
+			ANALYTICS_ARCHIVE_ENABLED: 'true',
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled(env);
+
+		expect(intel.statements.some((s) => /DELETE FROM mcp_access_log/i.test(s.sql))).toBe(false);
+		const failure = logs.map((l) => JSON.parse(l)).find((l) => l.details?.operation === 'archive_before_delete');
+		expect(failure).toMatchObject({ error: 'quota exceeded' });
+	});
 });

@@ -34,4 +34,31 @@ describe('GET /internal/analytics/forensics', () => {
 		expect(body.events[0].ip).toBe('192.0.2.77'); // decrypted
 		expect(auditRun).toHaveBeenCalledTimes(1); // self-audit written
 	});
+
+	it('still returns the events and logs a warn when the audit INSERT rejects (fail-open trail)', async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+			logs.push(String(line));
+		});
+		const { internalRoutes } = await import('../src/internal');
+		const auditRun = vi.fn(async () => {
+			throw new Error('D1_ERROR: audit table missing');
+		});
+		const all = vi.fn(async () => ({ results: [{ ip_ciphertext: null, ip_masked: '192.0.2.xxx', key_hash: 'abc', created_at: 1 }] }));
+		const prepare = vi.fn((sql: string) => (sql.includes('mcp_access_log_audit') ? { bind: () => ({ run: auditRun }) } : { bind: () => ({ all }) }));
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request('/analytics/forensics', { headers: { authorization: 'Bearer right' } }, env);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { count: number; events: Array<{ ip: string }> };
+		expect(body.count).toBe(1);
+		expect(body.events[0].ip).toBe('192.0.2.xxx'); // masked fallback when there is no ciphertext
+		expect(auditRun).toHaveBeenCalledTimes(1);
+		const warn = logs.map((l) => JSON.parse(l)).find((l) => l.details?.event === 'analytics.forensics.decrypt');
+		expect(warn).toMatchObject({
+			severity: 'warn',
+			category: 'audit',
+			error: 'D1_ERROR: audit table missing',
+			details: { event: 'analytics.forensics.decrypt', auditWriteFailed: true },
+		});
+	});
 });
