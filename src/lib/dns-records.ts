@@ -340,7 +340,9 @@ function isHexLengthMarker(token: string | undefined): boolean {
 /** Build a schema-valid TLSA record from `usage selector matchingType certData...` fields in the given radix. */
 function tlsaFromFields(fields: string[], radix: number): TlsaRecord | null {
 	if (fields.length < 4) return null;
-	const [usage, selector, matchingType] = fields.slice(0, 3).map((field) => parseInt(field, radix));
+	const usage = parseInt(fields[0], radix);
+	const selector = parseInt(fields[1], radix);
+	const matchingType = parseInt(fields[2], radix);
 	if ([usage, selector, matchingType].some(Number.isNaN)) return null;
 
 	const certData = fields.slice(3).join('');
