@@ -304,6 +304,52 @@ function remainingBudgetMs(probeTimeoutMs: number, deadlineMs: number | undefine
 	return Math.min(probeTimeoutMs, deadlineMs - Date.now());
 }
 
+function trimmedString(value: unknown): string | null {
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** The registrar entity of an RDAP domain response, or null for any non-conforming shape. */
+function registrarEntity(rdapData: unknown): object | null {
+	if (typeof rdapData !== 'object' || rdapData === null) return null;
+	const entities = (rdapData as { entities?: unknown }).entities;
+	if (!Array.isArray(entities)) return null;
+	return findEntityByRole(entities as Parameters<typeof findEntityByRole>[0], 'registrar') ?? null;
+}
+
+function ianaIdFromPublicId(publicId: unknown): string | null {
+	if (typeof publicId !== 'object' || publicId === null) return null;
+	const { type, identifier } = publicId as { type?: unknown; identifier?: unknown };
+	return typeof type === 'string' && /^IANA Registrar ID$/i.test(type.trim()) ? trimmedString(identifier) : null;
+}
+
+function registrarIanaId(registrar: object): string | null {
+	const publicIds = (registrar as { publicIds?: unknown }).publicIds;
+	if (!Array.isArray(publicIds)) return null;
+	for (const publicId of publicIds) {
+		const ianaId = ianaIdFromPublicId(publicId);
+		if (ianaId) return ianaId;
+	}
+	return null;
+}
+
+function vcardFnName(prop: unknown): string | null {
+	return Array.isArray(prop) && prop[0] === 'fn' ? trimmedString(prop[3]) : null;
+}
+
+function vcardProperties(registrar: object): unknown[] {
+	const vcardArray = (registrar as { vcardArray?: unknown }).vcardArray;
+	if (!Array.isArray(vcardArray) || vcardArray[0] !== 'vcard' || !Array.isArray(vcardArray[1])) return [];
+	return vcardArray[1] as unknown[];
+}
+
+function registrarName(registrar: object): string | null {
+	for (const prop of vcardProperties(registrar)) {
+		const name = vcardFnName(prop);
+		if (name) return name;
+	}
+	return null;
+}
+
 /**
  * Pull the registrar's IANA ID and display name out of a parsed RDAP domain
  * response. Local to the lookalike surface rather than imported because
@@ -315,36 +361,9 @@ function remainingBudgetMs(probeTimeoutMs: number, deadlineMs: number | undefine
  * brand-held predicate treats as "no evidence" (never as a match).
  */
 function extractRegistrar(rdapData: unknown): { ianaId: string | null; name: string | null } {
-	if (typeof rdapData !== 'object' || rdapData === null) return { ianaId: null, name: null };
-	const entities = (rdapData as { entities?: unknown }).entities;
-	if (!Array.isArray(entities)) return { ianaId: null, name: null };
-	const registrar = findEntityByRole(entities as Parameters<typeof findEntityByRole>[0], 'registrar');
+	const registrar = registrarEntity(rdapData);
 	if (!registrar) return { ianaId: null, name: null };
-
-	let ianaId: string | null = null;
-	const publicIds = (registrar as { publicIds?: unknown }).publicIds;
-	if (Array.isArray(publicIds)) {
-		for (const publicId of publicIds) {
-			if (typeof publicId !== 'object' || publicId === null) continue;
-			const { type, identifier } = publicId as { type?: unknown; identifier?: unknown };
-			if (typeof type === 'string' && /^IANA Registrar ID$/i.test(type.trim()) && typeof identifier === 'string' && identifier.trim()) {
-				ianaId = identifier.trim();
-				break;
-			}
-		}
-	}
-
-	let name: string | null = null;
-	const vcardArray = (registrar as { vcardArray?: unknown }).vcardArray;
-	if (Array.isArray(vcardArray) && vcardArray[0] === 'vcard' && Array.isArray(vcardArray[1])) {
-		for (const prop of vcardArray[1] as unknown[]) {
-			if (Array.isArray(prop) && prop[0] === 'fn' && typeof prop[3] === 'string' && prop[3].trim()) {
-				name = prop[3].trim();
-				break;
-			}
-		}
-	}
-	return { ianaId, name };
+	return { ianaId: registrarIanaId(registrar), name: registrarName(registrar) };
 }
 
 /**

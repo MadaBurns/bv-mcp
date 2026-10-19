@@ -88,6 +88,25 @@ interface VariantProbeResult {
 	authProbeFailed: boolean;
 }
 
+/** Regional TLD families keyed by a predicate on the (dot-prefixed, lowercase) effective TLD; first match wins. */
+const REGIONAL_TLD_FAMILIES: ReadonlyArray<{ matches: (tld: string) => boolean; tlds: readonly string[] }> = [
+	{ matches: (tld) => tld.endsWith('.nz') || tld === '.kiwi', tlds: NZ_REGIONAL },
+	{ matches: (tld) => UK_REGIONAL.includes(tld), tlds: UK_REGIONAL },
+	{ matches: (tld) => tld.endsWith('.au'), tlds: AU_REGIONAL },
+	{ matches: (tld) => GENERIC_TLDS.has(tld), tlds: GENERIC_EXTRA },
+];
+
+/** Global TLDs first, then the regional family for the effective TLD (insertion order is the dedupe order). */
+function candidateTlds(tldLower: string): Set<string> {
+	const allTlds = new Set<string>(GLOBAL_TLDS);
+	for (const family of REGIONAL_TLD_FAMILIES) {
+		if (!family.matches(tldLower)) continue;
+		for (const tld of family.tlds) allTlds.add(tld);
+		break;
+	}
+	return allTlds;
+}
+
 /**
  * Generate alternate-TLD variants for a given brand name and effective TLD.
  * Excludes the primary domain from the result.
@@ -98,36 +117,11 @@ export function generateVariants(brand: string, effectiveTld: string, primaryDom
 	// but the constant sets use leading dots. Ensure consistent format for comparison.
 	const tldLower = rawTld.startsWith('.') ? rawTld : '.' + rawTld;
 	const primaryLower = primaryDomain.toLowerCase();
-	const allTlds = new Set<string>();
 
-	// Add global TLDs
-	for (const tld of GLOBAL_TLDS) {
-		allTlds.add(tld);
-	}
-
-	// Add regional variants based on TLD family
-	if (tldLower.endsWith('.nz') || tldLower === '.kiwi') {
-		for (const tld of NZ_REGIONAL) allTlds.add(tld);
-	} else if (tldLower === '.co.uk' || tldLower === '.org.uk' || tldLower === '.uk') {
-		for (const tld of UK_REGIONAL) allTlds.add(tld);
-	} else if (tldLower.endsWith('.au')) {
-		for (const tld of AU_REGIONAL) allTlds.add(tld);
-	} else if (GENERIC_TLDS.has(tldLower)) {
-		for (const tld of GENERIC_EXTRA) allTlds.add(tld);
-	}
-
-	const variants: string[] = [];
-	for (const tld of allTlds) {
-		const candidate = `${brand}${tld}`;
-		if (candidate.toLowerCase() === primaryLower) continue;
-
-		const validation = validateDomain(candidate);
-		if (validation.valid) {
-			variants.push(candidate);
-		}
-	}
-
-	return variants.sort();
+	return [...candidateTlds(tldLower)]
+		.map((tld) => `${brand}${tld}`)
+		.filter((candidate) => candidate.toLowerCase() !== primaryLower && validateDomain(candidate).valid)
+		.sort();
 }
 
 /**
@@ -293,23 +287,22 @@ export function canClaimUnregistered(observed: { ns: string[]; mx: string[]; has
 	return observed.ns.length === 0 && observed.mx.length === 0 && !observed.hasSpf;
 }
 
-/**
- * Classify a probed variant into a finding based on risk.
- * When the variant is owned by the seed organisation, email-auth findings are
- * downgraded one severity level (it is the customer's own domain to fix, not a
- * hostile shadow).
- *
- * D4 (2026-07-26 correctness-defects design §5) — same-owner detection is
- * driven by `classifyOwnership()`'s structural verdict, replacing the naive
- * `sharesNsWithPrimary()` >=2-shared-hostname set-overlap heuristic. That
- * heuristic was actively dangerous on shared-NS providers (§3.3): two unrelated
- * banks pooled onto Akamai could reach its threshold by luck and have a genuine
- * third party's finding softened, while a customer's own domain delegated
- * in-bailiwick (`ns1.<seed>`) scored zero overlap and was reported to them as a
- * hostile CRITICAL. The severity CEILING is applied separately, by
- * {@link applyOwnershipGate}; this function only computes the unclamped ladder.
- */
-function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownership: OwnershipAssessment): Finding {
+interface VariantClassifyContext {
+	variant: string;
+	mx: string[];
+	hasSpf: boolean;
+	dmarcPolicy: string | null;
+	hasNullMxOnly: boolean;
+	hasMx: boolean;
+	hasNs: boolean;
+	authProbeFailed: boolean;
+	sameOwner: boolean;
+	ownerNote: string;
+	ownership: OwnershipAssessment;
+	meta: Record<string, unknown>;
+}
+
+function buildClassifyContext(probe: VariantProbeResult, ownership: OwnershipAssessment): VariantClassifyContext {
 	const { variant, ns, mx, hasSpf, dmarcPolicy } = probe;
 	const hasNullMxOnly = mx.length > 0 && mx.every(isNullMxExchange);
 	const hasMx = mx.length > 0 && !hasNullMxOnly;
@@ -329,139 +322,187 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownersh
 	// States the evidence that actually produced the verdict rather than a fixed
 	// "shared nameservers" sentence, which is wrong for the in-bailiwick case.
 	const ownerNote = ` Likely same owner (${ownership.rationale}) — still recommended to add DMARC.`;
+	return {
+		variant,
+		mx,
+		hasSpf,
+		dmarcPolicy,
+		hasNullMxOnly,
+		hasMx,
+		hasNs,
+		authProbeFailed: probe.authProbeFailed,
+		sameOwner,
+		ownerNote,
+		ownership,
+		meta,
+	};
+}
 
+function nullMxFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta } = ctx;
 	// RFC 7505 explicit non-mail posture — the domain is doing the right thing for a
 	// non-mail name. Don't pretend it's spoofable.
-	if (hasNullMxOnly) {
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain explicit non-mail (RFC 7505)',
+		'info',
+		`${variant} declares an RFC 7505 null MX (priority 0 to "." or "localhost"), explicitly refusing mail. This is the recommended anti-spoofing posture for non-mail domains.`,
+		meta,
+	);
+}
+
+function authNotAssessedFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta } = ctx;
+	// The SPF/DMARC evidence this ladder climbs on was never measured (probe rejected or
+	// SERVFAIL/REFUSED). Reporting "no SPF or DMARC" here would certify absence from a
+	// non-answer, and the `high` rung carries `missingControl`. Abstain for this candidate:
+	// `info`, `inconclusive` + `errorKind`, and no `missingControl`.
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain email authentication not assessed',
+		'info',
+		`${variant} has mail servers, but the SPF or DMARC lookup did not complete, so its email-authentication posture could not be assessed. No conclusion is drawn; re-run to complete this probe.`,
+		{ ...meta, inconclusive: true, errorKind: 'dns_error' },
+	);
+}
+
+function fullySpoofableFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta, sameOwner, ownerNote } = ctx;
+	// MX present, no SPF AND no DMARC → the top rung, on the seed's own domain.
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain fully spoofable',
+		'high',
+		`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.${sameOwner ? ownerNote : ''}`,
+		// SQ-74: mail infra with zero sender-authentication is a genuinely absent control,
+		// declared structurally (only this rung — the other rungs below keep plain `meta`)
+		// so a reword cannot silently un-zero `shadow_domains`.
+		{ ...meta, missingControl: true },
+	);
+}
+
+function lacksDmarcFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta, sameOwner, ownerNote } = ctx;
+	// MX present, SPF but no DMARC.
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain lacks DMARC',
+		'medium',
+		`${variant} has mail servers and SPF but no DMARC record. Without DMARC, SPF alone cannot prevent spoofing.${sameOwner ? ownerNote : ''}`,
+		meta,
+	);
+}
+
+function dmarcNotEnforcingFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta, sameOwner, ownerNote } = ctx;
+	// MX present, DMARC p=none.
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain DMARC not enforcing',
+		'medium',
+		`${variant} has mail servers with DMARC policy set to "none" — spoofed emails are monitored but not blocked.${sameOwner ? ownerNote.replace('add DMARC', 'enforce DMARC') : ''}`,
+		meta,
+	);
+}
+
+/** Rung for a missing DMARC record: SPF decides between "lacks DMARC" and the top "fully spoofable" rung. */
+function missingDmarcFinding(ctx: VariantClassifyContext): Finding {
+	return ctx.hasSpf ? lacksDmarcFinding(ctx) : fullySpoofableFinding(ctx);
+}
+
+function enforcingDmarcFinding(ctx: VariantClassifyContext, primaryMx: string[]): Finding {
+	const { variant, meta, sameOwner, ownership } = ctx;
+	if (!isSameMxInfra(ctx.mx, primaryMx)) {
+		// Divergent MX infrastructure → medium
+		const divergentNote = sameOwner
+			? ` Nameserver evidence indicates common ownership (${ownership.rationale}) despite the different mail servers.`
+			: '';
 		return createFinding(
 			'shadow_domains',
-			'Shadow domain explicit non-mail (RFC 7505)',
-			'info',
-			`${variant} declares an RFC 7505 null MX (priority 0 to "." or "localhost"), explicitly refusing mail. This is the recommended anti-spoofing posture for non-mail domains.`,
+			'Shadow domain divergent mail infrastructure',
+			'medium',
+			`${variant} uses different mail servers than the primary domain despite having enforcing DMARC. This may indicate separate management.${divergentNote}`,
 			meta,
 		);
 	}
 
-	if (hasMx && probe.authProbeFailed) {
-		// The SPF/DMARC evidence this ladder climbs on was never measured (probe rejected or
-		// SERVFAIL/REFUSED). Reporting "no SPF or DMARC" here would certify absence from a
-		// non-answer, and the `high` rung carries `missingControl`. Abstain for this candidate:
-		// `info`, `inconclusive` + `errorKind`, and no `missingControl`.
+	// Same MX infra, properly authenticated → low
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain well-managed',
+		'low',
+		`${variant} has matching mail infrastructure and enforcing DMARC — properly managed shadow domain.`,
+		meta,
+	);
+}
+
+function unknownDmarcPolicyFinding(ctx: VariantClassifyContext, primaryMx: string[]): Finding {
+	const { variant, meta, sameOwner } = ctx;
+	// DMARC present with unknown policy — treat as high-ish (SPF but unclear DMARC)
+	if (!isSameMxInfra(ctx.mx, primaryMx)) {
+		const divergentNote = sameOwner ? ` Shared nameservers suggest common ownership despite different mail servers.` : '';
 		return createFinding(
 			'shadow_domains',
-			'Shadow domain email authentication not assessed',
-			'info',
-			`${variant} has mail servers, but the SPF or DMARC lookup did not complete, so its email-authentication posture could not be assessed. No conclusion is drawn; re-run to complete this probe.`,
-			{ ...meta, inconclusive: true, errorKind: 'dns_error' },
-		);
-	}
-
-	if (hasMx) {
-		// LADDER ARMS ARE OWNED-ONLY BY CONSTRUCTION (fix round 1, F2). Each rung
-		// below used to read `sameOwner ? X : Y`, where the `Y` (non-owned) arm
-		// carried the harsher severity — `'critical'` on the rung immediately
-		// below. Those arms are now UNREACHABLE in output: `sameOwner` is exactly
-		// `verdict === 'owned_by_seed'`, so `Y` is only ever computed for a finding
-		// `applyOwnershipGate()` immediately clamps to `info` and re-words. Leaving
-		// a live `'critical'` literal here was a latent trap — any future
-		// relaxation of the gate would silently resurrect a critical
-		// shadow-domain finding about a third party's mail hygiene. The arms are
-		// collapsed to the owned-domain severity so the dead arm cannot be reached
-		// by construction; the rung itself is still named by the finding title.
-		if (!hasSpf && dmarcPolicy === null) {
-			// MX present, no SPF AND no DMARC → the top rung, on the seed's own domain.
-			return createFinding(
-				'shadow_domains',
-				'Shadow domain fully spoofable',
-				'high',
-				`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.${sameOwner ? ownerNote : ''}`,
-				// SQ-74: mail infra with zero sender-authentication is a genuinely absent control,
-				// declared structurally (only this rung — the other rungs below keep plain `meta`)
-				// so a reword cannot silently un-zero `shadow_domains`.
-				{ ...meta, missingControl: true },
-			);
-		}
-
-		if (hasSpf && dmarcPolicy === null) {
-			// MX present, SPF but no DMARC.
-			return createFinding(
-				'shadow_domains',
-				'Shadow domain lacks DMARC',
-				'medium',
-				`${variant} has mail servers and SPF but no DMARC record. Without DMARC, SPF alone cannot prevent spoofing.${sameOwner ? ownerNote : ''}`,
-				meta,
-			);
-		}
-
-		if (dmarcPolicy === 'none') {
-			// MX present, DMARC p=none.
-			return createFinding(
-				'shadow_domains',
-				'Shadow domain DMARC not enforcing',
-				'medium',
-				`${variant} has mail servers with DMARC policy set to "none" — spoofed emails are monitored but not blocked.${sameOwner ? ownerNote.replace('add DMARC', 'enforce DMARC') : ''}`,
-				meta,
-			);
-		}
-
-		// DMARC is quarantine or reject — check MX infrastructure match
-		if (dmarcPolicy === 'quarantine' || dmarcPolicy === 'reject') {
-			if (!isSameMxInfra(mx, primaryMx)) {
-				// Divergent MX infrastructure → medium
-				const divergentNote = sameOwner
-					? ` Nameserver evidence indicates common ownership (${ownership.rationale}) despite the different mail servers.`
-					: '';
-				return createFinding(
-					'shadow_domains',
-					'Shadow domain divergent mail infrastructure',
-					'medium',
-					`${variant} uses different mail servers than the primary domain despite having enforcing DMARC. This may indicate separate management.${divergentNote}`,
-					meta,
-				);
-			}
-
-			// Same MX infra, properly authenticated → low
-			return createFinding(
-				'shadow_domains',
-				'Shadow domain well-managed',
-				'low',
-				`${variant} has matching mail infrastructure and enforcing DMARC — properly managed shadow domain.`,
-				meta,
-			);
-		}
-
-		// DMARC present with unknown policy — treat as high-ish (SPF but unclear DMARC)
-		if (!isSameMxInfra(mx, primaryMx)) {
-			const divergentNote = sameOwner ? ` Shared nameservers suggest common ownership despite different mail servers.` : '';
-			return createFinding(
-				'shadow_domains',
-				'Shadow domain divergent mail infrastructure',
-				'medium',
-				`${variant} uses different mail servers than the primary domain.${divergentNote}`,
-				meta,
-			);
-		}
-
-		return createFinding(
-			'shadow_domains',
-			'Shadow domain well-managed',
-			'low',
-			`${variant} has matching mail infrastructure and DMARC configured.`,
+			'Shadow domain divergent mail infrastructure',
+			'medium',
+			`${variant} uses different mail servers than the primary domain.${divergentNote}`,
 			meta,
 		);
 	}
 
-	if (hasNs) {
-		// Registered but no MX → info
-		return createFinding(
-			'shadow_domains',
-			'Shadow domain registered, no mail',
-			'info',
-			`${variant} is registered (has NS records) but has no mail infrastructure configured.`,
-			meta,
-		);
-	}
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain well-managed',
+		'low',
+		`${variant} has matching mail infrastructure and DMARC configured.`,
+		meta,
+	);
+}
 
+function isEnforcingDmarc(policy: string | null): boolean {
+	return policy === 'quarantine' || policy === 'reject';
+}
+
+/**
+ * MX present. The SPF/DMARC ladder, top rung down.
+ *
+ * LADDER ARMS ARE OWNED-ONLY BY CONSTRUCTION (fix round 1, F2). Each rung
+ * below used to read `sameOwner ? X : Y`, where the `Y` (non-owned) arm
+ * carried the harsher severity — `'critical'` on the rung immediately
+ * below. Those arms are now UNREACHABLE in output: `sameOwner` is exactly
+ * `verdict === 'owned_by_seed'`, so `Y` is only ever computed for a finding
+ * `applyOwnershipGate()` immediately clamps to `info` and re-words. Leaving
+ * a live `'critical'` literal here was a latent trap — any future
+ * relaxation of the gate would silently resurrect a critical
+ * shadow-domain finding about a third party's mail hygiene. The arms are
+ * collapsed to the owned-domain severity so the dead arm cannot be reached
+ * by construction; the rung itself is still named by the finding title.
+ */
+function classifyMailLadder(ctx: VariantClassifyContext, primaryMx: string[]): Finding {
+	if (ctx.dmarcPolicy === null) return missingDmarcFinding(ctx);
+	if (ctx.dmarcPolicy === 'none') return dmarcNotEnforcingFinding(ctx);
+	// DMARC is quarantine or reject — check MX infrastructure match
+	return isEnforcingDmarc(ctx.dmarcPolicy) ? enforcingDmarcFinding(ctx, primaryMx) : unknownDmarcPolicyFinding(ctx, primaryMx);
+}
+
+function classifyMailVariant(ctx: VariantClassifyContext, primaryMx: string[]): Finding {
+	return ctx.authProbeFailed ? authNotAssessedFinding(ctx) : classifyMailLadder(ctx, primaryMx);
+}
+
+function registeredNoMailFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta } = ctx;
+	// Registered but no MX → info
+	return createFinding(
+		'shadow_domains',
+		'Shadow domain registered, no mail',
+		'info',
+		`${variant} is registered (has NS records) but has no mail infrastructure configured.`,
+		meta,
+	);
+}
+
+function recordsNotObservedFinding(ctx: VariantClassifyContext): Finding {
+	const { variant, meta, hasSpf } = ctx;
 	// Reached only for a variant Phase 1 proved registered whose detail probe
 	// observed no records. That is a measurement gap, never an availability
 	// claim — the pre-fix code emitted "unregistered" here while carrying the
@@ -487,6 +528,30 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownersh
 			: `${variant} is registered but no nameserver, mail or SPF records were observed during this scan.`,
 		{ ...meta, registrationState: 'registered', confidence: 'heuristic' },
 	);
+}
+
+/**
+ * Classify a probed variant into a finding based on risk.
+ * When the variant is owned by the seed organisation, email-auth findings are
+ * downgraded one severity level (it is the customer's own domain to fix, not a
+ * hostile shadow).
+ *
+ * D4 (2026-07-26 correctness-defects design §5) — same-owner detection is
+ * driven by `classifyOwnership()`'s structural verdict, replacing the naive
+ * `sharesNsWithPrimary()` >=2-shared-hostname set-overlap heuristic. That
+ * heuristic was actively dangerous on shared-NS providers (§3.3): two unrelated
+ * banks pooled onto Akamai could reach its threshold by luck and have a genuine
+ * third party's finding softened, while a customer's own domain delegated
+ * in-bailiwick (`ns1.<seed>`) scored zero overlap and was reported to them as a
+ * hostile CRITICAL. The severity CEILING is applied separately, by
+ * {@link applyOwnershipGate}; this function only computes the unclamped ladder.
+ */
+function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownership: OwnershipAssessment): Finding {
+	const ctx = buildClassifyContext(probe, ownership);
+	if (ctx.hasNullMxOnly) return nullMxFinding(ctx);
+	if (ctx.hasMx) return classifyMailVariant(ctx, primaryMx);
+	if (ctx.hasNs) return registeredNoMailFinding(ctx);
+	return recordsNotObservedFinding(ctx);
 }
 
 /**
