@@ -195,22 +195,16 @@ function safeParse(json: string | null): unknown {
 	}
 }
 
-/**
- * discover_brand_domains_findings reader — owner-scoped lookup of the single
- * discovery target's CheckResult. Returns `notReady` while in-flight, `notFound`
- * for an unknown or other-owner operationId (ID-enumeration defense), and the
- * parsed discovery result once complete.
- */
-export async function discoverBrandDomainsFindings(
-	operationId: string,
-	ownerId: string,
-	deps: { db: D1Database },
-): Promise<CheckResult> {
+function validateOperationId(operationId: string): CheckResult | undefined {
 	if (typeof operationId !== 'string' || operationId.trim().length === 0) {
 		return findingsError('invalidInput', 'operationId is required.');
 	}
+	return undefined;
+}
 
-	const audit = (await deps.db
+/** `notFound` for an unknown or other-owner audit (ID-enumeration defense); `undefined` when the caller owns it. */
+async function ownedAuditNotFound(db: D1Database, operationId: string, ownerId: string): Promise<CheckResult | undefined> {
+	const audit = (await db
 		.prepare('SELECT id, owner_id, status FROM brand_audits WHERE id = ? LIMIT 1')
 		.bind(operationId)
 		.first()) as DiscoverAuditRow | null;
@@ -218,8 +212,12 @@ export async function discoverBrandDomainsFindings(
 	if (!audit || audit.owner_id !== ownerId) {
 		return findingsError('notFound', `No discovery operation found with id ${operationId}.`, { operationId });
 	}
+	return undefined;
+}
 
-	const targetRow = (await deps.db
+/** Read the single discovery target of an owned audit and report it (or why it cannot be reported yet). */
+async function discoveryTargetResult(db: D1Database, operationId: string): Promise<CheckResult> {
+	const targetRow = (await db
 		.prepare('SELECT target, status, result_json, error, completed_at FROM brand_audit_targets WHERE audit_id = ? ORDER BY created_at ASC LIMIT 1')
 		.bind(operationId)
 		.first()) as DiscoverTargetRow | null;
@@ -248,4 +246,22 @@ export async function discoverBrandDomainsFindings(
 			error: targetRow.error,
 		}),
 	]);
+}
+
+/**
+ * discover_brand_domains_findings reader — owner-scoped lookup of the single
+ * discovery target's CheckResult. Returns `notReady` while in-flight, `notFound`
+ * for an unknown or other-owner operationId (ID-enumeration defense), and the
+ * parsed discovery result once complete.
+ */
+export async function discoverBrandDomainsFindings(
+	operationId: string,
+	ownerId: string,
+	deps: { db: D1Database },
+): Promise<CheckResult> {
+	return (
+		validateOperationId(operationId) ??
+		(await ownedAuditNotFound(deps.db, operationId, ownerId)) ??
+		(await discoveryTargetResult(deps.db, operationId))
+	);
 }

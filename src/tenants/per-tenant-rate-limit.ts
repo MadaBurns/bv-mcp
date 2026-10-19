@@ -103,6 +103,93 @@ function quotaFor(bucket: RateLimitBucket, tier: keyof typeof PER_TENANT_QUOTAS)
 	}
 }
 
+type RateVerdict = { allowed: boolean; remaining: number; resetAt: number; unavailable?: boolean };
+
+/** Everything one bucket check needs once the window, key and quota are resolved. */
+interface BucketCall {
+	kv: KVNamespace | undefined;
+	key: string;
+	bucket: RateLimitBucket;
+	amount: number;
+	quota: number;
+	reset: number;
+}
+
+/** A reservation is a whole number of units, at least one. */
+function isReservableAmount(amount: number): boolean {
+	return Number.isSafeInteger(amount) && amount >= 1;
+}
+
+function unavailableVerdict(reset: number): RateVerdict {
+	return { allowed: false, remaining: 0, resetAt: reset, unavailable: true };
+}
+
+/** Fail-soft verdict: let the request through when the best-effort counter cannot be read. */
+function softAllowVerdict(call: BucketCall): RateVerdict {
+	return { allowed: true, remaining: call.quota, resetAt: call.reset };
+}
+
+/** Current KV count (0 when absent or unparsable), or `undefined` when the KV read itself failed. */
+async function readKvCount(kv: KVNamespace, key: string): Promise<number | undefined> {
+	try {
+		const raw = await kv.get(key);
+		const parsed = raw === null ? Number.NaN : Number.parseInt(raw, 10);
+		return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Seed value for a coordinator reservation: the KV mirror when readable, else 0 (the coordinator stays authoritative). */
+async function seedCount(kv: KVNamespace | undefined, key: string): Promise<number> {
+	if (!kv) return 0;
+	return (await readKvCount(kv, key)) ?? 0;
+}
+
+/** Best-effort write: the verdict was already decided, so a failed put must not fail the request. */
+async function putCountBestEffort(kv: KVNamespace, key: string, count: number, bucket: RateLimitBucket): Promise<void> {
+	try {
+		await kv.put(key, String(count), { expirationTtl: TTL_BY_BUCKET[bucket] });
+	} catch {
+		// Non-authoritative / best-effort only.
+	}
+}
+
+/**
+ * Scan dispatches: commit the whole weighted reservation atomically in the coordinator before any work.
+ * A configured strong-state boundary must fail closed, otherwise a DO outage would silently turn into
+ * unlimited scan dispatches.
+ */
+async function reserveScanBudget(
+	call: BucketCall,
+	coordinationKey: string,
+	quotaCoordinator: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<RateVerdict> {
+	const current = await seedCount(call.kv, call.key);
+	try {
+		const reservation = await reserveBudgetWithCoordinator(coordinationKey, call.amount, call.quota, call.reset, quotaCoordinator, current);
+		if (!reservation) return unavailableVerdict(call.reset);
+		if (call.kv) await putCountBestEffort(call.kv, call.key, reservation.used, call.bucket);
+		return { allowed: reservation.allowed, remaining: reservation.remaining, resetAt: call.reset };
+	} catch {
+		return unavailableVerdict(call.reset);
+	}
+}
+
+/** Low-cost buckets: KV `get -> check -> put`, racey by design and fail-soft on any KV error. */
+async function recordInKv(call: BucketCall): Promise<RateVerdict> {
+	if (!call.kv) return softAllowVerdict(call);
+	const current = await readKvCount(call.kv, call.key);
+	if (current === undefined) return softAllowVerdict(call);
+	if (call.amount > call.quota - current) {
+		// Over quota — do not spend a write op on the increment, but do not fail.
+		return { allowed: false, remaining: 0, resetAt: call.reset };
+	}
+	const next = current + call.amount;
+	await putCountBestEffort(call.kv, call.key, next, call.bucket);
+	return { allowed: true, remaining: Math.max(0, call.quota - next), resetAt: call.reset };
+}
+
 /**
  * Reserve `amount` units and return the post-reservation verdict. Scan units
  * use strong state when supplied; the lower-cost KV buckets are best-effort.
@@ -118,77 +205,14 @@ export async function checkAndRecord(
 	tier: keyof typeof PER_TENANT_QUOTAS,
 	amount = 1,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
-): Promise<{ allowed: boolean; remaining: number; resetAt: number; unavailable?: boolean }> {
+): Promise<RateVerdict> {
 	const now = new Date();
 	const reset = resetAt(bucket, now);
 	const quota = quotaFor(bucket, tier);
 	const key = `${KEY_PREFIX}${subTenantId}:${bucket}:${windowKey(bucket, now)}`;
-	if (!Number.isSafeInteger(amount) || amount < 1) {
-		return { allowed: false, remaining: 0, resetAt: reset, unavailable: true };
-	}
+	if (!isReservableAmount(amount)) return unavailableVerdict(reset);
 
-	let current = 0;
-	if (kv) {
-		try {
-			const raw = await kv.get(key);
-			if (raw !== null) {
-				const parsed = Number.parseInt(raw, 10);
-				if (Number.isFinite(parsed) && parsed >= 0) current = parsed;
-			}
-		} catch {
-			// The scan coordinator remains authoritative even when its KV mirror
-			// cannot seed/mirror state. Other low-cost buckets preserve their
-			// historical fail-soft behavior.
-			if (bucket !== 'scans:day' || !quotaCoordinator) {
-				return { allowed: true, remaining: quota, resetAt: reset };
-			}
-		}
-	}
-
-	if (bucket === 'scans:day' && quotaCoordinator) {
-		try {
-			const reservation = await reserveBudgetWithCoordinator(
-				`tenant-scan:${subTenantId}:${windowKey(bucket, now)}`,
-				amount,
-				quota,
-				reset,
-				quotaCoordinator,
-				current,
-			);
-			if (!reservation) {
-				return { allowed: false, remaining: 0, resetAt: reset, unavailable: true };
-			}
-			if (kv) {
-				try {
-					await kv.put(key, String(reservation.used), { expirationTtl: TTL_BY_BUCKET[bucket] });
-				} catch {
-					// Non-authoritative mirror only; the atomic reservation committed.
-				}
-			}
-			return { allowed: reservation.allowed, remaining: reservation.remaining, resetAt: reset };
-		} catch {
-			// A configured strong-state boundary must fail closed. Otherwise a DO
-			// outage would silently turn into unlimited scan dispatches.
-			return { allowed: false, remaining: 0, resetAt: reset, unavailable: true };
-		}
-	}
-
-	if (!kv) {
-		return { allowed: true, remaining: quota, resetAt: reset };
-	}
-
-	if (amount > quota - current) {
-		// Over quota — do not spend a write op on the increment, but do not fail.
-		return { allowed: false, remaining: 0, resetAt: reset };
-	}
-
-	const next = current + amount;
-	try {
-		await kv.put(key, String(next), { expirationTtl: TTL_BY_BUCKET[bucket] });
-	} catch {
-		// Best-effort: even if the put fails we already returned the verdict
-		// based on the read, so let the request proceed.
-	}
-
-	return { allowed: true, remaining: Math.max(0, quota - next), resetAt: reset };
+	const call: BucketCall = { kv, key, bucket, amount, quota, reset };
+	const strongState = bucket === 'scans:day' ? quotaCoordinator : undefined;
+	return strongState ? reserveScanBudget(call, `tenant-scan:${subTenantId}:${windowKey(bucket, now)}`, strongState) : recordInKv(call);
 }

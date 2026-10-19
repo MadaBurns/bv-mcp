@@ -16,6 +16,8 @@ export interface MxTargetSelection {
 	rejectedExchanges: string[];
 }
 
+const MAX_SMTP_MX_TARGETS = 3;
+
 function normalizedExchange(exchange: string): string {
 	return exchange.trim().toLowerCase().replace(/\.$/u, '');
 }
@@ -56,40 +58,68 @@ export function isPublicSmtpAddress(address: string): boolean {
  * host. Lowest preference wins, then exchange and address lexical order.
  */
 export function selectSmtpMxTargets(records: MxRecordWithAddresses[]): MxTargetSelection {
-	if (records.length === 0) return { status: 'not-assessed', outcome: 'no_explicit_mx', targets: [], rejectedExchanges: [] };
-	if (records.length === 1 && records[0]!.preference === 0 && records[0]!.exchange.trim() === '.') {
-		return { status: 'not-applicable', outcome: 'null_mx', targets: [], rejectedExchanges: [] };
-	}
+	const degenerate = degenerateSelection(records);
+	if (degenerate) return degenerate;
+	const { targets, rejected } = collectTargets(records);
+	return buildSelection(targets, rejected);
+}
 
+/** The terminal selection for an empty record set or a null MX; undefined when real MX records need probing. */
+function degenerateSelection(records: MxRecordWithAddresses[]): MxTargetSelection | undefined {
+	if (records.length === 0) return { status: 'not-assessed', outcome: 'no_explicit_mx', targets: [], rejectedExchanges: [] };
+	if (isNullMx(records)) return { status: 'not-applicable', outcome: 'null_mx', targets: [], rejectedExchanges: [] };
+	return undefined;
+}
+
+/** Walk records in priority order, pinning up to MAX_SMTP_MX_TARGETS targets and noting rejected exchanges. */
+function collectTargets(records: MxRecordWithAddresses[]): { targets: SmtpProbeTarget[]; rejected: Set<string> } {
 	const targets: SmtpProbeTarget[] = [];
 	const rejected = new Set<string>();
 	const seenExchanges = new Set<string>();
-	const ordered = [...records].sort(
-		(a, b) => a.preference - b.preference || normalizedExchange(a.exchange).localeCompare(normalizedExchange(b.exchange)),
-	);
-	for (const record of ordered) {
-		if (targets.length >= 3) break;
+	for (const record of orderMxRecords(records)) {
+		if (targets.length >= MAX_SMTP_MX_TARGETS) break;
 		const exchange = normalizedExchange(record.exchange);
 		if (seenExchanges.has(exchange)) continue;
 		seenExchanges.add(exchange);
-		if (!Number.isInteger(record.preference) || record.preference < 0 || record.preference > 65_535 || !validateDomain(exchange).valid) {
-			rejected.add(exchange || '<empty>');
-			continue;
-		}
-		const address = [...new Set(record.addresses.filter(isPublicSmtpAddress))].sort()[0];
-		if (!address) {
-			rejected.add(exchange);
-			continue;
-		}
-		targets.push({ exchange, preference: record.preference, address, port: 25, tlsServerName: exchange });
+		const result = toProbeTarget(record, exchange);
+		if (typeof result === 'string') rejected.add(result);
+		else targets.push(result);
 	}
-	if (targets.length === 0) {
-		return { status: 'not-assessed', outcome: 'no_public_mx_address', targets, rejectedExchanges: [...rejected].sort() };
-	}
-	return {
-		status: rejected.size > 0 ? 'partial' : 'measured',
-		outcome: 'targets_selected',
-		targets,
-		rejectedExchanges: [...rejected].sort(),
-	};
+	return { targets, rejected };
+}
+
+/** A pinned probe target, or the label under which the exchange is reported as rejected. */
+function toProbeTarget(record: MxRecordWithAddresses, exchange: string): SmtpProbeTarget | string {
+	if (!isAdmissibleMxRecord(record, exchange)) return exchange || '<empty>';
+	const address = firstPublicAddress(record.addresses);
+	if (!address) return exchange;
+	return { exchange, preference: record.preference, address, port: 25, tlsServerName: exchange };
+}
+
+/** RFC 7505 null MX: a single record with preference 0 and exchange ".". */
+function isNullMx(records: MxRecordWithAddresses[]): boolean {
+	return records.length === 1 && records[0]!.preference === 0 && records[0]!.exchange.trim() === '.';
+}
+
+/** Lowest preference first, then lexical normalized exchange. */
+function orderMxRecords(records: MxRecordWithAddresses[]): MxRecordWithAddresses[] {
+	return [...records].sort(
+		(a, b) => a.preference - b.preference || normalizedExchange(a.exchange).localeCompare(normalizedExchange(b.exchange)),
+	);
+}
+
+function isAdmissibleMxRecord(record: MxRecordWithAddresses, exchange: string): boolean {
+	const validPreference = Number.isInteger(record.preference) && record.preference >= 0 && record.preference <= 65_535;
+	return validPreference && validateDomain(exchange).valid;
+}
+
+/** The lexically first distinct public address, or undefined when none is public. */
+function firstPublicAddress(addresses: string[]): string | undefined {
+	return [...new Set(addresses.filter(isPublicSmtpAddress))].sort()[0];
+}
+
+function buildSelection(targets: SmtpProbeTarget[], rejected: Set<string>): MxTargetSelection {
+	const rejectedExchanges = [...rejected].sort();
+	if (targets.length === 0) return { status: 'not-assessed', outcome: 'no_public_mx_address', targets, rejectedExchanges };
+	return { status: rejected.size > 0 ? 'partial' : 'measured', outcome: 'targets_selected', targets, rejectedExchanges };
 }

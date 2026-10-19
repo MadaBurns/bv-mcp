@@ -391,6 +391,11 @@ function readTierStats(value: unknown): BrandAuditTierStats | undefined {
 	};
 }
 
+function alertContextFromMetadata(md: unknown): { alertType: string; transition: string } | undefined {
+	if (!isRecord(md) || typeof md.alertType !== 'string' || typeof md.transition !== 'string') return undefined;
+	return { alertType: md.alertType, transition: md.transition };
+}
+
 /** Pluck `{alertType, transition}` from a tier-4 observation's metadata blob (set by Tier-2 evidence). */
 function scoreAlertContextFromObservations(
 	observations: BrandEvidenceObservation[] | undefined,
@@ -398,11 +403,8 @@ function scoreAlertContextFromObservations(
 	if (!observations) return undefined;
 	for (const obs of observations) {
 		if (obs.tier !== 4) continue;
-		const md = obs.metadata;
-		if (!isRecord(md)) continue;
-		if (typeof md.alertType === 'string' && typeof md.transition === 'string') {
-			return { alertType: md.alertType, transition: md.transition };
-		}
+		const ctx = alertContextFromMetadata(obs.metadata);
+		if (ctx) return ctx;
 	}
 	return undefined;
 }

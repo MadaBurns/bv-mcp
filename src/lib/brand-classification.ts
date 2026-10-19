@@ -161,32 +161,44 @@ export function normalizeRegistrant(raw: string | null | undefined): string | nu
 	return cleaned || null;
 }
 
+const UNKNOWN_REGISTRAR_SENTINEL = /^Registrar (lookup failed|unavailable|redacted by registry|not found in registry)$/i;
+
+// First match wins — keep this order. The corporate-domains registrar operates
+// dozens of regional entities (US, Canada, UK, a Malaysian digital-brand-services
+// arm, an Australian Pty Ltd, etc.) all sharing infra. Match the family, not each
+// regional variant. A legacy regex used 'BrandAudit' as a placeholder family name —
+// see the test for the production incident that surfaced this.
+// Regression: a 2026-05 verification of regional-alpha.example.com /
+// regional-beta.example.com / regional-gamma.example.com showed the AU subsidiary string
+// slipping through and driving false-positive shadowIt findings.
+// The WHOIS name patterns are neutral technical data — keep them as observed.
+const REGISTRAR_FAMILIES: ReadonlyArray<readonly [RegExp, string]> = [
+	[/markmonitor/, 'MarkMonitor'],
+	[/com\s*laude|nom[ -]?iq/, 'Com Laude'],
+	[/safenames/, 'SafeNames'],
+	[/corporate\s*domains/, 'CorporateDomains'],
+	[/corporation\s+service\s+company/, 'CorporateDomains'],
+	[/csc\s+digital\s+brand\s+services?/, 'CorporateDomains'],
+	[/(?:^|\b)csc\s+global(?:\b|$)/, 'CorporateDomains'],
+	[/(?:^|\b)cscglobal\.com(?:\b|$)/, 'CorporateDomains'],
+	[/cloudflare/, 'Cloudflare'],
+	[/tucows/, 'Tucows'],
+	[/godaddy/, 'GoDaddy'],
+	[/namecheap/, 'Namecheap'],
+	[/network solutions|networksolutions/, 'Network Solutions'],
+	[/gandi/, 'Gandi'],
+];
+
+function isUnknownRegistrar(raw: string): boolean {
+	return !raw || raw === 'Unknown' || UNKNOWN_REGISTRAR_SENTINEL.test(raw.trim());
+}
+
 export function normalizeRegistrar(raw: string): string {
-	if (!raw || raw === 'Unknown' || /^Registrar (lookup failed|unavailable|redacted by registry|not found in registry)$/i.test(raw.trim())) return 'Unknown';
+	if (isUnknownRegistrar(raw)) return 'Unknown';
 	const lower = raw.toLowerCase();
-	if (/markmonitor/.test(lower)) return 'MarkMonitor';
-	if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
-	if (/safenames/.test(lower)) return 'SafeNames';
-	// The corporate-domains registrar operates dozens of regional entities (US,
-	// Canada, UK, a Malaysian digital-brand-services arm, an Australian Pty
-	// Ltd, etc.) all sharing infra. Match the family, not each regional
-	// variant. A legacy regex used 'BrandAudit' as a placeholder family name —
-	// see the test for the production incident that surfaced this.
-	// Regression: a 2026-05 verification of regional-alpha.example.com /
-	// regional-beta.example.com / regional-gamma.example.com showed the AU subsidiary string
-	// slipping through and driving false-positive shadowIt findings.
-	// The WHOIS name patterns are neutral technical data — keep them as observed.
-	if (/corporate\s*domains/.test(lower)) return 'CorporateDomains';
-	if (/corporation\s+service\s+company/.test(lower)) return 'CorporateDomains';
-	if (/csc\s+digital\s+brand\s+services?/.test(lower)) return 'CorporateDomains';
-	if (/(?:^|\b)csc\s+global(?:\b|$)/.test(lower)) return 'CorporateDomains';
-	if (/(?:^|\b)cscglobal\.com(?:\b|$)/.test(lower)) return 'CorporateDomains';
-	if (/cloudflare/.test(lower)) return 'Cloudflare';
-	if (/tucows/.test(lower)) return 'Tucows';
-	if (/godaddy/.test(lower)) return 'GoDaddy';
-	if (/namecheap/.test(lower)) return 'Namecheap';
-	if (/network solutions|networksolutions/.test(lower)) return 'Network Solutions';
-	if (/gandi/.test(lower)) return 'Gandi';
+	for (const [pattern, family] of REGISTRAR_FAMILIES) {
+		if (pattern.test(lower)) return family;
+	}
 	return raw.trim();
 }
 

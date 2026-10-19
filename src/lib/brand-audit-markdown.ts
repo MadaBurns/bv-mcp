@@ -230,6 +230,15 @@ function appendVendorDependencies(lines: string[], items: Finding[]): void {
 	lines.push('');
 }
 
+function portfolioLine(f: Finding): string {
+	const domain = sanitizeOutputText(String(f.metadata?.candidate ?? ''), 253);
+	const registrar = sanitizeOutputText(String(f.metadata?.registrar ?? 'Unknown'), 100);
+	const source = sanitizeOutputText(String(f.metadata?.registrarSource ?? 'unknown'), 20);
+	const confidence = f.metadata?.combinedConfidence;
+	const conf = typeof confidence === 'number' ? confidence.toFixed(2) : '—';
+	return `- **${domain}**${defensiveSuffix(f)} — registrar: ${registrar} (${source}) · confidence ${conf}`;
+}
+
 function appendPortfolioSubsection(lines: string[], title: string, items: Finding[], heading = '### '): void {
 	lines.push(`${heading}${title} (${items.length})`);
 	lines.push('');
@@ -238,14 +247,7 @@ function appendPortfolioSubsection(lines: string[], title: string, items: Findin
 		lines.push('');
 		return;
 	}
-	for (const f of items) {
-		const domain = sanitizeOutputText(String(f.metadata?.candidate ?? ''), 253);
-		const registrar = sanitizeOutputText(String(f.metadata?.registrar ?? 'Unknown'), 100);
-		const source = sanitizeOutputText(String(f.metadata?.registrarSource ?? 'unknown'), 20);
-		const conf = typeof f.metadata?.combinedConfidence === 'number' ? (f.metadata.combinedConfidence as number).toFixed(2) : '—';
-		const defensive = defensiveSuffix(f);
-		lines.push(`- **${domain}**${defensive} — registrar: ${registrar} (${source}) · confidence ${conf}`);
-	}
+	for (const f of items) lines.push(portfolioLine(f));
 	lines.push('');
 }
 

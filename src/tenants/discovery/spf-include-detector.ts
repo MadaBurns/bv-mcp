@@ -281,6 +281,59 @@ export interface SeedSpfWalkResult {
 	lookups: number;
 }
 
+interface SpfWalkState {
+	seedApex: string | null;
+	maxDepth: number;
+	visited: Set<string>;
+	queue: Array<{ host: string; depth: number }>;
+	emitted: Map<string, SeedSpfIncludeCandidate>;
+}
+
+/**
+ * Chain targets that can never name a same-org apex: empty, macro-bearing
+ * (cannot meaningfully resolve), shared SaaS infra (subdomain match, e.g.
+ * spf.protection.outlook.com) and exactly-named shared SPF providers that
+ * aren't covered by INFRASTRUCTURE_PROVIDERS. Checked in that order.
+ */
+function isSkippedChainTarget(rawTarget: string): boolean {
+	return !rawTarget || rawTarget.includes('%') || isInfrastructureProvider(rawTarget) || SHARED_SPF_PROVIDERS.has(rawTarget);
+}
+
+/** Keep the shallowest depth per apex. */
+function recordEmission(state: SpfWalkState, apex: string, rawTarget: string, childDepth: number): void {
+	const prior = state.emitted.get(apex);
+	if (prior && prior.depth <= childDepth) return;
+	state.emitted.set(apex, { apex, confidence: 0.85, depth: childDepth, via: rawTarget });
+}
+
+/** Descend even into already-emitted apexes so deeper siblings surface. Stop at maxDepth. */
+function enqueueChainTarget(state: SpfWalkState, rawTarget: string, childDepth: number): void {
+	if (childDepth < state.maxDepth && !state.visited.has(rawTarget)) {
+		state.queue.push({ host: rawTarget, depth: childDepth });
+	}
+}
+
+function isSelfApex(state: SpfWalkState, apex: string): boolean {
+	return !!state.seedApex && apex === state.seedApex;
+}
+
+function processChainTarget(state: SpfWalkState, rawTarget: string, childDepth: number): void {
+	if (isSkippedChainTarget(rawTarget)) return;
+	const apex = registrableApex(rawTarget);
+	if (!apex) return;
+	// Same registrable apex as the seed is dropped from emission, but we still
+	// descend into self-rooted hosts to surface cross-org delegations nested under the seed.
+	// Emit only within depth budget: depth 1 = first include on the seed.
+	if (!isSelfApex(state, apex) && childDepth <= state.maxDepth) recordEmission(state, apex, rawTarget, childDepth);
+	enqueueChainTarget(state, rawTarget, childDepth);
+}
+
+function expandSpfChain(state: SpfWalkState, spf: string, childDepth: number): void {
+	for (const rawTarget of parseChainTargets(spf)) {
+		processChainTarget(state, rawTarget, childDepth);
+	}
+}
+
 /**
  * Forward-discovery: walk the SEED's own SPF `include:` and `redirect=` chain
  * (RFC 7208 §4.6.4) and emit each unique registrable apex that differs from
@@ -327,73 +380,37 @@ export async function extractSeedSpfIncludes(
 	// visited query targets (avoid cycles / wasted lookups)
 	const visited = new Set<string>();
 	const queue: Array<{ host: string; depth: number }> = [{ host: seedLower, depth: 0 }];
+	const state: SpfWalkState = { seedApex, maxDepth, visited, queue, emitted };
 	let lookups = 0;
 	let exceeded = false;
 	let seedHadSpf = false;
 
 	const start = Date.now();
 
+	const shouldStop = (): boolean => {
+		if (lookups >= MAX_LOOKUPS) return true;
+		if (Date.now() - start > budgetMs) {
+			exceeded = true;
+			return true;
+		}
+		return false;
+	};
+
+	const visitHost = async (item: { host: string; depth: number }): Promise<void> => {
+		const target = item.host;
+		if (visited.has(target)) return;
+		visited.add(target);
+		lookups++;
+
+		const spf = pickSpfRecord(await queryTxtRecords(target));
+		if (!spf) return;
+		if (target === seedLower) seedHadSpf = true;
+		expandSpfChain(state, spf, item.depth + 1);
+	};
+
 	const walk = async (): Promise<void> => {
-		while (queue.length > 0) {
-			if (lookups >= MAX_LOOKUPS) break;
-			if (Date.now() - start > budgetMs) {
-				exceeded = true;
-				break;
-			}
-			const item = queue.shift()!;
-			const target = item.host;
-			if (visited.has(target)) continue;
-			visited.add(target);
-			lookups++;
-
-			const txts = await queryTxtRecords(target);
-			const spf = pickSpfRecord(txts);
-			if (target === seedLower && spf) seedHadSpf = true;
-			if (!spf) continue;
-
-			const childDepth = item.depth + 1;
-			for (const rawTarget of parseChainTargets(spf)) {
-				if (!rawTarget) continue;
-				// Skip macro-bearing tokens — cannot meaningfully resolve to an apex.
-				if (rawTarget.includes('%')) continue;
-				// Skip shared SaaS infra; subdomain match (e.g. spf.protection.outlook.com).
-				if (isInfrastructureProvider(rawTarget)) continue;
-				// Skip well-known shared SPF provider exactly-named entries that
-				// aren't covered by INFRASTRUCTURE_PROVIDERS apex set.
-				if (SHARED_SPF_PROVIDERS.has(rawTarget)) continue;
-
-				const apex = registrableApex(rawTarget);
-				if (!apex) continue;
-				// Drop self — same registrable apex as the seed.
-				if (seedApex && apex === seedApex) {
-					// Still descend into self-rooted hosts so we surface
-					// cross-org policy delegations nested under the seed.
-					if (childDepth < maxDepth && !visited.has(rawTarget)) {
-						queue.push({ host: rawTarget, depth: childDepth });
-					}
-					continue;
-				}
-
-				// Emit only when within depth budget. Depth 1 = first include
-				// on the seed; depth N must be ≤ maxDepth to emit.
-				if (childDepth <= maxDepth) {
-					const prior = emitted.get(apex);
-					if (!prior || prior.depth > childDepth) {
-						emitted.set(apex, {
-							apex,
-							confidence: 0.85,
-							depth: childDepth,
-							via: rawTarget,
-						});
-					}
-				}
-
-				// Continue walking — descend even into already-emitted apexes
-				// so we surface deeper sibling apexes. Stop at maxDepth.
-				if (childDepth < maxDepth && !visited.has(rawTarget)) {
-					queue.push({ host: rawTarget, depth: childDepth });
-				}
-			}
+		while (queue.length > 0 && !shouldStop()) {
+			await visitHost(queue.shift()!);
 		}
 	};
 
