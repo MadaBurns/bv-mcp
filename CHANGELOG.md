@@ -8,6 +8,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.99.1] - 2026-10-19
+
+Maintainability release: brings the tiered CRAP-gate offenders under the gate ceiling (US-13, #1264 #1265), plus two small fixes and dependency bumps. Every target keeps its name, signature and output, and output-pinning specs guard the splits. `@blackveil/dns-checks` 1.60.2 (parity corpus 1.60.2) is cut because its check sources were refactored (DNSSEC, SVCB/HTTPS, DANE analysis, key strength); behaviour is unchanged and pinned by snapshot specs. Scoring model 1.40.0 (unchanged).
+
+### Fixed
+
+- The AWS Route 53 `add_txt` provider guide now shows the real record name in its "set the record name" step. It previously printed a literal `${params.name ?? '@'}`.
+
+### Changed
+
+- Complexity-reduction refactors with no behaviour change across auth/session/origin gates, quota validation and Durable Object routing, MCP dispatch and access logging, the CLI, brand-audit entry points and cron handlers, the scheduler rate logic, tenant-discovery parsers, tool-output formatters, recon/probe tools, record parsers and the SMTP STARTTLS line parser. 48 previously untested bodies gain tests. The quota-routing refactor keeps exact Durable Object routing for a sharded kind whose shard field is `null`.
+- Dependencies: zod 4.6.7, marked 18.1.x, drizzle-orm 0.45.4, tldts 7.4.18, eslint 10.12.0, typescript-eslint 8.71.2, @types/node 26.6.5, actions/setup-node 7.1.0 (#1266).
+- `scripts/test-client-matrix.mjs` exercises every tool with valid arguments (#1262).
+
 ## [3.99.0] - 2026-10-18
 
 ### Changed
