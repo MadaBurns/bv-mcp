@@ -45,4 +45,21 @@ describe('provider-guides add_txt builders', () => {
 			expect(steps!.some((s) => s.includes('"@"') || s.includes('\'@\''))).toBe(true);
 		});
 	});
+
+	describe('AWS Route 53 record-name step', () => {
+		const nameStep = (params: { name?: string; value?: string }) =>
+			getProviderFixSteps('AWS Route 53', 'add_txt', params)!.find((s) => s.startsWith('Select record type TXT'));
+
+		it('interpolates the supplied record name', () => {
+			const step = nameStep({ name: '_dmarc', value: 'v=DMARC1; p=reject' });
+			expect(step).toContain('"_dmarc"');
+			expect(step).not.toContain('${');
+		});
+
+		it('falls back to "@" when the name is omitted', () => {
+			const step = nameStep({});
+			expect(step).toContain('"@"');
+			expect(step).not.toContain('${');
+		});
+	});
 });
