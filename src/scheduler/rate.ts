@@ -68,6 +68,53 @@ export function computeAdaptiveRate({ lanes, bufferFactor, floorPerSec }: Adapti
 /** Aggregates active rows into per-cadence cohorts per lane. */
 const RATE_AGG_SQL = 'SELECT lane, cadence_ms AS cadenceMs, COUNT(*) AS count FROM scan_schedule WHERE active=1 GROUP BY lane, cadence_ms';
 
+/** One row of {@link RATE_AGG_SQL}. */
+interface RateAggRow {
+	lane: string;
+	cadenceMs: number;
+	count: number;
+}
+
+/** The two bindings the recompute needs; `undefined` when dark or unprovisioned. */
+function resolveRateBindings(env: ScanDispatchEnv): { db: D1Database; kv: KVNamespace } | undefined {
+	if (!isScanDispatchEnabled(env)) return undefined;
+	const db = env.SCAN_SCHEDULE_DB;
+	const kv = env.RATE_LIMIT;
+	return db && kv ? { db, kv } : undefined;
+}
+
+/** Caller overrides over the defaults; `??` (not `||`) so an explicit `0` is honoured. */
+function resolveRateOptions(opts?: { bufferFactor?: number; floorPerSec?: number }): { bufferFactor: number; floorPerSec: number } {
+	return {
+		bufferFactor: opts?.bufferFactor ?? DEFAULT_RATE_BUFFER_FACTOR,
+		floorPerSec: opts?.floorPerSec ?? DEFAULT_RATE_FLOOR_PER_SEC,
+	};
+}
+
+/** Group aggregate rows into per-lane cohorts, preserving first-seen lane order. */
+function groupCohortsByLane(rows: RateAggRow[]): Map<string, AdaptiveRateLane[]> {
+	const byLane = new Map<string, AdaptiveRateLane[]>();
+	for (const row of rows) {
+		const cohorts = byLane.get(row.lane) ?? [];
+		cohorts.push({ count: row.count, cadenceMs: row.cadenceMs });
+		byLane.set(row.lane, cohorts);
+	}
+	return byLane;
+}
+
+/** Compute and write each lane's target. A throw propagates (the caller is fail-soft). */
+async function persistLaneRates(
+	kv: KVNamespace,
+	byLane: Map<string, AdaptiveRateLane[]>,
+	bufferFactor: number,
+	floorPerSec: number,
+): Promise<void> {
+	for (const [lane, cohorts] of byLane) {
+		const rate = computeAdaptiveRate({ lanes: cohorts, bufferFactor, floorPerSec });
+		await kv.put(rateKeyForLane(lane), String(rate));
+	}
+}
+
 /**
  * Recompute and persist each lane's dispatch target to `RATE_LIMIT` KV. DARK +
  * fail-soft: no-op when the flag is off or either binding is absent; swallows
@@ -75,23 +122,11 @@ const RATE_AGG_SQL = 'SELECT lane, cadence_ms AS cadenceMs, COUNT(*) AS count FR
  */
 export async function recomputeAdaptiveRate(env: ScanDispatchEnv, opts?: { bufferFactor?: number; floorPerSec?: number }): Promise<void> {
 	try {
-		if (!isScanDispatchEnabled(env)) return;
-		const db = env.SCAN_SCHEDULE_DB;
-		const kv = env.RATE_LIMIT;
-		if (!db || !kv) return;
-		const bufferFactor = opts?.bufferFactor ?? DEFAULT_RATE_BUFFER_FACTOR;
-		const floorPerSec = opts?.floorPerSec ?? DEFAULT_RATE_FLOOR_PER_SEC;
-		const { results } = await db.prepare(RATE_AGG_SQL).all<{ lane: string; cadenceMs: number; count: number }>();
-		const byLane = new Map<string, AdaptiveRateLane[]>();
-		for (const row of results ?? []) {
-			const cohorts = byLane.get(row.lane) ?? [];
-			cohorts.push({ count: row.count, cadenceMs: row.cadenceMs });
-			byLane.set(row.lane, cohorts);
-		}
-		for (const [lane, cohorts] of byLane) {
-			const rate = computeAdaptiveRate({ lanes: cohorts, bufferFactor, floorPerSec });
-			await kv.put(rateKeyForLane(lane), String(rate));
-		}
+		const bindings = resolveRateBindings(env);
+		if (!bindings) return;
+		const { bufferFactor, floorPerSec } = resolveRateOptions(opts);
+		const { results } = await bindings.db.prepare(RATE_AGG_SQL).all<RateAggRow>();
+		await persistLaneRates(bindings.kv, groupCohortsByLane(results ?? []), bufferFactor, floorPerSec);
 	} catch {
 		// Fail-soft — telemetry/rate path must never throw from a cron tick.
 	}
