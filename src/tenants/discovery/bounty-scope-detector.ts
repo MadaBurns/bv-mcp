@@ -146,8 +146,15 @@ const shapeNoDomain = (assetType: BountyScopeAsset['assetType']): AssetShape => 
 /** First non-nullish key of an object payload, else the payload itself (tolerates bare arrays). */
 function unwrapPayload(raw: unknown, keys: readonly string[]): unknown {
 	if (!isPlainObject(raw)) return raw;
-	const hit = keys.find((key) => raw[key] != null);
+	const hit = firstPresentKey(raw, keys);
 	return hit === undefined ? raw : raw[hit];
+}
+
+function firstPresentKey(obj: Record<string, unknown>, keys: readonly string[]): string | undefined {
+	for (const key of keys) {
+		if (obj[key] != null) return key;
+	}
+	return undefined;
 }
 
 function isPlainObject(raw: unknown): raw is Record<string, unknown> {
