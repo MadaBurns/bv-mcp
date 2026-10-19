@@ -326,32 +326,24 @@ export async function querySrvRecords(
  * Returns null if the data cannot be parsed.
  */
 export function parseTlsaRecord(data: string): TlsaRecord | null {
-	if (data.startsWith('\\#') || data.startsWith('#')) {
-		const parts = data.trim().split(/\s+/);
-		const hexStart = parts[0] === '\\#' || parts[0] === '#' ? 2 : 1;
-		const hexBytes = parts.slice(hexStart);
-		if (hexBytes.length < 4) return null;
-		if (!hexBytes.every(isHexByte)) return null;
-
-		const usage = parseInt(hexBytes[0], 16);
-		const selector = parseInt(hexBytes[1], 16);
-		const matchingType = parseInt(hexBytes[2], 16);
-		if (isNaN(usage) || isNaN(selector) || isNaN(matchingType)) return null;
-
-		const certData = hexBytes.slice(3).join('');
-		const record = { usage, selector, matchingType, certData };
-		return TlsaRecordSchema.safeParse(record).success ? record : null;
-	}
-
 	const parts = data.trim().split(/\s+/);
-	if (parts.length < 4) return null;
+	if (!data.startsWith('\\#') && !data.startsWith('#')) return tlsaFromFields(parts, 10);
+	const hexBytes = parts.slice(isHexLengthMarker(parts[0]) ? 2 : 1);
+	return hexBytes.every(isHexByte) ? tlsaFromFields(hexBytes, 16) : null;
+}
 
-	const usage = parseInt(parts[0], 10);
-	const selector = parseInt(parts[1], 10);
-	const matchingType = parseInt(parts[2], 10);
-	if (isNaN(usage) || isNaN(selector) || isNaN(matchingType)) return null;
+/** True for the RFC 3597 `\#` (or bare `#`) token that precedes the wire-format length. */
+function isHexLengthMarker(token: string | undefined): boolean {
+	return token === '\\#' || token === '#';
+}
 
-	const certData = parts.slice(3).join('');
+/** Build a schema-valid TLSA record from `usage selector matchingType certData...` fields in the given radix. */
+function tlsaFromFields(fields: string[], radix: number): TlsaRecord | null {
+	if (fields.length < 4) return null;
+	const [usage, selector, matchingType] = fields.slice(0, 3).map((field) => parseInt(field, radix));
+	if ([usage, selector, matchingType].some(Number.isNaN)) return null;
+
+	const certData = fields.slice(3).join('');
 	const record = { usage, selector, matchingType, certData };
 	return TlsaRecordSchema.safeParse(record).success ? record : null;
 }

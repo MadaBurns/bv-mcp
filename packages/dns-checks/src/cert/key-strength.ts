@@ -49,6 +49,21 @@ export function ecCurveToBits(curve: string | null | undefined): number | null {
 	}
 }
 
+/** Reason for an MD5/SHA-1 signature, or null when the signature is absent or not weak. */
+function weakSignatureReason(sigAlg: string | null | undefined): string | null {
+	// `sha1(?!\d)` so "sha1" matches but "sha1024"-shaped strings do not.
+	if (!sigAlg || !/md5|sha1(?!\d)/i.test(sigAlg)) return null;
+	return `Weak signature algorithm: ${sigAlg.toLowerCase().includes('md5') ? 'MD5' : 'SHA-1'}`;
+}
+
+/** Reasons for an undersized RSA and/or EC key (RSA first), empty when the key meets the minimum. */
+function undersizedKeyReasons(isRsa: boolean, isEc: boolean, keyBits: number): string[] {
+	const reasons: string[] = [];
+	if (isRsa && keyBits < 2048) reasons.push(`RSA key too small: ${keyBits} bits`);
+	if (isEc && keyBits < 256) reasons.push(`EC key too small: ${keyBits} bits`);
+	return reasons;
+}
+
 /**
  * Band a key from its type, size, and signature algorithm.
  *
@@ -60,30 +75,26 @@ export function assessKeyStrength(input: { keyType?: string; keyBits?: number | 
 	band: KeyStrengthBand;
 	reasons: string[];
 } {
-	const reasons: string[] = [];
 	const { keyType, keyBits, sigAlg } = input;
-	// `sha1(?!\d)` so "sha1" matches but "sha1024"-shaped strings do not.
-	const weakSig = !!sigAlg && /md5|sha1(?!\d)/i.test(sigAlg);
-	if (weakSig) {
-		const algDisplay = sigAlg?.toLowerCase().includes('md5') ? 'MD5' : 'SHA-1';
-		reasons.push(`Weak signature algorithm: ${algDisplay}`);
-	}
+	const sigReason = weakSignatureReason(sigAlg);
+	const reasons = sigReason ? [sigReason] : [];
 
-	if (keyType == null || keyBits == null) {
-		if (weakSig) return { band: 'weak', reasons };
-		return { band: 'unknown', reasons };
-	}
+	if (keyType == null || keyBits == null) return { band: sigReason ? 'weak' : 'unknown', reasons };
 
+	const key = bandKeyMaterial(keyType, keyBits, sigReason !== null);
+	return { band: key.band, reasons: [...reasons, ...key.reasons] };
+}
+
+function isStrongKey(isRsa: boolean, isEc: boolean, keyBits: number): boolean {
+	return (isRsa && keyBits >= 3072) || (isEc && keyBits >= 256);
+}
+
+/** Band present key material; `weakSig` forces `weak` regardless of size. Reasons here are size reasons only. */
+function bandKeyMaterial(keyType: string, keyBits: number, weakSig: boolean): { band: KeyStrengthBand; reasons: string[] } {
 	const isRsa = /rsa/i.test(keyType);
 	const isEc = /ec|ecdsa/i.test(keyType);
-
-	if (isRsa && keyBits < 2048) reasons.push(`RSA key too small: ${keyBits} bits`);
-	if (isEc && keyBits < 256) reasons.push(`EC key too small: ${keyBits} bits`);
-	if (weakSig || (isRsa && keyBits < 2048) || (isEc && keyBits < 256)) {
-		return { band: 'weak', reasons };
-	}
-	if ((isRsa && keyBits >= 3072) || (isEc && keyBits >= 256)) {
-		return { band: 'strong', reasons };
-	}
+	const reasons = undersizedKeyReasons(isRsa, isEc, keyBits);
+	if (weakSig || reasons.length > 0) return { band: 'weak', reasons };
+	if (isStrongKey(isRsa, isEc, keyBits)) return { band: 'strong', reasons };
 	return { band: 'acceptable', reasons }; // RSA 2048..3071
 }
