@@ -439,20 +439,30 @@ function driftBaselineFromScan(scan: ScanResult): Record<string, unknown> {
 	};
 }
 
-async function runDriftSave(parsed: ParsedArgs, deps: CliDependencies): Promise<CliExitCode> {
+/** Validate `drift save` arguments and return the domain to scan. */
+function driftSaveDomain(parsed: ParsedArgs): string {
 	assertOptions(parsed, ['--out'], ['--force-refresh', '--force']);
 	const domain = requiredSinglePosition(parsed, 'domain');
 	if (!parsed.values.get('--out')) throw new CliUsageError('drift save requires --out');
-	const client = await connectedClient(deps);
-	const result = await client.callTool(
+	return domain;
+}
+
+function callDriftSaveScan(client: McpHttpClient, domain: string, forceRefresh: boolean) {
+	return client.callTool(
 		'scan_domain',
 		{
 			domain,
 			format: 'full',
-			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
+			...(forceRefresh ? { force_refresh: true } : {}),
 		},
 		{ readOnly: true },
 	);
+}
+
+async function runDriftSave(parsed: ParsedArgs, deps: CliDependencies): Promise<CliExitCode> {
+	const domain = driftSaveDomain(parsed);
+	const client = await connectedClient(deps);
+	const result = await callDriftSaveScan(client, domain, parsed.flags.has('--force-refresh'));
 	const errorExit = classifyToolError(result, deps.io, 'scan_domain');
 	if (errorExit !== undefined) return errorExit;
 	const structured = ScanResultSchema.safeParse(requireStructured(result, 'scan_domain'));
@@ -533,57 +543,76 @@ async function runEvidenceVerify(parsed: ParsedArgs, deps: CliDependencies): Pro
 
 /** Execute one CLI invocation without mutating process globals. */
 export async function runCli(argv: string[], deps: CliDependencies): Promise<CliExitCode> {
-	if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help') {
+	if (isHelpRequest(argv)) {
 		deps.io.stdout(HELP);
 		return 0;
 	}
 
 	try {
-		const commandDeps: CliDependencies = {
-			...deps,
-			deadlineAt: deps.deadlineAt ?? (deps.nowMs ?? Date.now)() + 45_000,
-		};
+		const commandDeps = withDeadline(deps);
 		const [command, ...rest] = argv;
 		const parsed = parseArgs(rest);
-		switch (command) {
-			case 'scan':
-				return await runScan(parsed, commandDeps);
-			case 'check':
-				return await runCheck(parsed, commandDeps);
-			case 'batch':
-				return await runBatch(parsed, commandDeps);
-			case 'policy':
-				return await runPolicy(parsed, commandDeps);
-			case 'drift': {
-				const [subcommand, ...subcommandArgs] = rest;
-				if (!subcommand) throw new CliUsageError('drift requires save or compare');
-				const driftParsed = parseArgs(subcommandArgs);
-				if (subcommand === 'save') return await runDriftSave(driftParsed, commandDeps);
-				if (subcommand === 'compare') return await runDriftCompare(driftParsed, commandDeps);
-				throw new CliUsageError('drift requires save or compare');
-			}
-			case 'evidence': {
-				const [subcommand, ...subcommandArgs] = rest;
-				if (subcommand !== 'verify') throw new CliUsageError('evidence requires verify');
-				return await runEvidenceVerify(parseArgs(subcommandArgs), commandDeps);
-			}
-			default:
-				throw new CliUsageError(`Unknown command ${command}`);
-		}
+		return await commandHandler(command)(parsed, rest, commandDeps);
 	} catch (error) {
-		if (error instanceof CliVerificationError) {
-			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
-			return 1;
-		}
-		if (error instanceof CliUsageError) {
-			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\nRun blackveil --help for usage.\n`);
-			return 2;
-		}
-		if (error instanceof McpClientError) {
-			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
-			return 3;
-		}
-		deps.io.stderr(`${sanitizeDiagnostic(error instanceof Error ? error.message : 'Unexpected CLI failure')}\n`);
+		return reportCliFailure(error, deps.io);
+	}
+}
+
+/** The shared command deadline starts before any command input is read. */
+function withDeadline(deps: CliDependencies): CliDependencies {
+	return { ...deps, deadlineAt: deps.deadlineAt ?? (deps.nowMs ?? Date.now)() + 45_000 };
+}
+
+function commandHandler(command: string): CommandHandler {
+	const handler = COMMAND_HANDLERS.get(command);
+	if (!handler) throw new CliUsageError(`Unknown command ${command}`);
+	return handler;
+}
+
+function isHelpRequest(argv: string[]): boolean {
+	return argv.length === 0 || argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help';
+}
+
+async function runDrift(rest: string[], deps: CliDependencies): Promise<CliExitCode> {
+	const [subcommand, ...subcommandArgs] = rest;
+	if (!subcommand) throw new CliUsageError('drift requires save or compare');
+	const driftParsed = parseArgs(subcommandArgs);
+	if (subcommand === 'save') return await runDriftSave(driftParsed, deps);
+	if (subcommand === 'compare') return await runDriftCompare(driftParsed, deps);
+	throw new CliUsageError('drift requires save or compare');
+}
+
+async function runEvidence(rest: string[], deps: CliDependencies): Promise<CliExitCode> {
+	const [subcommand, ...subcommandArgs] = rest;
+	if (subcommand !== 'verify') throw new CliUsageError('evidence requires verify');
+	return await runEvidenceVerify(parseArgs(subcommandArgs), deps);
+}
+
+type CommandHandler = (parsed: ParsedArgs, rest: string[], deps: CliDependencies) => Promise<CliExitCode>;
+
+const COMMAND_HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<string, CommandHandler>([
+	['scan', (parsed, _rest, deps) => runScan(parsed, deps)],
+	['check', (parsed, _rest, deps) => runCheck(parsed, deps)],
+	['batch', (parsed, _rest, deps) => runBatch(parsed, deps)],
+	['policy', (parsed, _rest, deps) => runPolicy(parsed, deps)],
+	['drift', (_parsed, rest, deps) => runDrift(rest, deps)],
+	['evidence', (_parsed, rest, deps) => runEvidence(rest, deps)],
+]);
+
+/** Write the diagnostic for a failed invocation and return its exit code (1 verification, 2 usage, 3 everything else). */
+function reportCliFailure(error: unknown, io: CliIo): CliExitCode {
+	if (error instanceof CliVerificationError) {
+		io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
+		return 1;
+	}
+	if (error instanceof CliUsageError) {
+		io.stderr(`${sanitizeDiagnostic(error.message)}\nRun blackveil --help for usage.\n`);
+		return 2;
+	}
+	if (error instanceof McpClientError) {
+		io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
 		return 3;
 	}
+	io.stderr(`${sanitizeDiagnostic(error instanceof Error ? error.message : 'Unexpected CLI failure')}\n`);
+	return 3;
 }

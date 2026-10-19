@@ -53,34 +53,55 @@ function requestIdKey(id: RequestId): string {
 	return `${typeof id}:${String(id)}`;
 }
 
-function classifyJsonRpcMessage(value: unknown, expectedId: RequestId, seenIds: Set<string>): ParsedRpcResponse | undefined {
+function asJsonRpcMessage(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value))
 		throw new McpClientError('MCP returned a malformed JSON-RPC message', 'protocol');
 	const message = value as Record<string, unknown>;
 	if (message.jsonrpc !== '2.0') throw new McpClientError('MCP returned a message with an invalid jsonrpc version', 'protocol');
-	if (typeof message.method === 'string') {
-		if (Object.hasOwn(message, 'id')) throw new McpClientError(`MCP sent unsupported server request ${message.method}`, 'protocol');
-		return undefined;
-	}
+	return message;
+}
+
+/** A server notification (method, no id) is skipped; a method carrying an id is an unsupported server request. */
+function isNotification(message: Record<string, unknown>): boolean {
+	if (typeof message.method !== 'string') return false;
+	if (Object.hasOwn(message, 'id')) throw new McpClientError(`MCP sent unsupported server request ${message.method}`, 'protocol');
+	return true;
+}
+
+function isRequestId(id: unknown): id is RequestId {
+	return typeof id === 'string' || (typeof id === 'number' && Number.isInteger(id));
+}
+
+function responseId(message: Record<string, unknown>): RequestId {
 	if (!Object.hasOwn(message, 'id') || message.id === null) throw new McpClientError('MCP response omitted its JSON-RPC id', 'protocol');
-	if (typeof message.id !== 'string' && (typeof message.id !== 'number' || !Number.isInteger(message.id))) {
-		throw new McpClientError('MCP response contained an invalid JSON-RPC id', 'protocol');
-	}
-	const key = requestIdKey(message.id);
-	if (seenIds.has(key)) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(message.id)}`, 'protocol');
+	if (!isRequestId(message.id)) throw new McpClientError('MCP response contained an invalid JSON-RPC id', 'protocol');
+	return message.id;
+}
+
+function assertExpectedResponseId(id: RequestId, expectedId: RequestId, seenIds: Set<string>): void {
+	const key = requestIdKey(id);
+	if (seenIds.has(key)) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(id)}`, 'protocol');
 	seenIds.add(key);
-	if (message.id !== expectedId) {
-		throw new McpClientError(`MCP response id ${String(message.id)} did not match request id ${String(expectedId)}`, 'protocol');
+	if (id !== expectedId) {
+		throw new McpClientError(`MCP response id ${String(id)} did not match request id ${String(expectedId)}`, 'protocol');
 	}
+}
+
+function responsePayload(message: Record<string, unknown>): ParsedRpcResponse {
 	const hasResult = Object.hasOwn(message, 'result');
 	const hasError = Object.hasOwn(message, 'error');
 	if (hasResult === hasError) throw new McpClientError('MCP response must contain exactly one of result or error', 'protocol');
-	if (hasError) {
-		const parsed = z.object({ code: z.number().int(), message: z.string() }).passthrough().safeParse(message.error);
-		if (!parsed.success) throw new McpClientError('MCP returned a malformed JSON-RPC error', 'protocol');
-		return { error: parsed.data };
-	}
-	return { result: message.result };
+	if (!hasError) return { result: message.result };
+	const parsed = z.object({ code: z.number().int(), message: z.string() }).passthrough().safeParse(message.error);
+	if (!parsed.success) throw new McpClientError('MCP returned a malformed JSON-RPC error', 'protocol');
+	return { error: parsed.data };
+}
+
+function classifyJsonRpcMessage(value: unknown, expectedId: RequestId, seenIds: Set<string>): ParsedRpcResponse | undefined {
+	const message = asJsonRpcMessage(value);
+	if (isNotification(message)) return undefined;
+	assertExpectedResponseId(responseId(message), expectedId, seenIds);
+	return responsePayload(message);
 }
 
 function parseSseEvent(event: string): unknown | undefined {
