@@ -61,6 +61,14 @@ export function matchesPrefix32(value: number, { net, len }: Prefix32): boolean 
 	return value >>> (32 - len) === net >>> (32 - len);
 }
 
+/** True when `value` falls inside any of the given prefixes. */
+export function matchesAnyPrefix32(value: number, prefixes: readonly Prefix32[]): boolean {
+	for (const prefix of prefixes) {
+		if (matchesPrefix32(value, prefix)) return true;
+	}
+	return false;
+}
+
 /** IPv4 ranges treated as private by isPrivateIP: RFC 1918, loopback and link-local only. */
 const PRIVATE_IPV4_PREFIXES: readonly Prefix32[] = [
 	{ net: 0x0a000000, len: 8 }, // 10.0.0.0/8
@@ -88,5 +96,5 @@ export function isPrivateIP(ip: string): boolean {
 	if (!isValidIPv4(ip)) return false;
 	const [a, b, c, d] = ip.split('.').map(Number);
 	const value = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
-	return PRIVATE_IPV4_PREFIXES.some((prefix) => matchesPrefix32(value, prefix));
+	return matchesAnyPrefix32(value, PRIVATE_IPV4_PREFIXES);
 }

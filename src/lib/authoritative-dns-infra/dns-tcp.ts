@@ -8,7 +8,7 @@
  * selected nameserver, not a recursive resolver projection.
  */
 
-import { matchesPrefix32, type Prefix32 } from '../ip-utils';
+import { matchesAnyPrefix32, matchesPrefix32, type Prefix32 } from '../ip-utils';
 import { queryDns } from '../dns-transport';
 import { RecordType, type RecordTypeName } from '../dns-types';
 
@@ -143,14 +143,14 @@ export function isGloballyRoutableIp(address: string): boolean {
 	const ipv4 = parseIpv4(address);
 	if (ipv4) {
 		const value = ((ipv4[0] << 24) | (ipv4[1] << 16) | (ipv4[2] << 8) | ipv4[3]) >>> 0;
-		return !NON_ROUTABLE_IPV4_PREFIXES.some((prefix) => matchesPrefix32(value, prefix));
+		return !matchesAnyPrefix32(value, NON_ROUTABLE_IPV4_PREFIXES);
 	}
 
 	const ipv6 = parseIpv6(address);
 	if (!ipv6) return false;
 	const head = ((ipv6[0] << 16) | ipv6[1]) >>> 0;
 	if (!matchesPrefix32(head, GLOBAL_UNICAST_IPV6_PREFIX)) return false;
-	return !NON_ROUTABLE_IPV6_PREFIXES.some((prefix) => matchesPrefix32(head, prefix));
+	return !matchesAnyPrefix32(head, NON_ROUTABLE_IPV6_PREFIXES);
 }
 
 function canonicalIp(address: string): string | null {
@@ -318,10 +318,11 @@ function ipv6Presentation(bytes: Uint8Array): string {
 }
 
 /** SOA -> serial only, as a decimal string (skip MNAME/RNAME via decodeName). */
-function decodeSoaSerial(message: Uint8Array, view: DataView, dataOffset: number): string {
+function decodeSoaSerial(message: Uint8Array, dataOffset: number): string {
 	const mname = decodeName(message, dataOffset);
 	const rname = decodeName(message, mname.nextOffset);
 	if (rname.nextOffset + 4 > message.length) throw new Error('Truncated SOA serial');
+	const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
 	return String(view.getUint32(rname.nextOffset));
 }
 
@@ -333,18 +334,35 @@ function decodeFirstTxtString(message: Uint8Array, dataOffset: number, dataLengt
 	return new TextDecoder().decode(message.subarray(txtStart, txtStart + txtLength));
 }
 
-/**
- * Decode the RDATA of the record types the probes read into a presentation string. DNSKEY / RRSIG
- * (presence only) and every other type, plus an A record whose RDLENGTH is not 4, yield ''.
- */
-function decodeRdata(message: Uint8Array, view: DataView, type: number, dataOffset: number, dataLength: number): string {
-	if (type === 1 && dataLength === 4) return [...message.subarray(dataOffset, dataOffset + dataLength)].join('.');
-	if (type === 28) return ipv6Presentation(message.subarray(dataOffset, dataOffset + dataLength));
-	if (type === 2 || type === 5 || type === 12) return decodeName(message, dataOffset).name;
-	if (type === 6) return decodeSoaSerial(message, view, dataOffset);
-	if (type === 16) return decodeFirstTxtString(message, dataOffset, dataLength);
-	return '';
+/** A -> dotted quad; an RDLENGTH other than 4 is left undecoded rather than guessed at. */
+function decodeIpv4Rdata(message: Uint8Array, dataOffset: number, dataLength: number): string {
+	if (dataLength !== 4) return '';
+	return [...message.subarray(dataOffset, dataOffset + dataLength)].join('.');
 }
+
+function decodeIpv6Rdata(message: Uint8Array, dataOffset: number, dataLength: number): string {
+	return ipv6Presentation(message.subarray(dataOffset, dataOffset + dataLength));
+}
+
+function decodeNameRdata(message: Uint8Array, dataOffset: number): string {
+	return decodeName(message, dataOffset).name;
+}
+
+type RdataDecoder = (message: Uint8Array, dataOffset: number, dataLength: number) => string;
+
+/**
+ * RDATA decoders by record type. DNSKEY / RRSIG (presence only) and every type not listed
+ * decode to '' — their RDATA is not read.
+ */
+const RDATA_DECODERS: ReadonlyMap<number, RdataDecoder> = new Map<number, RdataDecoder>([
+	[1, decodeIpv4Rdata], // A
+	[2, decodeNameRdata], // NS
+	[5, decodeNameRdata], // CNAME
+	[6, decodeSoaSerial], // SOA
+	[12, decodeNameRdata], // PTR
+	[16, decodeFirstTxtString], // TXT
+	[28, decodeIpv6Rdata], // AAAA
+]);
 
 function parseRecord(message: Uint8Array, startOffset: number): { record: DirectDnsRecord; nextOffset: number } {
 	const owner = decodeName(message, startOffset);
@@ -356,7 +374,8 @@ function parseRecord(message: Uint8Array, startOffset: number): { record: Direct
 	const nextOffset = dataOffset + dataLength;
 	if (nextOffset > message.length) throw new Error('Truncated DNS RDATA');
 
-	const data = decodeRdata(message, view, type, dataOffset, dataLength);
+	const decode = RDATA_DECODERS.get(type);
+	const data = decode ? decode(message, dataOffset, dataLength) : '';
 	return { record: { name: owner.name, type, data }, nextOffset };
 }
 

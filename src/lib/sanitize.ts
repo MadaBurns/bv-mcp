@@ -227,7 +227,10 @@ function classifyScript(char: string): string | null {
 	const cp = char.codePointAt(0) as number; // never undefined: `char` is one non-empty code point
 	if (cp === 0x2d || (cp >= 0x30 && cp <= 0x39)) return null;
 	if (cp >= 0x61 && cp <= 0x7a) return 'Latin';
-	return CLASSIFIED_SCRIPTS.find(([, pattern]) => pattern.test(char))?.[0] ?? null;
+	for (const [script, pattern] of CLASSIFIED_SCRIPTS) {
+		if (pattern.test(char)) return script;
+	}
+	return null;
 }
 
 /**
