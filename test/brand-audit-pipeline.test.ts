@@ -659,4 +659,49 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 			tier1Freshness: { overallStaleness: 'fresh' },
 		});
 	});
+
+	it('stamps scoreAlertContext only on impersonationSurface findings whose tier-4 observation carries a string alertType and transition', async () => {
+		const seed = 'brandepsilon.com';
+		const discovery = discoveryResult(seed, ['alerted.example', 'bare-surface.example', 'owned.example', 'untiered.example']);
+		const setObservations = (domain: string, evidenceObservations?: unknown[]): void => {
+			const finding = discovery.findings.find((f) => f.metadata?.candidate === domain);
+			finding!.metadata = {
+				...finding!.metadata,
+				signals: ['active_lookalike'],
+				combinedConfidence: 0.5,
+				...(evidenceObservations ? { evidenceObservations } : {}),
+			};
+		};
+		setObservations('alerted.example', [
+			// Non-string alertType and an incomplete pair are skipped; the first complete pair wins.
+			{ signal: 'active_lookalike', metadata: { tier: 4, alertType: 7, transition: 'ignored' } },
+			{ signal: 'active_lookalike', metadata: { tier: 4, alertType: 'newly_active' } },
+			{ signal: 'active_lookalike', metadata: { tier: 4, alertType: 'newly_active', transition: 'parked_to_active' } },
+			{ signal: 'active_lookalike', metadata: { tier: 4, alertType: 'later', transition: 'ignored' } },
+		]);
+		setObservations('bare-surface.example', [{ signal: 'active_lookalike', metadata: { tier: 4 } }]);
+		setObservations('owned.example', [
+			{ signal: 'dmarc_rua', metadata: { tier: 0, alertType: 'newly_active', transition: 'parked_to_active' } },
+		]);
+		setObservations('untiered.example');
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Brand Epsilon Inc.'));
+
+		const result = await runBrandAuditPipeline(
+			seed,
+			{ auditId: 'aud-alert-context' },
+			{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery), checkRdapLookup },
+		);
+		const byCandidate = (domain: string) => result.findings.find((f) => f.metadata?.candidate === domain)?.metadata;
+
+		expect(byCandidate('alerted.example')).toMatchObject({
+			bucket: 'impersonationSurface',
+			scoreAlertContext: { alertType: 'newly_active', transition: 'parked_to_active' },
+		});
+		expect(byCandidate('bare-surface.example')?.bucket).toBe('impersonationSurface');
+		expect(byCandidate('bare-surface.example')).not.toHaveProperty('scoreAlertContext');
+		// Alert metadata on a non-surface bucket is never lifted into scoreAlertContext.
+		expect(byCandidate('owned.example')?.bucket).not.toBe('impersonationSurface');
+		expect(byCandidate('owned.example')).not.toHaveProperty('scoreAlertContext');
+		expect(byCandidate('untiered.example')).not.toHaveProperty('scoreAlertContext');
+	});
 });
