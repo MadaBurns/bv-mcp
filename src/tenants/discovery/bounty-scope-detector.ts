@@ -137,34 +137,44 @@ const BugcrowdTargetSchema = z
 	.passthrough();
 const BugcrowdTargetsSchema = z.array(BugcrowdTargetSchema).default([]);
 
+type AssetShape = Pick<BountyScopeAsset, 'domain' | 'isWildcard' | 'assetType'>;
+
+const shapeWildcard = (id: string): AssetShape => ({ domain: stripWildcardPrefix(id), isWildcard: true, assetType: 'wildcard' });
+const shapeUrl = (id: string): AssetShape => ({ domain: extractHost(id), isWildcard: false, assetType: 'url' });
+const shapeNoDomain = (assetType: BountyScopeAsset['assetType']): AssetShape => ({ domain: null, isWildcard: false, assetType });
+
+/** First non-nullish key of an object payload, else the payload itself (tolerates bare arrays). */
+function unwrapPayload(raw: unknown, keys: readonly string[]): unknown {
+	if (!isPlainObject(raw)) return raw;
+	const hit = keys.find((key) => raw[key] != null);
+	return hit === undefined ? raw : raw[hit];
+}
+
+function isPlainObject(raw: unknown): raw is Record<string, unknown> {
+	return !!raw && typeof raw === 'object' && !Array.isArray(raw);
+}
+
+const BUGCROWD_WEB_CATEGORIES = new Set(['website', 'api']);
+const BUGCROWD_MOBILE_CATEGORIES = new Set(['mobile', 'android', 'ios']);
+
+function classifyBugcrowdTarget(id: string, cat: string): AssetShape {
+	if (BUGCROWD_WEB_CATEGORIES.has(cat)) return id.startsWith('*.') ? shapeWildcard(id) : shapeUrl(id);
+	if (BUGCROWD_MOBILE_CATEGORIES.has(cat)) return shapeNoDomain('app_store');
+	return shapeNoDomain('other');
+}
+
+function bugcrowdAsset(entry: z.infer<typeof BugcrowdTargetSchema>): BountyScopeAsset {
+	const inScope = entry.in_scope ?? entry.target_type !== 'out_of_scope';
+	const id = entry.name.trim();
+	const cat = (entry.category ?? '').toLowerCase();
+	return { identifier: id, inScope, platform: 'bugcrowd', ...classifyBugcrowdTarget(id, cat) };
+}
+
 /** Parse a Bugcrowd public scope payload (`targets` array). */
 export function parseBugcrowdScope(raw: unknown): BountyScopeAsset[] {
-	let candidates: unknown = raw;
-	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-		const obj = raw as Record<string, unknown>;
-		candidates = obj.targets ?? obj.in_scope ?? raw;
-	}
-	const parsed = BugcrowdTargetsSchema.safeParse(candidates);
+	const parsed = BugcrowdTargetsSchema.safeParse(unwrapPayload(raw, ['targets', 'in_scope']));
 	if (!parsed.success) return [];
-
-	const out: BountyScopeAsset[] = [];
-	for (const entry of parsed.data) {
-		const inScope = entry.in_scope ?? entry.target_type !== 'out_of_scope';
-		const id = entry.name.trim();
-		const cat = (entry.category ?? '').toLowerCase();
-		if (cat === 'website' || cat === 'api') {
-			if (id.startsWith('*.')) {
-				out.push({ identifier: id, domain: stripWildcardPrefix(id), isWildcard: true, inScope, assetType: 'wildcard', platform: 'bugcrowd' });
-			} else {
-				out.push({ identifier: id, domain: extractHost(id), isWildcard: false, inScope, assetType: 'url', platform: 'bugcrowd' });
-			}
-		} else if (cat === 'mobile' || cat === 'android' || cat === 'ios') {
-			out.push({ identifier: id, domain: null, isWildcard: false, inScope, assetType: 'app_store', platform: 'bugcrowd' });
-		} else {
-			out.push({ identifier: id, domain: null, isWildcard: false, inScope, assetType: 'other', platform: 'bugcrowd' });
-		}
-	}
-	return out;
+	return parsed.data.map(bugcrowdAsset);
 }
 
 const IntigritiAssetSchema = z
@@ -177,32 +187,33 @@ const IntigritiAssetSchema = z
 	.passthrough();
 const IntigritiAssetsSchema = z.array(IntigritiAssetSchema).default([]);
 
+const INTIGRITI_NETWORK_TYPES = new Set(['cidr', 'ip']);
+
+function classifyIntigritiAsset(id: string, type: string): AssetShape {
+	if (id.startsWith('*.')) return shapeWildcard(id);
+	if (INTIGRITI_NETWORK_TYPES.has(type)) return shapeNoDomain('cidr');
+	if (type.includes('app')) return shapeNoDomain('app_store');
+	return shapeUrl(id);
+}
+
+function intigritiAsset(entry: z.infer<typeof IntigritiAssetSchema>): BountyScopeAsset | null {
+	const id = (entry.endpoint ?? entry.identifier ?? '').trim();
+	if (!id) return null;
+	const type = (entry.type ?? '').toLowerCase();
+	// Intigriti `tier === 'out_of_scope'` is the disqualifier when present.
+	const inScope = entry.tier !== 'out_of_scope';
+	return { identifier: id, inScope, platform: 'intigriti', ...classifyIntigritiAsset(id, type) };
+}
+
 /** Parse an Intigriti `domains` / `assets` array. */
 export function parseIntigritiScope(raw: unknown): BountyScopeAsset[] {
-	let candidates: unknown = raw;
-	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-		const obj = raw as Record<string, unknown>;
-		candidates = obj.domains ?? obj.assets ?? obj.targets ?? raw;
-	}
-	const parsed = IntigritiAssetsSchema.safeParse(candidates);
+	const parsed = IntigritiAssetsSchema.safeParse(unwrapPayload(raw, ['domains', 'assets', 'targets']));
 	if (!parsed.success) return [];
 
 	const out: BountyScopeAsset[] = [];
 	for (const entry of parsed.data) {
-		const id = (entry.endpoint ?? entry.identifier ?? '').trim();
-		if (!id) continue;
-		const type = (entry.type ?? '').toLowerCase();
-		// Intigriti `tier === 'out_of_scope'` is the disqualifier when present.
-		const inScope = entry.tier !== 'out_of_scope';
-		if (id.startsWith('*.')) {
-			out.push({ identifier: id, domain: stripWildcardPrefix(id), isWildcard: true, inScope, assetType: 'wildcard', platform: 'intigriti' });
-		} else if (type === 'cidr' || type === 'ip') {
-			out.push({ identifier: id, domain: null, isWildcard: false, inScope, assetType: 'cidr', platform: 'intigriti' });
-		} else if (type.includes('app')) {
-			out.push({ identifier: id, domain: null, isWildcard: false, inScope, assetType: 'app_store', platform: 'intigriti' });
-		} else {
-			out.push({ identifier: id, domain: extractHost(id), isWildcard: false, inScope, assetType: 'url', platform: 'intigriti' });
-		}
+		const asset = intigritiAsset(entry);
+		if (asset) out.push(asset);
 	}
 	return out;
 }
