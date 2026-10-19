@@ -15,9 +15,9 @@ Tests run **inside the Workers runtime** (`@cloudflare/vitest-plugin`, formerly 
    ```
    A static top-of-file import binds before your mock is installed and the tool won't see mocked DNS. (`check_mx` is even dynamically imported in `handlers/tools.ts` itself for this reason.)
 
-2. **Clear BOTH cache keys between cases** when exercising `scan_domain` or any cached check — the per-check key *and* the top-level key:
-   - `cache:<domain>:check:<name>`
-   - `cache:<domain>`
+2. **Clear BOTH cache keys between cases** when exercising `scan_domain` or any cached check — the per-check key *and* the top-level key. Keys are versioned
+   (`cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>[:check:<name>]`), so build them with
+   `buildCheckCacheKey` / `buildScanCacheKey` from `src/lib/cache.ts`; a hand-written string misses.
    A stale entry from a prior case produces a cache hit and a confusing pass/fail.
 
 ## DNS mocking (`test/helpers/dns-mock.ts`)
@@ -36,7 +36,7 @@ Tests run **inside the Workers runtime** (`@cloudflare/vitest-plugin`, formerly 
 | `.audit.test.ts` | invariant audits (the backstops the other skills rely on) |
 | `.chaos.test.ts` | failure-injection |
 
-`test/` is flat by source file; subdirs are `helpers/ schemas/ oauth/ audits/ contracts/ chaos/`.
+`test/` is flat by source file; subdirs include `helpers/ schemas/ oauth/ audits/ contracts/ chaos/ tenants/ tools/ lib/ queue/ scheduled/ fixtures/`.
 
 ## Running
 

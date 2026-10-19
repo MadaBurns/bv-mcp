@@ -12,7 +12,7 @@ npm install @blackveil/dns-checks
 
 ## Usage
 
-Every check takes a `queryDNS` function as its second argument (dependency injection):
+DNS checks take a `queryDNS` function as their second argument (dependency injection); the HTTP checks (`checkSSL`, `checkHTTPSecurity`) take a `fetch`-compatible function instead:
 
 ```typescript
 import { checkSPF } from '@blackveil/dns-checks';
@@ -29,10 +29,10 @@ console.log(result.findings); // Array of findings
 ## Scoring
 
 ```typescript
-import { computeScanScore, scoreToGrade } from '@blackveil/dns-checks/scoring';
+import { computeScanScore } from '@blackveil/dns-checks/scoring';
 
 const score = computeScanScore(checkResults);
-const grade = scoreToGrade(score.overall); // A+, A, B+, etc.
+const grade = score.grade; // A+, A, B+, etc., or null when the scan is ungraded (score.overall is null)
 ```
 
 The scoring registry includes the `authoritative_dns_infra` category used by the MCP worker's authoritative DNS infrastructure profile. In normal mail/web profiles it carries zero scoring weight; when the dedicated profile is selected, it is weighted with DNSSEC, NS, and zone-hygiene evidence.
@@ -57,6 +57,7 @@ The scoring registry includes the `authoritative_dns_infra` category used by the
 | SVCB/HTTPS | `checkSVCBHTTPS` | RFC 9460 |
 | Subdomain Takeover | `checkSubdomainTakeover` | — |
 | HTTP Security | `checkHTTPSecurity` | — |
+| Subdomailing | `checkSubdomailing` | — |
 
 The MCP server package layers additional worker-only tools on top of this library, including `check_authoritative_dns_infra` and `check_root_server_set`.
 

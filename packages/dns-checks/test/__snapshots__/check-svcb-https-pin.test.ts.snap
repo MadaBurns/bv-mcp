@@ -1,0 +1,1244 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`checkSVCBHTTPS output pin > custom timeout is passed to the single HTTPS query 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=777",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . alpn=h2",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > no HTTPS record 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "No HTTPS (type 65) record found at example.com. HTTPS records (RFC 9460) advertise modern transport capabilities (ALPN, ECH) and enable clients to connect securely without an initial redirect round-trip. Consider publishing an HTTPS record with h2 and h3 ALPN support. Per RFC 9460 these records are an advisory performance/privacy optimization, not a required security control — absence is not a deficiency.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "No HTTPS record found",
+      },
+    ],
+    "passed": true,
+    "recordPresent": false,
+    "score": 95,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > alias first then service without ALPN: missing-ALPN and no-h2 findings are suppressed 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com uses alias mode (priority 0): 0 cdn.example.net.. This delegates SVCB parameters to a canonical name. Ensure the target also has valid HTTPS records.",
+        "metadata": {
+          "confidence": "deterministic",
+          "mode": "alias",
+          "record": "0 cdn.example.net.",
+        },
+        "severity": "info",
+        "title": "HTTPS record in alias mode",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . port=443",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > alias mode only 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com uses alias mode (priority 0): 0 cdn.example.net.. This delegates SVCB parameters to a canonical name. Ensure the target also has valid HTTPS records.",
+        "metadata": {
+          "confidence": "deterministic",
+          "mode": "alias",
+          "record": "0 cdn.example.net.",
+        },
+        "severity": "info",
+        "title": "HTTPS record in alias mode",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > multiple service records aggregating h2 and h3 across records 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . alpn=h2",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 2): ALPN= h3 , ECH=present.",
+        "metadata": {
+          "alpn": [
+            "h3",
+          ],
+          "confidence": "deterministic",
+          "ech": true,
+          "priority": 2,
+          "record": "2 . alpn=h3 ech=xyz",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com advertises HTTP/3 (h3) ALPN, enabling QUIC-based transport. This provides improved performance and resilience, especially on lossy networks.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "HTTP/3 (QUIC) advertised via HTTPS record",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com includes ECH parameters. ECH encrypts the TLS SNI field, preventing passive observers from identifying the target hostname during connection establishment.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Encrypted Client Hello (ECH) advertised",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > quoted alpn list with spaces 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2, h3 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+            "h3",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . alpn="h2, h3"",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com advertises HTTP/3 (h3) ALPN, enabling QUIC-based transport. This provides improved performance and resilience, especially on lossy networks.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "HTTP/3 (QUIC) advertised via HTTPS record",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > service mode h2 only 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . alpn=h2",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > service mode with ALPN but no h2 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= http/1.1 .",
+        "metadata": {
+          "alpn": [
+            "http/1.1",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . alpn=http/1.1",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 95,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > service mode with h2,h3 and ech 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2, h3 , ECH=present.",
+        "metadata": {
+          "alpn": [
+            "h2",
+            "h3",
+          ],
+          "confidence": "deterministic",
+          "ech": true,
+          "priority": 1,
+          "record": "1 . alpn=h2,h3 ech=AEn+DQA",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com advertises HTTP/3 (h3) ALPN, enabling QUIC-based transport. This provides improved performance and resilience, especially on lossy networks.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "HTTP/3 (QUIC) advertised via HTTPS record",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com includes ECH parameters. ECH encrypts the TLS SNI field, preventing passive observers from identifying the target hostname during connection establishment.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Encrypted Client Hello (ECH) advertised",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > service mode without ALPN 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . port=443",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "1 . port=443",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > service without ALPN first then alias: missing-ALPN fires, no-h2 suppressed by alias 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "1 . port=443",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "1 . port=443",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com uses alias mode (priority 0): 0 cdn.example.net.. This delegates SVCB parameters to a canonical name. Ensure the target also has valid HTTPS records.",
+        "metadata": {
+          "confidence": "deterministic",
+          "mode": "alias",
+          "record": "0 cdn.example.net.",
+        },
+        "severity": "info",
+        "title": "HTTPS record in alias mode",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 95,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > presentation format > unparseable priority is treated as service mode with null priority 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "garbage",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "garbage",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > query throws: not assessed 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "checkStatus": "error",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "DNS query for HTTPS records at example.com failed before any resolver answered. This is not evidence either way about SVCB/HTTPS publication — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.",
+        "metadata": {
+          "errorKind": "dns_error",
+          "inconclusive": true,
+        },
+        "severity": "info",
+        "title": "SVCB/HTTPS not assessed — HTTPS record query failed",
+      },
+    ],
+    "partial": true,
+    "passed": false,
+    "score": 0,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > # without a following length falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > TargetName label overrunning the buffer falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ 4 00010961",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 4 00010961",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > alias mode (priority 0) 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com uses alias mode (priority 0): \\ 7 00000363646e00. This delegates SVCB parameters to a canonical name. Ensure the target also has valid HTTPS records.",
+        "metadata": {
+          "confidence": "deterministic",
+          "mode": "alias",
+          "record": "\\ 7 00000363646e00",
+        },
+        "severity": "info",
+        "title": "HTTPS record in alias mode",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > bare \`#\` prefix (no backslash) is accepted 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "10 00010000010003026832",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > compression pointer in TargetName falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ 5 0001c00c00",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 5 0001c00c00",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > declared length below the 3-byte floor falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ 2 0001",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 2 0001",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > declared length mismatch falls back to presentation parsing 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ 9 00010000",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 9 00010000",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > hex split across whitespace-separated groups is joined 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 7 0001 00 0001 0000",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 7 0001 00 0001 0000",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > non-hex byte falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ 3 0001zz",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 3 0001zz",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > non-numeric declared length falls back 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority null): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": null,
+          "record": "\\ xx 000100",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ xx 000100",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > non-root TargetName labels are skipped 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 22 000103777777076578616d706c650000010003026832",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > service mode h2 only, no ECH 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 10 00010000010003026832",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > service mode h2,h3 + ECH 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2, h3 , ECH=present.",
+        "metadata": {
+          "alpn": [
+            "h2",
+            "h3",
+          ],
+          "confidence": "deterministic",
+          "ech": true,
+          "priority": 1,
+          "record": "\\ 19 0001000001000602683202683300050002aabb",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com advertises HTTP/3 (h3) ALPN, enabling QUIC-based transport. This provides improved performance and resilience, especially on lossy networks.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "HTTP/3 (QUIC) advertised via HTTPS record",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com includes ECH parameters. ECH encrypts the TLS SNI field, preventing passive observers from identifying the target hostname during connection establishment.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Encrypted Client Hello (ECH) advertised",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > service mode with no params at all 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 3 000100",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 3 000100",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > truncated ALPN entry inside the value is dropped 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= none .",
+        "metadata": {
+          "alpn": [],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 10 00010000010003056162",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com does not specify an ALPN parameter. Without ALPN, clients cannot use the record to negotiate HTTP/2 or HTTP/3 without an additional round-trip. Add alpn="h2" or alpn="h2,h3" to enable protocol negotiation.",
+        "metadata": {
+          "confidence": "deterministic",
+          "record": "\\ 10 00010000010003056162",
+        },
+        "severity": "low",
+        "title": "HTTPS record missing ALPN parameter",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS records at example.com do not include h2 in the ALPN list. HTTP/2 support via SVCB allows faster TLS negotiation. Add alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "low",
+        "title": "HTTPS record does not advertise HTTP/2",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 90,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > truncated trailing param stops the parse but keeps what was read 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 .",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": false,
+          "priority": 1,
+          "record": "\\ 16 00010000010003026832000900320102",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;
+
+exports[`checkSVCBHTTPS output pin > wire format (RFC 3597) > unknown param keys are skipped; ECH key sets the flag 1`] = `
+{
+  "calls": [
+    "HTTPS example.com timeout=5000",
+  ],
+  "result": {
+    "category": "svcb_https",
+    "findings": [
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record found at example.com (priority 1): ALPN= h2 , ECH=present.",
+        "metadata": {
+          "alpn": [
+            "h2",
+          ],
+          "confidence": "deterministic",
+          "ech": true,
+          "priority": 1,
+          "record": "\\ 20 000100000100030268320003000201bb00050000",
+        },
+        "severity": "info",
+        "title": "HTTPS record configured",
+      },
+      {
+        "category": "svcb_https",
+        "detail": "HTTPS record at example.com includes ECH parameters. ECH encrypts the TLS SNI field, preventing passive observers from identifying the target hostname during connection establishment.",
+        "metadata": {
+          "confidence": "deterministic",
+        },
+        "severity": "info",
+        "title": "Encrypted Client Hello (ECH) advertised",
+      },
+    ],
+    "passed": true,
+    "recordPresent": true,
+    "score": 100,
+  },
+}
+`;

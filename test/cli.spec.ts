@@ -87,6 +87,10 @@ describe('blackveil CLI', () => {
 		expect(combineBatchExitCodes([0, 1])).toBe(1);
 		expect(combineBatchExitCodes([1, 4])).toBe(4);
 		expect(combineBatchExitCodes([1, 4, 3])).toBe(3);
+		expect(combineBatchExitCodes([2, 0])).toBe(2);
+		expect(combineBatchExitCodes([1, 2])).toBe(1);
+		expect(combineBatchExitCodes([0, 0])).toBe(0);
+		expect(combineBatchExitCodes([])).toBe(0);
 	});
 
 	it('rejects command-line credentials before any request', async () => {
@@ -235,5 +239,235 @@ describe('blackveil CLI', () => {
 		});
 		expect(await runCli(['drift', 'compare', 'example.com', '--baseline', 'baseline'], h)).toBe(1);
 		expect(h.calls).toHaveLength(0);
+	});
+});
+
+describe('blackveil CLI output rendering', () => {
+	it('prints the remote human-readable text for the default format', async () => {
+		const h = harness({}, [toolResult(scan('example.com'), 'Score 92 (A) for example.com')]);
+		expect(await runCli(['scan', 'example.com'], h)).toBe(0);
+		expect(h.stdout).toEqual(['Score 92 (A) for example.com\n']);
+	});
+
+	it('fails with a protocol error when the human format has no text content', async () => {
+		const h = harness({}, [{ content: [{ type: 'image' }], structuredContent: scan('example.com') }]);
+		expect(await runCli(['scan', 'example.com'], h)).toBe(3);
+		expect(h.stderr.join('')).toContain('MCP tool result omitted human-readable text');
+		expect(h.stdout).toHaveLength(0);
+	});
+
+	it('prints pretty JSON of the structured result for --format json', async () => {
+		const structured = scan('example.com');
+		const h = harness({}, [toolResult(structured)]);
+		expect(await runCli(['scan', 'example.com', '--format', 'json'], h)).toBe(0);
+		expect(h.stdout).toEqual([`${JSON.stringify(structured, null, 2)}\n`]);
+	});
+
+	it('prints one JSON line per batch entry for --format ndjson', async () => {
+		const batch = { results: [scan('one.example'), scan('two.example')] };
+		const h = harness({ domains: 'one.example\ntwo.example\n' }, [toolResult(batch)]);
+		expect(await runCli(['batch', '--file', 'domains', '--format', 'ndjson'], h)).toBe(0);
+		expect(h.stdout).toEqual([`${JSON.stringify(batch.results[0])}\n${JSON.stringify(batch.results[1])}\n`]);
+	});
+
+	it('prints a single compact JSON line for --format ndjson when the result has no results array', async () => {
+		const structured = scan('example.com');
+		const h = harness({}, [toolResult(structured)]);
+		expect(await runCli(['scan', 'example.com', '--format', 'ndjson'], h)).toBe(0);
+		expect(h.stdout).toEqual([`${JSON.stringify(structured)}\n`]);
+	});
+
+	it('wraps the result in a verifiable evidence snapshot with server provenance for --format evidence', async () => {
+		const structured = scan('example.com');
+		const h = harness({}, [toolResult(structured)]);
+		const exit = await runCli(['scan', 'example.com', '--format', 'evidence'], { ...h, now: () => new Date(timestamp) });
+		expect(exit).toBe(0);
+
+		const snapshot = JSON.parse(h.stdout.join('')) as {
+			capturedAt: string;
+			source: { serverName: string; serverVersion: string; endpointOrigin: string; tool: string };
+			result: unknown;
+		};
+		expect(snapshot.capturedAt).toBe(timestamp);
+		expect(snapshot.source).toEqual({
+			serverName: 'blackveil-dns-mcp',
+			serverVersion: '1.2.3',
+			endpointOrigin: 'https://dns-mcp.blackveilsecurity.com',
+			tool: 'scan_domain',
+		});
+		expect(snapshot.result).toEqual(structured);
+		// The emitted snapshot round-trips through the CLI's own integrity verifier.
+		const verify = harness({ snapshot: h.stdout.join('') });
+		expect(await runCli(['evidence', 'verify', 'snapshot'], verify)).toBe(0);
+	});
+
+	it('stamps the evidence snapshot from the real clock when no clock is injected', async () => {
+		const h = harness({}, [toolResult(scan('example.com'))]);
+		const before = Date.now();
+		expect(await runCli(['scan', 'example.com', '--format', 'evidence'], h)).toBe(0);
+		const capturedAt = Date.parse((JSON.parse(h.stdout.join('')) as { capturedAt: string }).capturedAt);
+		expect(capturedAt).toBeGreaterThanOrEqual(before);
+		expect(capturedAt).toBeLessThanOrEqual(Date.now());
+	});
+});
+
+describe('blackveil CLI --out handling', () => {
+	it('writes the rendered output to the file instead of stdout and reports it on stderr', async () => {
+		const h = harness({}, [toolResult(scan('example.com'), 'report text')]);
+		expect(await runCli(['scan', 'example.com', '--out', 'report.txt'], h)).toBe(0);
+		expect(h.writes.get('report.txt')).toBe('report text\n');
+		expect(h.stdout).toHaveLength(0);
+		expect(h.stderr.join('')).toBe('Wrote report.txt\n');
+	});
+
+	it('refuses to overwrite an existing file without --force and reports a usage error', async () => {
+		const h = harness({}, [toolResult(scan('example.com'), 'new text')]);
+		h.writes.set('report.txt', 'old text');
+		expect(await runCli(['scan', 'example.com', '--out', 'report.txt'], h)).toBe(2);
+		expect(h.writes.get('report.txt')).toBe('old text');
+		expect(h.stderr.join('')).toContain('Could not write report.txt: EEXIST');
+		expect(h.stdout).toHaveLength(0);
+	});
+
+	it('overwrites an existing file when --force is passed', async () => {
+		const h = harness({}, [toolResult(scan('example.com'), 'new text')]);
+		h.writes.set('report.txt', 'old text');
+		expect(await runCli(['scan', 'example.com', '--out', 'report.txt', '--force'], h)).toBe(0);
+		expect(h.writes.get('report.txt')).toBe('new text\n');
+	});
+
+	it('uses a generic message when the write fails with a non-Error value', async () => {
+		const h = harness({}, [toolResult(scan('example.com'))]);
+		h.io.writeTextFile = async () => {
+			throw 'disk full';
+		};
+		expect(await runCli(['scan', 'example.com', '--out', 'report.txt'], h)).toBe(2);
+		expect(h.stderr.join('')).toContain('Could not write report.txt: write failed');
+	});
+});
+
+describe('blackveil CLI drift save', () => {
+	it('writes a verifiable scan_domain evidence snapshot to --out and exits 0', async () => {
+		const structured = scan('example.com');
+		const h = harness({}, [toolResult(structured)]);
+		const exit = await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json'], { ...h, now: () => new Date(timestamp) });
+		expect(exit).toBe(0);
+		expect(h.calls.at(-1)).toMatchObject({ method: 'tools/call', params: { name: 'scan_domain', arguments: { domain: 'example.com', format: 'full' } } });
+		expect(JSON.stringify(h.calls.at(-1))).not.toContain('force_refresh');
+		expect(h.stdout).toHaveLength(0);
+		expect(h.stderr.join('')).toBe('Wrote baseline.json\n');
+		const saved = JSON.parse(h.writes.get('baseline.json') ?? '') as { capturedAt: string; source: { tool: string }; result: unknown };
+		expect(saved.capturedAt).toBe(timestamp);
+		expect(saved.source.tool).toBe('scan_domain');
+		expect(saved.result).toEqual(structured);
+		// The saved baseline round-trips through the CLI's own integrity verifier.
+		const verify = harness({ baseline: h.writes.get('baseline.json') ?? '' });
+		expect(await runCli(['evidence', 'verify', 'baseline'], verify)).toBe(0);
+	});
+
+	it('forwards --force-refresh to scan_domain', async () => {
+		const h = harness({}, [toolResult(scan('example.com'))]);
+		expect(await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json', '--force-refresh'], h)).toBe(0);
+		expect(h.calls.at(-1)).toMatchObject({ params: { name: 'scan_domain', arguments: { domain: 'example.com', force_refresh: true } } });
+	});
+
+	it('returns incomplete (4) for an ungraded scan but still writes the evidence', async () => {
+		const h = harness({}, [toolResult(scan('example.com', { score: null, grade: null, passed: null, measured: false, evidenceInsufficient: true }))]);
+		expect(await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json'], h)).toBe(4);
+		expect(h.writes.has('baseline.json')).toBe(true);
+	});
+
+	it('requires --out before contacting the server', async () => {
+		const h = harness();
+		expect(await runCli(['drift', 'save', 'example.com'], h)).toBe(2);
+		expect(h.calls).toHaveLength(0);
+		expect(h.stderr.join('')).toContain('drift save requires --out');
+	});
+
+	it('rejects options that do not apply to drift save before contacting the server', async () => {
+		const h = harness();
+		expect(await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json', '--format', 'json'], h)).toBe(2);
+		expect(h.calls).toHaveLength(0);
+		expect(h.stderr.join('')).toContain('Option --format is not valid for this command');
+	});
+
+	it('requires exactly one domain', async () => {
+		const h = harness();
+		expect(await runCli(['drift', 'save', '--out', 'baseline.json'], h)).toBe(2);
+		expect(h.calls).toHaveLength(0);
+		expect(h.stderr.join('')).toContain('Expected exactly one domain');
+	});
+
+	it('maps a tool-level error result to the system-error exit without writing', async () => {
+		const h = harness({}, [{ content: [{ type: 'text', text: 'boom' }], isError: true }]);
+		expect(await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json'], h)).toBe(3);
+		expect(h.writes.has('baseline.json')).toBe(false);
+	});
+
+	it('fails with a protocol error when scan_domain structuredContent is malformed', async () => {
+		const h = harness({}, [toolResult({ domain: 'example.com' })]);
+		expect(await runCli(['drift', 'save', 'example.com', '--out', 'baseline.json'], h)).toBe(3);
+		expect(h.stderr.join('')).toContain('scan_domain returned malformed structuredContent');
+		expect(h.writes.has('baseline.json')).toBe(false);
+	});
+});
+
+describe('blackveil CLI command dispatch', () => {
+	it.each([[['--help']], [['-h']], [['help']], [[]]])('prints help and exits 0 for %j', async (argv) => {
+		const h = harness();
+		expect(await runCli(argv, h)).toBe(0);
+		expect(h.stdout.join('')).toContain('Usage:');
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it.each(['frobnicate', 'constructor', 'toString'])('rejects the unknown command %s with a usage error', async (command) => {
+		const h = harness();
+		expect(await runCli([command], h)).toBe(2);
+		expect(h.stderr.join('')).toBe(`Unknown command ${command}\nRun blackveil --help for usage.\n`);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it.each([
+		[['drift'], 'drift requires save or compare'],
+		[['drift', 'bogus', 'example.com'], 'drift requires save or compare'],
+		[['evidence'], 'evidence requires verify'],
+		[['evidence', 'bogus', 'file'], 'evidence requires verify'],
+	])('rejects the malformed subcommand invocation %j', async (argv, message) => {
+		const h = harness();
+		expect(await runCli(argv, h)).toBe(2);
+		expect(h.stderr.join('')).toContain(message);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it('parses the global arguments before resolving the command', async () => {
+		const h = harness();
+		expect(await runCli(['frobnicate', '--api-key', 'secret'], h)).toBe(2);
+		expect(h.stderr.join('')).toContain('Unknown option --api-key');
+		expect(h.stderr.join('')).not.toContain('Unknown command');
+	});
+
+	it('reports a structurally invalid evidence snapshot as a usage error', async () => {
+		const h = harness({ snapshot: JSON.stringify({ schemaVersion: 'blackveil-evidence/v1' }) });
+		const exit = await runCli(['evidence', 'verify', 'snapshot'], h);
+		expect(exit).toBe(2);
+		expect(h.stderr.join('')).toContain('Invalid evidence snapshot');
+	});
+
+	it('reports a non-Error failure as a generic system error', async () => {
+		const h = harness({}, [toolResult(scan('example.com'))]);
+		h.io.stdout = () => {
+			throw 'closed pipe';
+		};
+		expect(await runCli(['scan', 'example.com'], h)).toBe(3);
+		expect(h.stderr.join('')).toBe('Unexpected CLI failure\n');
+	});
+
+	it('reports an Error thrown by the environment with its message and exit 3', async () => {
+		const h = harness({}, [toolResult(scan('example.com'))]);
+		h.io.stdout = () => {
+			throw new Error('stdout closed');
+		};
+		expect(await runCli(['scan', 'example.com'], h)).toBe(3);
+		expect(h.stderr.join('')).toBe('stdout closed\n');
 	});
 });

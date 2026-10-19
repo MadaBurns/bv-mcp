@@ -1,0 +1,927 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`formatCompliance pins > renders every branch exactly [compact] 1`] = `
+{
+  "allPassing": "Compliance: pass.example — 95/100 (A+)
+
+NIST 800-177: 8/8 controls passing (100%)
+ ✓ §4.3.1 SPF Authentication
+ ✓ §4.3.2 DKIM Signing
+ ✓ §4.3.3 DMARC Policy
+ ✓ §4.4 MTA-STS Transport Security
+ ✓ §4.5 DANE for SMTP
+ ✓ §4.6 TLS Reporting
+ ✓ §5.1 DNSSEC Validation
+ ✓ §5.2 Certificate Authority Authorization
+
+PCI DSS 4.0: 5/5 controls passing (100%)
+ ✓ 4.2.1 Strong Cryptography for Transmission
+ ✓ 6.4.1 Public-Facing Web Application Security
+ ✓ 6.4.2 Web Application Firewall / CSP
+ ✓ 8.3.1 Authentication Controls
+ ✓ 11.3.1 Vulnerability Management
+
+SOC 2: 4/5 controls passing (80%)
+ ✓ CC6.1 Logical Access Security
+ ~ CC6.6 System Boundary Protection
+ ✓ CC6.7 Data-in-Transit Encryption
+ ✓ CC7.1 Monitoring and Detection
+ ✓ CC8.1 Change Management
+
+CIS Controls: 3/4 controls passing (75%)
+ ✓ 9.2 DNS Filtering and Monitoring
+ ✓ 9.3 Email Security
+ ✓ 3.10 Encrypt Data in Transit
+ ~ 12.1 DNS Infrastructure",
+  "mixed": "Compliance: fmt.example — 71/100 (C+)
+
+NIST 800-177: 5/8 controls passing (63%)
+ ~ §4.3.1 SPF Authentication — TXT RRset exceeds UDP limit
+ ✓ §4.3.2 DKIM Signing
+ ✓ §4.3.3 DMARC Policy
+ ✗ §4.4 MTA-STS Transport Security — No MTA-STS record
+ ✓ §4.5 DANE for SMTP
+ ✓ §4.6 TLS Reporting
+ ✗ §5.1 DNSSEC Validation — DNSSEC not enabled
+ ✓ §5.2 Certificate Authority Authorization
+
+PCI DSS 4.0: 2/5 controls passing (40%)
+ ~ 4.2.1 Strong Cryptography for Transmission — No MTA-STS record
+ ✓ 6.4.1 Public-Facing Web Application Security
+ ✓ 6.4.2 Web Application Firewall / CSP
+ ~ 8.3.1 Authentication Controls — TXT RRset exceeds UDP limit
+ ~ 11.3.1 Vulnerability Management — DNSSEC not enabled
+
+SOC 2: 1/5 controls passing (20%)
+ ~ CC6.1 Logical Access Security — TXT RRset exceeds UDP limit
+ ~ CC6.6 System Boundary Protection
+ ~ CC6.7 Data-in-Transit Encryption — No MTA-STS record
+ ✓ CC7.1 Monitoring and Detection
+ ~ CC8.1 Change Management — DNSSEC not enabled
+
+CIS Controls: 0/4 controls passing (0%)
+ ~ 9.2 DNS Filtering and Monitoring — DNSSEC not enabled
+ ~ 9.3 Email Security — TXT RRset exceeds UDP limit
+ ~ 3.10 Encrypt Data in Transit — No MTA-STS record
+ ~ 12.1 DNS Infrastructure — DNSSEC not enabled",
+  "sparse": "Compliance: sparse.example — 50/100 (D)
+
+NIST 800-177: 1/2 controls passing (50%) | 6 not assessed
+ ✓ §4.3.1 SPF Authentication
+ ? §4.3.2 DKIM Signing
+ ✗ §4.3.3 DMARC Policy — p=none
+ ? §4.4 MTA-STS Transport Security
+ ? §4.5 DANE for SMTP
+ ? §4.6 TLS Reporting
+ ? §5.1 DNSSEC Validation
+ ? §5.2 Certificate Authority Authorization
+
+PCI DSS 4.0: 0/1 controls passing (0%) | 4 not assessed
+ ? 4.2.1 Strong Cryptography for Transmission
+ ? 6.4.1 Public-Facing Web Application Security
+ ? 6.4.2 Web Application Firewall / CSP
+ ~ 8.3.1 Authentication Controls — p=none
+ ? 11.3.1 Vulnerability Management
+
+SOC 2: 0/2 controls passing (0%) | 3 not assessed
+ ~ CC6.1 Logical Access Security — p=none
+ ? CC6.6 System Boundary Protection
+ ? CC6.7 Data-in-Transit Encryption
+ ✗ CC7.1 Monitoring and Detection — p=none
+ ? CC8.1 Change Management
+
+CIS Controls: 0/1 controls passing (0%) | 3 not assessed
+ ? 9.2 DNS Filtering and Monitoring
+ ~ 9.3 Email Security — p=none
+ ? 3.10 Encrypt Data in Transit
+ ? 12.1 DNS Infrastructure",
+  "ungraded": "Compliance: never-measured.example — not measured
+No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.
+
+NIST 800-177: not measured — 0 of 8 controls assessable
+ ? §4.3.1 SPF Authentication
+ ? §4.3.2 DKIM Signing
+ ? §4.3.3 DMARC Policy
+ ? §4.4 MTA-STS Transport Security
+ ? §4.5 DANE for SMTP
+ ? §4.6 TLS Reporting
+ ? §5.1 DNSSEC Validation
+ ? §5.2 Certificate Authority Authorization
+
+PCI DSS 4.0: not measured — 0 of 5 controls assessable
+ ? 4.2.1 Strong Cryptography for Transmission
+ ? 6.4.1 Public-Facing Web Application Security
+ ? 6.4.2 Web Application Firewall / CSP
+ ? 8.3.1 Authentication Controls
+ ? 11.3.1 Vulnerability Management
+
+SOC 2: not measured — 0 of 5 controls assessable
+ ? CC6.1 Logical Access Security
+ ? CC6.6 System Boundary Protection
+ ? CC6.7 Data-in-Transit Encryption
+ ? CC7.1 Monitoring and Detection
+ ? CC8.1 Change Management
+
+CIS Controls: not measured — 0 of 4 controls assessable
+ ? 9.2 DNS Filtering and Monitoring
+ ? 9.3 Email Security
+ ? 3.10 Encrypt Data in Transit
+ ? 12.1 DNS Infrastructure",
+}
+`;
+
+exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
+{
+  "allPassing": "# Compliance Report: pass.example
+**Score:** 95/100 (A+)
+
+## NIST 800-177
+**8/8** controls passing (100%) | 0 failing | 0 partial
+
+✅ **§4.3.1 SPF Authentication** — PASS
+✅ **§4.3.2 DKIM Signing** — PASS
+✅ **§4.3.3 DMARC Policy** — PASS
+✅ **§4.4 MTA-STS Transport Security** — PASS
+✅ **§4.5 DANE for SMTP** — PASS
+✅ **§4.6 TLS Reporting** — PASS
+✅ **§5.1 DNSSEC Validation** — PASS
+✅ **§5.2 Certificate Authority Authorization** — PASS
+
+## PCI DSS 4.0
+**5/5** controls passing (100%) | 0 failing | 0 partial
+
+✅ **4.2.1 Strong Cryptography for Transmission** — PASS
+✅ **6.4.1 Public-Facing Web Application Security** — PASS
+✅ **6.4.2 Web Application Firewall / CSP** — PASS
+✅ **8.3.1 Authentication Controls** — PASS
+✅ **11.3.1 Vulnerability Management** — PASS
+
+## SOC 2
+**4/5** controls passing (80%) | 0 failing | 1 partial
+
+✅ **CC6.1 Logical Access Security** — PASS
+⚠️ **CC6.6 System Boundary Protection** — PARTIAL — implemented but flagged (not certified)
+✅ **CC6.7 Data-in-Transit Encryption** — PASS
+✅ **CC7.1 Monitoring and Detection** — PASS
+✅ **CC8.1 Change Management** — PASS
+
+## CIS Controls
+**3/4** controls passing (75%) | 0 failing | 1 partial
+
+✅ **9.2 DNS Filtering and Monitoring** — PASS
+✅ **9.3 Email Security** — PASS
+✅ **3.10 Encrypt Data in Transit** — PASS
+⚠️ **12.1 DNS Infrastructure** — PARTIAL — implemented but flagged (not certified)",
+  "mixed": "# Compliance Report: fmt.example
+**Score:** 71/100 (C+)
+
+## NIST 800-177
+**5/8** controls passing (63%) | 2 failing | 1 partial
+
+⚠️ **§4.3.1 SPF Authentication** — PARTIAL — implemented but flagged (not certified)
+  - TXT RRset exceeds UDP limit
+✅ **§4.3.2 DKIM Signing** — PASS
+✅ **§4.3.3 DMARC Policy** — PASS
+❌ **§4.4 MTA-STS Transport Security** — FAIL
+  - No MTA-STS record
+✅ **§4.5 DANE for SMTP** — PASS
+✅ **§4.6 TLS Reporting** — PASS
+❌ **§5.1 DNSSEC Validation** — FAIL
+  - DNSSEC not enabled
+  - second finding
+✅ **§5.2 Certificate Authority Authorization** — PASS
+
+## PCI DSS 4.0
+**2/5** controls passing (40%) | 0 failing | 3 partial
+
+⚠️ **4.2.1 Strong Cryptography for Transmission** — PARTIAL — implemented but flagged (not certified)
+  - No MTA-STS record
+✅ **6.4.1 Public-Facing Web Application Security** — PASS
+✅ **6.4.2 Web Application Firewall / CSP** — PASS
+⚠️ **8.3.1 Authentication Controls** — PARTIAL — implemented but flagged (not certified)
+  - TXT RRset exceeds UDP limit
+⚠️ **11.3.1 Vulnerability Management** — PARTIAL — implemented but flagged (not certified)
+  - DNSSEC not enabled
+  - second finding
+
+## SOC 2
+**1/5** controls passing (20%) | 0 failing | 4 partial
+
+⚠️ **CC6.1 Logical Access Security** — PARTIAL — implemented but flagged (not certified)
+  - TXT RRset exceeds UDP limit
+  - DNSSEC not enabled
+  - second finding
+⚠️ **CC6.6 System Boundary Protection** — PARTIAL — implemented but flagged (not certified)
+⚠️ **CC6.7 Data-in-Transit Encryption** — PARTIAL — implemented but flagged (not certified)
+  - No MTA-STS record
+✅ **CC7.1 Monitoring and Detection** — PASS
+⚠️ **CC8.1 Change Management** — PARTIAL — implemented but flagged (not certified)
+  - DNSSEC not enabled
+  - second finding
+
+## CIS Controls
+**0/4** controls passing (0%) | 0 failing | 4 partial
+
+⚠️ **9.2 DNS Filtering and Monitoring** — PARTIAL — implemented but flagged (not certified)
+  - DNSSEC not enabled
+  - second finding
+⚠️ **9.3 Email Security** — PARTIAL — implemented but flagged (not certified)
+  - TXT RRset exceeds UDP limit
+  - No MTA-STS record
+⚠️ **3.10 Encrypt Data in Transit** — PARTIAL — implemented but flagged (not certified)
+  - No MTA-STS record
+⚠️ **12.1 DNS Infrastructure** — PARTIAL — implemented but flagged (not certified)
+  - DNSSEC not enabled
+  - second finding",
+  "sparse": "# Compliance Report: sparse.example
+**Score:** 50/100 (D)
+
+## NIST 800-177
+**1/2** controls passing (50%) | 1 failing | 0 partial | 6 not assessed
+
+✅ **§4.3.1 SPF Authentication** — PASS
+❓ **§4.3.2 DKIM Signing** — NOT ASSESSED
+❌ **§4.3.3 DMARC Policy** — FAIL
+  - p=none
+❓ **§4.4 MTA-STS Transport Security** — NOT ASSESSED
+❓ **§4.5 DANE for SMTP** — NOT ASSESSED
+❓ **§4.6 TLS Reporting** — NOT ASSESSED
+❓ **§5.1 DNSSEC Validation** — NOT ASSESSED
+❓ **§5.2 Certificate Authority Authorization** — NOT ASSESSED
+
+## PCI DSS 4.0
+**0/1** controls passing (0%) | 0 failing | 1 partial | 4 not assessed
+
+❓ **4.2.1 Strong Cryptography for Transmission** — NOT ASSESSED
+❓ **6.4.1 Public-Facing Web Application Security** — NOT ASSESSED
+❓ **6.4.2 Web Application Firewall / CSP** — NOT ASSESSED
+⚠️ **8.3.1 Authentication Controls** — PARTIAL — implemented but flagged (not certified)
+  - p=none
+❓ **11.3.1 Vulnerability Management** — NOT ASSESSED
+
+## SOC 2
+**0/2** controls passing (0%) | 1 failing | 1 partial | 3 not assessed
+
+⚠️ **CC6.1 Logical Access Security** — PARTIAL — implemented but flagged (not certified)
+  - p=none
+❓ **CC6.6 System Boundary Protection** — NOT ASSESSED
+❓ **CC6.7 Data-in-Transit Encryption** — NOT ASSESSED
+❌ **CC7.1 Monitoring and Detection** — FAIL
+  - p=none
+❓ **CC8.1 Change Management** — NOT ASSESSED
+
+## CIS Controls
+**0/1** controls passing (0%) | 0 failing | 1 partial | 3 not assessed
+
+❓ **9.2 DNS Filtering and Monitoring** — NOT ASSESSED
+⚠️ **9.3 Email Security** — PARTIAL — implemented but flagged (not certified)
+  - p=none
+❓ **3.10 Encrypt Data in Transit** — NOT ASSESSED
+❓ **12.1 DNS Infrastructure** — NOT ASSESSED",
+  "ungraded": "# Compliance Report: never-measured.example
+**Score:** not measured
+> **No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.**
+
+## NIST 800-177
+**No control could be assessed** — 0 of 8 had any check evidence (not measured).
+
+❓ **§4.3.1 SPF Authentication** — NOT ASSESSED
+❓ **§4.3.2 DKIM Signing** — NOT ASSESSED
+❓ **§4.3.3 DMARC Policy** — NOT ASSESSED
+❓ **§4.4 MTA-STS Transport Security** — NOT ASSESSED
+❓ **§4.5 DANE for SMTP** — NOT ASSESSED
+❓ **§4.6 TLS Reporting** — NOT ASSESSED
+❓ **§5.1 DNSSEC Validation** — NOT ASSESSED
+❓ **§5.2 Certificate Authority Authorization** — NOT ASSESSED
+
+## PCI DSS 4.0
+**No control could be assessed** — 0 of 5 had any check evidence (not measured).
+
+❓ **4.2.1 Strong Cryptography for Transmission** — NOT ASSESSED
+❓ **6.4.1 Public-Facing Web Application Security** — NOT ASSESSED
+❓ **6.4.2 Web Application Firewall / CSP** — NOT ASSESSED
+❓ **8.3.1 Authentication Controls** — NOT ASSESSED
+❓ **11.3.1 Vulnerability Management** — NOT ASSESSED
+
+## SOC 2
+**No control could be assessed** — 0 of 5 had any check evidence (not measured).
+
+❓ **CC6.1 Logical Access Security** — NOT ASSESSED
+❓ **CC6.6 System Boundary Protection** — NOT ASSESSED
+❓ **CC6.7 Data-in-Transit Encryption** — NOT ASSESSED
+❓ **CC7.1 Monitoring and Detection** — NOT ASSESSED
+❓ **CC8.1 Change Management** — NOT ASSESSED
+
+## CIS Controls
+**No control could be assessed** — 0 of 4 had any check evidence (not measured).
+
+❓ **9.2 DNS Filtering and Monitoring** — NOT ASSESSED
+❓ **9.3 Email Security** — NOT ASSESSED
+❓ **3.10 Encrypt Data in Transit** — NOT ASSESSED
+❓ **12.1 DNS Infrastructure** — NOT ASSESSED",
+}
+`;
+
+exports[`formatCompliance pins > uses the generic fallback when an unassessed report somehow lacks a caveat 1`] = `
+"Compliance: nocaveat.example — not measured
+This domain could not be assessed.
+
+NIST 800-177: not measured — 0 of 8 controls assessable
+ ? §4.3.1 SPF Authentication
+ ? §4.3.2 DKIM Signing
+ ? §4.3.3 DMARC Policy
+ ? §4.4 MTA-STS Transport Security
+ ? §4.5 DANE for SMTP
+ ? §4.6 TLS Reporting
+ ? §5.1 DNSSEC Validation
+ ? §5.2 Certificate Authority Authorization
+
+PCI DSS 4.0: not measured — 0 of 5 controls assessable
+ ? 4.2.1 Strong Cryptography for Transmission
+ ? 6.4.1 Public-Facing Web Application Security
+ ? 6.4.2 Web Application Firewall / CSP
+ ? 8.3.1 Authentication Controls
+ ? 11.3.1 Vulnerability Management
+
+SOC 2: not measured — 0 of 5 controls assessable
+ ? CC6.1 Logical Access Security
+ ? CC6.6 System Boundary Protection
+ ? CC6.7 Data-in-Transit Encryption
+ ? CC7.1 Monitoring and Detection
+ ? CC8.1 Change Management
+
+CIS Controls: not measured — 0 of 4 controls assessable
+ ? 9.2 DNS Filtering and Monitoring
+ ? 9.3 Email Security
+ ? 3.10 Encrypt Data in Transit
+ ? 12.1 DNS Infrastructure"
+`;
+
+exports[`formatCompliance pins > uses the generic fallback when an unassessed report somehow lacks a caveat 2`] = `
+"# Compliance Report: nocaveat.example
+**Score:** not measured
+> **This domain could not be assessed.**
+
+## NIST 800-177
+**No control could be assessed** — 0 of 8 had any check evidence (not measured).
+
+❓ **§4.3.1 SPF Authentication** — NOT ASSESSED
+❓ **§4.3.2 DKIM Signing** — NOT ASSESSED
+❓ **§4.3.3 DMARC Policy** — NOT ASSESSED
+❓ **§4.4 MTA-STS Transport Security** — NOT ASSESSED
+❓ **§4.5 DANE for SMTP** — NOT ASSESSED
+❓ **§4.6 TLS Reporting** — NOT ASSESSED
+❓ **§5.1 DNSSEC Validation** — NOT ASSESSED
+❓ **§5.2 Certificate Authority Authorization** — NOT ASSESSED
+
+## PCI DSS 4.0
+**No control could be assessed** — 0 of 5 had any check evidence (not measured).
+
+❓ **4.2.1 Strong Cryptography for Transmission** — NOT ASSESSED
+❓ **6.4.1 Public-Facing Web Application Security** — NOT ASSESSED
+❓ **6.4.2 Web Application Firewall / CSP** — NOT ASSESSED
+❓ **8.3.1 Authentication Controls** — NOT ASSESSED
+❓ **11.3.1 Vulnerability Management** — NOT ASSESSED
+
+## SOC 2
+**No control could be assessed** — 0 of 5 had any check evidence (not measured).
+
+❓ **CC6.1 Logical Access Security** — NOT ASSESSED
+❓ **CC6.6 System Boundary Protection** — NOT ASSESSED
+❓ **CC6.7 Data-in-Transit Encryption** — NOT ASSESSED
+❓ **CC7.1 Monitoring and Detection** — NOT ASSESSED
+❓ **CC8.1 Change Management** — NOT ASSESSED
+
+## CIS Controls
+**No control could be assessed** — 0 of 4 had any check evidence (not measured).
+
+❓ **9.2 DNS Filtering and Monitoring** — NOT ASSESSED
+❓ **9.3 Email Security** — NOT ASSESSED
+❓ **3.10 Encrypt Data in Transit** — NOT ASSESSED
+❓ **12.1 DNS Infrastructure** — NOT ASSESSED"
+`;
+
+exports[`formatFixPlan pins > renders every branch exactly [compact] 1`] = `
+{
+  "clean": "Fix Plan: fp.example — 95/100 (A+), 0 actions
+No actionable findings.",
+  "oneAction": "Fix Plan: fp.example — 71/100 (C+), 1 actions
+1. [HIGH] SPF: Fix thing 1 (low)",
+  "sevenActions": "Fix Plan: fp.example — 71/100 (C+), 7 actions
+1. [CRITICAL] SPF: Fix thing 1 (low)
+2. [MEDIUM] DMARC: Fix thing 2 (low)
+3. [MEDIUM] SPF: Fix thing 3 (low)
+4. [CRITICAL] DMARC: Fix thing 4 (low)
+5. [MEDIUM] SPF: Fix thing 5 (low)
+... and 2 more",
+  "sevenActionsTransient": "Fix Plan: fp.example — 71/100 (C+), 7 actions
+1. [CRITICAL] SPF: Fix thing 1 (low)
+2. [MEDIUM] DMARC: Fix thing 2 (low)
+3. [MEDIUM] SPF: Fix thing 3 (low)
+4. [CRITICAL] DMARC: Fix thing 4 (low)
+5. [MEDIUM] SPF: Fix thing 5 (low)
+... and 2 more
+2 categories could not be assessed (transient check failure, not a clean result): ns, caa.",
+  "transientOne": "Fix Plan: fp.example — 71/100 (C+), 0 actions
+1 category could not be assessed (transient check failure, not a clean result): dkim.",
+  "transientTwo": "Fix Plan: fp.example — 71/100 (C+), 0 actions
+2 categories could not be assessed (transient check failure, not a clean result): dkim, ssl.",
+  "unassessed": "Fix Plan: fp.example — not measured, 0 actions
+Nothing ran.",
+  "unassessedNoCaveat": "Fix Plan: fp.example — 71/100 (C+), 0 actions
+This domain could not be assessed.",
+  "withDeps": "Fix Plan: fp.example — 71/100 (C+), 2 actions
+1. [HIGH] SPF: Fix thing 1 (low)
+2. [HIGH] SPF: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx... (high)
+1 category could not be assessed (transient check failure, not a clean result): mx.",
+}
+`;
+
+exports[`formatFixPlan pins > renders every branch exactly [full] 1`] = `
+{
+  "clean": "# Fix Plan: fp.example
+Score: 95/100 (A+) | Maturity Stage: 4/4
+0 remediation actions identified
+
+No actionable findings. Domain security posture is strong.",
+  "oneAction": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+1 remediation action identified
+
+## 1. [HIGH] SPF
+Action: Fix thing 1
+Effort: low | Impact: medium
+",
+  "sevenActions": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+7 remediation actions identified
+
+## 1. [CRITICAL] SPF
+Action: Fix thing 1
+Effort: low | Impact: medium
+
+## 2. [MEDIUM] DMARC
+Action: Fix thing 2
+Effort: low | Impact: medium
+
+## 3. [MEDIUM] SPF
+Action: Fix thing 3
+Effort: low | Impact: medium
+
+## 4. [CRITICAL] DMARC
+Action: Fix thing 4
+Effort: low | Impact: medium
+
+## 5. [MEDIUM] SPF
+Action: Fix thing 5
+Effort: low | Impact: medium
+
+## 6. [MEDIUM] DMARC
+Action: Fix thing 6
+Effort: low | Impact: medium
+
+## 7. [CRITICAL] SPF
+Action: Fix thing 7
+Effort: low | Impact: medium
+",
+  "sevenActionsTransient": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+7 remediation actions identified
+
+## 1. [CRITICAL] SPF
+Action: Fix thing 1
+Effort: low | Impact: medium
+
+## 2. [MEDIUM] DMARC
+Action: Fix thing 2
+Effort: low | Impact: medium
+
+## 3. [MEDIUM] SPF
+Action: Fix thing 3
+Effort: low | Impact: medium
+
+## 4. [CRITICAL] DMARC
+Action: Fix thing 4
+Effort: low | Impact: medium
+
+## 5. [MEDIUM] SPF
+Action: Fix thing 5
+Effort: low | Impact: medium
+
+## 6. [MEDIUM] DMARC
+Action: Fix thing 6
+Effort: low | Impact: medium
+
+## 7. [CRITICAL] SPF
+Action: Fix thing 7
+Effort: low | Impact: medium
+
+2 categories could not be assessed (transient check failure, not a clean result): ns, caa.",
+  "transientOne": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+0 remediation actions identified
+
+1 category could not be assessed (transient check failure, not a clean result): dkim.",
+  "transientTwo": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+0 remediation actions identified
+
+2 categories could not be assessed (transient check failure, not a clean result): dkim, ssl.",
+  "unassessed": "# Fix Plan: fp.example
+Score: not measured | Maturity Stage: not measured
+0 remediation actions identified
+
+Nothing ran.",
+  "unassessedNoCaveat": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+0 remediation actions identified
+
+This domain could not be assessed.",
+  "withDeps": "# Fix Plan: fp.example
+Score: 71/100 (C+) | Maturity Stage: 2/4
+2 remediation actions identified
+
+## 1. [HIGH] SPF
+Action: Fix thing 1
+Effort: low | Impact: medium
+Dependencies: Publish SPF; Publish DKIM
+
+## 2. [HIGH] SPF
+Action: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Effort: high | Impact: critical
+
+1 category could not be assessed (transient check failure, not a clean result): mx.",
+}
+`;
+
+exports[`formatSgeQuickscan pins > renders every branch exactly [compact] 1`] = `
+{
+  "abstaining": "NZ SGE: abstain.example — INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+0 satisfied | 0 not satisfied | 7 not measured (of 7)
+No check completed for this domain, so NONE of the six SGE controls were measured. Every control below is reported as NOT MEASURED — the absence of a verdict, never a pass and never a requirement found unmet.
+SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.
+Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.
+
+ ? DMARC: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the check did not complete (timeout or error), so nothing was observed.
+ ? SPF: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the check did not complete (timeout or error), so nothing was observed.
+ ? DKIM: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the check did not complete (timeout or error), so nothing was observed.
+ ? SMTP TLS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — this scanner never opens an SMTP session, so transport TLS is never observed here.
+ ? MTA-STS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the check did not complete (timeout or error), so nothing was observed.
+ ? TLS-RPT: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the check did not complete (timeout or error), so nothing was observed.
+ ? Sub-domain coverage: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.",
+  "bad": "NZ SGE: bad.example — NOT COMPLIANT — at least one SGE control was measured and found unmet.
+1 satisfied | 4 not satisfied | 2 not measured (of 7)
+SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.
+Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.
+
+ ✗ DMARC: NOT SATISFIED
+ ✗ SPF: NOT SATISFIED
+ ✓ DKIM: SATISFIED
+ ? SMTP TLS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — this scanner never opens an SMTP session, so transport TLS is never observed here.
+ ✗ MTA-STS: NOT SATISFIED
+ ✗ TLS-RPT: NOT SATISFIED
+ ? Sub-domain coverage: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.",
+  "good": "NZ SGE: good.example — INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+5 satisfied | 0 not satisfied | 2 not measured (of 7)
+SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.
+Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.
+
+ ✓ DMARC: SATISFIED
+ ✓ SPF: SATISFIED
+ ✓ DKIM: SATISFIED
+ ? SMTP TLS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — this scanner never opens an SMTP session, so transport TLS is never observed here.
+ ✓ MTA-STS: SATISFIED
+ ✓ TLS-RPT: SATISFIED
+ ? Sub-domain coverage: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.",
+  "noMx": "NZ SGE: nomx.example — INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+3 satisfied | 0 not satisfied | 4 not measured (of 7)
+Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.
+
+ ✓ DMARC: SATISFIED
+ ✓ SPF: SATISFIED
+ ✓ DKIM: SATISFIED
+ ? SMTP TLS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+ ? MTA-STS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+ ? TLS-RPT: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+ ? Sub-domain coverage: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.",
+  "withAdvisories": "NZ SGE: adv.example — NOT COMPLIANT — at least one SGE control was measured and found unmet.
+1 satisfied | 4 not satisfied | 2 not measured (of 7)
+SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.
+Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.
+
+ ✗ DMARC: NOT SATISFIED
+ ✗ SPF: NOT SATISFIED
+ ✓ DKIM: SATISFIED
+ ? SMTP TLS: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — this scanner never opens an SMTP session, so transport TLS is never observed here.
+ ✗ MTA-STS: NOT SATISFIED
+ ✗ TLS-RPT: NOT SATISFIED
+ ? Sub-domain coverage: NOT MEASURED — no verdict was reached (neither a pass nor a failure) — no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+
+ADDITIONAL FINDINGS OUTSIDE THE SIX CONTROLS. These do NOT change any control status and do NOT change the verdict — the SGE controls are written as they are written. They are measured facts this scan found anyway, and a control tally that omitted them would read as a clean bill of health it has not earned.
+⚠️ Exposed thing: An exposure summary.
+ℹ️ Note: A note.",
+}
+`;
+
+exports[`formatSgeQuickscan pins > renders every branch exactly [full] 1`] = `
+{
+  "abstaining": "# NZ Secure Government Email (SGE): abstain.example
+**Verdict:** INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+**Controls:** 0 satisfied | 0 not satisfied | 7 not measured (of 7)
+**Inbound mail transport:** unknown (the MX check reached no conclusion) — the inbound-transport controls are evaluated anyway
+> **No check completed for this domain, so NONE of the six SGE controls were measured. Every control below is reported as NOT MEASURED — the absence of a verdict, never a pass and never a requirement found unmet.**
+> **SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.**
+> **Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.**
+
+❓ **DMARC** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: A published DMARC record at p=reject, applied to 100% of mail.
+  - Why not measured: the check did not complete (timeout or error), so nothing was observed.
+  - Evidence: CheckResult.checkStatus = timeout
+
+❓ **SPF** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: A published SPF record terminating in -all (hard fail).
+  - Why not measured: the check did not complete (timeout or error), so nothing was observed.
+  - Evidence: CheckResult.checkStatus = timeout
+
+❓ **DKIM** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: An active DKIM signing key published for the domain.
+  - Why not measured: the check did not complete (timeout or error), so nothing was observed.
+  - Evidence: CheckResult.checkStatus = timeout
+
+❓ **SMTP TLS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: Mail exchangers offer and use TLS for SMTP transport.
+  - Why not measured: this scanner never opens an SMTP session, so transport TLS is never observed here.
+  - Evidence: SgeEvaluateOptions.smtpTls = undefined
+
+❓ **MTA-STS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: An MTA-STS policy served at mode: enforce.
+  - Why not measured: the check did not complete (timeout or error), so nothing was observed.
+  - Evidence: CheckResult.checkStatus = timeout
+
+❓ **TLS-RPT** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: A published TLS-RPT record so transport failures are reported.
+  - Why not measured: the check did not complete (timeout or error), so nothing was observed.
+  - Evidence: CheckResult.checkStatus = timeout
+
+❓ **Sub-domain coverage** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.
+  - Why not measured: no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+  - Evidence: SgeEvaluateOptions.subdomainCoverage = undefined",
+  "bad": "# NZ Secure Government Email (SGE): bad.example
+**Verdict:** NOT COMPLIANT — at least one SGE control was measured and found unmet.
+**Controls:** 1 satisfied | 4 not satisfied | 2 not measured (of 7)
+**Inbound mail transport:** present (the domain publishes a mail exchanger)
+> **SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.**
+> **Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.**
+
+❌ **DMARC** — NOT SATISFIED
+  - Requirement: A published DMARC record at p=reject, applied to 100% of mail.
+  - Evidence: CheckResult.recordPresent = true
+  - Evidence: CheckResult.controlPresent (dmarc: enforcing) = false
+  - Evidence: findingsIndicatePartialEnforcement() = false
+
+❌ **SPF** — NOT SATISFIED
+  - Requirement: A published SPF record terminating in -all (hard fail).
+  - Evidence: spfAllQualifier() = ~all
+
+✅ **DKIM** — SATISFIED
+  - Requirement: An active DKIM signing key published for the domain.
+  - Evidence: CheckResult.controlPresent (dkim: active key) = true
+
+❓ **SMTP TLS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: Mail exchangers offer and use TLS for SMTP transport.
+  - Why not measured: this scanner never opens an SMTP session, so transport TLS is never observed here.
+  - Evidence: SgeEvaluateOptions.smtpTls = undefined
+
+❌ **MTA-STS** — NOT SATISFIED
+  - Requirement: An MTA-STS policy served at mode: enforce.
+  - Evidence: mtaStsPolicyMode() = testing
+  - Evidence: CheckResult.recordPresent = true
+
+❌ **TLS-RPT** — NOT SATISFIED
+  - Requirement: A published TLS-RPT record so transport failures are reported.
+  - Evidence: CheckResult.recordPresent = false
+
+❓ **Sub-domain coverage** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.
+  - Why not measured: no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+  - Evidence: SgeEvaluateOptions.subdomainCoverage = undefined",
+  "good": "# NZ Secure Government Email (SGE): good.example
+**Verdict:** INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+**Controls:** 5 satisfied | 0 not satisfied | 2 not measured (of 7)
+**Inbound mail transport:** present (the domain publishes a mail exchanger)
+> **SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.**
+> **Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.**
+
+✅ **DMARC** — SATISFIED
+  - Requirement: A published DMARC record at p=reject, applied to 100% of mail.
+  - Evidence: CheckResult.recordPresent = true
+  - Evidence: CheckResult.controlPresent (dmarc: enforcing) = true
+  - Evidence: findingsIndicatePartialEnforcement() = false
+
+✅ **SPF** — SATISFIED
+  - Requirement: A published SPF record terminating in -all (hard fail).
+  - Evidence: spfAllQualifier() = -all
+
+✅ **DKIM** — SATISFIED
+  - Requirement: An active DKIM signing key published for the domain.
+  - Evidence: CheckResult.controlPresent (dkim: active key) = true
+
+❓ **SMTP TLS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: Mail exchangers offer and use TLS for SMTP transport.
+  - Why not measured: this scanner never opens an SMTP session, so transport TLS is never observed here.
+  - Evidence: SgeEvaluateOptions.smtpTls = undefined
+
+✅ **MTA-STS** — SATISFIED
+  - Requirement: An MTA-STS policy served at mode: enforce.
+  - Evidence: mtaStsPolicyMode() = enforce
+  - Evidence: CheckResult.recordPresent = true
+
+✅ **TLS-RPT** — SATISFIED
+  - Requirement: A published TLS-RPT record so transport failures are reported.
+  - Evidence: CheckResult.recordPresent = true
+
+❓ **Sub-domain coverage** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.
+  - Why not measured: no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+  - Evidence: SgeEvaluateOptions.subdomainCoverage = undefined",
+  "noMx": "# NZ Secure Government Email (SGE): nomx.example
+**Verdict:** INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, so SGE compliance can be neither confirmed nor denied for this domain.
+**Controls:** 3 satisfied | 0 not satisfied | 4 not measured (of 7)
+**Inbound mail transport:** absent (no mail exchanger, or a null MX) — the inbound-transport controls have nothing to measure
+> **Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.**
+
+✅ **DMARC** — SATISFIED
+  - Requirement: A published DMARC record at p=reject, applied to 100% of mail.
+  - Evidence: CheckResult.recordPresent = true
+  - Evidence: CheckResult.controlPresent (dmarc: enforcing) = true
+  - Evidence: findingsIndicatePartialEnforcement() = false
+
+✅ **SPF** — SATISFIED
+  - Requirement: A published SPF record terminating in -all (hard fail).
+  - Evidence: spfAllQualifier() = -all
+
+✅ **DKIM** — SATISFIED
+  - Requirement: An active DKIM signing key published for the domain.
+  - Evidence: CheckResult.controlPresent (dkim: active key) = true
+
+❓ **SMTP TLS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: Mail exchangers offer and use TLS for SMTP transport.
+  - Why not measured: the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+  - Evidence: mailTransport = absent
+
+❓ **MTA-STS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: An MTA-STS policy served at mode: enforce.
+  - Why not measured: the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+  - Evidence: mailTransport = absent
+
+❓ **TLS-RPT** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: A published TLS-RPT record so transport failures are reported.
+  - Why not measured: the domain publishes no mail exchanger, so there is no inbound mail transport to measure.
+  - Evidence: mailTransport = absent
+
+❓ **Sub-domain coverage** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.
+  - Why not measured: no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+  - Evidence: SgeEvaluateOptions.subdomainCoverage = undefined",
+  "withAdvisories": "# NZ Secure Government Email (SGE): adv.example
+**Verdict:** NOT COMPLIANT — at least one SGE control was measured and found unmet.
+**Controls:** 1 satisfied | 4 not satisfied | 2 not measured (of 7)
+**Inbound mail transport:** present (the domain publishes a mail exchanger)
+> **SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.**
+> **Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.**
+
+❌ **DMARC** — NOT SATISFIED
+  - Requirement: A published DMARC record at p=reject, applied to 100% of mail.
+  - Evidence: CheckResult.recordPresent = true
+  - Evidence: CheckResult.controlPresent (dmarc: enforcing) = false
+  - Evidence: findingsIndicatePartialEnforcement() = false
+
+❌ **SPF** — NOT SATISFIED
+  - Requirement: A published SPF record terminating in -all (hard fail).
+  - Evidence: spfAllQualifier() = ~all
+
+✅ **DKIM** — SATISFIED
+  - Requirement: An active DKIM signing key published for the domain.
+  - Evidence: CheckResult.controlPresent (dkim: active key) = true
+
+❓ **SMTP TLS** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: Mail exchangers offer and use TLS for SMTP transport.
+  - Why not measured: this scanner never opens an SMTP session, so transport TLS is never observed here.
+  - Evidence: SgeEvaluateOptions.smtpTls = undefined
+
+❌ **MTA-STS** — NOT SATISFIED
+  - Requirement: An MTA-STS policy served at mode: enforce.
+  - Evidence: mtaStsPolicyMode() = testing
+  - Evidence: CheckResult.recordPresent = true
+
+❌ **TLS-RPT** — NOT SATISFIED
+  - Requirement: A published TLS-RPT record so transport failures are reported.
+  - Evidence: CheckResult.recordPresent = false
+
+❓ **Sub-domain coverage** — NOT MEASURED — no verdict was reached (neither a pass nor a failure)
+  - Requirement: EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.
+  - Why not measured: no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.
+  - Evidence: SgeEvaluateOptions.subdomainCoverage = undefined
+
+## Additional findings
+> **ADDITIONAL FINDINGS OUTSIDE THE SIX CONTROLS. These do NOT change any control status and do NOT change the verdict — the SGE controls are written as they are written. They are measured facts this scan found anyway, and a control tally that omitted them would read as a clean bill of health it has not earned.**
+
+⚠️ **Exposed thing** — EXPOSURE — measured, and outside the six SGE controls (it does NOT change any control status)
+  - Related control: dmarc (status UNCHANGED by this advisory)
+  - An exposure summary.
+  - Evidence: sig_a = text
+  - Evidence: sig_b = true
+  - Evidence: sig_c = 7
+  - Evidence: sig_d = undefined
+
+ℹ️ **Note** — ADVISORY — a conformance note, not a measured attack surface
+  - Related control: spf (status UNCHANGED by this advisory)
+  - A note.",
+}
+`;
+
+exports[`formatSupplyChain pins > renders every branch exactly [compact] 1`] = `
+{
+  "allTrustLevels": "Supply Chain: sc.example — 4 providers (1 critical, 1 high, 1 medium, 1 low)
+- [CRITICAL] Prov A: mail, dns
+- [HIGH] Prov B: mail, dns
+- [MEDIUM] Prov C: mail, dns
+- [LOW] Prov D: mail, dns
+
+Signals:
+- [HIGH] High signal.
+- [MEDIUM] Medium signal.
+- [LOW] Low signal.
+- [INFO] Info signal.",
+  "depsWithUnmeasured": "Supply Chain: sc.example — 1 providers (0 critical, 1 high, 0 medium, 0 low)
+- [HIGH] Prov A: mail, dns
+Not measured: txt, ns lookups did not conclude; dependencies from these sources are unknown.",
+  "emptyClean": "Supply Chain: clean.example — 0 providers (0 critical, 0 high, 0 medium, 0 low)",
+  "emptyUnmeasured": "Supply Chain: empty.example — 0 providers (0 critical, 0 high, 0 medium, 0 low)
+Not measured: mx lookups did not conclude; dependencies from these sources are unknown.
+
+Signals:
+- [INFO] CAA forbids issuance.",
+  "emptyUnmeasuredList": "Supply Chain: emptylist.example — 0 providers (0 critical, 0 high, 0 medium, 0 low)",
+}
+`;
+
+exports[`formatSupplyChain pins > renders every branch exactly [full] 1`] = `
+{
+  "allTrustLevels": "# Supply Chain Map: sc.example
+Total Providers: 4 (1 critical, 1 high, 1 medium, 1 low)
+
+## Dependencies
+🔴 **Prov A** [CRITICAL]
+  Roles: mail, dns
+  Sources: mx, txt
+
+🟠 **Prov B** [HIGH]
+  Roles: mail, dns
+  Sources: mx, txt
+
+🟡 **Prov C** [MEDIUM]
+  Roles: mail, dns
+  Sources: mx, txt
+
+🟢 **Prov D** [LOW]
+  Roles: mail, dns
+  Sources: mx, txt
+
+## Risk Signals
+🔴 [HIGH] High signal.
+🟠 [MEDIUM] Medium signal.
+🟡 [LOW] Low signal.
+ℹ️ [INFO] Info signal.",
+  "depsWithUnmeasured": "# Supply Chain Map: sc.example
+Total Providers: 1 (0 critical, 1 high, 0 medium, 0 low)
+
+## Dependencies
+🟠 **Prov A** [HIGH]
+  Roles: mail, dns
+  Sources: mx, txt
+
+Not measured: txt (inconclusive), ns (rejected). Dependencies from these sources are unknown, not absent.
+",
+  "emptyClean": "# Supply Chain Map: clean.example
+Total Providers: 0 (0 critical, 0 high, 0 medium, 0 low)
+
+No third-party dependencies detected from DNS data.
+",
+  "emptyUnmeasured": "# Supply Chain Map: empty.example
+Total Providers: 0 (0 critical, 0 high, 0 medium, 0 low)
+
+Not assessed: no dependencies could be mapped because some DNS lookups did not conclude.
+
+Not measured: mx (inconclusive). Dependencies from these sources are unknown, not absent.
+
+## Risk Signals
+ℹ️ [INFO] CAA forbids issuance.",
+  "emptyUnmeasuredList": "# Supply Chain Map: emptylist.example
+Total Providers: 0 (0 critical, 0 high, 0 medium, 0 low)
+
+No third-party dependencies detected from DNS data.
+",
+}
+`;

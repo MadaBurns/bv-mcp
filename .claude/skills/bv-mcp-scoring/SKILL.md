@@ -18,8 +18,8 @@ Scoring lives in `packages/dns-checks/src/scoring/` (runtime-agnostic core, publ
 ## The three tiers (`computeScanScore`)
 
 - **Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8 (representative `mail_enabled` profile — every core weight is per-profile; e.g. DNSSEC 5–20, SSL 0–14, the 0 being `authoritative_dns_infra`, which grades a nameserver, not a website).
-- **Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2.
-- **Hardening (10%, bonus-only)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene (~1.4 pts each).
+- **Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, Subdomailing 3, NS 3, MX 2, CAA 2, Lookalikes 2, Shadow Domains 2, DANE-HTTPS 2, SVCB-HTTPS 1 (`mail_enabled`).
+- **Hardening (10%, bonus-only)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, PTR, Brand Discovery, DNSKEY Strength (10 categories; points = 10 ÷ the hardening categories actually measured).
 
 `CATEGORY_DISPLAY_WEIGHTS` (defined in `types.ts`, re-exported from `model.ts`) is **display-only** — changing it does not change the score. The live `scan_domain` score comes from **`PROFILE_WEIGHTS`** (`profiles.ts`, selected by `detectDomainContext`); the no-context fallback uses `config.coreWeights`/`config.protectiveWeights`.
 
@@ -91,7 +91,7 @@ npx vitest run packages/dns-checks   # scoring unit tests
 npm test                              # config/profiles parity audits live in the full suite
 ```
 
-If you changed a weight, expect golden/snapshot score assertions to move — review the diff rather than blindly updating snapshots. All four scoring spec families (`model`, `profiles`, `config`, `engine`) keep their snapshots + assertions **once** in `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts` (run against both the SOURCE and BUILT module via thin `.spec.ts` wrappers in that dir and in `test/`) — edit the `.suite.ts`, not the wrappers.
+If you changed a weight, expect golden/snapshot score assertions to move — review the diff rather than blindly updating snapshots. All five scoring spec families (`model`, `profiles`, `config`, `engine`, `evidence`) keep their snapshots + assertions **once** in `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts` (run against both the SOURCE and BUILT module via thin `.spec.ts` wrappers in that dir and in `test/`) — edit the `.suite.ts`, not the wrappers.
 
 ## Red flags
 

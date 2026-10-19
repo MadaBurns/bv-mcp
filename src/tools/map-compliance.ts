@@ -450,7 +450,13 @@ export async function mapCompliance(domain: string, kv?: KVNamespace, runtimeOpt
 	// renders the six-band scale via `displayGradeFor`, so passing the raw grade through
 	// made this tool disagree with `scan_domain` on the same score (82 → "B+" here, "B"
 	// there). One band scale, one helper.
-	return evaluateCompliance(scanResult.checks, domain, scanResult.score.overall, displayGradeFor(scanResult.score), notApplicableCategories);
+	return evaluateCompliance(
+		scanResult.checks,
+		domain,
+		scanResult.score.overall,
+		displayGradeFor(scanResult.score),
+		notApplicableCategories,
+	);
 }
 
 /**
@@ -486,80 +492,80 @@ const STATUS_LABEL: Record<ComplianceStatus, string> = {
 };
 
 /**
+ * Caveat shown when the report was never assessed. `caveat` is REQUIRED on
+ * `ComplianceReport`, so the real producer (`evaluateCompliance`) always states which
+ * reason applies whenever `!assessed`. Falling back to `UNASSESSED_COMPLIANCE_CAVEAT`
+ * specifically is the same silent-wrong-prose shape closed elsewhere this fix round
+ * (map_registrar_products, generate_fix_plan): a fabricated/hand-built report with a
+ * somehow-unset `caveat` would render the never-ran-specific text even for an
+ * all-transient state. The only genuinely safe fallback here makes no specific claim.
+ */
+function unassessedCaveat(report: ComplianceReport): string {
+	return report.caveat ?? 'This domain could not be assessed.';
+}
+
+function compactSummaryLine(label: string, summary: ComplianceFrameworkSummary): string {
+	return summary.assessedControls === 0
+		? `${label}: ${UNGRADED_DISPLAY} — 0 of ${summary.totalControls} controls assessable`
+		: `${label}: ${summary.passing}/${summary.assessedControls} controls passing (${summary.percentage}%)` +
+				(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : '');
+}
+
+function compactMappingLine(m: ComplianceMapping): string {
+	const icon = STATUS_ICON_COMPACT[m.status];
+	const findingSuffix = m.relatedFindings.length > 0 ? ` — ${sanitizeOutputText(m.relatedFindings[0], 80)}` : '';
+	return `${icon} ${m.controlId} ${sanitizeOutputText(m.controlName, 60)}${m.status !== 'pass' ? findingSuffix : ''}`;
+}
+
+function compactFrameworkLines(label: string, summary: ComplianceFrameworkSummary): string[] {
+	return [compactSummaryLine(label, summary), ...summary.mappings.map(compactMappingLine), ''];
+}
+
+function fullSummaryLine(summary: ComplianceFrameworkSummary): string {
+	return summary.assessedControls === 0
+		? `**No control could be assessed** — 0 of ${summary.totalControls} had any check evidence (${UNGRADED_DISPLAY}).`
+		: `**${summary.passing}/${summary.assessedControls}** controls passing (${summary.percentage}%) | ` +
+				`${summary.failing} failing | ${summary.partial} partial` +
+				(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : '');
+}
+
+function fullMappingLines(m: ComplianceMapping): string[] {
+	return [
+		`${STATUS_ICON_FULL[m.status]} **${m.controlId} ${sanitizeOutputText(m.controlName, 60)}** — ${STATUS_LABEL[m.status]}`,
+		...m.relatedFindings.map((f) => `  - ${sanitizeOutputText(f, 120)}`),
+	];
+}
+
+function fullFrameworkLines(label: string, summary: ComplianceFrameworkSummary): string[] {
+	return [`## ${label}`, fullSummaryLine(summary), '', ...summary.mappings.flatMap(fullMappingLines), ''];
+}
+
+// Driven by whether anything was MEASURED, not by whether the scan scored: a domain whose
+// checks ran but whose scoring bundle failed has a null score alongside genuinely evaluable
+// control results, and telling that customer "no checks ran" would itself be false.
+function compactComplianceLines(report: ComplianceReport): string[] {
+	const lines = [`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`];
+	if (!report.assessed) lines.push(unassessedCaveat(report));
+	lines.push('');
+	for (const fw of FRAMEWORK_ORDER) lines.push(...compactFrameworkLines(FRAMEWORK_LABELS[fw], report.frameworks[fw]));
+	return lines;
+}
+
+function fullComplianceLines(report: ComplianceReport): string[] {
+	const lines = [
+		`# Compliance Report: ${sanitizeOutputText(report.domain, 253)}`,
+		`**Score:** ${formatScoreGrade(report.score, report.grade)}`,
+	];
+	if (!report.assessed) lines.push(`> **${unassessedCaveat(report)}**`);
+	lines.push('');
+	for (const fw of FRAMEWORK_ORDER) lines.push(...fullFrameworkLines(FRAMEWORK_LABELS[fw], report.frameworks[fw]));
+	return lines;
+}
+
+/**
  * Format a compliance report for display.
  */
 export function formatCompliance(report: ComplianceReport, format: OutputFormat = 'full'): string {
-	const lines: string[] = [];
-
-	// Driven by whether anything was MEASURED, not by whether the scan scored: a
-	// domain whose checks ran but whose scoring bundle failed has a null score
-	// alongside genuinely evaluable control results, and telling that customer
-	// "no checks ran" would itself be false.
-	const unassessed = !report.assessed;
-	// `caveat` is REQUIRED on `ComplianceReport`, so the real producer
-	// (`evaluateCompliance`) always states which reason applies whenever
-	// `!assessed`. Falling back to `UNASSESSED_COMPLIANCE_CAVEAT` specifically
-	// is the same silent-wrong-prose shape closed elsewhere this fix round
-	// (map_registrar_products, generate_fix_plan): a fabricated/hand-built report
-	// with a somehow-unset `caveat` would render the never-ran-specific text
-	// even for an all-transient state. The only genuinely safe fallback here
-	// makes no specific claim.
-	const caveat = report.caveat ?? 'This domain could not be assessed.';
-
-	if (format === 'compact') {
-		lines.push(`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`);
-		if (unassessed) lines.push(caveat);
-		lines.push('');
-
-		for (const fw of FRAMEWORK_ORDER) {
-			const summary = report.frameworks[fw];
-			const label = FRAMEWORK_LABELS[fw];
-			lines.push(
-				summary.assessedControls === 0
-					? `${label}: ${UNGRADED_DISPLAY} \u2014 0 of ${summary.totalControls} controls assessable`
-					: `${label}: ${summary.passing}/${summary.assessedControls} controls passing (${summary.percentage}%)` +
-							(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : ''),
-			);
-
-			for (const m of summary.mappings) {
-				const icon = STATUS_ICON_COMPACT[m.status];
-				const findingSuffix = m.relatedFindings.length > 0 ? ` — ${sanitizeOutputText(m.relatedFindings[0], 80)}` : '';
-				lines.push(`${icon} ${m.controlId} ${sanitizeOutputText(m.controlName, 60)}${m.status !== 'pass' ? findingSuffix : ''}`);
-			}
-			lines.push('');
-		}
-	} else {
-		lines.push(`# Compliance Report: ${sanitizeOutputText(report.domain, 253)}`);
-		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}`);
-		if (unassessed) lines.push(`> **${caveat}**`);
-		lines.push('');
-
-		for (const fw of FRAMEWORK_ORDER) {
-			const summary = report.frameworks[fw];
-			const label = FRAMEWORK_LABELS[fw];
-			lines.push(`## ${label}`);
-			lines.push(
-				summary.assessedControls === 0
-					? `**No control could be assessed** — 0 of ${summary.totalControls} had any check evidence (${UNGRADED_DISPLAY}).`
-					: `**${summary.passing}/${summary.assessedControls}** controls passing (${summary.percentage}%) | ` +
-							`${summary.failing} failing | ${summary.partial} partial` +
-							(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : ''),
-			);
-			lines.push('');
-
-			for (const m of summary.mappings) {
-				const icon = STATUS_ICON_FULL[m.status];
-				lines.push(`${icon} **${m.controlId} ${sanitizeOutputText(m.controlName, 60)}** — ${STATUS_LABEL[m.status]}`);
-
-				if (m.relatedFindings.length > 0) {
-					for (const f of m.relatedFindings) {
-						lines.push(`  - ${sanitizeOutputText(f, 120)}`);
-					}
-				}
-			}
-			lines.push('');
-		}
-	}
-
+	const lines = format === 'compact' ? compactComplianceLines(report) : fullComplianceLines(report);
 	return lines.join('\n').trimEnd();
 }

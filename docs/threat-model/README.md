@@ -31,7 +31,7 @@ or IPs:
 
 - Use placeholders for anything sensitive; raw IPs and per-IP detail belong in
   operator-only notes, not here (consistent with the analytics/investigation rules
-  in `CLAUDE.md`).
+  in the `bv-mcp-operations` skill).
 - If the hook flags a reviewed false positive, override with `--no-verify` only
   after confirming nothing sensitive is staged.
 

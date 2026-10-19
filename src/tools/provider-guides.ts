@@ -645,7 +645,7 @@ const FIX_GUIDES: FixGuideMap = {
 			'Sign in to the AWS Management Console.',
 			'Navigate to Route 53 → Hosted Zones and select your domain.',
 			'Click "Create record".',
-			'Select record type TXT, set the record name to "${params.name ?? \'@\'}".',
+			`Select record type TXT, set the record name to "${params.name ?? '@'}".`,
 			`Set the value to: "${params.value ?? '(see recommendation)'}"`,
 			'Set TTL (e.g. 300 seconds) and click "Create records".',
 			'Propagation typically completes within 60 seconds within AWS.',

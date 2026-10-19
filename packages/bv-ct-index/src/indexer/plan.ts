@@ -14,7 +14,7 @@
  * chosen by content (a shard's first key is a cut when its hash is 0 mod GROUP_SHARDS, or after
  * GROUP_MAX_SHARDS shards without one), plus the edges of the sibling keyspace. Because T1 and T2 outputs are
  * cut at the same keys, each later job reads only the runs of its own range, and a T3 job rewrites about
- * GROUP_SHARDS shards (~160 MB) however big the index grows. Its output is closed every ~20 MB, which splits a
+ * GROUP_SHARDS shards (~80 MB) however big the index grows. Its output is closed every ~10 MB, which splits a
  * grown shard and merges shrunken neighbours. A boundary that moves only moves the cuts next to it, and a run
  * planned against older cuts that now straddles one simply joins the neighbouring range's job (`components`),
  * so jobs never share an input.

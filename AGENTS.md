@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a TypeScript Cloudflare Workers MCP server for DNS and email-security checks. Core Worker code lives in `src/`: tool implementations are in `src/tools/`, request handlers in `src/handlers/`, shared scoring/auth/config logic in `src/lib/`, and tenant workflows in `src/tenants/`. Tests live in `test/`, with focused specs such as `test/check-*.spec.ts`, audit tests under `test/audits/`, and chaos coverage under `test/chaos/`. Operational scripts live in `scripts/`, documentation in `docs/`, static/report assets in `assets/` and `reports/`, and the Rust/WASM helper crate in `crates/bv-wasm-core/`.
+This repository is a TypeScript Cloudflare Workers MCP server for DNS and email-security checks. Core Worker code lives in `src/`: tool implementations are in `src/tools/`, request handlers in `src/handlers/`, shared scoring/auth/config logic in `src/lib/`, and tenant workflows in `src/tenants/`. Tests live in `test/`, with focused specs such as `test/check-*.spec.ts`, audit tests under `test/audits/`, and chaos coverage under `test/chaos/`. Operational scripts live in `scripts/`, documentation in `docs/`, static assets in `assets/` (generated reports go to the gitignored `reports/`), and the Rust/WASM helper crate in `crates/bv-wasm-core/`.
 
 ## Build, Test, and Development Commands
 

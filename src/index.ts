@@ -493,15 +493,17 @@ function checkOrigin(origin: string, requestUrl: string, allowedOrigins?: string
 		return 'invalid';
 	}
 
-	if (allowedOrigins) {
-		const allowed = allowedOrigins
-			.split(',')
-			.map((value) => value.trim().toLowerCase())
-			.filter((value) => value.length > 0);
-		if (allowed.includes(origin.toLowerCase())) return 'allowed';
-	}
+	return isListedOrigin(origin, allowedOrigins) ? 'allowed' : 'denied';
+}
 
-	return 'denied';
+/** True when `origin` exactly matches (trimmed, case-insensitive) an entry of the comma-separated ALLOWED_ORIGINS. */
+function isListedOrigin(origin: string, allowedOrigins?: string): boolean {
+	if (!allowedOrigins) return false;
+	const allowed = allowedOrigins
+		.split(',')
+		.map((value) => value.trim().toLowerCase())
+		.filter((value) => value.length > 0);
+	return allowed.includes(origin.toLowerCase());
 }
 
 for (const path of authedPaths) {

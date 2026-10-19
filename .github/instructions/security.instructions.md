@@ -32,7 +32,7 @@ Key schemas that eliminate common findings:
 
 ### Authentication
 - `isAuthorizedRequest()` uses SHA-256 hashing + constant-time XOR comparison. This is the industry-standard approach for eliminating both length oracles and timing side-channels. Do not flag as vulnerable.
-- Token extracted from `Authorization: Bearer` header first, `?api_key=` query param as fallback.
+- Token precedence is `Authorization: Bearer` → `X-API-Key` header → `?api_key=` query param. The query form is ignored when `REJECT_QUERY_API_KEY=true` (hosted production).
 
 ### Rate Limiting Cascade
 Rate limiting uses a three-tier cascade: Durable Object → KV → in-memory. In-memory is the **last resort fallback**, not the primary mechanism. Do not flag in-memory counters as "the only rate limiter" without checking the DO and KV layers.
@@ -54,7 +54,7 @@ Rate limiting uses a three-tier cascade: Durable Object → KV → in-memory. In
 - `ALLOWED_ORIGINS` env var provides explicit allowlisting for additional origins.
 
 ### Internal Routes
-- `/internal/*` routes are guarded by `cf-connecting-ip` header detection. Cloudflare sets this on ALL public internet requests. Service binding (Worker-to-Worker) calls never carry this header. This is a reliable infrastructure-level guard, not spoofable.
+- `/internal/*` routes have two layers. First, `cf-connecting-ip` header detection: Cloudflare sets this on ALL public internet requests and service-binding (Worker-to-Worker) calls never carry it, so public traffic is rejected. Second, per-route capability bearer keys, required unless the operator sets `REQUIRE_INTERNAL_AUTH=false`.
 - Batch endpoint uses `ALLOWED_BATCH_ARGS` allowlist for argument keys and validates all domains through `validateDomain()` + `sanitizeDomain()`.
 
 ### SSRF Protection
@@ -74,4 +74,4 @@ Rate limiting uses a three-tier cascade: Durable Object → KV → in-memory. In
 - **KV error swallowing with fallback**: Throughout session.ts, rate-limiter.ts, cache.ts — KV failures degrade gracefully to in-memory with `logError()` logging. This is the documented resilience pattern.
 - **HSTS preload header**: Operational decision appropriate for an HTTPS-only Cloudflare Worker.
 - **`initialize` exempt from control-plane rate limit**: Session creation has its own dedicated rate limiter (30/min). Double-limiting causes mcp-remote reconnection storms.
-- **Passthrough Zod schemas (`.passthrough()`)**: Intentional — tools may receive extra properties from different MCP client versions. Unknown properties are ignored, not processed.
+- **Passthrough Zod schemas (`.passthrough()`)**: Intentional (except the `.strict()` recon schemas) — tools may receive extra properties from different MCP client versions. Unknown properties are ignored, not processed.

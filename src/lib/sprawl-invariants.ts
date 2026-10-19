@@ -78,57 +78,76 @@ function isStringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
+/** One invariant: returns the failure reason, or null when the item satisfies it. */
+type SprawlCheck = (item: SprawlItemLike) => string | null;
+
+const checkDomain: SprawlCheck = (item) => (isNonEmptyString(item.domain) ? null : 'missing or empty `domain`');
+
+const checkBucket: SprawlCheck = (item) =>
+	item.bucket === 'shadowIt' ? null : `bucket must be 'shadowIt' (got ${JSON.stringify(item.bucket)})`;
+
+const checkRelationshipType: SprawlCheck = (item) =>
+	item.relationshipType === 'owned_off_primary_registrar'
+		? null
+		: `relationshipType must be 'owned_off_primary_registrar' (got ${JSON.stringify(item.relationshipType)})`;
+
+const checkRegistrar: SprawlCheck = (item) =>
+	isNonEmptyString(item.registrar) && item.registrar !== 'Unknown'
+		? null
+		: `registrar must be a named non-empty string (got ${JSON.stringify(item.registrar)})`;
+
+const checkRegistrarSource: SprawlCheck = (item) =>
+	isNonEmptyString(item.registrarSource) && !UNUSABLE_REGISTRAR_SOURCES.has(item.registrarSource)
+		? null
+		: `registrarSource must be a resolved source (got ${JSON.stringify(item.registrarSource)})`;
+
+const checkEvidence: SprawlCheck = (item) => (isNonEmptyString(item.evidence) ? null : 'evidence must be a non-empty string');
+
+function describeSignals(signals: unknown): string {
+	return Array.isArray(signals) ? `length ${signals.length}` : typeof signals;
+}
+
+const checkSignals: SprawlCheck = (item) =>
+	isStringArray(item.signals) && item.signals.length >= MIN_SIGNALS
+		? null
+		: `signals must be a string[] with length >= ${MIN_SIGNALS} (got ${describeSignals(item.signals)})`;
+
+const checkConfidenceIsFinite: SprawlCheck = (item) =>
+	typeof item.combinedConfidence === 'number' && Number.isFinite(item.combinedConfidence)
+		? null
+		: `combinedConfidence must be a finite number (got ${JSON.stringify(item.combinedConfidence)})`;
+
+// Runs after checkConfidenceIsFinite, so combinedConfidence is a finite number here.
+const checkConfidenceFloor: SprawlCheck = (item) =>
+	(item.combinedConfidence as number) >= MIN_COMBINED_CONFIDENCE
+		? null
+		: `combinedConfidence must be >= ${MIN_COMBINED_CONFIDENCE} (got ${String(item.combinedConfidence)})`;
+
+const checkReasons: SprawlCheck = (item) =>
+	isStringArray(item.reasons) && item.reasons.length >= 1 ? null : 'reasons must be a non-empty string[]';
+
+/** Invariants in evaluation order; the first failure is the reported reason. */
+const SPRAWL_CHECKS: readonly SprawlCheck[] = [
+	checkDomain,
+	checkBucket,
+	checkRelationshipType,
+	checkRegistrar,
+	checkRegistrarSource,
+	checkEvidence,
+	checkSignals,
+	checkConfidenceIsFinite,
+	checkConfidenceFloor,
+	checkReasons,
+];
+
 /**
  * Non-throwing validator. Returns the first failed invariant so callers can
  * surface a useful reason in their downgrade path / log line.
  */
 export function validateSprawlItem(item: SprawlItemLike): SprawlValidationResult {
-	if (!isNonEmptyString(item.domain)) {
-		return { ok: false, reason: 'missing or empty `domain`' };
-	}
-	if (item.bucket !== 'shadowIt') {
-		return { ok: false, reason: `bucket must be 'shadowIt' (got ${JSON.stringify(item.bucket)})` };
-	}
-	if (item.relationshipType !== 'owned_off_primary_registrar') {
-		return {
-			ok: false,
-			reason: `relationshipType must be 'owned_off_primary_registrar' (got ${JSON.stringify(item.relationshipType)})`,
-		};
-	}
-	if (!isNonEmptyString(item.registrar) || item.registrar === 'Unknown') {
-		return { ok: false, reason: `registrar must be a named non-empty string (got ${JSON.stringify(item.registrar)})` };
-	}
-	if (!isNonEmptyString(item.registrarSource) || UNUSABLE_REGISTRAR_SOURCES.has(item.registrarSource)) {
-		return {
-			ok: false,
-			reason: `registrarSource must be a resolved source (got ${JSON.stringify(item.registrarSource)})`,
-		};
-	}
-	if (!isNonEmptyString(item.evidence)) {
-		return { ok: false, reason: 'evidence must be a non-empty string' };
-	}
-	if (!isStringArray(item.signals) || item.signals.length < MIN_SIGNALS) {
-		return {
-			ok: false,
-			reason: `signals must be a string[] with length >= ${MIN_SIGNALS} (got ${
-				Array.isArray(item.signals) ? `length ${item.signals.length}` : typeof item.signals
-			})`,
-		};
-	}
-	if (typeof item.combinedConfidence !== 'number' || !Number.isFinite(item.combinedConfidence)) {
-		return {
-			ok: false,
-			reason: `combinedConfidence must be a finite number (got ${JSON.stringify(item.combinedConfidence)})`,
-		};
-	}
-	if (item.combinedConfidence < MIN_COMBINED_CONFIDENCE) {
-		return {
-			ok: false,
-			reason: `combinedConfidence must be >= ${MIN_COMBINED_CONFIDENCE} (got ${item.combinedConfidence})`,
-		};
-	}
-	if (!isStringArray(item.reasons) || item.reasons.length < 1) {
-		return { ok: false, reason: 'reasons must be a non-empty string[]' };
+	for (const check of SPRAWL_CHECKS) {
+		const reason = check(item);
+		if (reason !== null) return { ok: false, reason };
 	}
 	return { ok: true };
 }

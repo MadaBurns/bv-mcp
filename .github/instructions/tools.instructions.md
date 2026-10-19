@@ -15,29 +15,21 @@ applyTo: src/tools/check-*.ts
 
 ## Registration checklist for new tools
 
-1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
-2. Add Zod schema to `src/schemas/tool-args.ts` (or use `BaseDomainArgs` if domain-only) + add to `TOOL_SCHEMA_MAP`
-3. Add tool entry to `TOOL_DEFS` in `src/schemas/tool-definitions.ts` (name, description, schema, group, tier, scanIncluded)
-4. Add to `TOOL_REGISTRY` in `src/handlers/tools.ts` (import + cacheKey + execute)
-5. Add `CheckCategory` to union in `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-6. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
-7. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `scoring-config.ts`
-8. Add to all 5 `PROFILE_WEIGHTS` maps in `context-profiles.ts`
-9. Add to `FREE_TOOL_DAILY_LIMITS` in `config.ts`
-10. Add explanation templates in `explain-finding-data.ts`
-11. If part of `scan_domain`, add to parallel orchestration in `scan-domain.ts` (static import)
-12. Add `test/check-<name>.spec.ts` using `dns-mock` helper pattern
-13. Update README tools table
+The maintained checklist is the numbered list in [CONTRIBUTING.md](../../CONTRIBUTING.md) ("Adding a New Tool"), and the
+full annotated one, with every audit a new tool trips, is [`.claude/skills/bv-mcp-add-tool/SKILL.md`](../../.claude/skills/bv-mcp-add-tool/SKILL.md).
+Key points that older copies of this list got wrong:
+
+- `CheckCategory`, `CATEGORY_TIERS` and `CATEGORY_DISPLAY_WEIGHTS` live in `packages/dns-checks/src/types.ts` (`model.ts` only re-exports them).
+- Weights go in all **6** `PROFILE_WEIGHTS` maps in `packages/dns-checks/src/scoring/profiles.ts`, the single source of weight values.
+- A scored check joins `scan_domain` by adding one entry to `CHECK_DISPATCH` in `src/tools/scan-domain.ts`; `SCAN_CATEGORIES`, the fan-out and the retry switch derive from it.
+- Bump `EXPECTED_TOOL_COUNT` in `test/audits/tool-count-ssot.audit.test.ts`, run `npm run generate:tool-surface`, and rebuild dns-checks (`npm -w packages/dns-checks run build`).
 
 Note: tool schemas are defined in `src/schemas/tool-definitions.ts` (TOOL_DEFS); import `TOOLS` / `TOOL_SCHEMA_MAP` from there.
 
 ## Caching and force refresh
 
 - Use `runWithCache` for tool and scan caching consistency.
-- Respect key patterns:
-  - `cache:<domain>`
-  - `cache:<domain>:check:<name>`
-  - `cache:<domain>:profile:<profile>`
+- Build cache keys with `buildScanCacheKey` / `buildCheckCacheKey` (`src/lib/cache.ts`). They are versioned: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>[:check:<name>|:profile:<profile>]`.
 - Ensure `force_refresh` propagates cache bypass.
 - Per-tool cache TTL overrides via `cacheTtlSeconds` in `TOOL_REGISTRY` (e.g., `check_lookalikes: 3600`).
 

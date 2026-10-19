@@ -184,73 +184,89 @@ export async function createSession(
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	// Reject malformed session IDs before any storage lookup
 	if (!isValidSessionIdFormat(id)) return false;
+	// Explicit tombstone (session was deleted) — prevents revival after DELETE
+	if (await isSessionRevoked(id, kv)) return false;
+	// In-memory first (same-isolate fast path, avoids KV replication lag)
+	if (await validateFromMemory(id, kv)) return true;
+	// Not (usably) in local memory — check KV (cross-isolate path)
+	return kv ? validateFromKv(id, kv) : false;
+}
 
-	// Check for explicit tombstone (session was deleted) — prevents revival after DELETE
-	if (isSessionTombstoned(id)) return false;
-	if (kv && (await isSessionTombstonedInKV(id, kv))) {
-		// Deleted on another isolate: evict any local copy (and tombstone locally) so the session
-		// cannot revive from this isolate's memory once the 10-minute KV tombstone expires.
-		deleteSessionInMemory(id);
+/** True when the session was explicitly deleted, locally or on another isolate (KV tombstone). */
+async function isSessionRevoked(id: string, kv?: KVNamespace): Promise<boolean> {
+	if (isSessionTombstoned(id)) return true;
+	if (!kv || !(await isSessionTombstonedInKV(id, kv))) return false;
+	// Deleted on another isolate: evict any local copy (and tombstone locally) so the session
+	// cannot revive from this isolate's memory once the 10-minute KV tombstone expires.
+	deleteSessionInMemory(id);
+	return true;
+}
+
+/**
+ * Same-isolate fast path. True = live in memory (refreshing the KV copy when stale).
+ * False = absent or idle-expired here (an expired local copy is dropped): fall through to KV,
+ * in case another isolate refreshed it.
+ */
+async function validateFromMemory(id: string, kv?: KVNamespace): Promise<boolean> {
+	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
+	if (!inMemoryRecord) return false;
+	const now = Date.now();
+	if (now - inMemoryRecord.lastAccessedAt > SESSION_TTL_MS) {
+		ACTIVE_SESSIONS.delete(id);
 		return false;
 	}
+	// Capture staleness before validateSessionInMemory refreshes the timestamp
+	const needsKvRefresh = kv && now - inMemoryRecord.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS;
+	validateSessionInMemory(id); // Updates in-memory lastAccessedAt
+	if (needsKvRefresh) await refreshKvFromMemory(id, kv);
+	return true;
+}
 
-	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
-	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
-	if (inMemoryRecord) {
+/** Push the (just-refreshed) in-memory record to KV. A write failure is non-fatal. */
+async function refreshKvFromMemory(id: string, kv: KVNamespace): Promise<void> {
+	const refreshedRecord = ACTIVE_SESSIONS.get(id);
+	if (!refreshedRecord) return;
+	try {
+		await createSessionKVRecord(id, kv, refreshedRecord);
+	} catch {
+		// Refresh write failure is non-fatal
+	}
+}
+
+/** Cross-isolate path. Any KV fault denies the session (fail closed). */
+async function validateFromKv(id: string, kv: KVNamespace): Promise<boolean> {
+	try {
 		const now = Date.now();
-		if (now - inMemoryRecord.lastAccessedAt > SESSION_TTL_MS) {
-			ACTIVE_SESSIONS.delete(id);
-			// Fall through to KV check (in case another isolate refreshed it)
-		} else {
-			// Capture staleness before validateSessionInMemory refreshes the timestamp
-			const needsKvRefresh = kv && now - inMemoryRecord.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS;
-			validateSessionInMemory(id); // Updates in-memory lastAccessedAt
-			if (needsKvRefresh) {
-				const refreshedRecord = ACTIVE_SESSIONS.get(id);
-				if (refreshedRecord) {
-					try {
-						await createSessionKVRecord(id, kv, refreshedRecord);
-					} catch {
-						// Refresh write failure is non-fatal
-					}
-				}
-			}
-			return true;
-		}
-	}
+		const record = await readSessionKVRecord(id, kv);
+		if (!record) return false;
 
-	// Not in local memory — check KV (cross-isolate path)
-	if (kv) {
+		if (now - record.lastAccessedAt > SESSION_TTL_MS) {
+			await kv.delete(sessionKey(id));
+			return false;
+		}
+
+		// Hydrate into local in-memory cache for subsequent same-isolate requests,
+		// preserving the original createdAt from KV (not resetting to now).
+		// Use fresh lastAccessedAt since this IS a valid access (avoid stale KV value).
+		ACTIVE_SESSIONS.set(id, { createdAt: record.createdAt, lastAccessedAt: now });
+		await refreshStaleKvRecord(id, kv, record, now);
+		return true;
+	} catch {
+		logError('[session] KV validate failed', { category: 'session' });
+		return false;
+	}
+}
+
+/** Rewrite a KV record whose last access is older than the refresh interval. A write failure is non-fatal. */
+async function refreshStaleKvRecord(id: string, kv: KVNamespace, record: SessionRecord, now: number): Promise<void> {
+	if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
+		record.lastAccessedAt = now;
 		try {
-			const now = Date.now();
-			const record = await readSessionKVRecord(id, kv);
-			if (!record) return false;
-
-			if (now - record.lastAccessedAt > SESSION_TTL_MS) {
-				await kv.delete(sessionKey(id));
-				return false;
-			}
-
-			// Hydrate into local in-memory cache for subsequent same-isolate requests,
-			// preserving the original createdAt from KV (not resetting to now).
-			// Use fresh lastAccessedAt since this IS a valid access (avoid stale KV value).
-			ACTIVE_SESSIONS.set(id, { createdAt: record.createdAt, lastAccessedAt: now });
-
-			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
-				record.lastAccessedAt = now;
-				try {
-					await createSessionKVRecord(id, kv, record);
-				} catch {
-					logError('[session] KV refresh write failed (session still valid)', { category: 'session' });
-				}
-			}
-			return true;
+			await createSessionKVRecord(id, kv, record);
 		} catch {
-			logError('[session] KV validate failed', { category: 'session' });
+			logError('[session] KV refresh write failed (session still valid)', { category: 'session' });
 		}
 	}
-
-	return false;
 }
 
 /** Remove a session from the store. Returns true if the session existed. */

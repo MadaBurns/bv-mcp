@@ -343,6 +343,51 @@ describe('checkShadowDomains', () => {
 		expect((medium!.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('owned_by_seed');
 	});
 
+	// SQ-376: the ladder's last rung (DMARC record present with a policy that is neither
+	// none/quarantine/reject) had no coverage. Same-owner fixture so the rung is unclamped.
+	function mockUnknownDmarcPolicyVariant(variantMx: string) {
+		const target = 'example.com';
+		const ownNs = ['ns1.example-dns.net.', 'ns2.example-dns.net.'];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ownNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+			if (name === 'example.org') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ownNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, [variantMx]));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.org' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; p=bogus']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+		return run(target);
+	}
+
+	it('should return low "well-managed" for an unrecognised DMARC policy with matching MX infrastructure', async () => {
+		const result = await mockUnknownDmarcPolicyVariant('10 mail.example.com.');
+		const low = result.findings.find((f) => f.severity === 'low' && f.detail.includes('example.org'));
+		expect(low).toBeDefined();
+		expect(low!.title).toBe('Shadow domain well-managed');
+		expect(low!.detail).toContain('has matching mail infrastructure and DMARC configured.');
+		expect((low!.metadata as { dmarcPolicy?: string | null }).dmarcPolicy).toBe('bogus');
+	});
+
+	it('should return medium "divergent" for an unrecognised DMARC policy with different MX infrastructure', async () => {
+		const result = await mockUnknownDmarcPolicyVariant('10 mail.other-provider.com.');
+		const medium = result.findings.find((f) => f.severity === 'medium' && f.detail.includes('example.org'));
+		expect(medium).toBeDefined();
+		expect(medium!.title).toBe('Shadow domain divergent mail infrastructure');
+		expect(medium!.detail).toContain('uses different mail servers than the primary domain.');
+		expect(medium!.detail).toContain('Shared nameservers suggest common ownership despite different mail servers.');
+	});
+
 	it('should detect shared NS across multiple variants', async () => {
 		const target = 'example.com';
 		const sharedNs = ['ns1.shared-registrar.com.', 'ns2.shared-registrar.com.'];
@@ -1923,10 +1968,7 @@ describe('checkShadowDomains — failed SPF/DMARC probes abstain (T6 item 5)', (
 	const sharedNs = ['ns1.shared-registrar.com.', 'ns2.shared-registrar.com.'];
 
 	/** An owned (shared-NS) example.net with MX; `txt`/`dmarc` decide how those two probes behave. */
-	function mockVariant(opts: {
-		txt: 'empty' | 'reject' | 'servfail' | 'spf';
-		dmarc: 'empty' | 'reject' | 'servfail';
-	}) {
+	function mockVariant(opts: { txt: 'empty' | 'reject' | 'servfail' | 'spf'; dmarc: 'empty' | 'reject' | 'servfail' }) {
 		const target = 'example.com';
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const q = parseDohQuery(input);

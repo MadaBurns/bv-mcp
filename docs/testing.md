@@ -1,9 +1,11 @@
 # Test environments and characterization contracts
 
-`npm test` is the authoritative runtime suite. It uses
-`@cloudflare/vitest-plugin`, therefore route, binding, Durable Object,
-KV, queue, and service-binding contracts execute in a Workerd-compatible
-Miniflare environment.
+`npm test` is the authoritative runtime suite. It runs the three projects in
+`vitest.config.mts`: `workers` (the product suite, under
+`@cloudflare/vitest-plugin`, so route, binding, Durable Object, KV, queue,
+and service-binding contracts execute in a Workerd-compatible Miniflare
+environment), `bv-ct-index` (the CT index sidecar, with its own bindings),
+and `node` (audits that need Node APIs, such as shelling out).
 
 ## Commands
 

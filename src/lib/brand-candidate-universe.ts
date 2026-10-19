@@ -178,58 +178,69 @@ function compareCandidateProbePriority(a: CandidateSeed, b: CandidateSeed): numb
 	return sourcePriority(a) - sourcePriority(b) || tldPriority(a.domain) - tldPriority(b.domain) || a.domain.localeCompare(b.domain);
 }
 
-export function buildBrandCandidateUniverse(input: {
-	seedDomain: string;
-	brandAliases?: string[];
-	candidateDomains?: string[];
-	markovCandidates?: string[];
-	activeLookalikes?: string[];
-	depth?: BrandAuditDepth;
-}): BrandCandidateUniverse {
-	const seed = normalizeDomain(input.seedDomain);
-	const base = seedLabel(input.seedDomain);
-	const depth = input.depth ?? 'standard';
-	const tlds = depth === 'deep' ? [...STANDARD_TLDS, ...DEEP_ONLY_TLDS] : STANDARD_TLDS;
-	const cap = depth === 'deep' ? DEEP_CANDIDATE_CAP : STANDARD_CANDIDATE_CAP;
-	const byDomain = new Map<string, CandidateSeed>();
+type AddCandidateSeed = (domain: string, source: CandidateSeedSource, reason: string) => void;
 
-	function add(domain: string, source: CandidateSeedSource, reason: string): void {
-		const normalized = normalizeDomain(domain);
-		if (!normalized || normalized === seed) return;
-		const existing = byDomain.get(normalized);
-		if (existing) {
-			if (!existing.sources.includes(source)) existing.sources.push(source);
-			existing.reasons.push(reason);
-			return;
-		}
-		byDomain.set(normalized, { domain: normalized, sources: [source], reasons: [reason] });
+function addUniverseSeed(
+	byDomain: Map<string, CandidateSeed>,
+	seed: string | null,
+	domain: string,
+	source: CandidateSeedSource,
+	reason: string,
+): void {
+	const normalized = normalizeDomain(domain);
+	if (!normalized || normalized === seed) return;
+	const existing = byDomain.get(normalized);
+	if (existing) {
+		if (!existing.sources.includes(source)) existing.sources.push(source);
+		existing.reasons.push(reason);
+		return;
 	}
+	byDomain.set(normalized, { domain: normalized, sources: [source], reasons: [reason] });
+}
 
-	// Collect first, rank/cap later. Exact brand TLDs must not get crowded out
-	// by noisy active/generated candidates on tier-1 brands.
-	for (const domain of input.candidateDomains ?? []) add(domain, 'caller_candidate', 'caller supplied candidate');
-	for (const domain of input.activeLookalikes ?? []) add(domain, 'active_lookalike', 'active lookalike candidate');
+function addAllCandidates(add: AddCandidateSeed, domains: string[] | undefined, source: CandidateSeedSource, reason: string): void {
+	for (const domain of domains ?? []) add(domain, source, reason);
+}
 
-	if (base) {
-		for (const tld of tlds) add(`${base}.${tld}`, 'tld_sweep', `seed label across .${tld}`);
-	}
+function sweepTlds(add: AddCandidateSeed, label: string, tlds: readonly string[], source: CandidateSeedSource, reasonPrefix: string): void {
+	for (const tld of tlds) add(`${label}.${tld}`, source, `${reasonPrefix} across .${tld}`);
+}
 
-	for (const rawAlias of input.brandAliases ?? []) {
+function sweepAliases(add: AddCandidateSeed, aliases: string[] | undefined, tlds: readonly string[]): void {
+	for (const rawAlias of aliases ?? []) {
 		const alias = normalizeAlias(rawAlias);
 		if (!alias) continue;
-		for (const tld of tlds) add(`${alias}.${tld}`, 'alias_tld_sweep', `brand alias across .${tld}`);
+		sweepTlds(add, alias, tlds, 'alias_tld_sweep', 'brand alias');
 	}
+}
 
-	if (depth === 'deep' && base) {
-		for (const affix of ENTERPRISE_AFFIXES) {
-			for (const tld of ENTERPRISE_AFFIX_TLDS) {
-				add(`${base}${affix}.${tld}`, 'enterprise_affix', `enterprise affix ${affix} across .${tld}`);
-			}
+function addEnterpriseAffixes(add: AddCandidateSeed, base: string): void {
+	for (const affix of ENTERPRISE_AFFIXES) {
+		for (const tld of ENTERPRISE_AFFIX_TLDS) {
+			add(`${base}${affix}.${tld}`, 'enterprise_affix', `enterprise affix ${affix} across .${tld}`);
 		}
 	}
+}
 
-	for (const domain of input.markovCandidates ?? []) add(domain, 'markov', 'generated lookalike candidate');
+// Collect first, rank/cap later. Exact brand TLDs must not get crowded out
+// by noisy active/generated candidates on tier-1 brands. Order is part of the
+// contract: reasons accumulate in this sequence.
+function collectCandidateSeeds(
+	input: Parameters<typeof buildBrandCandidateUniverse>[0],
+	depth: BrandAuditDepth,
+	add: AddCandidateSeed,
+): void {
+	const base = seedLabel(input.seedDomain);
+	const tlds = depth === 'deep' ? [...STANDARD_TLDS, ...DEEP_ONLY_TLDS] : STANDARD_TLDS;
+	addAllCandidates(add, input.candidateDomains, 'caller_candidate', 'caller supplied candidate');
+	addAllCandidates(add, input.activeLookalikes, 'active_lookalike', 'active lookalike candidate');
+	if (base) sweepTlds(add, base, tlds, 'tld_sweep', 'seed label');
+	sweepAliases(add, input.brandAliases, tlds);
+	if (depth === 'deep' && base) addEnterpriseAffixes(add, base);
+	addAllCandidates(add, input.markovCandidates, 'markov', 'generated lookalike candidate');
+}
 
+function rankAndCapCandidates(byDomain: Map<string, CandidateSeed>, cap: number): BrandCandidateUniverse {
 	const sourceCounts: Record<CandidateSeedSource, number> = {
 		caller_candidate: 0,
 		tld_sweep: 0,
@@ -253,4 +264,22 @@ export function buildBrandCandidateUniverse(input: {
 			dropped,
 		},
 	};
+}
+
+export function buildBrandCandidateUniverse(input: {
+	seedDomain: string;
+	brandAliases?: string[];
+	candidateDomains?: string[];
+	markovCandidates?: string[];
+	activeLookalikes?: string[];
+	depth?: BrandAuditDepth;
+}): BrandCandidateUniverse {
+	const seed = normalizeDomain(input.seedDomain);
+	const depth = input.depth ?? 'standard';
+	const byDomain = new Map<string, CandidateSeed>();
+	const add: AddCandidateSeed = (domain, source, reason) => {
+		addUniverseSeed(byDomain, seed, domain, source, reason);
+	};
+	collectCandidateSeeds(input, depth, add);
+	return rankAndCapCandidates(byDomain, depth === 'deep' ? DEEP_CANDIDATE_CAP : STANDARD_CANDIDATE_CAP);
 }

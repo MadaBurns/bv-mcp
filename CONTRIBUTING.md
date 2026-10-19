@@ -40,7 +40,7 @@ Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing large 
 
 Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `buildCheckResult()` from `@blackveil/dns-checks/scoring`, never construct findings manually.
 
-> The full SSOT checklist (the additional audits a new tool trips, scoring-snapshot bumps, generated WASM permissions, etc.) lives in the repo's `CLAUDE.md` "Adding a New Tool" section.
+> The full SSOT checklist (the additional audits a new tool trips, scoring-snapshot bumps, generated WASM permissions, etc.) lives in the `bv-mcp-add-tool` skill (`.claude/skills/bv-mcp-add-tool/SKILL.md`); `CLAUDE.md` keeps only the scored-vs-standalone decision.
 
 ## Testing
 
@@ -48,7 +48,7 @@ Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `bu
 - Each test file calls `restore()` in `afterEach` to reset mocks
 - Tests that call tool handlers should clear scan cache between cases
 - Dynamic imports are used for mock isolation
-- **Scoring specs** (`model`/`profiles`/`config`/`engine`) keep their assertions and expected values once in `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts`. The eight `scoring-<name>.spec.ts` files (one per name in that dir, one per name in `test/`) are thin wrappers that inject the SOURCE vs the BUILT `@blackveil/dns-checks/scoring` module so source↔build drift is caught — **edit the `.suite.ts`, not the wrappers**.
+- **Scoring specs** (`model`/`profiles`/`config`/`engine`/`evidence`) keep their assertions and expected values once in `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts`. The ten `scoring-<name>.spec.ts` files (one per name in that dir, one per name in `test/`) are thin wrappers that inject the SOURCE vs the BUILT `@blackveil/dns-checks/scoring` module so source↔build drift is caught — **edit the `.suite.ts`, not the wrappers**.
 
 ## Public Fixtures
 

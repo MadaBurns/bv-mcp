@@ -87,16 +87,24 @@ curl https://dns-mcp.blackveilsecurity.com/health
 
 Should return JSON containing `"status":"ok"` (plus `service` and `timestamp`).
 
-Test that tools are available:
+Test that tools are available. An anonymous `tools/list` needs a session, so call `initialize` first and send back the
+`Mcp-Session-Id` response header (only Bearer-authenticated callers may call `tools/list` without one):
 ```bash
+curl -si -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
+  | grep -i '^mcp-session-id'
+
 curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <id from above>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
-Should return JSON with a tools array including `scan_domain`.
+Should return JSON with a tools array including `scan_domain`. Without the session header an anonymous call returns
+`400 Bad Request: missing session`.
 
-If this returns `401 Unauthorized`, remove any configured API key to use the free tier, or replace it with a valid Bearer key. Hosted production rejects `?api_key=` URL credentials; use OAuth or an `Authorization: Bearer` header bridge such as `mcp-remote` for static-key auth.
+If this returns `401 Unauthorized`, remove any configured API key to use the free tier, or replace it with a valid Bearer key. Hosted production rejects `?api_key=` URL credentials (they are ignored and the request proceeds as free tier); use OAuth or an `Authorization: Bearer` header bridge such as `mcp-remote` for static-key auth.
 
 **6. If tools still don't connect, check Claude Desktop logs**
 
@@ -109,26 +117,14 @@ Look for MCP connection errors in:
 
 If Claude Code is connected but prompts like `scan blackveilsecurity.com` do not route to this MCP server automatically:
 
-**1. Verify `mcpServers` entry** in `~/.claude/settings.json`
+**1. Verify the server is registered** with `claude mcp list`. If it is missing, add it as in
+[client-setup.md](client-setup.md) (`claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp`,
+or a `.mcp.json` entry with `"type": "http"`).
 
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "url",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
+**2. Check it connected** with `/mcp` inside Claude Code. A server that failed to connect contributes no tools to route to.
 
-**2. Add an auto-mapping rule** in `~/.claude/mcp-mappings.json`
-
-Map scan and DNS/security patterns to `blackveil-dns` (for example: `scan domain`, `dns scan`, `check dmarc`, `check dkim`, `check spf`, `check mx`).
-
-**3. Ensure the server is always enabled**
-
-In `~/.claude/mcp-mappings.json`, include `blackveil-dns` in `defaults.alwaysEnabled`.
+**3. Name the server or tool in the prompt** (for example `use blackveil-dns to scan example.com`) if the model still picks
+another tool.
 
 **4. Start a new Claude Code session**
 
@@ -313,11 +309,10 @@ Avoid `mcp-remote` entirely. VS Code and Cursor support `"type": "http"` nativel
 - `401 Unauthorized`: Missing or invalid bearer token while auth is enabled.
 - `MCP server 'blackveil-dns' is taking longer than expected to connect`: Usually a local bridge/startup issue, not a hosted endpoint outage. Prefer native HTTP (`https://dns-mcp.blackveilsecurity.com/mcp`) where supported; if using stdio with `npx`, include `-y`, wait for the first cold install, or preinstall the package globally.
 - `Bad Request: missing session`: Auth is accepted, but no `Mcp-Session-Id` was sent for a stateful method. Call `initialize` first, then include the returned session ID header on follow-up MCP calls.
-- `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry. Sessions expire after 2 hours of idle time.
 - `Not Found: session expired or terminated`: Session TTL (2 hours) exceeded. Most MCP clients auto-reinitialize on 404; `mcp-remote` does not — restart Claude Desktop to force a new session.
-- `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`). Note: `GET /mcp` SSE notification stream is exempt from rate limiting.
+- `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`). The `GET /mcp` SSE stream is not counted against those limits but has its own control-plane limit (`60/min`, `600/hr` per IP).
 - `405 Method Not Allowed` on `GET /mcp` (with an `Allow: GET, POST` header): the request reached the SSE endpoint but its `Accept` header cannot receive an event stream, so there is nothing to open. Per the MCP Streamable HTTP spec a `GET` to the MCP endpoint either opens an SSE stream or returns `405`; well-behaved clients treat the `405` as "no stream here" and fall back to `POST /mcp` for JSON-RPC. To open the stream, send `Accept: text/event-stream` (a wildcard `Accept: */*` or `text/*` is also accepted). JSON-RPC requests are unaffected — they use `POST /mcp` with `Accept: application/json, text/event-stream`.
-- `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `192.0.2.53`, or `0xc0.0x00.0x02.0x35`.
+- `Domain validation failed: IP addresses are not allowed` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `192.0.2.53`, or `0xc0.0x00.0x02.0x35`.
 - `-32601 Method not found: prompts/list`: The current hosted server implements `prompts/list` and `prompts/get`. If you see this, verify the endpoint URL and confirm the client is not pinned to an old local package or stale deployment.
 - `check_spf` finding **“SPF check timed out”** or **“SPF check error”** (`checkStatus: 'timeout' | 'error'` — **not** `missingControl`; a direct `check_spf` call additionally tags the finding `errorKind: 'dns_error'`): the top-level DNS lookup for the domain failed before SPF could be read. This is not an MCP error — the tool returns a structured result with `passed: false` and `score: 0`. Inside `scan_domain` a `checkStatus`-tagged category is *excluded* from the score as inconclusive (shown `n/a`, remaining categories renormalised) rather than counted as a failure. Retry once with `force_refresh: true`; if it persists, the authoritative DNS for the zone is unreachable.
 - `check_authoritative_dns_infra` finding **“Authoritative DNS infra probe not configured”** or `check_root_server_set` finding **“Official root hints embedded”** with `partial: true`: `BV_INFRA_PROBE` is not bound in this deployment. Worker-only mode returns structured partial evidence and marks every live-probe capability (direct DNS-over-TCP/53 reachability and authoritative behavior, zone-transfer refusal, CHAOS disclosure, and the root-server-set comparison) inconclusive. Provision the infra probe worker and `BV_INFRA_PROBE` service binding to run the live checks.

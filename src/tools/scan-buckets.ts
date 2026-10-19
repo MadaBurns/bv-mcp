@@ -288,47 +288,86 @@ function ownerMismatch(scope: BucketScanScope, caller: string | undefined): bool
 	return Boolean(scope.owner && scope.owner !== caller);
 }
 
-function filterBucketPayload(payload: Record<string, unknown>, scope: BucketScanScope): Record<string, unknown> {
-	const targetScope = targetTokens(scope.target);
-	const arrayKey = Array.isArray(payload.data) ? 'data' : Array.isArray(payload.findings) ? 'findings' : undefined;
-	if (!arrayKey || (!hasTargetScope(targetScope) && !scope.providers?.length)) return payload;
-	const rows = payload[arrayKey] as unknown[];
+/** How many out-of-scope bucket names `filteredOutOfScopeSamples` reports. */
+const FILTERED_SAMPLE_LIMIT = 5;
+
+function bucketArrayKey(payload: Record<string, unknown>): 'data' | 'findings' | undefined {
+	if (Array.isArray(payload.data)) return 'data';
+	return Array.isArray(payload.findings) ? 'findings' : undefined;
+}
+
+/** True when neither a target nor a provider list narrows the payload, so every row is in scope. */
+function scopeIsOpen(tokens: TargetScopeTokens, providers: string[] | undefined): boolean {
+	return !hasTargetScope(tokens) && !providers?.length;
+}
+
+/** Non-object rows (null, strings, arrays) are never judged: they carry no bucket name or provider to filter on. */
+function rowInScope(row: unknown, tokens: TargetScopeTokens, providers: string[] | undefined): boolean {
+	if (!row || typeof row !== 'object' || Array.isArray(row)) return true;
+	const finding = row as Record<string, unknown>;
+	return findingInTargetScope(finding, tokens) && providerAllowed(finding.provider, providers);
+}
+
+function splitRowsByScope(rows: unknown[], tokens: TargetScopeTokens, providers: string[] | undefined) {
 	const kept: unknown[] = [];
-	const filteredSamples: string[] = [];
+	const rejected: unknown[] = [];
 	for (const row of rows) {
-		if (!row || typeof row !== 'object' || Array.isArray(row)) {
-			kept.push(row);
-			continue;
-		}
-		const finding = row as Record<string, unknown>;
-		if (findingInTargetScope(finding, targetScope) && providerAllowed(finding.provider, scope.providers)) {
-			kept.push(row);
-			continue;
-		}
-		if (filteredSamples.length < 5) filteredSamples.push(bucketFindingName(finding) || '(unnamed bucket)');
+		(rowInScope(row, tokens, providers) ? kept : rejected).push(row);
 	}
-	const filteredCount = rows.length - kept.length;
-	// P3: cap the in-scope array spread into structured metadata (mirrors the OSINT
-	// REPORT_MAX_FINDINGS=100 path). `count` stays the true in-scope total; the
-	// emitted array is the (possibly truncated) prefix. Markers signal truncation.
-	const keptTotal = kept.length;
-	const keptTruncated = keptTotal > BUCKET_FINDINGS_MAX;
-	const emitted = keptTruncated ? kept.slice(0, BUCKET_FINDINGS_MAX) : kept;
-	if (filteredCount <= 0 && !keptTruncated) return payload;
+	return { kept, rejected };
+}
+
+// Only object rows can be rejected (see `rowInScope`), so the cast is safe.
+function rejectedSample(row: unknown): string {
+	return bucketFindingName(row as Record<string, unknown>) || '(unnamed bucket)';
+}
+
+// P3: cap the in-scope array spread into structured metadata (mirrors the OSINT
+// REPORT_MAX_FINDINGS=100 path). `count` stays the true in-scope total; the
+// emitted array is the (possibly truncated) prefix. Markers signal truncation.
+function keptTruncationMarkers(keptTotal: number): Record<string, unknown> {
+	return keptTotal > BUCKET_FINDINGS_MAX ? { keptTruncated: true, keptCap: BUCKET_FINDINGS_MAX, keptTotal } : {};
+}
+
+type ScopedRows = ReturnType<typeof splitRowsByScope>;
+
+/** The payload is returned untouched when nothing was filtered and the in-scope array fits the cap. */
+function needsRewrite(split: ScopedRows): boolean {
+	return split.rejected.length > 0 || split.kept.length > BUCKET_FINDINGS_MAX;
+}
+
+function buildScopedPayload(
+	payload: Record<string, unknown>,
+	arrayKey: 'data' | 'findings',
+	totalRows: number,
+	split: ScopedRows,
+	scope: BucketScanScope,
+): Record<string, unknown> {
+	const keptTotal = split.kept.length;
+	// Preserve prior behavior: only override `count` when upstream supplied one.
+	const hasUpstreamCount = typeof payload.count === 'number';
 	return {
 		...payload,
-		[arrayKey]: emitted,
+		[arrayKey]: split.kept.slice(0, BUCKET_FINDINGS_MAX),
 		// In-scope total (not the possibly-truncated emitted length) so downstream
 		// callers see the real count regardless of the structured-output cap.
-		// Preserve prior behavior: only override `count` when upstream supplied one.
-		count: typeof payload.count === 'number' ? keptTotal : payload.count,
-		originalCount: typeof payload.count === 'number' ? payload.count : rows.length,
-		filteredOutOfScopeCount: filteredCount,
-		filteredOutOfScopeSamples: filteredSamples,
-		...(keptTruncated ? { keptTruncated: true, keptCap: BUCKET_FINDINGS_MAX, keptTotal } : {}),
+		count: hasUpstreamCount ? keptTotal : payload.count,
+		originalCount: hasUpstreamCount ? payload.count : totalRows,
+		filteredOutOfScopeCount: split.rejected.length,
+		filteredOutOfScopeSamples: split.rejected.slice(0, FILTERED_SAMPLE_LIMIT).map(rejectedSample),
+		...keptTruncationMarkers(keptTotal),
 		targetScope: scope.target,
 		providerScope: scope.providers,
 	};
+}
+
+function filterBucketPayload(payload: Record<string, unknown>, scope: BucketScanScope): Record<string, unknown> {
+	const targetScope = targetTokens(scope.target);
+	const arrayKey = bucketArrayKey(payload);
+	if (!arrayKey || scopeIsOpen(targetScope, scope.providers)) return payload;
+	const rows = payload[arrayKey] as unknown[];
+	const split = splitRowsByScope(rows, targetScope, scope.providers);
+	return needsRewrite(split) ? buildScopedPayload(payload, arrayKey, rows.length, split, scope) : payload;
 }
 
 export async function scanBucketsStart(

@@ -7,8 +7,8 @@ applyTo: src/tools/scan-domain.ts
 
 ## Parallel execution
 
-`scan_domain` runs the standard mail/web scan categories in parallel via `Promise.allSettled`:
-`checkSpf`, `checkDmarc`, `checkDkim`, `checkDnssec`, `checkSsl`, `checkMtaSts`, `checkNs`, `checkCaa`, `checkBimi`, `checkTlsrpt`, `checkSubdomainTakeover`, `checkMx`, `checkHttpSecurity`, `checkDane`, `checkDaneHttps`, `checkSvcbHttps`, `checkSubdomailing`
+`scan_domain` runs the 19 scan categories in parallel via `Promise.allSettled`. The single source is the `CHECK_DISPATCH` registry in `src/tools/scan-domain.ts`:
+spf, dmarc, dkim, dnssec, ssl, mta_sts, ns, caa, bimi, tlsrpt, subdomain_takeover, mx, http_security, dane, dane_https, svcb_https, subdomailing, ptr, dnskey_strength. `SCAN_CATEGORIES` and the retry switch derive from it.
 
 When `profile: 'authoritative_dns_infra'` is selected, scan orchestration runs only `checkAuthoritativeDnsInfra` and `checkRootServerSet`, then merges them into the `authoritative_dns_infra` category.
 
@@ -17,33 +17,36 @@ All checks are **static imports** — no dynamic imports in scan context (unlike
 ## Timeouts and partial results
 
 - Per-check timeout: `PER_CHECK_TIMEOUT_MS = 8_000` (8s)
-- Total scan timeout: `SCAN_TIMEOUT_MS = 12_000` (12s)
+- Total scan timeout: `SCAN_TIMEOUT_MS = 15_000` (15s; the env override is clamped to 5-30s)
 - Completed checks are preserved on timeout; missing checks get timeout findings
 - Scan context skips secondary DNS confirmation for speed
 
 ## Post-processing adjustments
 
-`applyScanPostProcessing()` in `src/tools/scan/post-processing.ts` applies three adjustments after all checks complete:
+`applyScanPostProcessing()` in `src/tools/scan/post-processing.ts` applies adjustments after all checks complete, including:
 
-1. **Non-mail domains** (no MX): queries parent DMARC `sp=`/`p=` → downgrades email-auth findings to `info`
-2. **No-send signal** (SPF `noSendPolicy` metadata): downgrades DKIM/MTA-STS/BIMI missing-record findings to `info`
-3. **BIMI**: rewritten for non-mail domains
+1. **Non-apex hosts** (e.g. `www.example.com`): absent host-label mail records are not reported as security failures
+2. **Non-mail domains** (no inbound mail): downgrades email-auth findings to `info` only when the parent's DMARC `sp=`/`p=` is `quarantine`/`reject`
+3. **No-send signal** (SPF `noSendPolicy` metadata): downgrades DKIM/MTA-STS/BIMI missing-record findings to `info`
+4. **BIMI**: wording rewritten for non-mail domains (text only)
+5. **Impersonation escalation**: a mail-sending domain with weak/absent DMARC and active lookalike/shadow domains is escalated
 
 ## Maturity staging
 
 `computeMaturityStage()` in `src/tools/scan/maturity-staging.ts` classifies domains into stages 0-4:
 - Stage 0: Unprotected
-- Stage 1-2: Basic/Configured
-- Stage 3: Enforcing (does not require DKIM)
-- Stage 4: Hardened (requires CAA + DKIM-discovered + BIMI + DANE + MTA-STS strict)
+- Stage 1-2: Basic/Monitoring
+- Stage 3: Enforcing (SPF + DMARC quarantine/reject; does not require DKIM or DNSSEC)
+- Stage 4: Hardened (Stage 3 + at least 2 of {MTA-STS, DNSSEC, BIMI, DANE, CAA, DKIM-discovered}, at least one being DNSSEC, MTA-STS or DANE)
 
-`capMaturityStage()` applies score-based caps: F (<50) → max Stage 2, D/D+ (<63) → max Stage 3.
+`web_only`/`non_mail` domains use a second ladder (Transport-Hardened, Defensive, Comprehensive).
+
+`capMaturityStage()` caps by the displayed 6-band NIST grade: F (<60) → max Stage 2, D (60-69) → max Stage 3.
 
 ## Caching
 
-- Each check cached at `cache:<domain>:check:<name>` (5 min default, `cacheTtlSeconds` override)
-- Top-level scan cached at `cache:<domain>`
-- Profile-specific: `cache:<domain>:profile:<profile>`
+- Keys are versioned, `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>[:check:<name>|:profile:<profile>]`, built by `buildCheckCacheKey` / `buildScanCacheKey` (`src/lib/cache.ts`)
+- Per-check entries: 5 min default, `cacheTtlSeconds` override
 - `force_refresh` propagates via `skipCache` in `runWithCache()`
 
 ## Output structure

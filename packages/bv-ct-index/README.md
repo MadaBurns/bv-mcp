@@ -29,7 +29,7 @@ bv-mcp  ──(service binding BV_CERTSTREAM)──> fetch: /enumerate /sans /ce
 | -------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Tailer         | `src/tailer/`         | Every minute, six concurrent lanes read the Chrome CT log list (cached up to an hour) and tail every usable or qualified log whose temporal interval has not ended, except the Geomys and IPng operators, each from its cursor. It parses **precert leaves only** (23,414 of 23,417 sampled final certs embed their SCTs, so tailing precerts avoids counting each cert twice) and sends `ObservationBatch` messages. A log seen for the first time starts at its current tree size: the index is **forward-only**. |
 | Indexer        | `src/indexer/write.ts` | Queue consumer (batch 100). Validates each observation against the key helpers and writes exactly one tier-0 sorted run to R2 plus a `runs` row in D1.                                                                                                                                                                  |
-| Compactor      | `src/indexer/plan.ts`, `compact.ts` | Hourly at :17 the planner enqueues jobs (one key range each): tier 0 → 1 (per hour), 1 → 2 (per UTC day), 2 + 3 → 3 (shards of about 20 MB). Output is streamed through `createRunWriter`, so a job holds one block per input, never a whole run.                                                                          |
+| Compactor      | `src/indexer/plan.ts`, `compact.ts` | Hourly at :17 the planner enqueues jobs (one key range each): tier 0 → 1 (per hour), 1 → 2 (per UTC day), 2 + 3 → 3 (shards of about 10 MB). T1 and T2 jobs take at most `MAX_JOB_INPUTS` (32) runs and `MAX_JOB_ROWS` (750k) rows, T3 jobs at most `MAX_T3_JOB_ROWS` (1.5M) rows, and a T2 run that straddles a T3 cut is first re-cut T2 → T2. Output is streamed through `createRunWriter`, so a job holds one block per input, never a whole run.                                                                          |
 | Generations    | `src/indexer/generations.ts` | Once a week the planner snapshots the catalog under a new generation. The previous generation stays for a week, so a rollback is one `UPDATE` (see the runbook).                                                                                                                                                         |
 | Reader         | `src/indexer/read.ts` | `scan`, `siblings` and `meta`. One D1 overlap query selects the runs of the current generation whose key range overlaps the query, then block-index-guided R2 range GETs read only the blocks needed.                                                                                                                  |
 | Query API      | `src/api/`            | The three routes plus open `GET /health`. Bearer auth. Budget 1500 ms per request.                                                                                                                                                                                                                                       |
@@ -90,9 +90,9 @@ object:
   roughly 200 days to full unexpired coverage). Treat an apex with few or no names inside the first 200 days as **unmeasured**, not clean.
 - `truncated: true` means the page hit the 500-name limit and a `cursor` is present.
 
-bv-mcp does not read `coverage` or `truncated` yet and has no `forward-from` history window, so until it does a truncated or
-young-index answer reads as complete to the consumer. The existing crt.sh and CertSpotter fallbacks only run when the owned index
-answers null (a 503, a 401 or a timeout), not when it answers a thin 200.
+bv-mcp reads `coverage` and `truncated` (`src/lib/ct-coverage.ts`, SQ-345). An answer that is truncated, from an index younger than
+200 days, or whose `freshThrough` is more than 6 hours old counts as partial: `discover_subdomains` keeps its names as a supplement
+and still consults crt.sh and CertSpotter, instead of returning it as final.
 
 ## Develop
 

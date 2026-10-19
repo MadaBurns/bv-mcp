@@ -320,83 +320,90 @@ function transientCategoriesNote(categories: CheckCategory[]): string {
 	return `${n} categor${n === 1 ? 'y' : 'ies'} could not be assessed (transient check failure, not a clean result): ${categories.join(', ')}.`;
 }
 
-/** Format a fix plan as a human-readable text report. */
-export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'): string {
-	const lines: string[] = [];
+/** How many actions the compact format lists before summarising the rest. */
+const COMPACT_MAX_ACTIONS = 5;
 
-	if (format === 'compact') {
-		lines.push(`Fix Plan: ${plan.domain} — ${formatScoreGrade(plan.score, plan.grade)}, ${plan.totalActions} actions`);
-		if (plan.actions.length === 0) {
-			// `caveat` is REQUIRED on `FixPlanResult`, so the real producer
-			// (`generateFixPlan`) always states which reason applies whenever
-			// `!assessed`. Falling back to `UNASSESSED_FIX_PLAN_CAVEAT` specifically
-			// is the same silent-wrong-prose shape closed elsewhere this fix round
-			// (map_registrar_products, map_compliance): a fabricated/hand-built plan with
-			// a somehow-unset `caveat` would render the never-ran-specific text
-			// even for an all-transient state. The only genuinely safe fallback
-			// here makes no specific claim.
-			if (!plan.assessed) {
-				lines.push(plan.caveat ?? 'This domain could not be assessed.');
-			} else if (plan.transientCategories.length > 0) {
-				// Zero actions here does NOT mean a clean bill of health — some
-				// category was never actually measured. Say so instead of reading
-				// as "No actionable findings" (see the full-mode branch below).
-				lines.push(transientCategoriesNote(plan.transientCategories));
-			} else {
-				lines.push('No actionable findings.');
-			}
-			return lines.join('\n');
-		}
-		const maxShow = 5;
-		const shown = plan.actions.slice(0, maxShow);
-		for (let i = 0; i < shown.length; i++) {
-			const a = shown[i];
-			lines.push(`${i + 1}. [${a.severity.toUpperCase()}] ${a.category.toUpperCase()}: ${sanitizeOutputText(a.action, 150)} (${a.effort})`);
-		}
-		if (plan.actions.length > maxShow) {
-			lines.push(`... and ${plan.actions.length - maxShow} more`);
-		}
-		if (plan.transientCategories.length > 0) {
-			lines.push(transientCategoriesNote(plan.transientCategories));
-		}
-		return lines.join('\n');
+/**
+ * What a plan with zero actions says. Zero actions is only good news when something was
+ * actually examined, so the unassessed and transient states never read as `cleanMessage`.
+ *
+ * `caveat` is REQUIRED on `FixPlanResult`, so the real producer (`generateFixPlan`) always
+ * states which reason applies whenever `!assessed`. Falling back to
+ * `UNASSESSED_FIX_PLAN_CAVEAT` specifically is the same silent-wrong-prose shape closed
+ * elsewhere this fix round (map_registrar_products, map_compliance): a fabricated/hand-built
+ * plan with a somehow-unset `caveat` would render the never-ran-specific text even for an
+ * all-transient state. The only genuinely safe fallback here makes no specific claim.
+ */
+function noActionsMessage(plan: FixPlanResult, cleanMessage: string): string {
+	if (!plan.assessed) return plan.caveat ?? 'This domain could not be assessed.';
+	// Zero actions here does NOT mean a clean bill of health — some category was never
+	// actually measured. Say so instead of reading as "No actionable findings".
+	if (plan.transientCategories.length > 0) return transientCategoriesNote(plan.transientCategories);
+	return cleanMessage;
+}
+
+function compactActionLines(actions: FixAction[]): string[] {
+	const lines = actions
+		.slice(0, COMPACT_MAX_ACTIONS)
+		.map(
+			(a, i) => `${i + 1}. [${a.severity.toUpperCase()}] ${a.category.toUpperCase()}: ${sanitizeOutputText(a.action, 150)} (${a.effort})`,
+		);
+	if (actions.length > COMPACT_MAX_ACTIONS) {
+		lines.push(`... and ${actions.length - COMPACT_MAX_ACTIONS} more`);
 	}
+	return lines;
+}
 
-	const maturity = plan.maturityStage === null ? UNGRADED_DISPLAY : `${plan.maturityStage}/4`;
-	lines.push(`# Fix Plan: ${plan.domain}`);
-	lines.push(`Score: ${formatScoreGrade(plan.score, plan.grade)} | Maturity Stage: ${maturity}`);
-	lines.push(`${plan.totalActions} remediation action${plan.totalActions !== 1 ? 's' : ''} identified`);
-	lines.push('');
-
+function formatFixPlanCompact(plan: FixPlanResult): string[] {
+	const lines = [`Fix Plan: ${plan.domain} — ${formatScoreGrade(plan.score, plan.grade)}, ${plan.totalActions} actions`];
 	if (plan.actions.length === 0) {
-		// Zero actions is only good news when something was actually examined.
-		// See the compact-mode fallback above for why this does NOT fall back to
-		// `UNASSESSED_FIX_PLAN_CAVEAT` specifically.
-		if (!plan.assessed) {
-			lines.push(plan.caveat ?? 'This domain could not be assessed.');
-		} else if (plan.transientCategories.length > 0) {
-			lines.push(transientCategoriesNote(plan.transientCategories));
-		} else {
-			lines.push('No actionable findings. Domain security posture is strong.');
-		}
-		return lines.join('\n');
+		lines.push(noActionsMessage(plan, 'No actionable findings.'));
+		return lines;
 	}
-
-	for (let i = 0; i < plan.actions.length; i++) {
-		const action = plan.actions[i];
-		const num = i + 1;
-		lines.push(`## ${num}. [${action.severity.toUpperCase()}] ${action.category.toUpperCase()}`);
-		lines.push(`Action: ${action.action}`);
-		lines.push(`Effort: ${action.effort} | Impact: ${action.impact}`);
-		if (action.dependencies.length > 0) {
-			lines.push(`Dependencies: ${action.dependencies.join('; ')}`);
-		}
-		lines.push('');
-	}
-
+	lines.push(...compactActionLines(plan.actions));
 	if (plan.transientCategories.length > 0) {
 		lines.push(transientCategoriesNote(plan.transientCategories));
 	}
+	return lines;
+}
 
-	return lines.join('\n');
+function fullHeaderLines(plan: FixPlanResult): string[] {
+	const maturity = plan.maturityStage === null ? UNGRADED_DISPLAY : `${plan.maturityStage}/4`;
+	return [
+		`# Fix Plan: ${plan.domain}`,
+		`Score: ${formatScoreGrade(plan.score, plan.grade)} | Maturity Stage: ${maturity}`,
+		`${plan.totalActions} remediation action${plan.totalActions !== 1 ? 's' : ''} identified`,
+		'',
+	];
+}
+
+function fullActionLines(action: FixAction, index: number): string[] {
+	const lines = [
+		`## ${index + 1}. [${action.severity.toUpperCase()}] ${action.category.toUpperCase()}`,
+		`Action: ${action.action}`,
+		`Effort: ${action.effort} | Impact: ${action.impact}`,
+	];
+	if (action.dependencies.length > 0) {
+		lines.push(`Dependencies: ${action.dependencies.join('; ')}`);
+	}
+	lines.push('');
+	return lines;
+}
+
+function formatFixPlanFull(plan: FixPlanResult): string[] {
+	const lines = fullHeaderLines(plan);
+	if (plan.actions.length === 0) {
+		lines.push(noActionsMessage(plan, 'No actionable findings. Domain security posture is strong.'));
+		return lines;
+	}
+	lines.push(...plan.actions.flatMap(fullActionLines));
+	if (plan.transientCategories.length > 0) {
+		lines.push(transientCategoriesNote(plan.transientCategories));
+	}
+	return lines;
+}
+
+/** Format a fix plan as a human-readable text report. */
+export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'): string {
+	return (format === 'compact' ? formatFixPlanCompact(plan) : formatFixPlanFull(plan)).join('\n');
 }

@@ -8,7 +8,7 @@
 - Run tests (Workers runtime): npm test
 - Run subpackage tests: npm -w packages/dns-checks run test
 - Run single test file: npx vitest run test/check-spf.spec.ts
-- Run chaos test (all 9 MCP client types): python3 scripts/chaos/chaos-test-clients.py
+- Run chaos test (9 client fixtures): python3 scripts/chaos/chaos-test-clients.py
 - Typecheck: npm run typecheck
 - Typecheck subpackage: npm -w packages/dns-checks run typecheck
 - Lint: npm run lint
@@ -35,18 +35,16 @@
 - Monorepo structure: Root Cloudflare Worker + packages/dns-checks runtime-agnostic subpackage
 
 ## Project Conventions
-- Keep versions synchronized between package.json version and src/lib/server-version.ts SERVER_VERSION.
+- SERVER_VERSION (src/lib/server-version.ts) derives from package.json; bump with `npm version <X.Y.Z>`, whose lifecycle hook also syncs server.json and the CHANGELOG heading.
 - Error messages intended for clients must start with safe prefixes (for example: Missing required, Invalid, Domain validation failed, Resource not found).
-- Rate limiting for MCP should return HTTP 200 with JSON-RPC error code -32029; `retry-after` may still be set.
+- Rate limiting for MCP returns HTTP 429 with JSON-RPC error code -32029 and a `retry-after` header.
 - Respect output format behavior:
   - format=compact for interactive clients
   - format=full for non-interactive clients
 - scan is a supported alias for scan_domain.
 
 ## Caching and Performance
-- Per-check cache key pattern: cache:<domain>:check:<name>
-- Scan-level cache key pattern: cache:<domain>
-- Profile cache key pattern: cache:<domain>:profile:<profile>
+- Cache keys are versioned: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>` (scan), `...:<domain>:check:<name>` (per check), `...:<domain>:profile:<profile>` (explicit profile). Build them with `buildScanCacheKey` / `buildCheckCacheKey` from `src/lib/cache.ts`; never hand-write the string.
 - For force_refresh flows, propagate skipCache through runWithCache().
 
 ## Testing Patterns
@@ -54,7 +52,7 @@
 - Restore fetch mocks in afterEach.
 - In tests that need mock isolation for check_mx, use dynamic imports inside test bodies.
 - Clear both scan-level and per-check cache entries between relevant test cases.
-- Chaos testing: Run `python3 scripts/chaos/chaos-test-clients.py` to validate behavior across all 9 MCP client types.
+- Chaos testing: Run `python3 scripts/chaos/chaos-test-clients.py` to validate behavior across its 9 client fixtures (client detection names 11 types).
 
 ## Security and Internal Routes
 - Keep SSRF protections and domain sanitization paths intact.

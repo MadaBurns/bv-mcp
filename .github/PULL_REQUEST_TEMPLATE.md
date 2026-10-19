@@ -26,5 +26,5 @@
 
 - [ ] Changes follow existing code conventions
 - [ ] No secrets, credentials, or internal references included
-- [ ] Error messages follow the safe-prefix convention (see CLAUDE.md)
-- [ ] New tool? Followed the "Adding a New Tool" checklist in CLAUDE.md
+- [ ] Error messages follow the safe-prefix convention (see the `bv-mcp-security-surface` skill)
+- [ ] New tool? Followed the "Adding a New Tool" checklist in CONTRIBUTING.md and the `bv-mcp-add-tool` skill

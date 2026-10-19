@@ -176,20 +176,9 @@ function fingerprintsEqual(left: string, right: string): boolean {
 	return different === 0;
 }
 
-/**
- * INTERNAL ONLY: safely adopt a pre-identity recurring watch that is still
- * owned by the historical `anonymous` principal.
- *
- * The trusted web service supplies a one-way fingerprint of its high-entropy
- * callback token. This helper never returns webhook URLs, callback tokens, or
- * domains. Broad adoption is impossible: exactly one eligible row must match,
- * and the final conditional update loses safely if ownership or activity
- * changes after the read.
- */
-export async function adoptAnonymousBrandAuditWatchInternal(
-	db: D1Database,
-	input: { canonicalOwnerId: string; webhookTokenFingerprint: string; watchId?: string },
-): Promise<AnonymousWatchAdoptionResult> {
+type AnonymousWatchAdoptionInput = { canonicalOwnerId: string; webhookTokenFingerprint: string; watchId?: string };
+
+function assertAnonymousAdoptionInput(input: AnonymousWatchAdoptionInput): void {
 	if (!CANONICAL_OWNER_ID.test(input.canonicalOwnerId)) {
 		throw new TypeError('Invalid canonical brand-audit owner ID');
 	}
@@ -199,13 +188,15 @@ export async function adoptAnonymousBrandAuditWatchInternal(
 	if (input.watchId !== undefined && !WATCH_ID.test(input.watchId)) {
 		throw new TypeError('Invalid brand-audit watch ID');
 	}
+}
 
-	const statement = input.watchId
+async function loadAnonymousWatchCandidates(db: D1Database, watchId: string | undefined): Promise<AnonymousWatchCandidate[]> {
+	const statement = watchId
 		? db
 				.prepare(
 					"SELECT id, webhook_url, domain, last_classification_hash, last_classification_result_json, pending_webhook_json FROM brand_audit_watches WHERE owner_id = 'anonymous' AND active = 1 AND id = ? LIMIT ?",
 				)
-				.bind(input.watchId, MAX_ANONYMOUS_WATCH_CANDIDATES + 1)
+				.bind(watchId, MAX_ANONYMOUS_WATCH_CANDIDATES + 1)
 		: db
 				.prepare(
 					"SELECT id, webhook_url, domain, last_classification_hash, last_classification_result_json, pending_webhook_json FROM brand_audit_watches WHERE owner_id = 'anonymous' AND active = 1 ORDER BY id LIMIT ?",
@@ -218,25 +209,34 @@ export async function adoptAnonymousBrandAuditWatchInternal(
 	if (rows.length > MAX_ANONYMOUS_WATCH_CANDIDATES) {
 		throw new Error('Anonymous brand-audit watch candidate limit exceeded');
 	}
+	return rows;
+}
 
+async function matchAnonymousWatchesByFingerprint(
+	rows: AnonymousWatchCandidate[],
+	webhookTokenFingerprint: string,
+): Promise<AnonymousWatchCandidate[]> {
 	const matches: AnonymousWatchCandidate[] = [];
 	for (const row of rows) {
 		if (!WATCH_ID.test(row.id)) continue;
 		const fingerprint = await fingerprintWebhookToken(row.webhook_url);
-		if (fingerprint && fingerprintsEqual(fingerprint, input.webhookTokenFingerprint)) matches.push(row);
+		if (fingerprint && fingerprintsEqual(fingerprint, webhookTokenFingerprint)) matches.push(row);
 	}
+	return matches;
+}
 
-	if (matches.length === 0) return { status: 'no_match' };
-	if (matches.length !== 1) return { status: 'ambiguous' };
-
-	const matched = matches[0];
+async function adoptMatchedAnonymousWatch(
+	db: D1Database,
+	canonicalOwnerId: string,
+	matched: AnonymousWatchCandidate,
+): Promise<AnonymousWatchAdoptionResult> {
 	const recoveredBaseline = await recoverAnonymousWatchBaseline(db, matched);
 	const update = await db
 		.prepare(
 			"UPDATE brand_audit_watches SET owner_id = ?, last_classification_result_json = ? WHERE id = ? AND owner_id = 'anonymous' AND active = 1 AND webhook_url = ? AND domain = ? AND last_classification_hash IS ? AND last_classification_result_json IS ? AND pending_webhook_json IS ?",
 		)
 		.bind(
-			input.canonicalOwnerId,
+			canonicalOwnerId,
 			recoveredBaseline,
 			matched.id,
 			matched.webhook_url,
@@ -251,4 +251,28 @@ export async function adoptAnonymousBrandAuditWatchInternal(
 	if (update.meta.changes !== 1) throw new Error('Anonymous brand-audit watch adoption changed an unexpected number of rows');
 
 	return { status: 'reconciled', watchId: matched.id };
+}
+
+/**
+ * INTERNAL ONLY: safely adopt a pre-identity recurring watch that is still
+ * owned by the historical `anonymous` principal.
+ *
+ * The trusted web service supplies a one-way fingerprint of its high-entropy
+ * callback token. This helper never returns webhook URLs, callback tokens, or
+ * domains. Broad adoption is impossible: exactly one eligible row must match,
+ * and the final conditional update loses safely if ownership or activity
+ * changes after the read.
+ */
+export async function adoptAnonymousBrandAuditWatchInternal(
+	db: D1Database,
+	input: AnonymousWatchAdoptionInput,
+): Promise<AnonymousWatchAdoptionResult> {
+	assertAnonymousAdoptionInput(input);
+	const rows = await loadAnonymousWatchCandidates(db, input.watchId);
+	const matches = await matchAnonymousWatchesByFingerprint(rows, input.webhookTokenFingerprint);
+
+	if (matches.length === 0) return { status: 'no_match' };
+	if (matches.length !== 1) return { status: 'ambiguous' };
+
+	return adoptMatchedAnonymousWatch(db, input.canonicalOwnerId, matches[0]);
 }

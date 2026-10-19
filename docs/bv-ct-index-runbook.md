@@ -154,8 +154,9 @@ job fit. A full hour is about 235 runs and 3.4M rows. A T1 merge opens every inp
 keyspace. Measured in V8 on synthetic rows, that merge runs out of a 96 MB heap and takes about 34 s of CPU, so it cannot finish
 inside the Worker's 128 MB isolate or its 30 s default CPU limit. The queue then retries it 3 times and drops it, since there is no
 DLQ. The next hour re-plans the same oversized hours plus one more. The fix caps every T1 and T2 job at `MAX_JOB_INPUTS` (32) runs
-and `MAX_JOB_ROWS` (1.5M) rows (`src/indexer/plan.ts`), and raises `limits.cpu_ms` to 300000. A 32-run job measured 4.5 s of CPU
-and fit the 96 MB heap.
+and `MAX_JOB_ROWS` rows (`src/indexer/plan.ts`), and raises `limits.cpu_ms` to 300000. A 32-run job measured 4.5 s of CPU
+and fit the 96 MB heap. `MAX_JOB_ROWS` was 1.5M at first; it is 750k since the 00:17Z 2026-10-18 T2 jobs of about 1.4M rows ran
+out of the 128 MB isolate (SQ-363, see below).
 
 Open point: the 13:17Z tail showed no compact-consumer invocation at all, not failed ones. Confirm which it was with the probe
 below. After the fix deploys, each `:17` cron logs one `ct_compaction_plan` line (`jobs`, `tiers`, `inputs`), and each job logs a
@@ -205,8 +206,10 @@ Two findings:
 2. **CPU, T3.** On the first day there are no T3 shards, so `cutsFor` returns only the fixed cuts, and one range holds a whole day
    of T2 for its keyspace: about 10M rows at the 2026-10-17 ingest rate. That is about 134 s of CPU, inside the 300 s limit but
    without a 2x margin. The bound: a T3 job takes every T3 shard of its range plus the oldest T2 runs, up to `MAX_T3_JOB_ROWS`
-   (6M rows, about 84 s) and at least one T2 run. `cutsFor` also closes a range once its shards reach `MAX_T3_RANGE_ROWS`
-   (3M rows), so the shards never use up a job's budget. T2 runs past the budget wait for the next cron. A first-day range drains in
+   (1.5M rows, about 21 s) and at least one T2 run. `cutsFor` also closes a range once its shards reach `MAX_T3_RANGE_ROWS`
+   (750k rows), so the shards never use up a job's budget. Memory, not CPU, set these numbers: they were 6M and 3M until the
+   00:17Z 2026-10-18 T2 jobs of about 1.4M rows ran out of the 128 MB isolate, and `MAX_JOB_ROWS` (T1, T2, re-cut) was halved
+   from 1.5M to 750k at the same time. T2 runs past the budget wait for the next cron. A first-day range drains in
    a few crons.
 
 Why sequential bounded merges (option b) rather than more fixed cuts (a) or splitting T3 output by rows (c): (a) bounds the first
@@ -224,7 +227,7 @@ only at the fixed cuts, so each spans about half the name keyspace. Once T3 shar
 planner joined every range they touch back into one T3 job. That job rewrote all of that keyspace's shards for about one T2 run a
 cron: about 17 crons of about 7M rows each to finish day 1. Now a T2 run that spans a cut never goes to T3. A bounded T2 -> T2
 job (`MAX_JOB_INPUTS` / `MAX_JOB_ROWS`) first rewrites it closed at the current cuts, and the next cron merges each range's pieces
-in its own T3 job. On the rehearsal catalog, the second T3 cron plans 4 re-cut jobs (each at most 1.47M rows) plus a T3 job for
+in its own T3 job. On the rehearsal catalog, the second T3 cron plans 4 re-cut jobs (each at most 1.47M rows, under the 1.5M cap of the time; the cap is now 750k) plus a T3 job for
 the one range that was already settled. If cuts move later, a run that straddles again is simply re-cut again.
 
 Watch after the deploy: at 00:17Z, `ct_compaction_plan` should list tier-2 jobs, with no `exceeded` lines. From 01:17Z, tier-3

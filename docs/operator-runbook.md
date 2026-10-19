@@ -56,9 +56,10 @@ their own commands, each running from the repo root:
     npm run deploy:whois
     npm run deploy:infra-probe
 
-Since #1082 both run the same freshness and release-tag gates `deploy:prod`
-runs — `check:deploy-freshness` (checkout not behind `origin/main`) and
-`check:release-integrity` (`HEAD` at a tag) — before their own deploy call
+Since #1082 both run `check:deploy-freshness` (checkout not behind
+`origin/main`) and `check:release-integrity:sidecar` (clean working tree only;
+unlike `deploy:prod`'s `check:release-integrity`, no exact-tag requirement)
+before their own deploy call
 (`deploy:whois` runs `cf deploy` from `packages/bv-whois/` using its
 `cloudflare.config.ts`; `deploy:infra-probe` runs `cf deploy`
 from `packages/bv-infra-probe/`, a config-only package whose
@@ -321,44 +322,11 @@ summary — the full generated `worker-configuration.d.ts` (still written to
 disk, gitignored and pre-commit-blocked) is the only place literal values
 appear.
 
-The installed wrangler (4.131.1; checked via `npx wrangler deploy --help`)
-supports `--secrets-file` on both `wrangler deploy` and `wrangler versions
-upload`, which lands the var removal and the secret creation in the SAME
-deploy — no window with alerting silently off. The one-shot override IS still
-needed for this single command, though: `deploy:prod` (package.json:52)
-`&&`-chains `node scripts/inject-private-config.cjs` — whose gate calls
-`wrangler secret list` — BEFORE the final `npx wrangler deploy` step, and
-`npm run deploy:prod -- --secrets-file <file>` only appends `--secrets-file`
-to that LAST chained command. So at gate-check time `ALERT_WEBHOOK_URL` is not
-yet listed as a Worker secret (it uploads atomically with the deploy call that
-comes AFTER the gate), and with the var already removed from step 1 the gate
-fails closed. The override does not weaken that: it only tells the gate to
-skip the pre-check for this one command, and the deploy that follows is what
-actually provisions the secret.
-
-1. Remove `ALERT_WEBHOOK_URL` from `.dev/wrangler.deploy.jsonc`'s `vars`.
-2. Write a secrets file — gitignored the same way as the overlay, and never
-   committed — e.g. `.dev/alert-webhook.secrets.json`:
-   `{"ALERT_WEBHOOK_URL": "https://your-alert-webhook"}` (JSON or `.env`
-   form; wrangler accepts either).
-3. Deploy with it, using the override inline for this one command only — set
-   it on the same command line, never `export`ed from a shell profile, since a
-   persisted override silently disables the alerting guarantee on every
-   deploy from then on (the gate still warns loudly each time it fires, but
-   nothing forces you to notice a standing override):
-
-       BV_ALLOW_MISSING_ALERT_SECRET=1 npm run deploy:prod -- --secrets-file .dev/alert-webhook.secrets.json
-
-   (`deploy:prod`'s trailing `&&`-chained `npx wrangler deploy` forwards args
-   after `--`.) Delete the secrets file afterward — secrets persist on the
-   Worker across deploys, so wrangler does not need it again.
-4. The NEXT `npm run deploy:prod` — without the override — is what actually
-   proves the secret landed: the gate re-runs, finds `ALERT_WEBHOOK_URL` in
-   `wrangler secret list`, and passes on its own. Do not skip this step;
-   running only the overridden deploy leaves the gate unverified.
-
-If `--secrets-file` is unavailable (an older wrangler) or a two-step deploy is
-preferred:
+Use the two-step procedure below. An earlier revision of this section also gave a one-command path,
+`npm run deploy:prod -- --secrets-file <file>`, which relied on the flag reaching a trailing
+`npx wrangler deploy`. That no longer holds: `deploy:prod` now ends with
+`npm -w packages/bv-dns-security-mcp run deploy` (`cf deploy --mode production`), so an appended flag
+reaches the inner `npm run` without a `--` and is not forwarded to the deploy. Do not use it.
 
 1. Remove `ALERT_WEBHOOK_URL` from `.dev/wrangler.deploy.jsonc`'s `vars`.
 2. Deploy once with the one-shot override, since the secret is not yet
