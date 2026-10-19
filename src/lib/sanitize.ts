@@ -225,8 +225,23 @@ const CLASSIFIED_SCRIPTS: ReadonlyArray<readonly [string, RegExp]> = [
  */
 function classifyScript(char: string): string | null {
 	const cp = char.codePointAt(0) as number; // never undefined: `char` is one non-empty code point
-	if (cp === 0x2d || (cp >= 0x30 && cp <= 0x39)) return null;
-	if (cp >= 0x61 && cp <= 0x7a) return 'Latin';
+	if (isNeutralAscii(cp)) return null;
+	if (isAsciiLetter(cp)) return 'Latin';
+	return lookupClassifiedScript(char);
+}
+
+/** ASCII hyphen and digits carry no script. */
+function isNeutralAscii(cp: number): boolean {
+	return cp === 0x2d || (cp >= 0x30 && cp <= 0x39);
+}
+
+/** ASCII letters a-z (the label is already lowercased). */
+function isAsciiLetter(cp: number): boolean {
+	return cp >= 0x61 && cp <= 0x7a;
+}
+
+/** Match a character against the Unicode script property escapes; null for any unlisted script. */
+function lookupClassifiedScript(char: string): string | null {
 	for (const [script, pattern] of CLASSIFIED_SCRIPTS) {
 		if (pattern.test(char)) return script;
 	}
