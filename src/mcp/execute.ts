@@ -36,7 +36,7 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
-import { piiAllows } from '../lib/analytics-pii';
+import { piiAllows, type AnalyticsPiiLevel } from '../lib/analytics-pii';
 import { buildAccessLogEvent, resolveAccessLogAttribution, type AccessLogEvent } from '../lib/access-log-event';
 import { extractProtocolHeaders, readJsonRpcErrorPayload } from './response';
 
@@ -362,13 +362,38 @@ export async function decryptIpEvidence(wire: string, keyBase64: string | undefi
 	}
 }
 
-function recordMcpAccessLog(
-	options: ExecuteMcpRequestOptions,
-	input: { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string },
-): void {
-	if (!options.intelligenceDb && !options.analyticsQueue) return;
-	const logger = getLogger();
-	const level = options.analyticsPiiLevel ?? 'coarse';
+type AccessLogInput = { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string };
+type AccessLogLogger = ReturnType<typeof getLogger>;
+
+/** Copy `keys` from `src`, defaulting each absent (undefined/null) value to `null`; key order follows `keys`. */
+function nullableFields<T extends object, K extends keyof T>(src: T, keys: readonly K[]): { [P in K]-?: NonNullable<T[P]> | null } {
+	const out = {} as { [P in K]-?: NonNullable<T[P]> | null };
+	for (const key of keys) out[key] = (src[key] ?? null) as NonNullable<T[typeof key]> | null;
+	return out;
+}
+
+/** Request-origin and caller-identity columns (source, geo, key hash, client). */
+function accessLogCallerFields(options: ExecuteMcpRequestOptions) {
+	return {
+		source: options.source ?? 'public',
+		...nullableFields(options, ['country', 'region', 'city', 'latitude', 'longitude', 'asn', 'asOrg']),
+		keyHash: options.analyticsKeyHash ?? null,
+		...nullableFields(options, ['clientType', 'colo', 'sessionHash', 'userAgent']),
+	};
+}
+
+/** Per-call outcome columns (method, transport, status, latency, rate-limit flag). */
+function accessLogOutcomeFields(options: ExecuteMcpRequestOptions, input: AccessLogInput) {
+	return {
+		method: input.method ?? null,
+		transport: options.responseTransport ?? null,
+		status: input.status ?? null,
+		responseMs: Math.max(0, Date.now() - options.startTime),
+		rateLimited: input.rateLimited,
+	};
+}
+
+function buildMcpAccessLogEvent(options: ExecuteMcpRequestOptions, input: AccessLogInput, level: AnalyticsPiiLevel) {
 	// #876 — header present → real `i_` hash; header absent but request.cf present →
 	// `n_` network-locality key + ip_masked='no-cf-header'; neither → bare 'unknown'.
 	// The internal door passes ipHash='unknown' explicitly and is untouched.
@@ -379,71 +404,78 @@ function recordMcpAccessLog(
 		colo: options.colo,
 		country: options.country,
 	});
-	const event = buildAccessLogEvent(
+	return buildAccessLogEvent(
 		{
 			ip: options.ip,
 			ipHash: attribution.ipHash,
 			ipMasked: attribution.ipMasked,
 			toolName: input.toolName,
 			domain: input.domain,
-			source: options.source ?? 'public',
-			country: options.country ?? null,
-			region: options.region ?? null,
-			city: options.city ?? null,
-			latitude: options.latitude ?? null,
-			longitude: options.longitude ?? null,
-			asn: options.asn ?? null,
-			asOrg: options.asOrg ?? null,
-			keyHash: options.analyticsKeyHash ?? null,
-			clientType: options.clientType ?? null,
-			colo: options.colo ?? null,
-			sessionHash: options.sessionHash ?? null,
-			userAgent: options.userAgent ?? null,
-			method: input.method ?? null,
-			transport: options.responseTransport ?? null,
-			status: input.status ?? null,
-			responseMs: Math.max(0, Date.now() - options.startTime),
-			rateLimited: input.rateLimited,
+			...accessLogCallerFields(options),
+			...accessLogOutcomeFields(options, input),
 		},
 		level,
 	);
+}
 
-	// Phase 1, decision #2: internal-source traffic (automated rescans — null
-	// key_hash, ip_hash='unknown') has near-zero forensic value at near-total
-	// volume. When the rollup flag is on, increment a low-cardinality counter
-	// INSTEAD of writing a per-event row/queue message. External/authenticated
-	// traffic is untouched and keeps its faithful per-event rows. Best-effort,
-	// fail-soft; requires the D1 binding to land the counter.
-	if (options.rollupInternal && (options.source ?? 'public') === 'internal' && options.intelligenceDb) {
-		// Capture the day bucket from the REQUEST start time, not `Date.now()` inside
-		// the deferred DB write: this recorder runs after dispatch (and the increment
-		// settles in the waitUntil tail), so a long request that crosses UTC midnight
-		// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
-		// next day. `options.startTime` pins the count to the day the request began.
-		const bucketDay = unixDayBucket(options.startTime);
-		options.waitUntil?.(
-			fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'),
-		);
-		return;
-	}
+/**
+ * Phase 1, decision #2: internal-source traffic (automated rescans — null
+ * key_hash, ip_hash='unknown') has near-zero forensic value at near-total
+ * volume. When the rollup flag is on, increment a low-cardinality counter
+ * INSTEAD of writing a per-event row/queue message. External/authenticated
+ * traffic is untouched and keeps its faithful per-event rows. Best-effort,
+ * fail-soft; requires the D1 binding to land the counter. Returns true when it handled the event.
+ */
+function recordAccessRollup(options: ExecuteMcpRequestOptions, event: AccessLogEvent, logger: AccessLogLogger): boolean {
+	if (!options.rollupInternal || (options.source ?? 'public') !== 'internal' || !options.intelligenceDb) return false;
+	// Capture the day bucket from the REQUEST start time, not `Date.now()` inside
+	// the deferred DB write: this recorder runs after dispatch (and the increment
+	// settles in the waitUntil tail), so a long request that crosses UTC midnight
+	// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
+	// next day. `options.startTime` pins the count to the day the request began.
+	const bucketDay = unixDayBucket(options.startTime);
+	options.waitUntil?.(
+		fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'),
+	);
+	return true;
+}
 
-	// Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert).
-	if (options.analyticsQueue) {
-		// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
-		// encryption (standard+). At coarse, neither applies — strip it so the raw IP
-		// never transits the queue at-rest. ipHash/ipMasked are already on the event.
-		const queueEvent = piiAllows(level, 'ptr') || piiAllows(level, 'ciphertext') ? event : { ...event, ip: 'unknown' };
-		const send = options.analyticsQueue.send(queueEvent, { contentType: 'json' });
-		options.waitUntil?.(fireAndForget(send, logger, 'mcp_access_log_enqueue'));
-		return;
-	}
+/** Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert). Returns true when it handled the event. */
+function enqueueAccessLog(
+	options: ExecuteMcpRequestOptions,
+	event: AccessLogEvent,
+	level: AnalyticsPiiLevel,
+	logger: AccessLogLogger,
+): boolean {
+	if (!options.analyticsQueue) return false;
+	// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
+	// encryption (standard+). At coarse, neither applies — strip it so the raw IP
+	// never transits the queue at-rest. ipHash/ipMasked are already on the event.
+	const queueEvent = piiAllows(level, 'ptr') || piiAllows(level, 'ciphertext') ? event : { ...event, ip: 'unknown' };
+	const send = options.analyticsQueue.send(queueEvent, { contentType: 'json' });
+	options.waitUntil?.(fireAndForget(send, logger, 'mcp_access_log_enqueue'));
+	return true;
+}
 
-	// Fallback (self-host, no queue): inline encrypted insert, no PTR.
-	const work = async () => {
-		const ipCiphertext = piiAllows(level, 'ciphertext') ? await encryptIpEvidence(event.ip, options.ipEncryptionKey) : null;
-		await insertAccessLogRow(options.intelligenceDb!, event, ipCiphertext, ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null);
-	};
-	options.waitUntil?.(fireAndForget(work(), logger, 'mcp_access_log_insert'));
+/** Fallback (self-host, no queue): inline encrypted insert, no PTR. */
+async function insertAccessLogInline(options: ExecuteMcpRequestOptions, event: AccessLogEvent, level: AnalyticsPiiLevel): Promise<void> {
+	const ipCiphertext = piiAllows(level, 'ciphertext') ? await encryptIpEvidence(event.ip, options.ipEncryptionKey) : null;
+	await insertAccessLogRow(options.intelligenceDb!, event, ipCiphertext, ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null);
+}
+
+/** An access-log row can only land when the D1 binding or the analytics queue is bound. */
+function hasAccessLogSink(options: ExecuteMcpRequestOptions): boolean {
+	return !!(options.intelligenceDb || options.analyticsQueue);
+}
+
+function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: AccessLogInput): void {
+	if (!hasAccessLogSink(options)) return;
+	const logger = getLogger();
+	const level = options.analyticsPiiLevel ?? 'coarse';
+	const event = buildMcpAccessLogEvent(options, input, level);
+	if (recordAccessRollup(options, event, logger)) return;
+	if (enqueueAccessLog(options, event, level, logger)) return;
+	options.waitUntil?.(fireAndForget(insertAccessLogInline(options, event, level), logger, 'mcp_access_log_insert'));
 }
 
 /** Test-only handle to exercise the recorder without booting a request. */

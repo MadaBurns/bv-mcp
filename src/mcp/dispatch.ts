@@ -241,225 +241,234 @@ export type DispatchMcpMethodResult =
 			headers: Record<string, string>;
 	  };
 
-export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
-	switch (options.method) {
-		case 'initialize': {
-			const createSessionOnInitialize = options.createSessionOnInitialize !== false;
-			if (createSessionOnInitialize) {
-				const sessionCreateGate = await checkSessionCreateRateLimit(
-					options.sessionRateLimitPrincipal ?? options.ip,
-					options.rateLimitKv,
-					options.quotaCoordinator,
-					options.quotaShardRouting,
-				);
-				if (!sessionCreateGate.allowed) {
-					const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
-					return {
-						kind: 'early-error',
-						payload: jsonRpcError(options.id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
-						status: 429,
-						headers: {
-							...options.rateHeaders,
-							'retry-after': String(retryAfterSeconds),
-						},
-					};
-				}
-			}
+type MethodHandler = (options: DispatchMcpMethodOptions) => DispatchMcpMethodResult | Promise<DispatchMcpMethodResult>;
 
-			// Do NOT delete the old session on re-initialize — mcp-remote
-			// reconnects the notification stream periodically, and deleting
-			// the old session creates a race where in-flight tools/call
-			// requests with the old session ID get a 404. Old sessions
-			// expire naturally via TTL (2 hours) and are cleaned up by
-			// periodic in-memory pruning + KV expirationTtl.
-			const sessionId = createSessionOnInitialize
-				? await createSession(options.sessionStore, options.analytics, options.waitUntil)
-				: options.existingSessionId;
-			if (createSessionOnInitialize && sessionId) {
-				auditSessionCreated(options.ip, sessionId);
-				// The client's DECLARED identity from the initialize handshake —
-				// the attribution key for the unknown-UA connector surge. Read
-				// defensively (client-controlled, optional per MCP spec) and used
-				// for analytics only, never auth/tier.
-				const clientInfo = options.params?.clientInfo as { name?: unknown } | undefined;
-				const declaredClient = typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
-				options.analytics?.emitSessionEvent({
-					action: 'created',
-					country: options.country,
-					clientType: options.clientType as import('../lib/client-detection').McpClientType,
-					authTier: options.authTier,
-					keyHash: options.analyticsKeyHash,
-					declaredClient,
-				});
-			}
+/** Rate-limit gate for session creation on `initialize`; returns the early-error result when throttled. */
+async function checkInitializeRateLimit(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult | undefined> {
+	const sessionCreateGate = await checkSessionCreateRateLimit(
+		options.sessionRateLimitPrincipal ?? options.ip,
+		options.rateLimitKv,
+		options.quotaCoordinator,
+		options.quotaShardRouting,
+	);
+	if (sessionCreateGate.allowed) return undefined;
+	const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+	return {
+		kind: 'early-error',
+		payload: jsonRpcError(options.id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+		status: 429,
+		headers: {
+			...options.rateHeaders,
+			'retry-after': String(retryAfterSeconds),
+		},
+	};
+}
 
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, {
-					protocolVersion: negotiateProtocolVersion(options.params?.protocolVersion),
-					capabilities: {
-						tools: { listChanged: false },
-						resources: { subscribe: false, listChanged: false },
-						prompts: { listChanged: false },
-					},
-					serverInfo: {
-						name: 'Blackveil DNS',
-						version: options.serverVersion,
-						description: `Source-available DNS & email security scanner — ${TOOL_COUNT} MCP tools (${CHECK_TOOL_COUNT} check_* checks) across ${SCAN_CATEGORY_COUNT} scan categories, with scoring, grading, and remediation guidance`,
-					},
-					instructions: SERVER_INSTRUCTIONS,
-				}),
-				newSessionId: createSessionOnInitialize ? sessionId : undefined,
-				logCategory: 'session',
-				logResult: 'initialized',
-			};
-		}
-
-		case 'tools/list':
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, handleToolsList()),
-				logCategory: 'tools',
-				logResult: 'list',
-			};
-
-		case 'tools/call': {
-			// params are validated by validateJsonRpcRequest upstream — name is required by MCP spec
-			const toolParams = options.params as { name: string; arguments?: Record<string, unknown> };
-			const result = await handleToolsCall(toolParams, options.scanCache, {
-				providerSignaturesUrl: options.providerSignaturesUrl,
-				providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
-				providerSignaturesSha256: options.providerSignaturesSha256,
-				analytics: options.analytics,
-				// Wire the binding-degradation analytics sink ONCE here (R1): when an
-				// analytics client is present, recon/tls-probe wrappers emit the
-				// `degradation` event on a PRESENT-binding failure so the cron alert
-				// can fire. Undefined when analytics is unavailable. Fail-open.
-				onBindingDegradation: options.analytics ? (e) => options.analytics?.emitDegradationEvent(e) : undefined,
-				profileAccumulator: options.profileAccumulator,
-				profileAccumulatorShardMode: options.profileAccumulatorShardMode,
-				waitUntil: options.waitUntil,
-				scoringConfig: options.scoringConfig,
-				cacheTtlSeconds: options.cacheTtlSeconds,
-				scanTimeoutMs: options.scanTimeoutMs,
-				perCheckTimeoutMs: options.perCheckTimeoutMs,
-				secondaryDoh: options.secondaryDohEndpoint
-					? { endpoint: options.secondaryDohEndpoint, token: options.secondaryDohToken }
-					: undefined,
-				country: options.country,
-				clientType: options.clientType,
-				authTier: options.authTier,
-				keyHash: options.keyHash,
-				analyticsKeyHash: options.analyticsKeyHash,
-				colo: options.colo,
-				region: options.region,
-				city: options.city,
-				asn: options.asn,
-				sessionId: options.sessionId,
-				certstream: options.certstream,
-				certstreamAuthToken: options.certstreamAuthToken,
-				whoisBinding: options.whoisBinding,
-				reconBinding: options.reconBinding,
-				reconAuthToken: options.reconAuthToken,
-				tlsProbeBinding: options.tlsProbeBinding,
-				tlsProbeAuthToken: options.tlsProbeAuthToken,
-				m365Proxy: options.m365Proxy,
-				m365ProxyAuthToken: options.m365ProxyAuthToken,
-				m365Identity: options.m365Identity,
-				bvWebBenchmark: options.bvWebBenchmark,
-				bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
-				infraProbe: options.infraProbe,
-				brandAuditDb: options.brandAuditDb,
-				brandAuditQueue: options.brandAuditQueue,
-				asyncBatchQueue: options.asyncBatchQueue,
-				asyncBatchKv: options.asyncBatchKv,
-				brandReportsR2: options.brandReportsR2,
-				publicOrigin: options.publicOrigin,
-				browserRenderer: options.browserRenderer,
-				discoveryModeDefault: options.discoveryModeDefault,
-				principalId: options.principalId,
-				rateLimitKv: options.rateLimitKv,
-				quotaCoordinator: options.quotaCoordinator,
-				tier0Lookup: options.tier0Lookup,
-				tier1Lookup: options.tier1Lookup,
-				tier2Lookup: options.tier2Lookup,
-			});
-
-			// Drop the redundant backward-compat STRUCTURED_RESULT comment for clients that read
-			// the MCP-standard structuredContent field (conservative — keeps it for legacy
-			// comment-parsers and pre-2025-06-18 / header-less clients). See buildToolContent.
-			const finalResult = stripRedundantStructuredComment(result, {
-				clientType: options.clientType,
-				protocolVersionHeader: options.protocolVersionHeader,
-			});
-
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, finalResult),
-				logCategory: 'tools',
-				logTool: toolParams.name,
-				// result shape varies by tool — narrowing via 'in' guard before access
-				logResult:
-					typeof finalResult === 'object' && finalResult && 'status' in finalResult
-						? String((finalResult as { status: unknown }).status)
-						: undefined,
-				logDetails: finalResult,
-			};
-		}
-
-		case 'resources/list':
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, handleResourcesList()),
-				logCategory: 'resources',
-				logResult: 'list',
-			};
-
-		case 'resources/read': {
-			// params are validated by validateJsonRpcRequest upstream — uri is required by MCP spec
-			const resourceParams = options.params as { uri: string };
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, handleResourcesRead(resourceParams)),
-				logCategory: 'resources',
-				logResult: 'read',
-				logDetails: resourceParams,
-			};
-		}
-
-		case 'prompts/list':
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, handlePromptsList()),
-				logCategory: 'prompts',
-				logResult: 'list',
-			};
-
-		case 'prompts/get': {
-			const promptParams = options.params as { name: string; arguments?: Record<string, string> };
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, handlePromptsGet(promptParams)),
-				logCategory: 'prompts',
-				logResult: 'get',
-				logDetails: promptParams,
-			};
-		}
-
-		case 'ping':
-			return {
-				kind: 'success',
-				payload: jsonRpcSuccess(options.id, {}),
-				logCategory: 'session',
-				logResult: 'ping',
-			};
-
-		default:
-			return {
-				kind: 'success',
-				payload: jsonRpcError(options.id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, 'Method not found'),
-				logCategory: 'error',
-				logResult: 'method_not_found',
-			};
+/** Create the session for a fresh `initialize` handshake, audit it and emit the `created` analytics event. */
+async function createInitializeSession(options: DispatchMcpMethodOptions): Promise<string | undefined> {
+	// Do NOT delete the old session on re-initialize — mcp-remote
+	// reconnects the notification stream periodically, and deleting
+	// the old session creates a race where in-flight tools/call
+	// requests with the old session ID get a 404. Old sessions
+	// expire naturally via TTL (2 hours) and are cleaned up by
+	// periodic in-memory pruning + KV expirationTtl.
+	const sessionId = await createSession(options.sessionStore, options.analytics, options.waitUntil);
+	if (sessionId) {
+		auditSessionCreated(options.ip, sessionId);
+		// The client's DECLARED identity from the initialize handshake —
+		// the attribution key for the unknown-UA connector surge. Read
+		// defensively (client-controlled, optional per MCP spec) and used
+		// for analytics only, never auth/tier.
+		const clientInfo = options.params?.clientInfo as { name?: unknown } | undefined;
+		const declaredClient = typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
+		options.analytics?.emitSessionEvent({
+			action: 'created',
+			country: options.country,
+			clientType: options.clientType as import('../lib/client-detection').McpClientType,
+			authTier: options.authTier,
+			keyHash: options.analyticsKeyHash,
+			declaredClient,
+		});
 	}
+	return sessionId;
+}
+
+async function handleInitialize(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
+	const createSessionOnInitialize = options.createSessionOnInitialize !== false;
+	if (createSessionOnInitialize) {
+		const throttled = await checkInitializeRateLimit(options);
+		if (throttled) return throttled;
+	}
+
+	const sessionId = createSessionOnInitialize ? await createInitializeSession(options) : options.existingSessionId;
+
+	return {
+		kind: 'success',
+		payload: jsonRpcSuccess(options.id, {
+			protocolVersion: negotiateProtocolVersion(options.params?.protocolVersion),
+			capabilities: {
+				tools: { listChanged: false },
+				resources: { subscribe: false, listChanged: false },
+				prompts: { listChanged: false },
+			},
+			serverInfo: {
+				name: 'Blackveil DNS',
+				version: options.serverVersion,
+				description: `Source-available DNS & email security scanner — ${TOOL_COUNT} MCP tools (${CHECK_TOOL_COUNT} check_* checks) across ${SCAN_CATEGORY_COUNT} scan categories, with scoring, grading, and remediation guidance`,
+			},
+			instructions: SERVER_INSTRUCTIONS,
+		}),
+		newSessionId: createSessionOnInitialize ? sessionId : undefined,
+		logCategory: 'session',
+		logResult: 'initialized',
+	};
+}
+
+/** Map the per-request dispatch options onto the runtime options `handleToolsCall` consumes. */
+function buildToolsCallRuntimeOptions(options: DispatchMcpMethodOptions): NonNullable<Parameters<typeof handleToolsCall>[2]> {
+	return {
+		providerSignaturesUrl: options.providerSignaturesUrl,
+		providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
+		providerSignaturesSha256: options.providerSignaturesSha256,
+		analytics: options.analytics,
+		// Wire the binding-degradation analytics sink ONCE here (R1): when an
+		// analytics client is present, recon/tls-probe wrappers emit the
+		// `degradation` event on a PRESENT-binding failure so the cron alert
+		// can fire. Undefined when analytics is unavailable. Fail-open.
+		onBindingDegradation: options.analytics ? (e) => options.analytics?.emitDegradationEvent(e) : undefined,
+		profileAccumulator: options.profileAccumulator,
+		profileAccumulatorShardMode: options.profileAccumulatorShardMode,
+		waitUntil: options.waitUntil,
+		scoringConfig: options.scoringConfig,
+		cacheTtlSeconds: options.cacheTtlSeconds,
+		scanTimeoutMs: options.scanTimeoutMs,
+		perCheckTimeoutMs: options.perCheckTimeoutMs,
+		secondaryDoh: options.secondaryDohEndpoint ? { endpoint: options.secondaryDohEndpoint, token: options.secondaryDohToken } : undefined,
+		country: options.country,
+		clientType: options.clientType,
+		authTier: options.authTier,
+		keyHash: options.keyHash,
+		analyticsKeyHash: options.analyticsKeyHash,
+		colo: options.colo,
+		region: options.region,
+		city: options.city,
+		asn: options.asn,
+		sessionId: options.sessionId,
+		certstream: options.certstream,
+		certstreamAuthToken: options.certstreamAuthToken,
+		whoisBinding: options.whoisBinding,
+		reconBinding: options.reconBinding,
+		reconAuthToken: options.reconAuthToken,
+		tlsProbeBinding: options.tlsProbeBinding,
+		tlsProbeAuthToken: options.tlsProbeAuthToken,
+		m365Proxy: options.m365Proxy,
+		m365ProxyAuthToken: options.m365ProxyAuthToken,
+		m365Identity: options.m365Identity,
+		bvWebBenchmark: options.bvWebBenchmark,
+		bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
+		infraProbe: options.infraProbe,
+		brandAuditDb: options.brandAuditDb,
+		brandAuditQueue: options.brandAuditQueue,
+		asyncBatchQueue: options.asyncBatchQueue,
+		asyncBatchKv: options.asyncBatchKv,
+		brandReportsR2: options.brandReportsR2,
+		publicOrigin: options.publicOrigin,
+		browserRenderer: options.browserRenderer,
+		discoveryModeDefault: options.discoveryModeDefault,
+		principalId: options.principalId,
+		rateLimitKv: options.rateLimitKv,
+		quotaCoordinator: options.quotaCoordinator,
+		tier0Lookup: options.tier0Lookup,
+		tier1Lookup: options.tier1Lookup,
+		tier2Lookup: options.tier2Lookup,
+	};
+}
+
+async function handleToolsCallMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
+	// params are validated by validateJsonRpcRequest upstream — name is required by MCP spec
+	const toolParams = options.params as { name: string; arguments?: Record<string, unknown> };
+	const result = await handleToolsCall(toolParams, options.scanCache, buildToolsCallRuntimeOptions(options));
+
+	// Drop the redundant backward-compat STRUCTURED_RESULT comment for clients that read
+	// the MCP-standard structuredContent field (conservative — keeps it for legacy
+	// comment-parsers and pre-2025-06-18 / header-less clients). See buildToolContent.
+	const finalResult = stripRedundantStructuredComment(result, {
+		clientType: options.clientType,
+		protocolVersionHeader: options.protocolVersionHeader,
+	});
+
+	return {
+		kind: 'success',
+		payload: jsonRpcSuccess(options.id, finalResult),
+		logCategory: 'tools',
+		logTool: toolParams.name,
+		// result shape varies by tool — narrowing via 'in' guard before access
+		logResult:
+			typeof finalResult === 'object' && finalResult && 'status' in finalResult
+				? String((finalResult as { status: unknown }).status)
+				: undefined,
+		logDetails: finalResult,
+	};
+}
+
+function handleResourcesReadMethod(options: DispatchMcpMethodOptions): DispatchMcpMethodResult {
+	// params are validated by validateJsonRpcRequest upstream — uri is required by MCP spec
+	const resourceParams = options.params as { uri: string };
+	return {
+		kind: 'success',
+		payload: jsonRpcSuccess(options.id, handleResourcesRead(resourceParams)),
+		logCategory: 'resources',
+		logResult: 'read',
+		logDetails: resourceParams,
+	};
+}
+
+function handlePromptsGetMethod(options: DispatchMcpMethodOptions): DispatchMcpMethodResult {
+	const promptParams = options.params as { name: string; arguments?: Record<string, string> };
+	return {
+		kind: 'success',
+		payload: jsonRpcSuccess(options.id, handlePromptsGet(promptParams)),
+		logCategory: 'prompts',
+		logResult: 'get',
+		logDetails: promptParams,
+	};
+}
+
+/** Success result for a params-free method whose payload is derived from no request input. */
+function simpleSuccess(
+	options: DispatchMcpMethodOptions,
+	logCategory: string,
+	logResult: string,
+	result: unknown,
+): DispatchMcpMethodResult {
+	return { kind: 'success', payload: jsonRpcSuccess(options.id, result), logCategory, logResult };
+}
+
+// The simple handlers evaluate their result inside the entry's arrow (not at table-build time) so a
+// partial `vi.mock` of `../handlers/*` without these exports never fails at module load — only when
+// that method is called.
+const METHOD_HANDLERS: ReadonlyMap<string, MethodHandler> = new Map<string, MethodHandler>([
+	['initialize', handleInitialize],
+	['tools/list', (options) => simpleSuccess(options, 'tools', 'list', handleToolsList())],
+	['tools/call', handleToolsCallMethod],
+	['resources/list', (options) => simpleSuccess(options, 'resources', 'list', handleResourcesList())],
+	['resources/read', handleResourcesReadMethod],
+	['prompts/list', (options) => simpleSuccess(options, 'prompts', 'list', handlePromptsList())],
+	['prompts/get', handlePromptsGetMethod],
+	['ping', (options) => simpleSuccess(options, 'session', 'ping', {})],
+]);
+
+function methodNotFound(options: DispatchMcpMethodOptions): DispatchMcpMethodResult {
+	return {
+		kind: 'success',
+		payload: jsonRpcError(options.id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, 'Method not found'),
+		logCategory: 'error',
+		logResult: 'method_not_found',
+	};
+}
+
+export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
+	// Map lookup (not an object literal) so a method like `constructor` or `__proto__` can never resolve to an inherited member.
+	const handler = METHOD_HANDLERS.get(options.method) ?? methodNotFound;
+	return handler(options);
 }
