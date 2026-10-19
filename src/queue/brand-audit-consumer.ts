@@ -930,46 +930,67 @@ function sanitizeErrorString(raw: string): string {
 	return raw.replace(/[\r\n\t]+/g, ' ').slice(0, 500);
 }
 
+/** The `phase` discriminator of a raw queue body, or `undefined` when the body is not an object. */
+function queueMessagePhase(body: unknown): unknown {
+	return typeof body === 'object' && body !== null ? (body as Record<string, unknown>).phase : undefined;
+}
+
+function reportDeepScanFailure(err: unknown): void {
+	// Deep-scan failures are not retryable: the step-store is the durability boundary.
+	// The fast-stage payload is already persisted; brand_audit_get_report falls back to
+	// registrar_complement_fast when registrar_complement_full is absent. Ack and let the cron reaper
+	// re-enqueue if needed.
+	logError(err instanceof Error ? err : String(err), { category: 'brand_audit', result: 'deep_scan_failed' });
+}
+
+/** The deep-scan inputs, or `undefined` for a malformed payload or an unbound `internalCall`. */
+function deepScanArgs(
+	body: unknown,
+	deps: BrandAuditConsumerDeps,
+): { auditId: string; target: string; internalCall: NonNullable<BrandAuditConsumerDeps['internalCall']> } | undefined {
+	const { auditId, target } = body as { auditId: unknown; target: unknown };
+	const internalCall = deps.internalCall;
+	return typeof auditId === 'string' && typeof target === 'string' && internalCall ? { auditId, target, internalCall } : undefined;
+}
+
+/**
+ * Run one `phase: 'deep_scan'` message. Never throws and has no verdict: the
+ * caller acks unconditionally (malformed payload, missing internalCall, or
+ * deep-scan failure are not retryable).
+ */
+async function processDeepScanMessage(body: unknown, deps: BrandAuditConsumerDeps): Promise<void> {
+	const args = deepScanArgs(body, deps);
+	if (!args) return;
+	try {
+		const { runDeepScanFromStepStore } = await import('../lib/brand-audit-registrar-deepscan-job');
+		const stepStore = createD1BrandAuditStepStore(deps.db);
+		await runDeepScanFromStepStore({ ...args, stepStore });
+	} catch (err) {
+		reportDeepScanFailure(err);
+	}
+}
+
+/**
+ * Route one queue message to its processor and return the ack/retry verdict.
+ * Phase detection happens before Zod parse: deep_scan and discover_only
+ * messages (from the registrar pipeline / discover_brand_domains_start) don't
+ * carry `format` and would be silently acked as "malformed" by
+ * BrandAuditQueueMessageSchema.
+ */
+async function routeBrandAuditMessage(body: unknown, deps: BrandAuditConsumerDeps): Promise<'ack' | 'retry'> {
+	const phase = queueMessagePhase(body);
+	if (phase === 'deep_scan') {
+		await processDeepScanMessage(body, deps);
+		return 'ack';
+	}
+	if (phase === 'discover_only') return processDiscoverOnlyMessage(body, deps);
+	return processBrandAuditMessage(body, deps);
+}
+
 /** Cloudflare Queue consumer entrypoint — fans out to `processBrandAuditMessage` per message. */
 export async function handleBrandAuditQueue(batch: MessageBatch<unknown>, deps: BrandAuditConsumerDeps): Promise<void> {
 	for (const message of batch.messages) {
-		// Phase detection before Zod parse: deep_scan messages don't carry `format`
-		// and would be silently acked as "malformed" by BrandAuditQueueMessageSchema.
-		const rawBody = message.body as Record<string, unknown>;
-		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'deep_scan') {
-			const { auditId, target } = rawBody as { auditId: string; target: string; phase: string };
-			if (typeof auditId === 'string' && typeof target === 'string' && deps.internalCall) {
-				try {
-					const { runDeepScanFromStepStore } = await import('../lib/brand-audit-registrar-deepscan-job');
-					const stepStore = createD1BrandAuditStepStore(deps.db);
-					await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
-				} catch (err) {
-					// Deep-scan failures are not retryable: the step-store is the durability boundary.
-					// The fast-stage payload is already persisted; brand_audit_get_report falls back to
-					// registrar_complement_fast when registrar_complement_full is absent. Ack and let the cron reaper
-					// re-enqueue if needed.
-					logError(err instanceof Error ? err : String(err), { category: 'brand_audit', result: 'deep_scan_failed' });
-				}
-			}
-			// Ack unconditionally: malformed payload, missing internalCall, or deep-scan failure are not retryable.
-			message.ack();
-			continue;
-		}
-
-		// Phase detection: discover_only messages (from discover_brand_domains_start)
-		// don't carry `format` and would be acked as "malformed" by the brand-audit
-		// schema. Route them to the discovery-only processor.
-		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'discover_only') {
-			const verdict = await processDiscoverOnlyMessage(message.body, deps);
-			if (verdict === 'retry') {
-				message.retry();
-			} else {
-				message.ack();
-			}
-			continue;
-		}
-
-		const verdict = await processBrandAuditMessage(message.body, deps);
+		const verdict = await routeBrandAuditMessage(message.body, deps);
 		if (verdict === 'retry') {
 			message.retry();
 		} else {

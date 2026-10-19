@@ -71,3 +71,74 @@ describe('formatBrandAuditMarkdown tiered Owned Portfolio', () => {
 		expect(inferred.slice(inferred.indexOf('#### Shadow IT'))).toContain('_No candidates in this tier._');
 	});
 });
+
+describe('formatBrandAuditMarkdown Owned Portfolio exact output', () => {
+	it('renders every subsection byte-for-byte (empty marker, defensive suffix, missing fields, sanitised values)', () => {
+		const md = formatBrandAuditMarkdown(
+			tieredResult([
+				candidate('zero.example', { bucket: 'consolidated', tier: 0, combinedConfidence: 0.876 }),
+				candidate('one.example', {
+					bucket: 'consolidated',
+					tier: 1,
+					defensive: true,
+					defensiveReason: 'redirect-to-target',
+					registrar: 'MarkMonitor',
+					registrarSource: 'rdap',
+				}),
+				candidate('two.example', { bucket: 'consolidated', tier: 2, defensive: true, combinedConfidence: 'high' }),
+				{
+					category: 'brand_discovery',
+					title: 'bare',
+					severity: 'info',
+					detail: '',
+					metadata: { bucket: 'consolidated', tier: 3 },
+				},
+				candidate('shadow.example', { bucket: 'shadowIt', relationshipType: 'owned_off_primary_registrar' }),
+				candidate('indet.example', { bucket: 'indeterminate', combinedConfidence: 0.5 }),
+			]),
+		);
+		const portfolio = md.slice(md.indexOf('## Owned Portfolio'), md.indexOf('## Impersonation Surface'));
+
+		expect(portfolio).toBe(
+			[
+				'## Owned Portfolio (6)',
+				'',
+				'### Tenant-declared (tier 0) (1)',
+				'',
+				'- **zero.example** — registrar: Example Registrar (rdap) · confidence 0.88',
+				'',
+				'### Graph-surfaced (tier 1) (1)',
+				'',
+				'- **one.example** _(defensive registration — redirect-to-target)_ — registrar: MarkMonitor (rdap) · confidence 0.90',
+				'',
+				'### Declared evidence (tier 2) (1)',
+				'',
+				'- **two.example** _(defensive registration)_ — registrar: Example Registrar (rdap) · confidence —',
+				'',
+				'### Inferred (tier 3) — 3',
+				'',
+				'#### Consolidated (1)',
+				'',
+				'- **** — registrar: Unknown (unknown) · confidence —',
+				'',
+				'#### Shadow IT (1)',
+				'',
+				'- **shadow.example** — registrar: Example Registrar (rdap) · confidence 0.90',
+				'',
+				'#### Indeterminate (1)',
+				'',
+				'- **indet.example** — registrar: Example Registrar (rdap) · confidence 0.50',
+				'',
+				'',
+			].join('\n'),
+		);
+	});
+
+	it('renders the empty-tier marker under each heading level when no candidates exist', () => {
+		const md = formatBrandAuditMarkdown(tieredResult([candidate('only.example', { bucket: 'consolidated', tier: 0 })]));
+		expect(md).toContain(
+			['### Graph-surfaced (tier 1) (0)', '', '_No candidates in this tier._', '', '### Declared evidence (tier 2) (0)'].join('\n'),
+		);
+		expect(md).toContain(['#### Shadow IT (0)', '', '_No candidates in this tier._', '', '#### Indeterminate (0)'].join('\n'));
+	});
+});

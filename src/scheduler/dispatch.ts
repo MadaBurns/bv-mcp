@@ -148,15 +148,19 @@ export async function handleScanDispatch(env: ScanDispatchEnv, _ctx?: ExecutionC
 	await dispatchDueScans(env, { now: Date.now() });
 }
 
+/** Parse a stored dispatch target; only a finite positive number is usable. */
+function parseRateTarget(raw: string | null): number | undefined {
+	if (!raw) return undefined;
+	const parsed = Number.parseFloat(raw);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 /** Read the persisted dispatch target (scans/sec) for `lane`, or `undefined`. Fail-soft. */
 async function readRateTarget(env: ScanDispatchEnv, lane: string): Promise<number | undefined> {
 	const kv = env.RATE_LIMIT;
 	if (!kv) return undefined;
 	try {
-		const raw = await kv.get(rateKeyForLane(lane));
-		if (!raw) return undefined;
-		const parsed = Number.parseFloat(raw);
-		return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+		return parseRateTarget(await kv.get(rateKeyForLane(lane)));
 	} catch {
 		return undefined;
 	}

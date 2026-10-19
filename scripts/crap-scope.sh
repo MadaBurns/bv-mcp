@@ -34,7 +34,17 @@ for f in $files; do
 	inc="$inc --coverage.include=$f"
 	src="$src --source $f"
 done
-cmd="node scripts/vitest-filter-workerd.mjs related --run$files --coverage.enabled --coverage.provider=istanbul --coverage.reporter=lcov$inc --coverage.reportsDirectory=\"\$QUALITY_GATE_COVERAGE_DIR\""
+# Coverage runs here, outside the gate, because the gate kills its coverageCommand at 300 s and a
+# heavily-imported file set (e.g. src/index.ts) selects ~480 related specs. Both gate passes then read
+# this one LCOV through a copy command, so the suite runs once instead of twice.
+cov_dir=$(mktemp -d "${TMPDIR:-/tmp}/crap-scope.XXXXXX")
+trap 'rm -rf "$cov_dir"' EXIT
+echo "== coverage: vitest related$files"
+# shellcheck disable=SC2086
+node scripts/vitest-filter-workerd.mjs related --run$files --coverage.enabled --coverage.provider=istanbul \
+	--coverage.reporter=lcov$inc --coverage.reportsDirectory="$cov_dir" || { echo "crap-scope: RED (related specs failed)"; exit 1; }
+[ -s "$cov_dir/lcov.info" ] || { echo "crap-scope: RED (no LCOV written)"; exit 1; }
+cmd="cp \"$cov_dir/lcov.info\" \"\$QUALITY_GATE_COVERAGE_DIR/lcov.info\""
 
 echo "== new or complexity-raised bodies vs origin/main"
 # shellcheck disable=SC2086

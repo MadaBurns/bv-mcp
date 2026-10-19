@@ -312,38 +312,12 @@ async function reconcileTrustedTenantBrandOwner(input: {
 	canonicalOwnerId: string;
 	toolName: string;
 	args: Record<string, unknown> | undefined;
-}): Promise<{ ok: true } | { ok: false; status: 400 | 409 | 503; error: string }> {
-	if (
-		!input.db ||
-		(input.internalPrincipal !== 'tenant-tool' && input.internalPrincipal !== 'watch-cleanup') ||
-		!input.tenantHeader ||
-		!INTERNAL_OWNER_SCOPED_BRAND_TOOLS.has(input.toolName)
-	) {
-		return { ok: true };
-	}
+}): Promise<BrandOwnerReconciliation> {
+	if (!input.db || !isTrustedBrandOwnerCall(input)) return { ok: true };
 
 	try {
 		await reconcileLegacyBrandAuditOwner(input.db, `tenant:${input.tenantHeader}`, input.canonicalOwnerId);
-		if (input.toolName !== 'list_brand_audit_watches' && input.toolName !== 'delete_brand_audit_watch') {
-			return { ok: true };
-		}
-
-		const fingerprint = input.args?.legacyWebhookTokenFingerprint;
-		if (fingerprint === undefined) return { ok: true };
-		if (typeof fingerprint !== 'string') return { ok: false, status: 400, error: 'invalid_legacy_watch_proof' };
-		const watchId = input.toolName === 'delete_brand_audit_watch' ? input.args?.watchId : undefined;
-		if (watchId !== undefined && typeof watchId !== 'string') {
-			return { ok: false, status: 400, error: 'invalid_legacy_watch_id' };
-		}
-		const adoption = await adoptAnonymousBrandAuditWatchInternal(input.db, {
-			canonicalOwnerId: input.canonicalOwnerId,
-			webhookTokenFingerprint: fingerprint,
-			...(typeof watchId === 'string' ? { watchId } : {}),
-		});
-		if (adoption.status === 'ambiguous') {
-			return { ok: false, status: 409, error: 'legacy_watch_ambiguous' };
-		}
-		return { ok: true };
+		return await adoptProvenLegacyWatch(input.db, input);
 	} catch (error) {
 		logError(error instanceof Error ? error : 'Brand owner reconciliation failed', {
 			category: 'brand_audit_owner_reconciliation',
@@ -351,6 +325,64 @@ async function reconcileTrustedTenantBrandOwner(input: {
 		});
 		return { ok: false, status: 503, error: 'brand_owner_reconciliation_unavailable' };
 	}
+}
+
+type BrandOwnerReconciliation = { ok: true } | { ok: false; status: 400 | 409 | 503; error: string };
+
+/** Only a delegated tenant principal asserting a tenant, calling an owner-scoped brand tool, is reconciled. */
+function isTrustedBrandOwnerCall(input: {
+	internalPrincipal: InternalPrincipal;
+	tenantHeader: string | undefined;
+	toolName: string;
+}): boolean {
+	return (
+		(input.internalPrincipal === 'tenant-tool' || input.internalPrincipal === 'watch-cleanup') &&
+		Boolean(input.tenantHeader) &&
+		INTERNAL_OWNER_SCOPED_BRAND_TOOLS.has(input.toolName)
+	);
+}
+
+/** The two tools whose callers may carry a proof of an anonymous (pre-account) watch to adopt. */
+const LEGACY_WATCH_PROOF_TOOLS: ReadonlySet<string> = new Set(['list_brand_audit_watches', 'delete_brand_audit_watch']);
+
+/** Adopt an anonymous watch for the canonical owner when the call carries a well-formed proof. */
+async function adoptProvenLegacyWatch(
+	db: D1Database,
+	input: { canonicalOwnerId: string; toolName: string; args: Record<string, unknown> | undefined },
+): Promise<BrandOwnerReconciliation> {
+	if (!LEGACY_WATCH_PROOF_TOOLS.has(input.toolName)) return { ok: true };
+	const parsed = parseLegacyWatchProof(input.toolName, input.args);
+	if (!parsed.ok) return parsed;
+	if (!parsed.proof) return { ok: true };
+	const adoption = await adoptAnonymousBrandAuditWatchInternal(db, { canonicalOwnerId: input.canonicalOwnerId, ...parsed.proof });
+	return adoption.status === 'ambiguous' ? { ok: false, status: 409, error: 'legacy_watch_ambiguous' } : { ok: true };
+}
+
+type LegacyWatchProof = { webhookTokenFingerprint: string; watchId?: string };
+
+/** `proof: null` = the caller asserted no legacy proof. The proof is checked before the watch id. */
+function parseLegacyWatchProof(
+	toolName: string,
+	args: Record<string, unknown> | undefined,
+): { ok: true; proof: LegacyWatchProof | null } | { ok: false; status: 400; error: string } {
+	const fingerprint = args?.legacyWebhookTokenFingerprint;
+	if (fingerprint === undefined) return { ok: true, proof: null };
+	if (typeof fingerprint !== 'string') return { ok: false, status: 400, error: 'invalid_legacy_watch_proof' };
+	const watch = readLegacyWatchId(toolName, args);
+	if (!watch.ok) return watch;
+	return { ok: true, proof: { webhookTokenFingerprint: fingerprint, ...(watch.watchId === undefined ? {} : { watchId: watch.watchId }) } };
+}
+
+/** Only `delete_brand_audit_watch` may name the watch to adopt; anything but a string is refused. */
+function readLegacyWatchId(
+	toolName: string,
+	args: Record<string, unknown> | undefined,
+): { ok: true; watchId: string | undefined } | { ok: false; status: 400; error: string } {
+	const watchId = toolName === 'delete_brand_audit_watch' ? args?.watchId : undefined;
+	if (watchId !== undefined && typeof watchId !== 'string') {
+		return { ok: false, status: 400, error: 'invalid_legacy_watch_id' };
+	}
+	return { ok: true, watchId };
 }
 
 /**
@@ -367,38 +399,65 @@ async function resolveToolDoorIdentity(
 	tierHeader: string | undefined,
 	callerHeader: string | undefined,
 	oauthIssuer: string | undefined,
-): Promise<{ ok: true; identity: ToolDoorIdentity } | { ok: false; status: 400 | 403 | 503; error: string }> {
-	const hasTenantContext = tenantHeader !== undefined || tierHeader !== undefined;
+): Promise<ToolDoorIdentityResult> {
 	if (principal === 'tenant-tool' || principal === 'watch-cleanup') {
-		if (!tenantHeader || !tierHeader) return { ok: false, status: 400, error: 'incomplete_tenant_context' };
-		if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(tenantHeader)) {
-			return { ok: false, status: 400, error: 'invalid_tenant_context' };
-		}
-		if (tierHeader !== 'developer' && tierHeader !== 'enterprise') {
-			return { ok: false, status: 400, error: 'invalid_auth_tier' };
-		}
-		if (!oauthIssuer) return { ok: false, status: 503, error: 'oauth_issuer_not_configured' };
-		try {
-			return {
-				ok: true,
-				identity: {
-					principalId: await deriveCanonicalTenantPrincipal(oauthIssuer, tenantHeader),
-					authTier: tierHeader,
-				},
-			};
-		} catch {
-			return { ok: false, status: 503, error: 'oauth_issuer_invalid' };
-		}
+		return resolveTenantIdentity(tenantHeader, tierHeader, oauthIssuer);
 	}
-	if (hasTenantContext) {
+	if (tenantHeader !== undefined || tierHeader !== undefined) {
 		return { ok: false, status: 403, error: 'tenant_context_not_allowed' };
 	}
+	return { ok: true, identity: resolveSystemIdentity(principal, callerHeader) };
+}
 
+type ToolDoorIdentityResult = { ok: true; identity: ToolDoorIdentity } | { ok: false; status: 400 | 403 | 503; error: string };
+
+/** A delegated tenant's asserted context, once it has passed every syntactic check. */
+type TenantContext = { tenant: string; tier: 'developer' | 'enterprise' };
+
+function isDelegatedTier(tier: string): tier is TenantContext['tier'] {
+	return tier === 'developer' || tier === 'enterprise';
+}
+
+/** Checks run in a fixed order: presence, tenant syntax, then tier. */
+function parseTenantContext(
+	tenantHeader: string | undefined,
+	tierHeader: string | undefined,
+): { ok: true; context: TenantContext } | { ok: false; status: 400; error: string } {
+	if (!tenantHeader || !tierHeader) return { ok: false, status: 400, error: 'incomplete_tenant_context' };
+	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(tenantHeader)) return { ok: false, status: 400, error: 'invalid_tenant_context' };
+	if (!isDelegatedTier(tierHeader)) return { ok: false, status: 400, error: 'invalid_auth_tier' };
+	return { ok: true, context: { tenant: tenantHeader, tier: tierHeader } };
+}
+
+/** Canonical tenant principal for a delegated call; a missing or unusable pinned issuer fails closed (503). */
+async function resolveTenantIdentity(
+	tenantHeader: string | undefined,
+	tierHeader: string | undefined,
+	oauthIssuer: string | undefined,
+): Promise<ToolDoorIdentityResult> {
+	const parsed = parseTenantContext(tenantHeader, tierHeader);
+	if (!parsed.ok) return parsed;
+	if (!oauthIssuer) return { ok: false, status: 503, error: 'oauth_issuer_not_configured' };
+	try {
+		return {
+			ok: true,
+			identity: {
+				principalId: await deriveCanonicalTenantPrincipal(oauthIssuer, parsed.context.tenant),
+				authTier: parsed.context.tier,
+			},
+		};
+	} catch {
+		return { ok: false, status: 503, error: 'oauth_issuer_invalid' };
+	}
+}
+
+/** Server-owned principals: bv-web's reaches owner tier (per-caller bucket); every other caller is free. */
+function resolveSystemIdentity(principal: InternalPrincipal, callerHeader: string | undefined): ToolDoorIdentity {
 	if (principal === 'web') {
 		const caller = callerHeader && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(callerHeader) ? callerHeader : 'default';
-		return { ok: true, identity: { principalId: `system:web:${caller}`, authTier: 'owner' } };
+		return { principalId: `system:web:${caller}`, authTier: 'owner' };
 	}
-	return { ok: true, identity: { principalId: `system:${principal}`, authTier: 'free' } };
+	return { principalId: `system:${principal}`, authTier: 'free' };
 }
 
 export const internalRoutes = new Hono<InternalAppEnv>();
@@ -1352,7 +1411,14 @@ function parseDays(url: URL): string {
  * Returns: tool usage, latency, error rates, cache performance,
  * rate limit hits, sessions, daily trend, and top tools per tier.
  */
-internalRoutes.get('/analytics/tier-summary', async (c) => {
+internalRoutes.get('/analytics/tier-summary', handleAnalyticsTierSummary);
+
+/** Bounded diagnostic for a 502: the Error message truncated to 100 chars, else 'unknown'. */
+function queryFailureDetail(err: unknown): string {
+	return err instanceof Error ? err.message.slice(0, 100) : 'unknown';
+}
+
+async function handleAnalyticsTierSummary(c: import('hono').Context<InternalAppEnv>) {
 	const config = requireAnalyticsConfig(c.env);
 	if (!config) {
 		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
@@ -1388,9 +1454,9 @@ internalRoutes.get('/analytics/tier-summary', async (c) => {
 			topTools,
 		});
 	} catch (err) {
-		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+		return c.json({ error: 'Analytics query failed', detail: queryFailureDetail(err) }, 502);
 	}
-});
+}
 
 /**
  * GET /internal/analytics/key-usage
@@ -1400,7 +1466,9 @@ internalRoutes.get('/analytics/tier-summary', async (c) => {
  *
  * key_hash is the 16-char prefix stored in analytics blobs.
  */
-internalRoutes.get('/analytics/key-usage', async (c) => {
+internalRoutes.get('/analytics/key-usage', handleAnalyticsKeyUsage);
+
+async function handleAnalyticsKeyUsage(c: import('hono').Context<InternalAppEnv>) {
 	const config = requireAnalyticsConfig(c.env);
 	if (!config) {
 		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
@@ -1414,9 +1482,9 @@ internalRoutes.get('/analytics/key-usage', async (c) => {
 		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryKeyUsage(days, keyHashPrefix, config.dataset));
 		return c.json({ days, keyHash: keyHashPrefix ?? 'all', usage: rows });
 	} catch (err) {
-		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+		return c.json({ error: 'Analytics query failed', detail: queryFailureDetail(err) }, 502);
 	}
-});
+}
 
 /**
  * GET /internal/analytics/usage  (D1, precise — not sampled)

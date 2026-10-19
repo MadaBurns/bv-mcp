@@ -294,36 +294,74 @@ function pypiPackageName(token: string): string | null {
 	return PYPI_NAME.test(name) ? name.toLowerCase().replace(/[-_.]+/g, '-') : null;
 }
 
+type PackageRef = { ecosystem: PackageEcosystem; name: string };
+
+/** npx's `-p` / `--package` flag carries a package name as its value. */
+function isNpxPackageFlag(flag: string, isNpx: boolean): boolean {
+	return isNpx && (flag === '-p' || flag === '--package');
+}
+
+function flagTakesValue(flag: string, isNpx: boolean): boolean {
+	return VALUE_FLAGS.has(flag) || isNpxPackageFlag(flag, isNpx);
+}
+
+/** Splits `--flag=value`; `consumed` means the NEXT token is this flag's value. */
+function parseFlag(
+	token: string,
+	next: string | undefined,
+	isNpx: boolean,
+): { consumed: boolean; flag: string; value: string | undefined } {
+	const [flag, inlineValue] = token.split('=', 2);
+	const consumed = inlineValue === undefined && flagTakesValue(flag, isNpx);
+	return { consumed, flag, value: inlineValue ?? (consumed ? next : undefined) };
+}
+
+type TokenStep = { next: number; name: string | null; stop: boolean };
+
+/** A flag token: it may consume the next token as its value, and `npx -p` / `--package` values name a package. */
+function flagStep(tokens: string[], i: number, isNpx: boolean): TokenStep {
+	const { consumed, flag, value } = parseFlag(tokens[i], tokens[i + 1], isNpx);
+	const name = value && isNpxPackageFlag(flag, isNpx) ? npmPackageName(value) : null;
+	return { next: consumed ? i + 1 : i, name, stop: false };
+}
+
+/** A positional token. npx runs its first positional; everything after it is that command's arguments. */
+function positionalStep(token: string, i: number, ecosystem: PackageEcosystem, isNpx: boolean): TokenStep {
+	return { next: i, name: ecosystem === 'npm' ? npmPackageName(token) : pypiPackageName(token), stop: isNpx };
+}
+
+/** One token of an install command: a flag (possibly consuming the next token) or a positional package. */
+function tokenStep(tokens: string[], i: number, ecosystem: PackageEcosystem, isNpx: boolean): TokenStep {
+	return tokens[i].startsWith('-') ? flagStep(tokens, i, isNpx) : positionalStep(tokens[i], i, ecosystem, isNpx);
+}
+
+function packagesFromTokens(tokens: string[], ecosystem: PackageEcosystem, isNpx: boolean): PackageRef[] {
+	const found: PackageRef[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		const step = tokenStep(tokens, i, ecosystem, isNpx);
+		i = step.next;
+		if (step.name) found.push({ ecosystem, name: step.name });
+		if (step.stop) break;
+	}
+	return found;
+}
+
+/** Packages named by one matched install command (`commandWord` is group 1 of INSTALL_COMMAND, `args` group 2). */
+function packagesFromInstall(commandWord: string, args: string): PackageRef[] {
+	const command = commandWord.split(/\s+/)[0];
+	const ecosystem: PackageEcosystem = /^(?:pip3?|uv|pipx)$/.test(command) ? 'PyPI' : 'npm';
+	const tokens = args
+		.trim()
+		.split(/\s+/)
+		.map((t) => t.replace(/^["']|["']$/g, ''))
+		.filter(Boolean);
+	return packagesFromTokens(tokens, ecosystem, command === 'npx');
+}
+
 function extractPackages(text: string): Array<{ ecosystem: PackageEcosystem; name: string }> {
 	const found: Array<{ ecosystem: PackageEcosystem; name: string }> = [];
 	for (const fragment of codeFragments(text)) {
-		for (const m of fragment.matchAll(INSTALL_COMMAND)) {
-			const command = m[1].split(/\s+/)[0];
-			const ecosystem: PackageEcosystem = /^(?:pip3?|uv|pipx)$/.test(command) ? 'PyPI' : 'npm';
-			const isNpx = command === 'npx';
-			const tokens = m[2]
-				.trim()
-				.split(/\s+/)
-				.map((t) => t.replace(/^["']|["']$/g, ''))
-				.filter(Boolean);
-			for (let i = 0; i < tokens.length; i++) {
-				const token = tokens[i];
-				if (token.startsWith('-')) {
-					const [flag, inlineValue] = token.split('=', 2);
-					const isNpxPackageFlag = isNpx && (flag === '-p' || flag === '--package');
-					const value = inlineValue ?? (VALUE_FLAGS.has(flag) || isNpxPackageFlag ? tokens[++i] : undefined);
-					if (isNpxPackageFlag && value) {
-						const name = npmPackageName(value);
-						if (name) found.push({ ecosystem, name });
-					}
-					continue;
-				}
-				const name = ecosystem === 'npm' ? npmPackageName(token) : pypiPackageName(token);
-				if (name) found.push({ ecosystem, name });
-				// npx runs its first positional; everything after it is that command's arguments.
-				if (isNpx) break;
-			}
-		}
+		for (const m of fragment.matchAll(INSTALL_COMMAND)) found.push(...packagesFromInstall(m[1], m[2]));
 	}
 	return found;
 }

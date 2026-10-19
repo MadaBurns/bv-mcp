@@ -60,36 +60,59 @@ function errorResult(flag: string, message: string, extra: Record<string, unknow
 	return buildCheckResult(CATEGORY, [createFinding(CATEGORY, `Brand audit watch: ${flag}`, 'high', message, { [flag]: true, ...extra })]);
 }
 
-/** Create a new recurring brand-audit watch. */
-export async function registerBrandAuditWatch(
-	args: RegisterBrandAuditWatchArgs,
-	ownerId: string,
-	deps: BrandAuditWatchDeps,
-): Promise<CheckResult> {
-	if (!args.domain || typeof args.domain !== 'string') {
-		return errorResult('invalidInput', 'domain is required.');
-	}
+function checkDomainPresent(args: RegisterBrandAuditWatchArgs): CheckResult | undefined {
+	if (!args.domain || typeof args.domain !== 'string') return errorResult('invalidInput', 'domain is required.');
+	return undefined;
+}
+
+function checkIntervalValid(args: RegisterBrandAuditWatchArgs): CheckResult | undefined {
 	if (!args.interval || !['daily', 'weekly', 'monthly'].includes(args.interval)) {
 		return errorResult('invalidInput', 'interval must be one of daily|weekly|monthly.');
 	}
-	// SSRF/blocklist guard at register time. The watched domain is scanned on a
-	// recurring cron cadence, so reject reserved/IP/blocklisted targets here
-	// rather than storing a row that fails every cycle (#198).
-	const domainValidation = validateDomain(args.domain);
-	if (!domainValidation.valid) {
-		return errorResult('invalidInput', `Invalid domain: ${domainValidation.error ?? 'not allowed'}`);
-	}
-	if (args.webhook_url) {
-		const v = validateOutboundUrl(args.webhook_url);
-		if (!v.valid) {
-			return errorResult('invalidInput', `webhook_url failed SSRF validation: ${v.error ?? 'invalid URL'}`);
-		}
-	}
+	return undefined;
+}
 
-	const watchId = (deps.generateId ?? defaultGenerateId)();
-	const now = (deps.now ?? Date.now)();
-	const domain = sanitizeDomain(args.domain);
+// SSRF/blocklist guard at register time. The watched domain is scanned on a
+// recurring cron cadence, so reject reserved/IP/blocklisted targets here
+// rather than storing a row that fails every cycle (#198).
+function checkDomainAllowed(domain: string): CheckResult | undefined {
+	const domainValidation = validateDomain(domain);
+	if (domainValidation.valid) return undefined;
+	return errorResult('invalidInput', `Invalid domain: ${domainValidation.error ?? 'not allowed'}`);
+}
 
+function checkWebhookUrl(webhookUrl: string | undefined): CheckResult | undefined {
+	if (!webhookUrl) return undefined;
+	const v = validateOutboundUrl(webhookUrl);
+	if (v.valid) return undefined;
+	return errorResult('invalidInput', `webhook_url failed SSRF validation: ${v.error ?? 'invalid URL'}`);
+}
+
+/**
+ * Pure input validation for {@link registerBrandAuditWatch}: the first failing
+ * check wins, in the original order (domain, interval, domain policy, webhook).
+ * Returns `undefined` when the input is acceptable. Never touches D1.
+ */
+function validateRegisterInput(args: RegisterBrandAuditWatchArgs): CheckResult | undefined {
+	return (
+		checkDomainPresent(args) ?? checkIntervalValid(args) ?? checkDomainAllowed(args.domain as string) ?? checkWebhookUrl(args.webhook_url)
+	);
+}
+
+function describeError(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Insert the watch row. Returns an error result when the principal is at the
+ * cap or D1 throws, `undefined` on success.
+ */
+async function persistWatch(
+	args: RegisterBrandAuditWatchArgs,
+	ownerId: string,
+	deps: BrandAuditWatchDeps,
+	row: { watchId: string; domain: string; now: number },
+): Promise<CheckResult | undefined> {
 	try {
 		// Keep the cap check and mutation in one SQLite statement. D1 serializes
 		// statements for a database, so concurrent registrations cannot all pass a
@@ -105,36 +128,55 @@ export async function registerBrandAuditWatch(
 				   WHERE owner_id = ? AND active = 1
 				 ) < ?`,
 			)
-			.bind(watchId, ownerId, domain, args.interval, args.webhook_url ?? null, 1, now, ownerId, MAX_WATCHES_PER_OWNER)
+			.bind(row.watchId, ownerId, row.domain, args.interval, args.webhook_url ?? null, 1, row.now, ownerId, MAX_WATCHES_PER_OWNER)
 			.run();
 
-		if (insertResult.meta.changes === 0) {
-			return errorResult(
-				'watchLimitExceeded',
-				`Per-principal cap of ${MAX_WATCHES_PER_OWNER} active watches reached. Delete an existing watch before registering another.`,
-				{ current: MAX_WATCHES_PER_OWNER, limit: MAX_WATCHES_PER_OWNER },
-			);
-		}
+		if (insertResult.meta.changes !== 0) return undefined;
+		return errorResult(
+			'watchLimitExceeded',
+			`Per-principal cap of ${MAX_WATCHES_PER_OWNER} active watches reached. Delete an existing watch before registering another.`,
+			{ current: MAX_WATCHES_PER_OWNER, limit: MAX_WATCHES_PER_OWNER },
+		);
 	} catch (err) {
-		return errorResult('persistenceFailure', `Failed to register watch: ${err instanceof Error ? err.message : String(err)}`);
+		return errorResult('persistenceFailure', `Failed to register watch: ${describeError(err)}`);
 	}
+}
 
+function registeredResult(args: RegisterBrandAuditWatchArgs, row: { watchId: string; domain: string; now: number }): CheckResult {
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
-			`Brand audit watch registered: ${domain} (${args.interval})`,
+			`Brand audit watch registered: ${row.domain} (${args.interval})`,
 			'info',
-			`watchId=${watchId} interval=${args.interval} webhook=${args.webhook_url ? 'set' : 'none'}`,
+			`watchId=${row.watchId} interval=${args.interval} webhook=${args.webhook_url ? 'set' : 'none'}`,
 			{
 				summary: true,
-				watchId,
-				domain,
+				watchId: row.watchId,
+				domain: row.domain,
 				interval: args.interval,
 				hasWebhook: Boolean(args.webhook_url),
-				createdAt: now,
+				createdAt: row.now,
 			},
 		),
 	]);
+}
+
+/** Create a new recurring brand-audit watch. */
+export async function registerBrandAuditWatch(
+	args: RegisterBrandAuditWatchArgs,
+	ownerId: string,
+	deps: BrandAuditWatchDeps,
+): Promise<CheckResult> {
+	const invalid = validateRegisterInput(args);
+	if (invalid) return invalid;
+
+	const watchId = (deps.generateId ?? defaultGenerateId)();
+	const now = (deps.now ?? Date.now)();
+	// validateRegisterInput proved args.domain is a non-empty string.
+	const row = { watchId, domain: sanitizeDomain(args.domain as string), now };
+
+	const failure = await persistWatch(args, ownerId, deps, row);
+	return failure ?? registeredResult(args, row);
 }
 
 /**

@@ -304,48 +304,72 @@ export function interceptedVantageContext(): TlsaVerificationContext {
  */
 export function servedCertificateFromProbe(probe: TlsProbeResult | null, expectedHost: string): TlsaVerificationContext {
 	if (!probe) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.probeUnavailable);
-	const cert = probe.certificate;
-	if (cert) {
-		const host = cert.host ? normalizeHost(cert.host) : '';
-		if (host.length === 0 || host !== normalizeHost(expectedHost)) {
-			return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.hostMismatch);
-		}
-		if (!cert.leafSha256 || !cert.leafSpkiSha256) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
-		const served: ServedCertificate = {
-			host,
-			port: cert.port ?? DEFAULT_PROBE_PORT,
-			capturedAt: cert.capturedAt,
-			leafDer: cert.leafDer,
-			leafSpkiDer: cert.leafSpkiDer,
-			leafSha256: cert.leafSha256,
-			leafSha512: cert.leafSha512,
-			leafSpkiSha256: cert.leafSpkiSha256,
-			leafSpkiSha512: cert.leafSpkiSha512,
-			chain: (cert.chain ?? []).map((entry) => ({
-				sha256: entry.sha256,
-				sha512: entry.sha512,
-				spkiSha256: entry.spkiSha256,
-				spkiSha512: entry.spkiSha512,
-				der: entry.der,
-				spkiDer: entry.spkiDer,
-			})),
-			chainTruncated: cert.chainTruncated,
-			chainLength: cert.chainLength,
-			subjectName: cert.subjectName,
-			subjectAlternativeNames: cert.subjectAlternativeNames,
-			validFrom: cert.validFrom,
-			validTo: cert.validTo,
-		};
-		return { servedCertificate: served };
+	if (probe.certificate) return servedCertificateContext(probe.certificate, expectedHost);
+	return certificatelessProbeContext(probe);
+}
+
+/** A captured certificate block → the served certificate, or a permanent `failed` context when it is unusable. */
+function servedCertificateContext(cert: NonNullable<TlsProbeResult['certificate']>, expectedHost: string): TlsaVerificationContext {
+	const host = capturedHost(cert);
+	if (host.length === 0 || host !== normalizeHost(expectedHost)) {
+		return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.hostMismatch);
 	}
-	if (probe.certificateError) {
-		return unmeasured(
-			'failed',
-			OFF_HOST_REDIRECT_RE.test(probe.certificateError)
-				? DANE_CERTIFICATE_PROBE_REASONS.offHostRedirect
-				: DANE_CERTIFICATE_PROBE_REASONS.captureFailed,
-		);
-	}
+	if (!cert.leafSha256 || !cert.leafSpkiSha256) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
+	return { servedCertificate: buildServedCertificate(cert, host, cert.leafSha256, cert.leafSpkiSha256) };
+}
+
+/** The normalized host a certificate block claims to describe; empty when absent. */
+function capturedHost(cert: NonNullable<TlsProbeResult['certificate']>): string {
+	return cert.host ? normalizeHost(cert.host) : '';
+}
+
+/** Field-for-field projection of a validated certificate block (leaf digests already checked present). */
+function buildServedCertificate(
+	cert: NonNullable<TlsProbeResult['certificate']>,
+	host: string,
+	leafSha256: string,
+	leafSpkiSha256: string,
+): ServedCertificate {
+	return {
+		host,
+		port: cert.port ?? DEFAULT_PROBE_PORT,
+		capturedAt: cert.capturedAt,
+		leafDer: cert.leafDer,
+		leafSpkiDer: cert.leafSpkiDer,
+		leafSha256,
+		leafSha512: cert.leafSha512,
+		leafSpkiSha256,
+		leafSpkiSha512: cert.leafSpkiSha512,
+		chain: (cert.chain ?? []).map((entry) => ({
+			sha256: entry.sha256,
+			sha512: entry.sha512,
+			spkiSha256: entry.spkiSha256,
+			spkiSha512: entry.spkiSha512,
+			der: entry.der,
+			spkiDer: entry.spkiDer,
+		})),
+		chainTruncated: cert.chainTruncated,
+		chainLength: cert.chainLength,
+		subjectName: cert.subjectName,
+		subjectAlternativeNames: cert.subjectAlternativeNames,
+		validFrom: cert.validFrom,
+		validTo: cert.validTo,
+	};
+}
+
+/** `off_host_redirect` (permanent) when the probe says so, else `capture_failed` (transient). */
+function certificateErrorContext(certificateError: string): TlsaVerificationContext {
+	return unmeasured(
+		'failed',
+		OFF_HOST_REDIRECT_RE.test(certificateError)
+			? DANE_CERTIFICATE_PROBE_REASONS.offHostRedirect
+			: DANE_CERTIFICATE_PROBE_REASONS.captureFailed,
+	);
+}
+
+/** A probe response with no certificate block → the failed/pending context its error fields describe. */
+function certificatelessProbeContext(probe: TlsProbeResult): TlsaVerificationContext {
+	if (probe.certificateError) return certificateErrorContext(probe.certificateError);
 	if (probe.error && PROBE_PENDING_RE.test(probe.error)) return unmeasured('pending', DANE_CERTIFICATE_PROBE_REASONS.pending);
 	if (probe.reachable === false) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.unreachable);
 	return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);

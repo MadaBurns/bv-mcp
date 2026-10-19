@@ -447,6 +447,92 @@ export function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessm
 	});
 }
 
+type BrandHeldRegistration = { registrarIanaId: string | null };
+
+/** The observed-infrastructure phrase plus any corroborator reasons. */
+function describeObservedInfrastructure(signals: LookalikeSignals, seedDomain: string, corroboratorReasons: string): string {
+	const infraPhrase = signals.hasMX
+		? `active mail infrastructure (MX records), so it is capable of sending mail that resembles ${seedDomain}`
+		: 'web infrastructure (A records) and no active mail infrastructure';
+	const observed = corroboratorReasons ? `${infraPhrase}; also observed: ${corroboratorReasons}` : infraPhrase;
+	return observed;
+}
+
+// FIX ROUND 1 (F1): when the #263 correlation found a shared registrant-org
+// string, it is RECORDED here — as an unverified observation — but it does
+// NOT reduce the severity and does not suppress this finding. An org string
+// anyone can type into a registrar form earns a sentence, not a discount.
+function describeRegistrantNote(seedDomain: string, sharedRegistrantOrg: string | undefined): string {
+	return sharedRegistrantOrg
+		? ` Its RDAP registrant-organisation string matches the one published for ${seedDomain} ("${sharedRegistrantOrg}"); that field is self-declared, unverified by the registry, and frequently a shared privacy-service placeholder, so it is recorded but does not reduce what was observed here.`
+		: '';
+}
+
+/** Attribution clause when the registration record corroborates the candidate as the seed's own defensive registration. */
+function describeBrandHeldAttribution(seedDomain: string, brandHeld: BrandHeldRegistration): string {
+	return brandHeld.registrarIanaId !== null
+		? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
+		: `it delegates to the same complete nameserver set as ${seedDomain} on a DNS platform that does not offer self-service registration, so it is most likely the scanned organisation's own defensive registration`;
+}
+
+function describeAttribution(
+	candidateDomain: string,
+	seedDomain: string,
+	brandHeld: BrandHeldRegistration | undefined,
+	seedInfra: boolean,
+	labelCohort: boolean,
+): string {
+	if (brandHeld) return describeBrandHeldAttribution(seedDomain, brandHeld);
+	if (seedInfra) {
+		return `it resolves to the same web address set and mail hosts as ${seedDomain}, the shape of the scanned organisation's own brand-variant registration, though those records can be copied and ownership is not established`;
+	}
+	if (labelCohort) {
+		return `it resolves to the same web address set as ${seedDomain} and shares identical nameservers and mail hosts with other exact-label variants of it, the shape of the scanned organisation's own brand-variant portfolio, though those records can be copied and ownership is not established`;
+	}
+	return `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
+}
+
+function describeRemediation(
+	candidateDomain: string,
+	seedDomain: string,
+	brandHeld: BrandHeldRegistration | undefined,
+	copyableMatch: boolean,
+): string {
+	if (brandHeld) {
+		return `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`;
+	}
+	if (copyableMatch) {
+		return `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`;
+	}
+	return `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
+}
+
+function threatObservationMetadata(
+	candidateDomain: string,
+	signals: LookalikeSignals,
+	ownership: OwnershipAssessment,
+	sharedRegistrantOrg: string | undefined,
+	brandHeld: BrandHeldRegistration | undefined,
+) {
+	return {
+		...(brandHeld ? { brandHeldRegistration: true } : {}),
+		lookalikeDomain: candidateDomain,
+		hasA: signals.hasA,
+		hasMX: signals.hasMX,
+		registrationDays: signals.registrationDays,
+		...registrationAgeMetadata(signals),
+		mxOnDisposable: signals.mxOnDisposable,
+		hasWebContent: signals.hasWebContent,
+		...webPresenceMetadata(signals),
+		findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
+		// The verdict travels on EVERY classified finding, threat axis
+		// included, so a consumer can read "high observed threat, NOT owned by
+		// the customer" off a single object rather than correlating two.
+		ownershipVerdict: ownership.verdict,
+		...(sharedRegistrantOrg ? { sharedRegistrantOrg } : {}),
+	};
+}
+
 /**
  * AXIS 2 — build the observed-threat finding for a NON-OWNED candidate
  * (Task 7b). Carries the #264 calibrated severity verbatim; the attribution
@@ -493,17 +579,8 @@ export function buildThreatObservationFinding(
 	 */
 	brandHeld: { registrarIanaId: string | null } | undefined = undefined,
 ): Finding {
-	const infraPhrase = signals.hasMX
-		? `active mail infrastructure (MX records), so it is capable of sending mail that resembles ${seedDomain}`
-		: 'web infrastructure (A records) and no active mail infrastructure';
-	const observed = corroboratorReasons ? `${infraPhrase}; also observed: ${corroboratorReasons}` : infraPhrase;
-	// FIX ROUND 1 (F1): when the #263 correlation found a shared registrant-org
-	// string, it is RECORDED here — as an unverified observation — but it does
-	// NOT reduce the severity and does not suppress this finding. An org string
-	// anyone can type into a registrar form earns a sentence, not a discount.
-	const registrantNote = sharedRegistrantOrg
-		? ` Its RDAP registrant-organisation string matches the one published for ${seedDomain} ("${sharedRegistrantOrg}"); that field is self-declared, unverified by the registry, and frequently a shared privacy-service placeholder, so it is recorded but does not reduce what was observed here.`
-		: '';
+	const observed = describeObservedInfrastructure(signals, seedDomain, corroboratorReasons);
+	const registrantNote = describeRegistrantNote(seedDomain, sharedRegistrantOrg);
 	// The attribution clause and the closing remediation clause both assume the
 	// candidate is an outside party's. When the registration record corroborates
 	// that it is the scanned organisation's OWN defensive registration, both are
@@ -518,41 +595,13 @@ export function buildThreatObservationFinding(
 	// (`seed_label_cohort`). Same posture: the advice changes, nothing else.
 	const seedInfra = !brandHeld && ownership.signals.includes('seed_infrastructure_match');
 	const labelCohort = !brandHeld && ownership.signals.includes('seed_label_cohort');
-	const attributionClause = brandHeld
-		? brandHeld.registrarIanaId !== null
-			? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
-			: `it delegates to the same complete nameserver set as ${seedDomain} on a DNS platform that does not offer self-service registration, so it is most likely the scanned organisation's own defensive registration`
-		: seedInfra
-			? `it resolves to the same web address set and mail hosts as ${seedDomain}, the shape of the scanned organisation's own brand-variant registration, though those records can be copied and ownership is not established`
-			: labelCohort
-				? `it resolves to the same web address set as ${seedDomain} and shares identical nameservers and mail hosts with other exact-label variants of it, the shape of the scanned organisation's own brand-variant portfolio, though those records can be copied and ownership is not established`
-				: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
-	const remediationClause = brandHeld
-		? `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`
-		: seedInfra || labelCohort
-			? `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`
-			: `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
+	const attributionClause = describeAttribution(candidateDomain, seedDomain, brandHeld, seedInfra, labelCohort);
+	const remediationClause = describeRemediation(candidateDomain, seedDomain, brandHeld, seedInfra || labelCohort);
 	return createFinding(
 		'lookalikes',
 		`Impersonation-shaped ${signals.hasMX ? 'infrastructure' : 'web infrastructure'} observed: ${candidateDomain}`,
 		severity,
 		`${candidateDomain} is a confusable variant of ${seedDomain} and was observed with ${observed}. This is an infrastructure observation only: ${attributionClause}.${registrantNote} ${remediationClause}`,
-		{
-			...(brandHeld ? { brandHeldRegistration: true } : {}),
-			lookalikeDomain: candidateDomain,
-			hasA: signals.hasA,
-			hasMX: signals.hasMX,
-			registrationDays: signals.registrationDays,
-			...registrationAgeMetadata(signals),
-			mxOnDisposable: signals.mxOnDisposable,
-			hasWebContent: signals.hasWebContent,
-			...webPresenceMetadata(signals),
-			findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
-			// The verdict travels on EVERY classified finding, threat axis
-			// included, so a consumer can read "high observed threat, NOT owned by
-			// the customer" off a single object rather than correlating two.
-			ownershipVerdict: ownership.verdict,
-			...(sharedRegistrantOrg ? { sharedRegistrantOrg } : {}),
-		},
+		threatObservationMetadata(candidateDomain, signals, ownership, sharedRegistrantOrg, brandHeld),
 	);
 }

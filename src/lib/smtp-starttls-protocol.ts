@@ -12,6 +12,15 @@ export interface SmtpReply {
 	lines: string[];
 }
 
+/** Classify one reply line (`NNN-text` continuation or `NNN text` final); throws on bad syntax or code range. */
+function parseReplyLine(line: string): { code: number; final: boolean; text: string } {
+	const match = /^(\d{3})([ -])(.*)$/u.exec(line);
+	if (!match) throw new Error('Invalid SMTP reply syntax');
+	const code = Number(match[1]);
+	if (code < 200 || code > 599) throw new Error('Invalid SMTP reply code');
+	return { code, final: match[2] === ' ', text: match[3] ?? '' };
+}
+
 /** Incremental CRLF SMTP reply parser with strict byte and line ceilings. */
 export class SmtpReplyParser {
 	private pending = '';
@@ -21,42 +30,65 @@ export class SmtpReplyParser {
 	private replyLines: string[] = [];
 
 	push(chunk: Uint8Array | string): SmtpReply[] {
+		this.append(chunk);
+		const replies: SmtpReply[] = [];
+		for (;;) {
+			const line = this.takeLine();
+			if (line === undefined) break;
+			const reply = this.acceptLine(line);
+			if (reply) replies.push(reply);
+		}
+		return replies;
+	}
+
+	/** Buffer a chunk, enforcing the session and pending-reply byte ceilings. */
+	private append(chunk: Uint8Array | string): void {
 		const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
 		this.sessionBytes += bytes.byteLength;
 		if (this.sessionBytes > MAX_SESSION_BYTES) throw new RangeError('SMTP session reply limit exceeded');
 		this.pending += new TextDecoder().decode(bytes);
 		if (new TextEncoder().encode(this.pending).byteLength > MAX_REPLY_BYTES) throw new RangeError('SMTP reply limit exceeded');
+	}
 
-		const replies: SmtpReply[] = [];
-		for (;;) {
-			const lineEnd = this.pending.indexOf('\r\n');
-			if (lineEnd < 0) {
-				if (this.pending.includes('\n')) throw new Error('Invalid SMTP reply line ending');
-				if (new TextEncoder().encode(this.pending).byteLength > MAX_LINE_BYTES) throw new RangeError('SMTP reply line limit exceeded');
-				break;
-			}
-			const line = this.pending.slice(0, lineEnd);
-			this.pending = this.pending.slice(lineEnd + 2);
-			const lineBytes = new TextEncoder().encode(line).byteLength + 2;
-			if (lineBytes > MAX_LINE_BYTES) throw new RangeError('SMTP reply line limit exceeded');
-			const match = /^(\d{3})([ -])(.*)$/u.exec(line);
-			if (!match) throw new Error('Invalid SMTP reply syntax');
-			const code = Number(match[1]);
-			if (code < 200 || code > 599) throw new Error('Invalid SMTP reply code');
-			if (this.replyCode !== undefined && code !== this.replyCode) throw new Error('Invalid SMTP multiline reply code');
-			this.replyCode = code;
-			this.replyBytes += lineBytes;
-			if (this.replyBytes > MAX_REPLY_BYTES) throw new RangeError('SMTP reply limit exceeded');
-			this.replyLines.push(match[3] ?? '');
-			if (this.replyLines.length > MAX_REPLY_LINES) throw new RangeError('SMTP reply line count exceeded');
-			if (match[2] === ' ') {
-				replies.push({ code, lines: [...this.replyLines] });
-				this.replyCode = undefined;
-				this.replyLines = [];
-				this.replyBytes = 0;
-			}
+	/** Remove and return the next complete CRLF line; undefined (after validating the partial tail) when none is buffered. */
+	private takeLine(): string | undefined {
+		const lineEnd = this.pending.indexOf('\r\n');
+		if (lineEnd < 0) {
+			if (this.pending.includes('\n')) throw new Error('Invalid SMTP reply line ending');
+			if (new TextEncoder().encode(this.pending).byteLength > MAX_LINE_BYTES) throw new RangeError('SMTP reply line limit exceeded');
+			return undefined;
 		}
-		return replies;
+		const line = this.pending.slice(0, lineEnd);
+		this.pending = this.pending.slice(lineEnd + 2);
+		return line;
+	}
+
+	/** Fold one line into the in-flight reply; returns the reply when this was its final line. */
+	private acceptLine(line: string): SmtpReply | undefined {
+		const lineBytes = new TextEncoder().encode(line).byteLength + 2;
+		if (lineBytes > MAX_LINE_BYTES) throw new RangeError('SMTP reply line limit exceeded');
+		const { code, final, text } = parseReplyLine(line);
+		this.extendReply(code, text, lineBytes);
+		return final ? this.completeReply(code) : undefined;
+	}
+
+	/** Append a parsed line to the in-flight reply, enforcing code continuity and the reply ceilings. */
+	private extendReply(code: number, text: string, lineBytes: number): void {
+		if (this.replyCode !== undefined && code !== this.replyCode) throw new Error('Invalid SMTP multiline reply code');
+		this.replyCode = code;
+		this.replyBytes += lineBytes;
+		if (this.replyBytes > MAX_REPLY_BYTES) throw new RangeError('SMTP reply limit exceeded');
+		this.replyLines.push(text);
+		if (this.replyLines.length > MAX_REPLY_LINES) throw new RangeError('SMTP reply line count exceeded');
+	}
+
+	/** Emit the in-flight reply and reset reply state for the next one. */
+	private completeReply(code: number): SmtpReply {
+		const reply = { code, lines: [...this.replyLines] };
+		this.replyCode = undefined;
+		this.replyLines = [];
+		this.replyBytes = 0;
+		return reply;
 	}
 
 	finish(): void {

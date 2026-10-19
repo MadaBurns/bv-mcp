@@ -315,3 +315,34 @@ describe('daily digest positive control (#896)', () => {
 		expect(digestChecksLine()).toContain('client_ip_audit: unbound');
 	});
 });
+
+describe('handleClientIpHeaderAudit — KV failure containment (SQ-373)', () => {
+	const failingKv = (opts: { get?: boolean; put?: boolean }) =>
+		({
+			get: vi.fn(async () => {
+				if (opts.get) throw new Error('kv get boom');
+				return null;
+			}),
+			put: vi.fn(async () => {
+				if (opts.put) throw new Error('kv put boom');
+			}),
+		}) as unknown as KVNamespace;
+
+	it('a KV read failure does not suppress the alert (fail-loud), and the marker is then written', async () => {
+		const intel = fakeIntelDb({ total: 54, missing: 51 });
+		const kv = failingKv({ get: true });
+		await handleClientIpHeaderAudit({ INTELLIGENCE_DB: intel.db, RATE_LIMIT: kv, ALERT_WEBHOOK_URL: ALERT_WEBHOOK });
+		expect(webhookCalls).toHaveLength(1);
+		expect((kv.put as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([CLIENT_IP_ALERT_COOLDOWN_KEY, '1', { expirationTtl: 6 * 60 * 60 }]);
+	});
+
+	it('a KV write failure after a delivered alert is swallowed (next tick re-alerts)', async () => {
+		const intel = fakeIntelDb({ total: 54, missing: 51 });
+		const kv = failingKv({ put: true });
+		await expect(
+			handleClientIpHeaderAudit({ INTELLIGENCE_DB: intel.db, RATE_LIMIT: kv, ALERT_WEBHOOK_URL: ALERT_WEBHOOK }),
+		).resolves.toBeUndefined();
+		expect(webhookCalls).toHaveLength(1);
+		expect(kv.put).toHaveBeenCalledTimes(1);
+	});
+});

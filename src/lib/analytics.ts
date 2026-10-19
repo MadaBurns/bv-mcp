@@ -319,41 +319,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			});
 		},
 		emitToolEvent: (event) => {
-			safeWrite(dataset, {
-				indexes: ['tool_call'],
-				blobs: [
-					normalizeIndex(event.toolName),
-					event.status,
-					event.isError ? 'error' : 'ok',
-					event.domain ? domainFingerprint(event.domain) : 'none',
-					event.country ?? 'unknown',
-					event.clientType ?? 'unknown',
-					event.authTier ?? 'anon',
-					event.cacheStatus ?? 'n/a',
-					event.keyHash ?? 'none',
-					event.ipHash ?? 'none',
-					// blob11 — Cloudflare edge colo (append-only; existing queries unaffected).
-					event.colo ?? 'unknown',
-					// blob12 — priorTool: canonical name of the immediately-preceding tool in
-					// the same MCP session. 'none' = first call; 'unknown' = continuity
-					// unavailable. Computed synchronously from in-memory session state
-					// (readAndUpdateLastTool) — zero I/O, O(1), never blocks the hot path.
-					// Append-only; blobs 1–11 and doubles 1–2 UNCHANGED.
-					event.priorTool ?? 'unknown',
-					// blob13-15 — geo aggregate dimensions (append-only; positions 1-12 unchanged).
-					normalizeIndex(event.region ?? 'unknown'),
-					normalizeIndex(event.city ?? 'unknown'),
-					event.asn != null ? String(event.asn) : 'unknown',
-					// blob16 — bounded terminal reason (append-only; no raw error text/PII).
-					event.outcomeReason ?? (event.isError ? 'internal_error' : 'completed'),
-				],
-				doubles: [
-					sanitizeNumber(event.durationMs),
-					sanitizeNumber(event.score ?? 0),
-					sanitizeNumber(event.unitsAttempted ?? 0),
-					sanitizeNumber(event.unitsCompleted ?? 0),
-				],
-			});
+			safeWrite(dataset, toolEventDataPoint(event));
 		},
 		emitUngradedNotCachedEvent: (event) => {
 			safeWrite(dataset, {
@@ -407,22 +373,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			});
 		},
 		emitDohPrimarySummary: (event) => {
-			safeWrite(dataset, {
-				indexes: ['doh_primary'],
-				blobs: [
-					event.http5xx + event.network + event.timeout > 0 ? 'failures' : 'clean',
-					event.domain ? domainFingerprint(event.domain) : 'none',
-					event.country ?? 'unknown',
-					event.clientType ?? 'unknown',
-					event.authTier ?? 'anon',
-				],
-				doubles: [
-					sanitizeNumber(event.attempts),
-					sanitizeNumber(event.http5xx),
-					sanitizeNumber(event.network),
-					sanitizeNumber(event.timeout),
-				],
-			});
+			safeWrite(dataset, dohPrimaryDataPoint(event));
 		},
 		emitQuotaShardEvent: (event) => {
 			safeWrite(dataset, {
@@ -491,6 +442,88 @@ function normalizeIndex(value: string): string {
 
 function sanitizeNumber(value: number): number {
 	return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+type AnalyticsDataPoint = Parameters<AnalyticsDatasetLike['writeDataPoint']>[0];
+type ToolEvent = Parameters<AnalyticsClient['emitToolEvent']>[0];
+type DohPrimaryEvent = Parameters<AnalyticsClient['emitDohPrimarySummary']>[0];
+
+/** Domain fingerprint blob, or `'none'` when no domain applies. */
+function fingerprintOrNone(domain: string | undefined): string {
+	return domain ? domainFingerprint(domain) : 'none';
+}
+
+/** The standard country / clientType / authTier blob triple shared by most event types. */
+function contextBlobs(event: AnalyticsContext): string[] {
+	return [event.country ?? 'unknown', event.clientType ?? 'unknown', event.authTier ?? 'anon'];
+}
+
+/** tool_call blobs 8-10: cacheStatus, keyHash, ipHash. */
+function toolEventKeyBlobs(event: ToolEvent): string[] {
+	return [event.cacheStatus ?? 'n/a', event.keyHash ?? 'none', event.ipHash ?? 'none'];
+}
+
+/** tool_call blobs 13-15 — geo aggregate dimensions (append-only; positions 1-12 unchanged). */
+function toolEventGeoBlobs(event: ToolEvent): string[] {
+	return [
+		normalizeIndex(event.region ?? 'unknown'),
+		normalizeIndex(event.city ?? 'unknown'),
+		event.asn != null ? String(event.asn) : 'unknown',
+	];
+}
+
+/** tool_call blob16 — bounded terminal reason (append-only; no raw error text/PII). */
+function toolEventOutcomeReason(event: ToolEvent): string {
+	return event.outcomeReason ?? (event.isError ? 'internal_error' : 'completed');
+}
+
+/** tool_call blobs 1-16, in positional order. */
+function toolEventBlobs(event: ToolEvent): string[] {
+	return [
+		normalizeIndex(event.toolName),
+		event.status,
+		event.isError ? 'error' : 'ok',
+		fingerprintOrNone(event.domain),
+		...contextBlobs(event),
+		...toolEventKeyBlobs(event),
+		// blob11 — Cloudflare edge colo (append-only; existing queries unaffected).
+		event.colo ?? 'unknown',
+		// blob12 — priorTool: canonical name of the immediately-preceding tool in
+		// the same MCP session. 'none' = first call; 'unknown' = continuity
+		// unavailable. Computed synchronously from in-memory session state
+		// (readAndUpdateLastTool) — zero I/O, O(1), never blocks the hot path.
+		// Append-only; blobs 1–11 and doubles 1–2 UNCHANGED.
+		event.priorTool ?? 'unknown',
+		...toolEventGeoBlobs(event),
+		toolEventOutcomeReason(event),
+	];
+}
+
+/** tool_call doubles 1-4: duration, score, unitsAttempted, unitsCompleted. */
+function toolEventDoubles(event: ToolEvent): number[] {
+	return [
+		sanitizeNumber(event.durationMs),
+		sanitizeNumber(event.score ?? 0),
+		sanitizeNumber(event.unitsAttempted ?? 0),
+		sanitizeNumber(event.unitsCompleted ?? 0),
+	];
+}
+
+function toolEventDataPoint(event: ToolEvent): AnalyticsDataPoint {
+	return { indexes: ['tool_call'], blobs: toolEventBlobs(event), doubles: toolEventDoubles(event) };
+}
+
+/** doh_primary data point: blob1=outcome, blob2=domain fingerprint, blob3-5=context; doubles 1-4 = attempts / http5xx / network / timeout. */
+function dohPrimaryDataPoint(event: DohPrimaryEvent): AnalyticsDataPoint {
+	return {
+		indexes: ['doh_primary'],
+		blobs: [
+			event.http5xx + event.network + event.timeout > 0 ? 'failures' : 'clean',
+			fingerprintOrNone(event.domain),
+			...contextBlobs(event),
+		],
+		doubles: [sanitizeNumber(event.attempts), sanitizeNumber(event.http5xx), sanitizeNumber(event.network), sanitizeNumber(event.timeout)],
+	};
 }
 
 /**

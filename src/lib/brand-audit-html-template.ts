@@ -119,6 +119,60 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
 	return rows;
 }
 
+type CitationItem = { href: string; label: string };
+type CitationRule = { matches: (key: string) => boolean; link: (domain: string) => CitationItem };
+
+/**
+ * Signal-keyword -> verification link rules. First matching rule wins per
+ * signal, so the order mirrors the original if/else chain — keep it.
+ */
+const CITATION_RULES: readonly CitationRule[] = [
+	{
+		matches: (key) => key.includes('san') || key.includes('cert'),
+		link: (domain) => ({ href: `https://crt.sh/?q=${domain}&exclude=expired`, label: 'cert' }),
+	},
+	{
+		// `ns_overlap` / `ns_match` are covered by the `ns_` prefix.
+		matches: (key) => key.startsWith('ns_'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=${domain}&type=NS`, label: 'ns' }),
+	},
+	{
+		matches: (key) => key.includes('dkim'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=default._domainkey.${domain}&type=TXT`, label: 'dkim' }),
+	},
+	{
+		matches: (key) => key.includes('dmarc'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=_dmarc.${domain}&type=TXT`, label: 'dmarc' }),
+	},
+	{
+		matches: (key) => key.includes('spf') || key.includes('txt'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=${domain}&type=TXT`, label: 'spf' }),
+	},
+	{
+		matches: (key) => key.startsWith('mx_') || key.includes('mail'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=${domain}&type=MX`, label: 'mx' }),
+	},
+	{
+		matches: (key) => key.includes('caa'),
+		link: (domain) => ({ href: `https://dns.google/resolve?name=${domain}&type=CAA`, label: 'caa' }),
+	},
+	{
+		matches: (key) => key.includes('registrar') || key.includes('rdap') || key.includes('whois'),
+		link: (domain) => ({ href: `https://rdap.org/domain/${domain}`, label: 'whois' }),
+	},
+];
+
+function ruleForSignal(key: string): CitationRule | undefined {
+	for (const rule of CITATION_RULES) {
+		if (rule.matches(key)) return rule;
+	}
+	return undefined;
+}
+
+function renderCitation(item: CitationItem): string {
+	return `<a class="cite" href="${esc(item.href)}" target="_blank" rel="noopener">${esc(item.label)}</a>`;
+}
+
 /**
  * Build third-party verification links per candidate. Each signal in
  * `r.signals` maps to one or more public, auditable sources a reviewer can
@@ -129,9 +183,10 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
  */
 function citationLinks(r: BrandCandidateRow): string {
 	const domain = encodeURIComponent(r.domain);
-	const items: Array<{ href: string; label: string }> = [];
-	items.push({ href: `https://crt.sh/?q=${domain}`, label: 'crt.sh' });
-	items.push({ href: `https://rdap.org/domain/${domain}`, label: 'rdap' });
+	const items: CitationItem[] = [
+		{ href: `https://crt.sh/?q=${domain}`, label: 'crt.sh' },
+		{ href: `https://rdap.org/domain/${domain}`, label: 'rdap' },
+	];
 
 	const seen = new Set<string>();
 	for (const s of r.signals) {
@@ -139,28 +194,11 @@ function citationLinks(r: BrandCandidateRow): string {
 		if (seen.has(key)) continue;
 		seen.add(key);
 
-		if (key.includes('san') || key.includes('cert')) {
-			items.push({ href: `https://crt.sh/?q=${domain}&exclude=expired`, label: 'cert' });
-		} else if (key.startsWith('ns_') || key === 'ns_overlap' || key === 'ns_match') {
-			items.push({ href: `https://dns.google/resolve?name=${domain}&type=NS`, label: 'ns' });
-		} else if (key.includes('dkim')) {
-			items.push({ href: `https://dns.google/resolve?name=default._domainkey.${domain}&type=TXT`, label: 'dkim' });
-		} else if (key.includes('dmarc')) {
-			items.push({ href: `https://dns.google/resolve?name=_dmarc.${domain}&type=TXT`, label: 'dmarc' });
-		} else if (key.includes('spf') || key.includes('txt')) {
-			items.push({ href: `https://dns.google/resolve?name=${domain}&type=TXT`, label: 'spf' });
-		} else if (key.startsWith('mx_') || key.includes('mail')) {
-			items.push({ href: `https://dns.google/resolve?name=${domain}&type=MX`, label: 'mx' });
-		} else if (key.includes('caa')) {
-			items.push({ href: `https://dns.google/resolve?name=${domain}&type=CAA`, label: 'caa' });
-		} else if (key.includes('registrar') || key.includes('rdap') || key.includes('whois')) {
-			items.push({ href: `https://rdap.org/domain/${domain}`, label: 'whois' });
-		}
+		const rule = ruleForSignal(key);
+		if (rule) items.push(rule.link(domain));
 	}
 
-	return items
-		.map((it) => `<a class="cite" href="${esc(it.href)}" target="_blank" rel="noopener">${esc(it.label)}</a>`)
-		.join(' ');
+	return items.map(renderCitation).join(' ');
 }
 
 function renderTableSection(
