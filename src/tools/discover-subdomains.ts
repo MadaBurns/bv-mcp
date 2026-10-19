@@ -1799,6 +1799,110 @@ async function readFreshCache(domain: string, options?: DiscoverSubdomainsOption
 	});
 }
 
+/** A 200 carrying an `error` body or the wrong shape is not a healthy answer; only the transport succeeded. */
+function enumerateHealthy(data: CertstreamEnumerateResponse | null): data is CertstreamEnumerateResponse {
+	return Boolean(data) && !data?.error && Array.isArray(data?.subdomains);
+}
+
+function sansHealthy(data: CertstreamSansResponse | null): data is CertstreamSansResponse {
+	return Boolean(data) && !data?.error && Array.isArray(data?.names);
+}
+
+/** A transport-level `ok` whose body was unhealthy is an `error` outcome; any other outcome stands. */
+function degradeOkOutcome(outcome: CtSourceOutcome, healthy: boolean): CtSourceOutcome {
+	return outcome === 'ok' && !healthy ? 'error' : outcome;
+}
+
+/** `/enumerate` answered in full: a young or truncated owned index contributes but is NOT exhaustive. */
+function completeEnumerateFastPath(
+	domain: string,
+	data: CertstreamEnumerateResponse,
+	owned: OwnedIndexCoverage | null,
+): CertstreamFastPath {
+	// A young or truncated owned index contributes but is NOT exhaustive: the orchestrator
+	// must still consult crt.sh / CertSpotter instead of treating this as the answer.
+	if (owned && ownedIndexIsPartial(owned)) {
+		return ownedPartialFastPath(domain, data.subdomains, data.certificateCount, owned, data.entries);
+	}
+	const ownedCoverage = owned ?? undefined;
+	return {
+		result: buildCertstreamResult(domain, data.subdomains, data.certificateCount, undefined, ownedCoverage),
+		attempt: certstreamAttempt('ok', true, ownedCoverage),
+	};
+}
+
+/**
+ * The fast-path answer from a healthy `/enumerate` body, or null when it timed out with an
+ * empty list (fall through to `/sans` rather than accepting an incomplete measurement as a confident zero).
+ */
+function enumerateFastPath(domain: string, data: CertstreamEnumerateResponse): CertstreamFastPath | null {
+	const owned = ownedIndexFromResponse(data);
+	if (!data.timedOut) return completeEnumerateFastPath(domain, data, owned);
+	// #575's partial semantics, now also carrying #573's upstream metadata so the
+	// timed-out enumeration is reported incomplete rather than merely `partial`.
+	if (data.subdomains.length === 0) return null;
+	const ownedCoverage = owned ?? undefined;
+	return {
+		result: {
+			...buildCertstreamResult(domain, data.subdomains, data.certificateCount, { timedOut: true }, ownedCoverage),
+			partial: true,
+		},
+		attempt: certstreamAttempt('ok', true, ownedCoverage),
+	};
+}
+
+/**
+ * Interpret the `/enumerate` stage: the fast-path answer when there is one, plus the outcome to record
+ * if the ladder continues to `/sans`. A healthy-but-empty timed-out answer DID answer, so its
+ * recorded outcome is a timeout, never "never asked".
+ */
+function enumerateStage(
+	domain: string,
+	enumerate: CertstreamEndpointOutcome<CertstreamEnumerateResponse>,
+): { fast: CertstreamFastPath | null; outcome: CtSourceOutcome } {
+	if (!enumerateHealthy(enumerate.data)) return { fast: null, outcome: degradeOkOutcome(enumerate.outcome, false) };
+	return { fast: enumerateFastPath(domain, enumerate.data), outcome: 'timeout' };
+}
+
+/** A healthy, non-owned-index `/sans` body: complete, timed-out-with-data (partial), or timed-out-empty (no result). */
+function sansAnswer(domain: string, data: CertstreamSansResponse): CertstreamFastPath {
+	if (!data.timedOut) {
+		return {
+			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }),
+			attempt: certstreamAttempt('ok', true),
+		};
+	}
+	if (data.names.length > 0) {
+		return {
+			result: {
+				...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }),
+				partial: true,
+			},
+			attempt: certstreamAttempt('ok', true),
+		};
+	}
+	// timedOut:true with an empty list — no result so the orchestrator falls
+	// through to the direct public sources (crt.sh → Certspotter) instead of
+	// treating this as a confident zero.
+	return { result: null, attempt: certstreamAttempt('timeout', false) };
+}
+
+/** Interpret the `/sans` stage; any unhealthy answer is a failed source carrying the recorded outcome. */
+function sansStage(domain: string, sans: CertstreamEndpointOutcome<CertstreamSansResponse>, outcome: CtSourceOutcome): CertstreamFastPath {
+	// `/sans` reports its own upstream truncation — read it (declared and silently
+	// discarded before #573) so an incomplete SAN sweep is never served as a
+	// complete enumeration. Layered over #575's timed-out control flow.
+	const sansOk = sansHealthy(sans.data);
+	const finalOutcome = worstCertstreamOutcome(outcome, degradeOkOutcome(sans.outcome, sansOk));
+	if (!sansOk || !sans.data) return { result: null, attempt: certstreamAttempt(finalOutcome, false) };
+	// The owned index's `/sans` is NOT an enumeration of this domain: it lists the OTHER-apex names that
+	// share a certificate with it (the sibling question san-correlator asks). `buildCertstreamResult`
+	// drops every name outside the domain, so accepting it here would turn an `/enumerate` fault into a
+	// confident zero and end the ladder before crt.sh. An index that cannot enumerate is a failed source.
+	if (ownedIndexFromResponse(sans.data)) return { result: null, attempt: certstreamAttempt(finalOutcome, false) };
+	return sansAnswer(domain, sans.data);
+}
+
 /**
  * Query bv-certstream-worker via service binding. Returns null on failure.
  *
@@ -1836,82 +1940,18 @@ async function queryCertstream(
 		certstreamAuthToken,
 		options,
 	);
-	const enumerateOk = Boolean(enumerate.data) && !enumerate.data?.error && Array.isArray(enumerate.data?.subdomains);
-	// A 200 carrying an `error` body or the wrong shape is not a healthy answer;
-	// only the transport succeeded.
-	let outcome: CtSourceOutcome = enumerate.outcome === 'ok' && !enumerateOk ? 'error' : enumerate.outcome;
-
-	if (enumerateOk && enumerate.data) {
-		const data = enumerate.data;
-		const owned = ownedIndexFromResponse(data);
-		if (!data.timedOut) {
-			// A young or truncated owned index contributes but is NOT exhaustive: the orchestrator
-			// must still consult crt.sh / CertSpotter instead of treating this as the answer.
-			if (owned && ownedIndexIsPartial(owned)) {
-				return ownedPartialFastPath(domain, data.subdomains, data.certificateCount, owned, data.entries);
-			}
-			return {
-				result: buildCertstreamResult(domain, data.subdomains, data.certificateCount, undefined, owned ?? undefined),
-				attempt: certstreamAttempt('ok', true, owned ?? undefined),
-			};
-		}
-		// #575's partial semantics, now also carrying #573's upstream metadata so the
-		// timed-out enumeration is reported incomplete rather than merely `partial`.
-		if (data.subdomains.length > 0) {
-			return {
-				result: {
-					...buildCertstreamResult(domain, data.subdomains, data.certificateCount, { timedOut: true }, owned ?? undefined),
-					partial: true,
-				},
-				attempt: certstreamAttempt('ok', true, owned ?? undefined),
-			};
-		}
-		// timedOut:true with an empty list — fall through to /sans below rather
-		// than accepting an incomplete measurement as a confident zero. The source
-		// DID answer, so the recorded outcome is a timeout, never "never asked".
-		outcome = 'timeout';
-	}
+	const stage = enumerateStage(domain, enumerate);
+	if (stage.fast) return stage.fast;
 
 	// Deadline gate: if we already burned the budget on /enumerate, skip /sans
 	// and let the orchestrator decide whether to fall through to crt.sh. One
 	// request HAS been issued by now, so the attempt is recorded either way.
 	if (deadlineExceeded(options)) {
-		return { result: emptyResult(domain, true, true), attempt: certstreamAttempt(outcome, false) };
+		return { result: emptyResult(domain, true, true), attempt: certstreamAttempt(stage.outcome, false) };
 	}
 
 	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken, options);
-	// `/sans` reports its own upstream truncation — read it (declared and silently
-	// discarded before #573) so an incomplete SAN sweep is never served as a
-	// complete enumeration. Layered over #575's timed-out control flow.
-	const sansOk = Boolean(sans.data) && !sans.data?.error && Array.isArray(sans.data?.names);
-	outcome = worstCertstreamOutcome(outcome, sans.outcome === 'ok' && !sansOk ? 'error' : sans.outcome);
-
-	if (!sansOk || !sans.data) return { result: null, attempt: certstreamAttempt(outcome, false) };
-	const data = sans.data;
-	// The owned index's `/sans` is NOT an enumeration of this domain: it lists the OTHER-apex names that
-	// share a certificate with it (the sibling question san-correlator asks). `buildCertstreamResult`
-	// drops every name outside the domain, so accepting it here would turn an `/enumerate` fault into a
-	// confident zero and end the ladder before crt.sh. An index that cannot enumerate is a failed source.
-	if (ownedIndexFromResponse(data)) return { result: null, attempt: certstreamAttempt(outcome, false) };
-	if (!data.timedOut) {
-		return {
-			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }),
-			attempt: certstreamAttempt('ok', true),
-		};
-	}
-	if (data.names.length > 0) {
-		return {
-			result: {
-				...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }),
-				partial: true,
-			},
-			attempt: certstreamAttempt('ok', true),
-		};
-	}
-	// timedOut:true with an empty list — no result so the orchestrator falls
-	// through to the direct public sources (crt.sh → Certspotter) instead of
-	// treating this as a confident zero.
-	return { result: null, attempt: certstreamAttempt('timeout', false) };
+	return sansStage(domain, sans, stage.outcome);
 }
 
 /** One certstream endpoint call: the parsed body (when healthy) and why, if not. */

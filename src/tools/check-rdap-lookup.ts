@@ -153,6 +153,56 @@ interface RdapDomainResponse {
 	entities?: RdapEntity[];
 }
 
+/** The first server URL of a bootstrap service entry, or null when the entry is unusable. */
+function bootstrapServerUrl(tlds: unknown, urls: unknown): string | null {
+	if (!Array.isArray(tlds) || !Array.isArray(urls)) return null;
+	return typeof urls[0] === 'string' ? urls[0] : null;
+}
+
+function addBootstrapTlds(map: Record<string, string>, tlds: unknown[], serverUrl: string): void {
+	for (const tld of tlds) {
+		if (typeof tld === 'string') map[tld.toLowerCase()] = serverUrl;
+	}
+}
+
+/** TLD → server URL map from the bootstrap `services` array; malformed entries are skipped. */
+function buildBootstrapMap(services: [string[], string[]][] | undefined): Record<string, string> {
+	const map: Record<string, string> = {};
+	if (!Array.isArray(services)) return map;
+	for (const [tlds, urls] of services) {
+		const serverUrl = bootstrapServerUrl(tlds, urls);
+		if (serverUrl !== null) addBootstrapTlds(map, tlds, serverUrl);
+	}
+	return map;
+}
+
+/** A still-fresh cached bootstrap success or failure, or null when IANA must be fetched. */
+function cachedBootstrapResult(now: number): { map: Record<string, string>; failed: boolean } | null {
+	if (bootstrapState && now - bootstrapState.fetchedAt < BOOTSTRAP_TTL_MS) {
+		return { map: bootstrapState.value, failed: false };
+	}
+	if (bootstrapFailure && now - bootstrapFailure.failedAt < BOOTSTRAP_FAILURE_TTL_MS) {
+		return { map: {}, failed: true };
+	}
+	return null;
+}
+
+/** Fetches and parses the IANA bootstrap file; null when the registry was not read (non-2xx, unparseable or over-cap). */
+async function fetchBootstrapMap(): Promise<Record<string, string> | null> {
+	const resp = await fetch(IANA_BOOTSTRAP_URL, {
+		redirect: 'manual',
+		signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
+		headers: { Accept: 'application/json' },
+	});
+	if (!resp.ok) {
+		await disposeUnreadResponseBody(resp);
+		return null;
+	}
+
+	const data = await readJsonResponseCapped<{ services?: [string[], string[]][] }>(resp, RDAP_BOOTSTRAP_MAX_BODY_BYTES);
+	return data === null ? null : buildBootstrapMap(data.services);
+}
+
 /**
  * Fetch and parse the IANA RDAP bootstrap file. Caches the result for
  * BOOTSTRAP_TTL_MS on success, BOOTSTRAP_FAILURE_TTL_MS on failure (so we don't
@@ -166,39 +216,13 @@ interface RdapDomainResponse {
  * body, and any throw (including the fetch timeout).
  */
 async function fetchBootstrap(): Promise<{ map: Record<string, string>; failed: boolean }> {
-	const now = Date.now();
-	if (bootstrapState && now - bootstrapState.fetchedAt < BOOTSTRAP_TTL_MS) {
-		return { map: bootstrapState.value, failed: false };
-	}
-	if (bootstrapFailure && now - bootstrapFailure.failedAt < BOOTSTRAP_FAILURE_TTL_MS) {
-		return { map: {}, failed: true };
-	}
+	const cached = cachedBootstrapResult(Date.now());
+	if (cached) return cached;
 	try {
-		const resp = await fetch(IANA_BOOTSTRAP_URL, {
-			redirect: 'manual',
-			signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
-			headers: { Accept: 'application/json' },
-		});
-		if (!resp.ok) {
-			await disposeUnreadResponseBody(resp);
+		const map = await fetchBootstrapMap();
+		if (map === null) {
 			bootstrapFailure = { failedAt: Date.now() };
 			return { map: {}, failed: true };
-		}
-
-		const data = await readJsonResponseCapped<{ services?: [string[], string[]][] }>(resp, RDAP_BOOTSTRAP_MAX_BODY_BYTES);
-		if (data === null) {
-			bootstrapFailure = { failedAt: Date.now() };
-			return { map: {}, failed: true };
-		}
-		const map: Record<string, string> = {};
-		if (Array.isArray(data.services)) {
-			for (const [tlds, urls] of data.services) {
-				if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
-				const serverUrl = urls[0];
-				for (const tld of tlds) {
-					if (typeof tld === 'string' && typeof serverUrl === 'string') map[tld.toLowerCase()] = serverUrl;
-				}
-			}
 		}
 		bootstrapState = { value: map, fetchedAt: Date.now() };
 		bootstrapFailure = null;
