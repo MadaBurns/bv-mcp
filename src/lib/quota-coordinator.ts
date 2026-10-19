@@ -401,6 +401,63 @@ export type QuotaCoordinatorResponse =
 	| EvaluateResponse
 	| undefined;
 
+/** Kinds that hold authorization/idempotency state, routed by `coordinationKey` on the frozen security shards. */
+type SecurityStatePayload = Extract<
+	QuotaCoordinatorRequest,
+	{
+		kind:
+			| 'reserve-budget'
+			| 'claim-once'
+			| 'marker-set'
+			| 'marker-has'
+			| 'version-get'
+			| 'version-bump'
+			| 'version-set-max'
+			| 'version-bump-idempotent'
+			| 'idempotency-begin'
+			| 'idempotency-complete'
+			| 'idempotency-release';
+	}
+>;
+
+const SECURITY_STATE_KINDS: ReadonlySet<string> = new Set<SecurityStatePayload['kind']>([
+	'reserve-budget',
+	'claim-once',
+	'marker-set',
+	'marker-has',
+	'version-get',
+	'version-bump',
+	'version-set-max',
+	'version-bump-idempotent',
+	'idempotency-begin',
+	'idempotency-complete',
+	'idempotency-release',
+]);
+
+function isSecurityStatePayload(payload: QuotaCoordinatorRequest): payload is SecurityStatePayload {
+	return SECURITY_STATE_KINDS.has(payload.kind);
+}
+
+/**
+ * Which payload field a quota kind shards on. global-daily, oauth-dcr-write, reset and any unknown kind
+ * are absent: they stay on the singleton. A Map (not an object) so an inherited key such as
+ * `constructor` can never read as a field name.
+ */
+const QUOTA_SHARD_KEY_FIELD: ReadonlyMap<string, 'ip' | 'principalId' | 'shardKey'> = new Map([
+	['scoped-rate', 'ip'],
+	['session-create', 'ip'],
+	['tool-daily', 'principalId'],
+	['distinct-domain-daily', 'principalId'],
+	['evaluate', 'shardKey'],
+]);
+
+/** The scoping key a quota payload shards on, or `null` when its kind is pinned to the singleton. */
+function quotaShardKeyFor(payload: QuotaCoordinatorRequest): string | null {
+	const field = QUOTA_SHARD_KEY_FIELD.get(payload.kind);
+	// The map pairs each kind with a field that exists on exactly that kind of payload.
+	return field === undefined ? null : (payload as unknown as Record<string, string>)[field];
+}
+
 /**
  * Routing name for a payload. Security state always uses frozen security shards;
  * per-IP/per-principal quota counters fan across quota shards only when enabled;
@@ -415,39 +472,13 @@ export type QuotaCoordinatorResponse =
 function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardRouting): string {
 	// Authorization/idempotency state always uses the frozen security sharding
 	// scheme. It must not follow the independently controlled quota flag/salt.
-	switch (payload.kind) {
-		case 'reserve-budget':
-		case 'claim-once':
-		case 'marker-set':
-		case 'marker-has':
-		case 'version-get':
-		case 'version-bump':
-		case 'version-set-max':
-		case 'version-bump-idempotent':
-		case 'idempotency-begin':
-		case 'idempotency-complete':
-		case 'idempotency-release':
-			return securityStateShardNameForKey(payload.coordinationKey);
-	}
+	if (isSecurityStatePayload(payload)) return securityStateShardNameForKey(payload.coordinationKey);
 	// Flag-OFF (ADAM #2): every quota payload stays on the singleton — byte-for-byte
 	// the pre-shard behavior. global-daily + reset ALWAYS stay on the singleton even
 	// when quota sharding is on (ADAM #5: the cost ceiling is never approximated).
 	if (!routing.enabled) return COORDINATOR_NAME;
-	switch (payload.kind) {
-		case 'scoped-rate':
-		case 'session-create':
-			return shardNameForKey(payload.ip, routing.salt);
-		case 'tool-daily':
-		case 'distinct-domain-daily':
-			return shardNameForKey(payload.principalId, routing.salt);
-		case 'evaluate':
-			return shardNameForKey(payload.shardKey, routing.salt);
-		case 'global-daily':
-		case 'oauth-dcr-write':
-		case 'reset':
-		default:
-			return COORDINATOR_NAME;
-	}
+	const shardKey = quotaShardKeyFor(payload);
+	return shardKey === null ? COORDINATOR_NAME : shardNameForKey(shardKey, routing.salt);
 }
 
 function getCoordinatorStub(
@@ -1014,81 +1045,98 @@ const VALID_KINDS = new Set<string>([
 /** Max sub-checks in one evaluate batch — bounds DO work; the request path only ever sends ≤4. */
 const MAX_EVALUATE_CHECKS = 8;
 
+/** One field's invariant: returns its error message, or `undefined` when the field is absent or valid. */
+type QuotaFieldValidator = (obj: Record<string, unknown>) => string | undefined;
+
+/** `field` may be absent, but when present it must be a string of at most `max` chars. */
+function boundedStringField(field: string, max: number, error = `Invalid ${field}: must be string <= ${max} chars`): QuotaFieldValidator {
+	return (obj) => {
+		const value = obj[field];
+		return field in obj && (typeof value !== 'string' || value.length > max) ? error : undefined;
+	};
+}
+
+function isPrintableKey(value: unknown, max: number): boolean {
+	return typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** `field` may be absent, but when present it must be a non-empty printable string of at most `max` chars. */
+function printableKeyField(field: string, max: number): QuotaFieldValidator {
+	const error = `Invalid ${field}: must be a non-empty printable string <= ${max} chars`;
+	return (obj) => {
+		const printable = isPrintableKey(obj[field], max);
+		return field in obj && !printable ? error : undefined;
+	};
+}
+
+/** `field` may be absent, but when present it must be a lowercase SHA-256 hex digest. */
+function sha256HexField(field: string): QuotaFieldValidator {
+	const error = `Invalid ${field}: must be a lowercase SHA-256 hex digest`;
+	return (obj) => {
+		const value = obj[field];
+		return field in obj && (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) ? error : undefined;
+	};
+}
+
+function isSafeIntegerAtLeast(value: unknown, min: number): boolean {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= min;
+}
+
+/** `field` may be absent, but when present it must be a safe integer >= `min`. */
+function safeIntegerField(field: string, min: number, error: string): QuotaFieldValidator {
+	return (obj) => {
+		const valid = isSafeIntegerAtLeast(obj[field], min);
+		return field in obj && !valid ? error : undefined;
+	};
+}
+
+const NON_NEGATIVE_INTEGER_FIELDS = [
+	'minuteLimit',
+	'hourLimit',
+	'limit',
+	'windowMs',
+	'amount',
+	'defaultValue',
+	'initialUsed',
+	'value',
+	'sourceDailyLimit',
+	'globalHourlyLimit',
+	'globalDailyLimit',
+] as const;
+
+/** `result` may be absent, but when present it must be a string of at most MAX_IDEMPOTENCY_RESULT_BYTES UTF-8 bytes. */
+function validateResultField(obj: Record<string, unknown>): string | undefined {
+	if (!('result' in obj)) return undefined;
+	const value = obj.result;
+	return typeof value !== 'string' || new TextEncoder().encode(value).byteLength > MAX_IDEMPOTENCY_RESULT_BYTES
+		? `Invalid result: must be a UTF-8 string <= ${MAX_IDEMPOTENCY_RESULT_BYTES} bytes`
+		: undefined;
+}
+
+/**
+ * Per-field validators in the order they run. The first error wins, so this ORDER is the contract for a
+ * payload with several invalid fields: do not reorder.
+ */
+const QUOTA_FIELD_VALIDATORS: readonly QuotaFieldValidator[] = [
+	boundedStringField('ip', 50),
+	boundedStringField('principalId', 100),
+	boundedStringField('scope', 30, 'Invalid scope'),
+	boundedStringField('toolName', 100),
+	printableKeyField('domainFingerprint', 128),
+	sha256HexField('sourceFingerprint'),
+	printableKeyField('coordinationKey', 256),
+	printableKeyField('idempotencyCoordinationKey', 256),
+	...NON_NEGATIVE_INTEGER_FIELDS.map((field) => safeIntegerField(field, 0, `Invalid ${field}: must be a non-negative safe integer`)),
+	safeIntegerField('expiresAt', 1, 'Invalid expiresAt: must be a positive safe integer'),
+	sha256HexField('requestHash'),
+	validateResultField,
+];
+
 /** Validate the per-field invariants on a single object (shared by top-level + evaluate sub-checks). */
 function validateQuotaFields(obj: Record<string, unknown>): string | undefined {
-	if ('ip' in obj && (typeof obj.ip !== 'string' || obj.ip.length > 50)) {
-		return 'Invalid ip: must be string <= 50 chars';
-	}
-	if ('principalId' in obj && (typeof obj.principalId !== 'string' || obj.principalId.length > 100)) {
-		return 'Invalid principalId: must be string <= 100 chars';
-	}
-	if ('scope' in obj && (typeof obj.scope !== 'string' || obj.scope.length > 30)) {
-		return 'Invalid scope';
-	}
-	if ('toolName' in obj && (typeof obj.toolName !== 'string' || obj.toolName.length > 100)) {
-		return 'Invalid toolName: must be string <= 100 chars';
-	}
-	if (
-		'domainFingerprint' in obj &&
-		(typeof obj.domainFingerprint !== 'string' ||
-			obj.domainFingerprint.length === 0 ||
-			obj.domainFingerprint.length > 128 ||
-			/[\u0000-\u001f\u007f]/.test(obj.domainFingerprint))
-	) {
-		return 'Invalid domainFingerprint: must be a non-empty printable string <= 128 chars';
-	}
-	if ('sourceFingerprint' in obj && (typeof obj.sourceFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(obj.sourceFingerprint))) {
-		return 'Invalid sourceFingerprint: must be a lowercase SHA-256 hex digest';
-	}
-	if (
-		'coordinationKey' in obj &&
-		(typeof obj.coordinationKey !== 'string' ||
-			obj.coordinationKey.length === 0 ||
-			obj.coordinationKey.length > 256 ||
-			/[\u0000-\u001f\u007f]/.test(obj.coordinationKey))
-	) {
-		return 'Invalid coordinationKey: must be a non-empty printable string <= 256 chars';
-	}
-	if (
-		'idempotencyCoordinationKey' in obj &&
-		(typeof obj.idempotencyCoordinationKey !== 'string' ||
-			obj.idempotencyCoordinationKey.length === 0 ||
-			obj.idempotencyCoordinationKey.length > 256 ||
-			/[\u0000-\u001f\u007f]/.test(obj.idempotencyCoordinationKey))
-	) {
-		return 'Invalid idempotencyCoordinationKey: must be a non-empty printable string <= 256 chars';
-	}
-	for (const numField of [
-		'minuteLimit',
-		'hourLimit',
-		'limit',
-		'windowMs',
-		'amount',
-		'defaultValue',
-		'initialUsed',
-		'value',
-		'sourceDailyLimit',
-		'globalHourlyLimit',
-		'globalDailyLimit',
-	] as const) {
-		if (numField in obj) {
-			const val = obj[numField];
-			if (typeof val !== 'number' || !Number.isSafeInteger(val) || val < 0) {
-				return `Invalid ${numField}: must be a non-negative safe integer`;
-			}
-		}
-	}
-	if ('expiresAt' in obj && (typeof obj.expiresAt !== 'number' || !Number.isSafeInteger(obj.expiresAt) || obj.expiresAt <= 0)) {
-		return 'Invalid expiresAt: must be a positive safe integer';
-	}
-	if ('requestHash' in obj && (typeof obj.requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(obj.requestHash))) {
-		return 'Invalid requestHash: must be a lowercase SHA-256 hex digest';
-	}
-	if (
-		'result' in obj &&
-		(typeof obj.result !== 'string' || new TextEncoder().encode(obj.result).byteLength > MAX_IDEMPOTENCY_RESULT_BYTES)
-	) {
-		return `Invalid result: must be a UTF-8 string <= ${MAX_IDEMPOTENCY_RESULT_BYTES} bytes`;
+	for (const validate of QUOTA_FIELD_VALIDATORS) {
+		const error = validate(obj);
+		if (error !== undefined) return error;
 	}
 	return undefined;
 }
@@ -1695,53 +1743,55 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	private async handleReset(): Promise<undefined> {
+		await this.ctx.storage.deleteAll();
+		await this.ctx.storage.deleteAlarm();
+		return undefined;
+	}
+
+	/**
+	 * One handler per request kind. The mapped type makes a new kind a compile error until it is wired here.
+	 * Unknown kinds never reach this table: `validateQuotaPayload` rejects them first with a TypeError.
+	 */
+	private static readonly HANDLERS: {
+		[K in QuotaCoordinatorRequest['kind']]: (
+			self: QuotaCoordinator,
+			payload: Extract<QuotaCoordinatorRequest, { kind: K }>,
+		) => Promise<QuotaCoordinatorResponse>;
+	} = {
+		'scoped-rate': (self, payload) => self.handleScopedRateLimit(payload),
+		'tool-daily': (self, payload) => self.handleToolDailyRateLimit(payload),
+		'distinct-domain-daily': (self, payload) => self.handleDistinctDomainDailyLimit(payload),
+		'global-daily': (self, payload) => self.handleGlobalDailyLimit(payload),
+		'session-create': (self, payload) => self.handleSessionCreate(payload),
+		'oauth-dcr-write': (self, payload) => self.handleOAuthDcrWrite(payload),
+		'reserve-budget': (self, payload) => self.handleReserveBudget(payload),
+		'claim-once': (self, payload) => self.handleClaimOnce(payload),
+		'marker-set': (self, payload) => self.handleMarkerSet(payload),
+		'marker-has': (self, payload) => self.handleMarkerHas(payload),
+		'version-get': (self, payload) => self.handleVersionGet(payload),
+		'version-bump': (self, payload) => self.handleVersionBump(payload),
+		'version-set-max': (self, payload) => self.handleVersionSetMax(payload),
+		'version-bump-idempotent': (self, payload) => self.handleIdempotentVersionBump(payload),
+		'idempotency-begin': (self, payload) => self.handleIdempotencyBegin(payload),
+		'idempotency-complete': (self, payload) => self.handleIdempotencyComplete(payload),
+		'idempotency-release': (self, payload) => self.handleIdempotencyRelease(payload),
+		evaluate: (self, payload) => self.handleEvaluate(payload),
+		reset: (self) => self.handleReset(),
+	};
+
 	/** Type-safe RPC entrypoint used by Worker callers. */
 	async dispatch(payload: QuotaCoordinatorRequest): Promise<QuotaCoordinatorResponse> {
 		const validation = validateQuotaPayload(payload);
 		if (!validation.valid) throw new TypeError(validation.error);
 		const validPayload = validation.payload;
-		switch (validPayload.kind) {
-			case 'scoped-rate':
-				return this.handleScopedRateLimit(validPayload);
-			case 'tool-daily':
-				return this.handleToolDailyRateLimit(validPayload);
-			case 'distinct-domain-daily':
-				return this.handleDistinctDomainDailyLimit(validPayload);
-			case 'global-daily':
-				return this.handleGlobalDailyLimit(validPayload);
-			case 'session-create':
-				return this.handleSessionCreate(validPayload);
-			case 'oauth-dcr-write':
-				return this.handleOAuthDcrWrite(validPayload);
-			case 'reserve-budget':
-				return this.handleReserveBudget(validPayload);
-			case 'claim-once':
-				return this.handleClaimOnce(validPayload);
-			case 'marker-set':
-				return this.handleMarkerSet(validPayload);
-			case 'marker-has':
-				return this.handleMarkerHas(validPayload);
-			case 'version-get':
-				return this.handleVersionGet(validPayload);
-			case 'version-bump':
-				return this.handleVersionBump(validPayload);
-			case 'version-set-max':
-				return this.handleVersionSetMax(validPayload);
-			case 'version-bump-idempotent':
-				return this.handleIdempotentVersionBump(validPayload);
-			case 'idempotency-begin':
-				return this.handleIdempotencyBegin(validPayload);
-			case 'idempotency-complete':
-				return this.handleIdempotencyComplete(validPayload);
-			case 'idempotency-release':
-				return this.handleIdempotencyRelease(validPayload);
-			case 'evaluate':
-				return this.handleEvaluate(validPayload);
-			case 'reset':
-				await this.ctx.storage.deleteAll();
-				await this.ctx.storage.deleteAlarm();
-				return undefined;
-		}
+		// The table is keyed by kind, so the handler picked here always accepts this payload; TypeScript
+		// cannot correlate a union key with its own handler, hence the widening cast.
+		const handler = QuotaCoordinator.HANDLERS[validPayload.kind] as (
+			self: QuotaCoordinator,
+			payload: QuotaCoordinatorRequest,
+		) => Promise<QuotaCoordinatorResponse>;
+		return handler(this, validPayload);
 	}
 
 	async fetch(request: Request): Promise<Response> {
