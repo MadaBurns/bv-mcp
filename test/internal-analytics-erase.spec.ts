@@ -48,4 +48,39 @@ describe('POST /internal/analytics/erase', () => {
 		expect(String(deleteSql)).toContain('WHERE');
 		expect(String(deleteSql)).toContain('key_hash = ?');
 	});
+
+	it('still reports the deletion count and logs a warn when the audit INSERT rejects (fail-open trail)', async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, 'log').mockImplementation((line?: unknown) => {
+			logs.push(String(line));
+		});
+		const { internalRoutes } = await import('../src/internal');
+		const deleteRun = vi.fn(async () => ({ success: true, meta: { changes: 3 } }));
+		const auditRun = vi.fn(async () => {
+			throw 'audit write refused';
+		});
+		const prepare = vi.fn((sql: string) =>
+			sql.includes('mcp_access_log_audit') ? { bind: () => ({ run: auditRun }) } : { bind: () => ({ run: deleteRun }) },
+		);
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request(
+			'/analytics/erase?ip_hash=iph&key_hash=kh',
+			{ method: 'POST', headers: { authorization: 'Bearer right' } },
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ deleted: 3, key_hash: 'kh', ip_hash: 'iph' });
+		expect(deleteRun).toHaveBeenCalledTimes(1);
+		expect(auditRun).toHaveBeenCalledTimes(1);
+		// Both filters present => AND-ed in the DELETE.
+		const deleteSql = String((prepare.mock.calls.find(([sql]) => !String(sql).includes('mcp_access_log_audit')) ?? [''])[0]);
+		expect(deleteSql).toContain('ip_hash = ? AND key_hash = ?');
+		const warn = logs.map((l) => JSON.parse(l)).find((l) => l.details?.event === 'analytics.subject.erase');
+		expect(warn).toMatchObject({
+			severity: 'warn',
+			category: 'audit',
+			error: 'audit write refused',
+			details: { event: 'analytics.subject.erase', auditWriteFailed: true },
+		});
+	});
 });

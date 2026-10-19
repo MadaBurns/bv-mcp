@@ -212,6 +212,8 @@ function makeRegistry(
 		tenants: string[];
 		/** Cycle ids whose settle UPDATE throws. */
 		settleFailsFor?: string[];
+		/** Cycle ids whose unreconcilable-mark UPDATE throws (mutable: clear it to model the registry recovering). */
+		markFailsFor?: string[];
 		/** Hold every UNSETTLED read until this many sweeps have read, so all of them saw the same pre-settle snapshot. */
 		concurrentSweeps?: number;
 		/** Hold every PENDING read until this many sweeps have read, so all of them saw the same pre-claim snapshot. */
@@ -277,6 +279,7 @@ function makeRegistry(
 			}
 			case 'MARK_UNRECONCILABLE': {
 				const [outcome, id] = binds as [string, string];
+				if (options.markFailsFor?.includes(id)) throw new Error(REGISTRY_BUSY);
 				const cycle = cycles.get(id);
 				if (!cycle || cycle.alert_sent_at !== null || (sql.includes(MARK_GUARD) && cycle.alert_outcome !== null)) return 0;
 				cycle.alert_outcome = outcome;
@@ -732,4 +735,39 @@ describe('Tenant stalled-cycle settle chaos (#1122)', () => {
 			expect(unmatchedSql(calls)).toEqual([]);
 		},
 	);
+
+	it('H8: Given a stalled, unmeasurable cycle past the 6h deadline and a registry that rejects the unreconcilable mark, the sweep logs the failed mark, sends no operator alert, resolves, and escalates once the registry recovers', async () => {
+		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
+		const calls: SqlCall[] = [];
+		const markFailsFor = ['cycle-1'];
+		const registry = makeRegistry(calls, { cycles: [stalledCycle('cycle-1', TENANT_1)], tenants: [TENANT_1], markFailsFor });
+		const env = sweepEnv(
+			registry.db,
+			{ [TENANT_1_BINDING]: makeTenantDb(TENANT_1, calls, { 'cycle-1': 1 }, { down: true }) },
+			{ ALERT_WEBHOOK_URL: OPS_WEBHOOK },
+		);
+
+		await expect(handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE })).resolves.toBeUndefined();
+
+		// The guarded mark was attempted and rejected: nothing was claimed, so nothing is escalated.
+		expect(calls.filter((c) => c.tag === 'MARK_UNRECONCILABLE')).toHaveLength(1);
+		expect(deliveries).toHaveLength(0);
+		expect(unreconcilableLogs()).toEqual([]);
+		expect(registry.cycle('cycle-1')).toMatchObject({ alert_sent_at: null, alert_outcome: null });
+		// The failure is logged (warn) against the cycle rather than thrown or swallowed silently.
+		const markFailures = logLines().filter((line) => line.details?.message === 'tenant_cycle_unreconcilable_mark_failed');
+		expect(markFailures).toEqual([
+			expect.objectContaining({ error: REGISTRY_BUSY, category: 'tenant.scheduled', details: expect.objectContaining({ cycleId: 'cycle-1' }) }),
+		]);
+		expect(markFailures[0]).toMatchObject({ severity: 'warn' });
+
+		// Deferred, not lost: once the registry accepts writes the next sweep marks and alerts exactly once.
+		markFailsFor.length = 0;
+		await handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE + FIFTEEN_MINUTES_MS });
+		expect(registry.cycle('cycle-1')).toMatchObject({ alert_sent_at: null, alert_outcome: 'unreconcilable' });
+		expect(deliveries).toHaveLength(1);
+		expect(deliveries[0].body).toContain('Tenant monitoring cycle unreconcilable');
+		expect(unreconcilableLogs()).toHaveLength(1);
+		expect(unmatchedSql(calls)).toEqual([]);
+	});
 });
