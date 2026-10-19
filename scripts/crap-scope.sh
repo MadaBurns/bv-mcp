@@ -12,6 +12,12 @@
 #   3. every named function has a PASS row and no FAIL row.
 set -u
 cd "$(git rev-parse --show-toplevel)" || exit 2
+# The istanbul provider is not a declared dependency (the V8 provider cannot run under workerd), so a
+# fresh worktree lacks it. Install it --no-save at vitest's exact version; package files never change.
+if ! node -e "require.resolve('@vitest/coverage-istanbul')" 2>/dev/null; then
+	V=$(node -p "require('vitest/package.json').version")
+	npm i --no-save --ignore-scripts --no-audit --no-fund "@vitest/coverage-istanbul@$V" >/dev/null || exit 2
+fi
 files=""
 names=""
 mode=files
