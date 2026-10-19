@@ -154,6 +154,46 @@ describe('handleBrandAuditQueue — deep_scan is always acked', () => {
 	});
 });
 
+describe('handleBrandAuditQueue — deep_scan job hand-off', () => {
+	const PAYLOAD = { auditId: 'a1', target: 'contoso.com', phase: 'deep_scan' };
+
+	it('passes auditId, target, internalCall and a step store to the job, then acks', async () => {
+		const runDeepScanFromStepStore = vi.fn(async () => undefined);
+		vi.resetModules();
+		vi.doMock('../src/lib/brand-audit-registrar-deepscan-job', () => ({ runDeepScanFromStepStore }));
+		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
+		const internalCall = vi.fn();
+		const { batch, messages } = makeBatch([PAYLOAD]);
+		await handleBrandAuditQueue(batch, { db: emptyD1(), internalCall });
+		expect(runDeepScanFromStepStore).toHaveBeenCalledTimes(1);
+		const arg = (runDeepScanFromStepStore.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0];
+		expect(arg).toMatchObject({ auditId: 'a1', target: 'contoso.com', internalCall });
+		expect(arg.stepStore).toBeDefined();
+		expect(messages[0].ack).toHaveBeenCalledOnce();
+		expect(messages[0].retry).not.toHaveBeenCalled();
+		vi.doUnmock('../src/lib/brand-audit-registrar-deepscan-job');
+	});
+
+	it('a throwing job is logged as deep_scan_failed and the message is STILL acked (not retried)', async () => {
+		vi.resetModules();
+		vi.doMock('../src/lib/brand-audit-registrar-deepscan-job', () => ({
+			runDeepScanFromStepStore: async () => {
+				throw new Error('deep scan exploded');
+			},
+		}));
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
+		const { batch, messages } = makeBatch([PAYLOAD]);
+		await expect(handleBrandAuditQueue(batch, { db: emptyD1(), internalCall: vi.fn() })).resolves.toBeUndefined();
+		expect(messages[0].ack).toHaveBeenCalledOnce();
+		expect(messages[0].retry).not.toHaveBeenCalled();
+		const logged = logSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('deep_scan_failed'));
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toContain('deep scan exploded');
+		vi.doUnmock('../src/lib/brand-audit-registrar-deepscan-job');
+	});
+});
+
 describe('handleBrandAuditQueue — batch behaviour', () => {
 	it('settles every message exactly once, in order, independently of its neighbours', async () => {
 		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
