@@ -314,6 +314,14 @@ interface ToolRuntimeOptions {
 	certstreamAuthToken?: string;
 	/** SSLMate Cert Spotter API token for CT queries. Absent → unauthenticated. */
 	certspotterToken?: string;
+	/**
+	 * The SCAN_CACHE namespace, threaded to registry tools that compose
+	 * `discover_subdomains` (`osint_investigation_report` on a deep_infrastructure
+	 * target) so they share its fresh-window / last-known-good entries instead of
+	 * spending a second CT query on data the direct tool just cached. Set by
+	 * `handleToolsCall` from its own `scanCacheKV` parameter.
+	 */
+	scanCacheKv?: KVNamespace;
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
@@ -1255,6 +1263,15 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 					reconJobKv: ro?.rateLimitKv,
 					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
+					// A deep_infrastructure report composes this Worker's own discover_subdomains
+					// (the quota-aware CT ladder) for the remembered target; see the tool module.
+					ctDiscovery: {
+						certstream: ro?.certstream,
+						certstreamAuthToken: ro?.certstreamAuthToken,
+						...(ro?.certspotterToken ? { certspotterToken: ro.certspotterToken } : {}),
+						...(ro?.scanCacheKv ? { cacheKv: ro.scanCacheKv } : {}),
+						...(ro?.waitUntil ? { waitUntil: ro.waitUntil } : {}),
+					},
 				}),
 			),
 		cacheTtlSeconds: 30,
@@ -1442,11 +1459,14 @@ export async function handleToolsCall(
 				// does not cache its non-resolving result either). A probe failure or SERVFAIL
 				// falls through to the check unchanged (fail-open).
 				const nxdomainCategory = nxdomainGateCategory(name, validatedArgs);
+				// Registry tools see the scan cache through runtimeOptions (they have no other
+				// handle on this function's `scanCacheKV` parameter).
+				const registryOptions: ToolRuntimeOptions = { ...runtimeOptions, ...(scanCacheKV ? { scanCacheKv: scanCacheKV } : {}) };
 				const runRegisteredTool = async (): Promise<CheckResult> => {
-					if (!nxdomainCategory) return registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+					if (!nxdomainCategory) return registeredTool.execute(validDomain, validatedArgs, registryOptions);
 					// One per-call cache shared by the probe and the check, so check_ns / check_dnssec /
 					// check_zone_hygiene reuse the probe's apex NS answer (SQ-268 F3).
-					const gatedOptions: ToolRuntimeOptions = { ...runtimeOptions, dnsQueryCache: new Map() };
+					const gatedOptions: ToolRuntimeOptions = { ...registryOptions, dnsQueryCache: new Map() };
 					return (await isNonResolvingApex(validDomain, buildDnsOptions(gatedOptions)))
 						? buildNonResolvingCheckResult(nxdomainCategory, validDomain)
 						: registeredTool.execute(validDomain, validatedArgs, gatedOptions);

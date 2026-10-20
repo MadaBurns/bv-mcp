@@ -805,7 +805,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigation_report: {
 		description:
-			'Retrieve the final report of a completed OSINT investigation by investigationId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned or not yet complete.',
+			'Retrieve the final report of a completed OSINT investigation by investigationId. For a deep_infrastructure investigation the report also composes discover_subdomains for the target (a cached CT sample under `ctDiscovery`, never an inventory). Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned or not yet complete.',
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,

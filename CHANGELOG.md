@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- `osint_investigation_report` composes `discover_subdomains` for a `deep_infrastructure` investigation: the report carries a `ctDiscovery` summary (count basis, coverage line, cache state, and the names the recon sample did not already list). The target is remembered at start time in the owner KV, because the recon service's status route deliberately omits the query. The quota-aware CT ladder stays in this Worker; the recon service's own CT leg is a plain crt.sh sample.
+
 ## [3.99.1] - 2026-10-19
 
 Maintainability release: brings the tiered CRAP-gate offenders under the gate ceiling (US-13, #1264 #1265), plus two small fixes and dependency bumps. Every target keeps its name, signature and output, and output-pinning specs guard the splits. `@blackveil/dns-checks` 1.60.2 (parity corpus 1.60.2) is cut because its check sources were refactored (DNSSEC, SVCB/HTTPS, DANE analysis, key strength); behaviour is unchanged and pinned by snapshot specs. Scoring model 1.40.0 (unchanged).
