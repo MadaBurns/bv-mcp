@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.100.1] - 2026-10-20
+
+Patch release: one wording fix in the OSINT report (#1270). `@blackveil/dns-checks` 1.60.2 and scoring model 1.40.0 are unchanged.
+
 ### Fixed
 
 - The `osint_investigation_report` detail sentence now says "at least N name(s)" for a floor-basis CT count. It printed "=N" in v3.100.0 because the output sanitiser replaces `>` with a space.
