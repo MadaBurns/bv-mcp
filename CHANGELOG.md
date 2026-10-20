@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.100.0] - 2026-10-20
+
+Feature release: a `deep_infrastructure` OSINT report now composes this Worker's own CT discovery (#1268). `@blackveil/dns-checks` 1.60.2 and scoring model 1.40.0 are unchanged.
+
 ### Added
 
 - `osint_investigation_report` composes `discover_subdomains` for a `deep_infrastructure` investigation: the report carries a `ctDiscovery` summary (count basis, coverage line, cache state, and the names the recon sample did not already list). The target is remembered at start time in the owner KV, because the recon service's status route deliberately omits the query. The quota-aware CT ladder stays in this Worker; the recon service's own CT leg is a plain crt.sh sample.
