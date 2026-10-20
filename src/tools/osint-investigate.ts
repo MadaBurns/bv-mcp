@@ -544,6 +544,8 @@ export async function osintInvestigationReport(id: string, options: ReconToolOpt
 function ctDiscoveryLine(ct: Record<string, unknown> | undefined): string {
 	if (!ct) return '';
 	if (ct.unavailable) return ' CT discovery (discover_subdomains) was unavailable on this call.';
-	const floor = ct.countBasis === 'floor' ? '>=' : '';
+	// Words, not a ">=" sign: the output sanitiser replaces markdown/HTML characters
+	// (including ">") with a space, which turned ">=2" into "=2" in 3.100.0.
+	const floor = ct.countBasis === 'floor' ? 'at least ' : '';
 	return ` CT discovery (discover_subdomains): ${floor}${String(ct.totalSubdomains)} name(s), ${String(ct.newHostnamesTotal)} not in the recon sample.`;
 }

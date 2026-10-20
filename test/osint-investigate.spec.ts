@@ -457,6 +457,30 @@ describe('osint deep_infrastructure report composes discover_subdomains', () => 
 		expect((meta.findings as unknown[]).length).toBe(2);
 	});
 
+	it('report: a floor count is worded "at least N", never a ">=" the sanitiser would strip', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		await m.osintInvestigateInfrastructureStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_c1f' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		const discover = vi.fn(async () => discoveryResult(['www.acme.com', 'shop.acme.com'], { countBasis: 'floor', truncated: true }));
+		const r = await m.osintInvestigationReport('inv_c1f', {
+			reconBinding: binding({ total: 0, findings: [] }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+			ctDiscovery: { discover },
+		});
+		const ct = r.findings[0]!.metadata!.ctDiscovery as Record<string, unknown>;
+		expect(ct.countBasis).toBe('floor');
+		expect(ct.truncated).toBe(true);
+		expect(r.findings[0]!.detail).toContain('CT discovery (discover_subdomains): at least 2 name(s), 2 not in the recon sample.');
+		expect(r.findings[0]!.detail).not.toContain('=2');
+	});
+
 	it('report: no remembered target (other types, or no KV) means no composition and no CT call', async () => {
 		const m = await import('../src/tools/osint-investigate');
 		const kv = kvStub();
