@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import type { SubdomainDiscoveryResult } from '../src/tools/discover-subdomains';
 afterEach(() => vi.restoreAllMocks());
 function binding(body: unknown, status = 200) {
 	return { fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) };
@@ -55,14 +56,23 @@ describe('osint investigation tools', () => {
 	});
 	it('domain start: returns investigationId when bound', async () => {
 		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');
-		const r = await osintInvestigateDomainStart('example.com', { reconBinding: binding({ investigationId: 'inv_1', status: 'running' }), reconAuthToken: 't' });
+		const r = await osintInvestigateDomainStart('example.com', {
+			reconBinding: binding({ investigationId: 'inv_1', status: 'running' }),
+			reconAuthToken: 't',
+		});
 		expect(r.findings.some((f) => f.metadata?.investigationId === 'inv_1')).toBe(true);
 	});
 	it('infrastructure + supply_chain starts set their type', async () => {
 		const m = await import('../src/tools/osint-investigate');
-		const ri = await m.osintInvestigateInfrastructureStart('example.com', { reconBinding: binding({ investigationId: 'inv_2' }), reconAuthToken: 't' });
+		const ri = await m.osintInvestigateInfrastructureStart('example.com', {
+			reconBinding: binding({ investigationId: 'inv_2' }),
+			reconAuthToken: 't',
+		});
 		expect(ri.findings.some((f) => f.metadata?.type === 'deep_infrastructure')).toBe(true);
-		const rs = await m.osintInvestigateSupplyChainStart('example.com', { reconBinding: binding({ investigationId: 'inv_3' }), reconAuthToken: 't' });
+		const rs = await m.osintInvestigateSupplyChainStart('example.com', {
+			reconBinding: binding({ investigationId: 'inv_3' }),
+			reconAuthToken: 't',
+		});
 		expect(rs.findings.some((f) => f.metadata?.type === 'supply_chain')).toBe(true);
 	});
 	it('status + report: unprovisioned when binding absent', async () => {
@@ -291,5 +301,228 @@ describe('osint investigation tools', () => {
 		const r = await m.osintInvestigationReport('inv_x', { reconBinding: binding(upstream), reconAuthToken: 't' });
 		const meta = r.findings[0]!.metadata!;
 		expect((meta.investigationSummary as string).length).toBe(8_000);
+	});
+});
+
+/** In-memory KV standing in for the owner/target namespace (RATE_LIMIT) in these tests. */
+function kvStub() {
+	const map = new Map<string, string>();
+	return {
+		map,
+		put: vi.fn(async (k: string, v: string) => {
+			map.set(k, v);
+		}),
+		get: vi.fn(async (k: string) => map.get(k) ?? null),
+		delete: vi.fn(async (k: string) => {
+			map.delete(k);
+		}),
+	} as unknown as KVNamespace & { map: Map<string, string> };
+}
+
+/** A minimal `discover_subdomains` result; only the fields the composition reads. */
+function discoveryResult(names: string[], extra: Record<string, unknown> = {}): SubdomainDiscoveryResult {
+	return {
+		domain: 'acme.com',
+		totalSubdomains: names.length,
+		totalCertificates: names.length,
+		subdomains: names.map((subdomain) => ({
+			subdomain,
+			firstSeen: '',
+			lastSeen: '',
+			issuer: '',
+			certCount: 1,
+			isWildcard: false,
+			isExpired: false,
+		})),
+		wildcardCerts: 0,
+		expiredCerts: 0,
+		uniqueIssuers: [],
+		issues: [],
+		countBasis: 'sample',
+		concreteSubdomains: names.length,
+		coverage: {
+			basis: 'ct-sample',
+			perSource: [{ source: 'crtsh', outcome: 'ok', contributed: true, indexExhausted: true, historyWindow: 'unexpired-only' }],
+			contributing: ['crtsh'],
+			unavailable: [],
+			notConsulted: ['certstream', 'certspotter'],
+			degraded: true,
+			caveat: 'sample',
+		},
+		...extra,
+	} as SubdomainDiscoveryResult;
+}
+
+describe('osint deep_infrastructure report composes discover_subdomains', () => {
+	it('start remembers a sanitised domain target for deep_infrastructure only, owner-scoped', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		await m.osintInvestigateInfrastructureStart('ACME.com.', {
+			reconBinding: binding({ investigationId: 'inv_t1' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		expect(kv.map.get('osint-investigation-target:inv_t1')).toBe(JSON.stringify({ type: 'deep_infrastructure', domain: 'acme.com' }));
+		// The other types never store a target, and an IP/org query is not a domain to discover.
+		await m.osintInvestigateDomainStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_t2' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		expect(kv.map.has('osint-investigation-target:inv_t2')).toBe(false);
+		await m.osintInvestigateInfrastructureStart('Acme Holdings Ltd', {
+			reconBinding: binding({ investigationId: 'inv_t3' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		expect(kv.map.has('osint-investigation-target:inv_t3')).toBe(false);
+		// Without a principal nothing is remembered (same guard as the owner record).
+		await m.osintInvestigateInfrastructureStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_t4' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+		});
+		expect(kv.map.has('osint-investigation-target:inv_t4')).toBe(false);
+	});
+
+	it('report: runs discover_subdomains for the remembered target, under a budget, sharing the scan cache, and lists only names the recon sample lacks', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		const scanCache = kvStub();
+		const waitUntil = vi.fn();
+		await m.osintInvestigateInfrastructureStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_c1' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		const discover = vi.fn(async () =>
+			discoveryResult(['www.acme.com', 'vpn.acme.com', 'Mail.acme.com'], { cached: true, cacheAgeMinutes: 12 }),
+		);
+		const before = Date.now();
+		const r = await m.osintInvestigationReport('inv_c1', {
+			reconBinding: binding({
+				total: 2,
+				findings: [
+					{ type: 'ct_hostname', severity: 'info', title: 'www.acme.com' },
+					{ type: 'ct_hostname', severity: 'info', title: 'mail.acme.com' },
+				],
+			}),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+			ctDiscovery: {
+				certstream: { fetch: vi.fn() as unknown as typeof fetch },
+				certstreamAuthToken: 'cs',
+				cacheKv: scanCache,
+				waitUntil,
+				discover,
+			},
+		});
+		expect(discover).toHaveBeenCalledTimes(1);
+		const [domain, certstream, certstreamAuthToken, opts] = discover.mock.calls[0]! as unknown as [
+			string,
+			unknown,
+			string,
+			Record<string, unknown>,
+		];
+		expect(domain).toBe('acme.com');
+		expect(certstream).toBeDefined();
+		expect(certstreamAuthToken).toBe('cs');
+		expect(opts.cacheKv).toBe(scanCache);
+		expect(opts.waitUntil).toBe(waitUntil);
+		expect(opts.certspotterToken).toBeUndefined();
+		expect(typeof opts.deadlineMs).toBe('number');
+		expect(opts.deadlineMs as number).toBeLessThanOrEqual(before + 16_000 + 1_000);
+		const meta = r.findings[0]!.metadata!;
+		const ct = meta.ctDiscovery as Record<string, unknown>;
+		expect(ct.source).toBe('discover_subdomains');
+		expect(ct.basis).toBe('ct-sample');
+		expect(ct.countBasis).toBe('sample');
+		expect(ct.totalSubdomains).toBe(3);
+		expect(ct.cached).toBe(true);
+		expect(ct.cacheAgeMinutes).toBe(12);
+		expect(ct.newHostnames).toEqual(['vpn.acme.com']); // case-insensitive against the recon sample
+		expect(ct.newHostnamesTotal).toBe(1);
+		// The createFinding chokepoint neutralises markdown in metadata strings, so the
+		// brackets of `Coverage [ct-sample]` are gone here; the per-source outcome survives.
+		expect(String(ct.coverage)).toContain('Coverage');
+		expect(String(ct.coverage)).toContain('crtsh=ok');
+		expect(String(ct.coverage)).toContain('certspotter=not-consulted');
+		expect(r.findings[0]!.detail).toContain('CT discovery (discover_subdomains): 3 name(s), 1 not in the recon sample.');
+		// The recon findings are still the report body.
+		expect((meta.findings as unknown[]).length).toBe(2);
+	});
+
+	it('report: no remembered target (other types, or no KV) means no composition and no CT call', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		const discover = vi.fn(async () => discoveryResult(['x.acme.com']));
+		await m.osintInvestigateSupplyChainStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_s1' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		const r = await m.osintInvestigationReport('inv_s1', {
+			reconBinding: binding({ total: 0, findings: [] }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+			ctDiscovery: { discover },
+		});
+		expect(discover).not.toHaveBeenCalled();
+		expect(r.findings[0]!.metadata!.ctDiscovery).toBeUndefined();
+		expect(r.findings[0]!.detail).not.toContain('CT discovery');
+	});
+
+	it('report: a throwing discover_subdomains degrades to ctDiscovery.unavailable and keeps the recon report', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		await m.osintInvestigateInfrastructureStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_e1' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+		});
+		const discover = vi.fn(async () => {
+			throw new Error('boom');
+		});
+		const r = await m.osintInvestigationReport('inv_e1', {
+			reconBinding: binding({ total: 1, findings: [{ type: 'dns_a', severity: 'info', title: '1 A record(s)' }] }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'p1',
+			ctDiscovery: { discover },
+		});
+		const meta = r.findings[0]!.metadata!;
+		expect((meta.ctDiscovery as Record<string, unknown>).unavailable).toBe(true);
+		expect((meta.findings as unknown[]).length).toBe(1);
+		expect(r.findings[0]!.detail).toContain('was unavailable on this call');
+		expect(r.checkStatus).not.toBe('error');
+	});
+
+	it('report: another principal cannot reach the remembered target', async () => {
+		const m = await import('../src/tools/osint-investigate');
+		const kv = kvStub();
+		await m.osintInvestigateInfrastructureStart('acme.com', {
+			reconBinding: binding({ investigationId: 'inv_o1' }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'owner',
+		});
+		const discover = vi.fn(async () => discoveryResult(['x.acme.com']));
+		const r = await m.osintInvestigationReport('inv_o1', {
+			reconBinding: binding({ total: 0, findings: [] }),
+			reconAuthToken: 't',
+			reconJobKv: kv,
+			principalId: 'intruder',
+			ctDiscovery: { discover },
+		});
+		expect(discover).not.toHaveBeenCalled();
+		expect(r.findings[0]!.metadata!.notOwned).toBe(true);
 	});
 });

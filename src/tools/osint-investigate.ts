@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: BUSL-1.1
-/** OSINT investigation tools — thin fail-soft proxies over bv-recon osint-worker workflows. */
+/**
+ * OSINT investigation tools — thin fail-soft proxies over bv-recon osint-worker workflows.
+ *
+ * One composition lives here rather than in bv2-recon: for a `deep_infrastructure`
+ * investigation the REPORT also runs this Worker's own `discover_subdomains` for the
+ * target (the cached, cooled-down crt.sh → Certspotter → owned-index CT ladder) and
+ * attaches its result under `ctDiscovery`. bv2-recon's own CT leg is a crt.sh sample
+ * with no cache and no account quota, by design (bv-web-prod
+ * cloudflare/recon/src/osint/deep.ts) — the quota-aware ladder is THIS tool, and
+ * bv2-recon is a pure receiver that never calls back here.
+ *
+ * The target is remembered at START time in the owner KV, because bv2-recon's status
+ * route deliberately omits `query` (an investigationId must not be an id→target oracle
+ * for any BV_RECON_KEY holder). It is read back only after the owner check passes.
+ */
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { formatCoverageLine } from '../lib/ct-coverage';
+import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { markUnmeasured } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
@@ -12,8 +28,29 @@ import {
 	type ReconInvestigationType,
 	type BindingDegradationSink,
 } from '../lib/recon-binding';
+import { discoverSubdomains, type DiscoverSubdomainsOptions, type SubdomainDiscoveryResult } from './discover-subdomains';
 
 const CATEGORY = 'osint_investigation' as CheckCategory;
+
+/** The `discover_subdomains` entry point, injectable so the composition is testable without CT I/O. */
+export type DiscoverSubdomainsFn = (
+	domain: string,
+	certstream?: { fetch: typeof fetch },
+	certstreamAuthToken?: string,
+	options?: DiscoverSubdomainsOptions,
+) => Promise<SubdomainDiscoveryResult>;
+
+/** What the report needs to run `discover_subdomains` for a deep_infrastructure target. */
+export interface CtDiscoveryDeps {
+	certstream?: { fetch: typeof fetch };
+	certstreamAuthToken?: string;
+	certspotterToken?: string;
+	/** The SCAN_CACHE namespace: shares the direct tool's fresh-window / last-known-good entries. */
+	cacheKv?: KVNamespace;
+	waitUntil?: (promise: Promise<unknown>) => void;
+	/** Defaults to the real `discoverSubdomains`. */
+	discover?: DiscoverSubdomainsFn;
+}
 
 export interface ReconToolOptions {
 	reconBinding?: ReconBinding;
@@ -21,6 +58,8 @@ export interface ReconToolOptions {
 	reconJobKv?: KVNamespace;
 	principalId?: string;
 	onBindingDegradation?: BindingDegradationSink;
+	/** Present → a deep_infrastructure report composes `discover_subdomains` for its target. */
+	ctDiscovery?: CtDiscoveryDeps;
 }
 
 function unprovisioned(detail: string): CheckResult {
@@ -142,15 +181,131 @@ function reconUnavailable(
 	if (reason === 'unbound') return unprovisioned(prose.unbound);
 	if (reason === 'not_found') return notFound(title, prose.notFound, meta);
 	if (reason === 'target_not_authorized')
-		return upstreamUnavailable(reason, title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, { reconUpstreamStatus: 403, ...meta });
+		return upstreamUnavailable(reason, title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, {
+			reconUpstreamStatus: 403,
+			...meta,
+		});
 	return upstreamUnavailable(reason, title, prose.upstream, meta);
 }
 
 const OSINT_OWNER_TTL_SECONDS = 24 * 60 * 60;
 const SAFE_INVESTIGATION_ID = /^[A-Za-z0-9._:-]+$/;
 
+/**
+ * Wall-clock budget for the composed `discover_subdomains` call. The report tool already
+ * spends two binding hops and sits under the handler's 28 s guillotine, so this is tighter
+ * than the direct tool's 24 s: the ladder yields a partial (`countBasis: 'floor'`) rather
+ * than taking the whole report down with it, and a second poll hits its 1 h fresh cache.
+ */
+const OSINT_CT_COMPOSE_BUDGET_MS = 16_000;
+/** Names listed under `ctDiscovery.newHostnames`; the total is always carried beside it. */
+const CT_COMPOSE_NEW_NAMES_MAX = 25;
+
 function ownerKey(id: string): string {
 	return `osint-investigation-owner:${id}`;
+}
+
+function targetKey(id: string): string {
+	return `osint-investigation-target:${id}`;
+}
+
+interface RememberedTarget {
+	type: ReconInvestigationType;
+	domain: string;
+}
+
+/**
+ * Remember the deep_infrastructure target beside the owner record (same KV, same TTL, same
+ * guards). Only a syntactically valid, sanitised domain is stored — the recon service accepts
+ * IPs and org names for this type too, and `discover_subdomains` must never see those.
+ */
+async function rememberInvestigationTarget(
+	id: string | undefined,
+	type: ReconInvestigationType,
+	query: string,
+	options: ReconToolOptions,
+): Promise<void> {
+	if (type !== 'deep_infrastructure') return;
+	if (!id || !options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return;
+	if (!validateDomain(query).valid) return;
+	let domain: string;
+	try {
+		domain = sanitizeDomain(query);
+	} catch {
+		return;
+	}
+	if (!domain) return;
+	const value: RememberedTarget = { type, domain };
+	await options.reconJobKv.put(targetKey(id), JSON.stringify(value), { expirationTtl: OSINT_OWNER_TTL_SECONDS }).catch(() => undefined);
+}
+
+/** The remembered target, or null. Callers run the owner check FIRST — this read is not an authority. */
+async function readInvestigationTarget(id: string, options: ReconToolOptions): Promise<RememberedTarget | null> {
+	if (!options.reconJobKv || !SAFE_INVESTIGATION_ID.test(id)) return null;
+	const raw = await options.reconJobKv.get(targetKey(id)).catch(() => null);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as Partial<RememberedTarget> | null;
+		if (parsed && typeof parsed.domain === 'string' && parsed.type === 'deep_infrastructure') {
+			return { type: parsed.type, domain: parsed.domain };
+		}
+	} catch {
+		// a garbled entry is a miss, never an error
+	}
+	return null;
+}
+
+/** Hostnames the recon report already lists as `ct_hostname` findings, lower-cased. */
+function knownCtHostnames(findings: readonly Record<string, unknown>[]): Set<string> {
+	const known = new Set<string>();
+	for (const f of findings) {
+		if (f.type === 'ct_hostname' && typeof f.title === 'string') known.add(f.title.toLowerCase());
+	}
+	return known;
+}
+
+/**
+ * Run `discover_subdomains` for the target and reduce it to a token-cheap summary. Never
+ * throws: a failure is `{ unavailable: true }` and the recon report is returned regardless.
+ * Every string here reaches `createFinding`, whose chokepoint sanitises metadata recursively.
+ */
+async function composeCtDiscovery(
+	domain: string,
+	deps: CtDiscoveryDeps,
+	reconFindings: readonly Record<string, unknown>[],
+): Promise<Record<string, unknown>> {
+	const discover = deps.discover ?? discoverSubdomains;
+	const known = knownCtHostnames(reconFindings);
+	try {
+		const r = await discover(domain, deps.certstream, deps.certstreamAuthToken, {
+			signal: AbortSignal.timeout(OSINT_CT_COMPOSE_BUDGET_MS),
+			deadlineMs: Date.now() + OSINT_CT_COMPOSE_BUDGET_MS,
+			...(deps.certspotterToken ? { certspotterToken: deps.certspotterToken } : {}),
+			...(deps.cacheKv ? { cacheKv: deps.cacheKv } : {}),
+			...(deps.waitUntil ? { waitUntil: deps.waitUntil } : {}),
+		});
+		const fresh: string[] = [];
+		for (const s of r.subdomains) {
+			if (!s.isWildcard && !known.has(s.subdomain.toLowerCase())) fresh.push(s.subdomain);
+		}
+		return {
+			source: 'discover_subdomains',
+			basis: 'ct-sample',
+			countBasis: r.countBasis ?? 'sample',
+			totalSubdomains: r.totalSubdomains,
+			concreteSubdomains: r.concreteSubdomains ?? r.totalSubdomains - r.wildcardCerts,
+			...(r.cached ? { cached: true } : {}),
+			...(r.stale ? { stale: true } : {}),
+			...(typeof r.cacheAgeMinutes === 'number' ? { cacheAgeMinutes: r.cacheAgeMinutes } : {}),
+			...(r.truncated ? { truncated: true } : {}),
+			...(r.sourceUnavailable ? { sourceUnavailable: true } : {}),
+			...(r.coverage ? { coverage: formatCoverageLine(r.coverage) } : {}),
+			newHostnames: fresh.slice(0, CT_COMPOSE_NEW_NAMES_MAX),
+			newHostnamesTotal: fresh.length,
+		};
+	} catch (err) {
+		return { source: 'discover_subdomains', unavailable: true, reason: err instanceof Error ? err.name : 'error' };
+	}
 }
 
 function notOwned(id: string): CheckResult {
@@ -202,6 +357,7 @@ export async function osintInvestigateStart(
 		);
 	const started = outcome.data;
 	await rememberInvestigationOwner(started.investigationId, options);
+	await rememberInvestigationTarget(started.investigationId, type, query, options);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
@@ -360,11 +516,34 @@ export async function osintInvestigationReport(id: string, options: ReconToolOpt
 	const r = outcome.data;
 	const total = typeof r.total === 'number' ? r.total : Array.isArray(r.findings) ? r.findings.length : 0;
 	const summary = typeof r.summary === 'string' ? r.summary.trim() : '';
+	const meta = projectReportMeta(r);
+	// Owner check passed above; the remembered target is read only after it.
+	const target = await readInvestigationTarget(id, options);
+	const ctDiscovery =
+		target && options.ctDiscovery
+			? await composeCtDiscovery(target.domain, options.ctDiscovery, meta.findings as Record<string, unknown>[])
+			: undefined;
+	const ctLine = ctDiscoveryLine(ctDiscovery);
 	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Investigation ${id} report`, 'info', shortText(`${total} findings.${summary ? ` ${summary}` : ''}`, 1200), {
-			...projectReportMeta(r),
-			summary: true,
-			investigationId: id,
-		}),
+		createFinding(
+			CATEGORY,
+			`Investigation ${id} report`,
+			'info',
+			shortText(`${total} findings.${summary ? ` ${summary}` : ''}${ctLine}`, 1200),
+			{
+				...meta,
+				...(ctDiscovery ? { ctDiscovery } : {}),
+				summary: true,
+				investigationId: id,
+			},
+		),
 	]) as CheckResult;
+}
+
+/** One sentence for the human-readable detail; the structured summary carries the rest. */
+function ctDiscoveryLine(ct: Record<string, unknown> | undefined): string {
+	if (!ct) return '';
+	if (ct.unavailable) return ' CT discovery (discover_subdomains) was unavailable on this call.';
+	const floor = ct.countBasis === 'floor' ? '>=' : '';
+	return ` CT discovery (discover_subdomains): ${floor}${String(ct.totalSubdomains)} name(s), ${String(ct.newHostnamesTotal)} not in the recon sample.`;
 }
