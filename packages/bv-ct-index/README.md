@@ -57,12 +57,23 @@ registrable apex and answers a healthy empty list.
 
 ## Routes and auth
 
-All routes are `GET ?domain=<hostname>` and need `Authorization: Bearer <CT_INDEX_ADMIN_KEY>` (constant-time compare; unset secret
-fails closed with 401). `GET /health` is the only open route and returns `{"ok":true,"worker":"bv-ct-index"}`. The Worker has no
+All routes are `GET ?domain=<hostname>` and need a bearer key (constant-time compare; an unset secret fails closed with 401). Two
+kinds of key work:
+
+- `CT_INDEX_ADMIN_KEY`, on its own.
+- A **read key per calling Worker**, accepted only when the request names that Worker in `X-BV-Caller`: `bv-mcp`
+  (`CT_INDEX_KEY_BV_MCP`), `bv-web-prod` (`CT_INDEX_KEY_BV_WEB_PROD`), `bv2-ops` (`CT_INDEX_KEY_BV2_OPS`), `bv2-recon`
+  (`CT_INDEX_KEY_BV2_RECON`) and `bv2-certstream` (`CT_INDEX_KEY_BV2_CERTSTREAM`). The list is `READ_CALLERS` in
+  `src/api/auth.ts`. Each is optional: an unset key refuses that caller, and rotating one touches no other caller.
+
+Every answer carries `coverage.entriesBehind`: the log entries the tailer has not read yet, summed over every log. `freshThrough`
+alone hides that, as it moves with every write however far behind the tailer is. A caller that needs recent certificates should
+treat a large `entriesBehind` as "recent names may be missing" and keep its other sources. `GET /health` is the only open route and returns `{"ok":true,"worker":"bv-ct-index"}`. The Worker has no
 `workers.dev` hostname and no route: it is reachable only through the `BV_CERTSTREAM` service binding.
 
-The same secret value is bv-mcp's `BV_CERTSTREAM_ADMIN_KEY` (bv-mcp falls back to `BV_INTERNAL_DEV_KEY` when it is unset). Setting
-only one side makes every `/enumerate` call 401, and bv-mcp then falls through to crt.sh.
+bv-mcp sends `X-BV-Caller: bv-mcp` and its `BV_CERTSTREAM_ADMIN_KEY` secret as the bearer (bv-mcp falls back to
+`BV_INTERNAL_DEV_KEY` when it is unset). That value must equal `CT_INDEX_KEY_BV_MCP` here, or the admin key. Setting only one side
+makes every call 401, and bv-mcp then falls through to crt.sh.
 
 | Route                 | Used by                                           | Notes                                                                    |
 | --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |

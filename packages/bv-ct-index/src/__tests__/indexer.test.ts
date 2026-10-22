@@ -80,6 +80,8 @@ describe('T0 indexer', () => {
 		expect(await meta()).toEqual({
 			indexStartedAt: new Date(T).toISOString(),
 			freshThrough: new Date(T + HOUR_MS).toISOString(),
+			// The indexer writes no cursors; with none, the backlog is unknown, not zero.
+			entriesBehind: null,
 			generation: 1,
 		});
 		// One row per day: 4 puts (3 names runs, 1 siblings run), no GETs, and the D1 rows the batches wrote.

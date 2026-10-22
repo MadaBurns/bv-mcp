@@ -15,9 +15,8 @@
  */
 
 import { apexOf, nameKey } from '../codec';
-import type { Env } from '../index';
 import type { IndexReader, SiblingObservation } from '../types';
-import { isAuthorized } from './auth';
+import { authenticate, type ApiKeys } from './auth';
 
 /** Page size, matching the 500-name display cap bv-mcp already applies. */
 export const PAGE_LIMIT = 500;
@@ -45,6 +44,10 @@ function coverageOf(meta: ReaderMeta, truncated: boolean) {
 		source: COVERAGE_SOURCE,
 		indexStartedAt: meta.indexStartedAt,
 		freshThrough: meta.freshThrough,
+		// Entries the logs hold that the tailer has not read yet, summed over every log, as of each log's last cursor
+		// write. freshThrough alone hides this: it moves with every write however far behind the tailer is. A caller
+		// that needs recent issuance treats a large value as "the index may be missing recent names".
+		entriesBehind: meta.entriesBehind,
 		historyWindow: 'forward-from' as const,
 		truncated,
 	};
@@ -165,8 +168,8 @@ function faultResponse(route: string, error: unknown): Response {
 const ROUTES = new Set(['/enumerate', '/sans', '/cert-meta']);
 
 /** Auth, routing and fault mapping for every path except /health (index.ts answers that one, unauthenticated). */
-export async function handleApiRequest(request: Request, env: Pick<Env, 'CT_INDEX_ADMIN_KEY'>, deps: ApiDeps): Promise<Response> {
-	if (!(await isAuthorized(request.headers.get('authorization'), env.CT_INDEX_ADMIN_KEY))) {
+export async function handleApiRequest(request: Request, env: ApiKeys, deps: ApiDeps): Promise<Response> {
+	if ((await authenticate(request.headers, env)) === null) {
 		return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
 	}
 	const url = new URL(request.url);
