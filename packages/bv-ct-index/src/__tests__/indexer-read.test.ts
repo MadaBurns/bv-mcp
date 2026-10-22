@@ -148,6 +148,24 @@ describe('createReader faults', () => {
 		await expect(reader.siblings('example.com', { limit: 10 })).rejects.toThrow(MissingRunObjectError);
 	});
 
+	it('reports the tailer backlog: unread entries summed over the logs that have a cursor', async () => {
+		const env = testEnv();
+		const reader = createReader(env, () => at(0, 2, 0));
+		await env.CURSORS.prepare('DELETE FROM log_cursors').run();
+		expect((await reader.meta()).entriesBehind).toBeNull();
+
+		const insert = env.CURSORS.prepare(
+			"INSERT INTO log_cursors (log_id, kind, url, next_index, tree_size, updated_at) VALUES (?, 'static', ?, ?, ?, '2026-10-17T00:00:00Z')",
+		);
+		await env.CURSORS.batch([
+			insert.bind('a', 'https://a.test/', 1_000, 1_500),
+			insert.bind('b', 'https://b.test/', 7, 7),
+			// Never read: no cursor yet, so it adds nothing rather than nulling the sum.
+			insert.bind('c', 'https://c.test/', null, 9_999),
+		]);
+		expect((await reader.meta()).entriesBehind).toBe(500);
+	});
+
 	it('throws on a D1 failure', async () => {
 		const env = testEnv({
 			CURSORS: withFault(testEnv().CURSORS, 'prepare', () => {

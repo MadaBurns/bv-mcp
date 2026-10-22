@@ -40,7 +40,8 @@ export interface ScanPage {
 export interface IndexReader {
 	scan(domain: string, opts: { limit: number; cursor?: string | null }): Promise<ScanPage>; // all names == domain or under it, merged across tiers, expired dropped
 	siblings(apex: string, opts: { limit: number }): Promise<{ siblings: SiblingObservation[]; truncated: boolean }>;
-	meta(): Promise<{ indexStartedAt: string | null; freshThrough: string | null; generation: number }>;
+	// entriesBehind: unread log entries summed over the logs with a cursor; null before any log has one.
+	meta(): Promise<{ indexStartedAt: string | null; freshThrough: string | null; entriesBehind: number | null; generation: number }>;
 }
 
 /** One row of a sorted run. A run holds one kind only: name keys never start with the sibling prefix 's\x00'. */
