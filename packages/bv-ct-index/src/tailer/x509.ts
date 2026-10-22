@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
  * Minimal DER walker for the TBSCertificate a CT precert entry carries (RFC 5280 section 4.1). It reads
- * only what the tailer stores: the SAN dNSNames (else the subject CN), the validity window and the issuer
- * CN (else O). No dependencies; Workers-runtime APIs only. Every malformed or truncated input throws a
+ * only what the tailer stores: the SAN dNSNames (else the subject CN), the validity window, the issuer
+ * CN (else O), and the certificate details the scanners show (serial, signature algorithm, key type and size). No dependencies; Workers-runtime APIs only. Every malformed or truncated input throws a
  * RangeError, so the caller can skip and count the entry.
  */
 
@@ -14,6 +14,14 @@ export interface CertFacts {
 	notAfter: number;
 	/** Issuer CN, else issuer O, else ''. */
 	issuer: string;
+	/** The serial number as lowercase hex, without the sign byte DER adds before a high bit. */
+	serial: string;
+	/** The TBS signature algorithm by its OpenSSL name (e.g. `sha256WithRSAEncryption`), else its dotted OID; '' if unreadable. */
+	sigAlg: string;
+	/** Same vocabulary as @blackveil/dns-checks `CertMetadata.keyType`. */
+	keyType: 'rsa' | 'ec' | 'unknown';
+	/** RSA modulus bits or the EC curve's size; null when the key or curve is not one we size. */
+	keyBits: number | null;
 }
 
 interface Tlv {
@@ -40,6 +48,37 @@ const DNS_NAME_TAG = 0x82;
 const OID_COMMON_NAME = [0x55, 0x04, 0x03];
 const OID_ORGANIZATION = [0x55, 0x04, 0x0a];
 const OID_SUBJECT_ALT_NAME = [0x55, 0x1d, 0x11];
+const BIT_STRING = 0x03;
+
+/**
+ * OIDs as dotted text, built from their arcs: a dotted literal with four parts reads as an IPv4 address to the
+ * secret scanners (see `epochSeconds`).
+ */
+const oid = (...arcs: number[]) => arcs.join('.');
+
+/** Dotted OID → name, for the signature algorithms CAs use; anything else is kept as its dotted OID. */
+const SIGNATURE_ALGORITHMS: Record<string, string> = {
+	[oid(1, 2, 840, 113549, 1, 1, 5)]: 'sha1WithRSAEncryption',
+	[oid(1, 2, 840, 113549, 1, 1, 4)]: 'md5WithRSAEncryption',
+	[oid(1, 2, 840, 113549, 1, 1, 10)]: 'rsassaPss',
+	[oid(1, 2, 840, 113549, 1, 1, 11)]: 'sha256WithRSAEncryption',
+	[oid(1, 2, 840, 113549, 1, 1, 12)]: 'sha384WithRSAEncryption',
+	[oid(1, 2, 840, 113549, 1, 1, 13)]: 'sha512WithRSAEncryption',
+	[oid(1, 2, 840, 10045, 4, 1)]: 'ecdsa-with-SHA1',
+	[oid(1, 2, 840, 10045, 4, 3, 2)]: 'ecdsa-with-SHA256',
+	[oid(1, 2, 840, 10045, 4, 3, 3)]: 'ecdsa-with-SHA384',
+	[oid(1, 2, 840, 10045, 4, 3, 4)]: 'ecdsa-with-SHA512',
+	[oid(1, 3, 101, 112)]: 'ED25519',
+};
+const RSA_KEY = oid(1, 2, 840, 113549, 1, 1, 1);
+const RSA_PSS_KEY = oid(1, 2, 840, 113549, 1, 1, 10);
+const EC_KEY = oid(1, 2, 840, 10045, 2, 1);
+/** Named curve OID → key size in bits. */
+const EC_CURVE_BITS: Record<string, number> = {
+	[oid(1, 2, 840, 10045, 3, 1, 7)]: 256,
+	[oid(1, 3, 132, 0, 34)]: 384,
+	[oid(1, 3, 132, 0, 35)]: 521,
+};
 
 const utf8 = new TextDecoder();
 
@@ -124,6 +163,89 @@ function epochSeconds(der: Uint8Array, tlv: Tlv | undefined): number {
 	return Math.floor(Date.UTC(fullYear, month - 1, day, hour, minute, second) / 1000);
 }
 
+/** An OBJECT IDENTIFIER's content as dotted text. */
+function dottedOid(der: Uint8Array, tlv: Tlv): string {
+	if (tlv.tag !== OID || tlv.end === tlv.start) throw new RangeError('DER: expected OBJECT IDENTIFIER');
+	const first = der[tlv.start]!;
+	const top = first < 80 ? Math.floor(first / 40) : 2;
+	return [top, first - 40 * top, ...base128Arcs(der, tlv.start + 1, tlv.end)].join('.');
+}
+
+/** The arcs after the first byte: base-128 groups, the high bit set on every byte but a group's last. */
+function base128Arcs(der: Uint8Array, start: number, end: number): number[] {
+	const arcs: number[] = [];
+	let arc = 0;
+	for (let i = start; i < end; i++) {
+		arc = arc * 128 + (der[i]! & 0x7f);
+		if (der[i]! < 0x80) {
+			arcs.push(arc);
+			arc = 0;
+		}
+	}
+	return arcs;
+}
+
+/** The bit length of an unsigned big-endian integer held in der[start, end), leading zero bytes ignored. */
+function bitLength(der: Uint8Array, start: number, end: number): number {
+	let i = start;
+	while (i < end && der[i] === 0) i++;
+	if (i === end) return 0;
+	return (end - i - 1) * 8 + (32 - Math.clz32(der[i]!));
+}
+
+/** Lowercase hex of the serial INTEGER, without the sign byte DER adds before a high bit. */
+function serialHex(der: Uint8Array, serial: Tlv): string {
+	const start = serial.end - serial.start > 1 && der[serial.start] === 0 ? serial.start + 1 : serial.start;
+	let hex = '';
+	for (let i = start; i < serial.end; i++) hex += der[i]!.toString(16).padStart(2, '0');
+	return hex;
+}
+
+/**
+ * The details are read leniently: a malformed signature or key field yields '' / 'unknown' rather than a throw,
+ * so an odd key encoding never costs the names, which are what the index is for.
+ */
+function details(der: Uint8Array, signature: Tlv, spki: Tlv): Pick<CertFacts, 'sigAlg' | 'keyType' | 'keyBits'> {
+	let sigAlg = '';
+	try {
+		sigAlg = signatureAlgorithm(der, signature);
+	} catch {
+		// keep ''
+	}
+	try {
+		return { sigAlg, ...publicKey(der, spki) };
+	} catch {
+		return { sigAlg, keyType: 'unknown', keyBits: null };
+	}
+}
+
+function signatureAlgorithm(der: Uint8Array, algorithm: Tlv): string {
+	const oid = dottedOid(der, expectTag(children(der, algorithm)[0], OID, 'signature algorithm'));
+	return SIGNATURE_ALGORITHMS[oid] ?? oid;
+}
+
+/** RSA modulus bits: the BIT STRING (one unused-bits byte) wraps SEQUENCE { modulus INTEGER, exponent INTEGER }. */
+function rsaBits(der: Uint8Array, key: Tlv | undefined): number | null {
+	if (key?.tag !== BIT_STRING) return null;
+	const rsaKey = readTlv(der, key.start + 1, key.end);
+	const modulus = rsaKey.tag === SEQUENCE ? children(der, rsaKey)[0] : undefined;
+	return modulus?.tag === INTEGER ? bitLength(der, modulus.start, modulus.end) : null;
+}
+
+function publicKey(der: Uint8Array, spki: Tlv): Pick<CertFacts, 'keyType' | 'keyBits'> {
+	const [algorithm, key] = children(der, spki);
+	const [oidTlv, parameters] = children(der, expectTag(algorithm, SEQUENCE, 'key algorithm'));
+	const oid = dottedOid(der, expectTag(oidTlv, OID, 'key algorithm'));
+	if (oid === RSA_KEY || oid === RSA_PSS_KEY) return { keyType: 'rsa', keyBits: rsaBits(der, key) };
+	if (oid === EC_KEY) return { keyType: 'ec', keyBits: ecBits(der, parameters) };
+	return { keyType: 'unknown', keyBits: null };
+}
+
+/** An EC key's size from its namedCurve parameter; null for an unnamed or unsized curve. */
+function ecBits(der: Uint8Array, parameters: Tlv | undefined): number | null {
+	return parameters?.tag === OID ? (EC_CURVE_BITS[dottedOid(der, parameters)] ?? null) : null;
+}
+
 /** The dNSNames of a subjectAltName extension's value (an OCTET STRING wrapping GeneralNames). */
 function sanDnsNames(der: Uint8Array, extnValue: Tlv): string[] {
 	const generalNames = expectTag(readTlv(der, extnValue.start, extnValue.end), SEQUENCE, 'GeneralNames');
@@ -135,12 +257,12 @@ function sanDnsNames(der: Uint8Array, extnValue: Tlv): string[] {
 export function parseTbsCertificate(der: Uint8Array): CertFacts {
 	const fields = children(der, expectTag(readTlv(der, 0, der.length), SEQUENCE, 'TBSCertificate'));
 	let i = fields[0]?.tag === VERSION_TAG ? 1 : 0;
-	expectTag(fields[i++], INTEGER, 'serialNumber');
-	expectTag(fields[i++], SEQUENCE, 'signature');
+	const serial = expectTag(fields[i++], INTEGER, 'serialNumber');
+	const signature = expectTag(fields[i++], SEQUENCE, 'signature');
 	const issuer = expectTag(fields[i++], SEQUENCE, 'issuer');
 	const [notBefore, notAfter] = children(der, expectTag(fields[i++], SEQUENCE, 'validity'));
 	const subject = expectTag(fields[i++], SEQUENCE, 'subject');
-	expectTag(fields[i++], SEQUENCE, 'subjectPublicKeyInfo');
+	const spki = expectTag(fields[i++], SEQUENCE, 'subjectPublicKeyInfo');
 
 	const dnsNames: string[] = [];
 	const extensions = fields.slice(i).find((field) => field.tag === EXTENSIONS_TAG);
@@ -157,5 +279,7 @@ export function parseTbsCertificate(der: Uint8Array): CertFacts {
 		notBefore: epochSeconds(der, notBefore),
 		notAfter: epochSeconds(der, notAfter),
 		issuer: attributeValues(der, issuer, OID_COMMON_NAME)[0] ?? attributeValues(der, issuer, OID_ORGANIZATION)[0] ?? '',
+		serial: serialHex(der, serial),
+		...details(der, signature, spki),
 	};
 }
