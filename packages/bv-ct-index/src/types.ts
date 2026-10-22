@@ -15,6 +15,17 @@ export interface NameObservation {
 	notAfter: number /* epoch s, max seen */;
 	issuer: string;
 	wildcard: boolean;
+	/** The certificate details of the certificate this row's notAfter and issuer came from; absent on rows written before them. */
+	details?: CertDetails;
+}
+/** What the scanners show about a certificate beyond its names and dates (same vocabulary as @blackveil/dns-checks CertMetadata). */
+export interface CertDetails {
+	notBefore: number /* epoch s, of this certificate */;
+	serial: string /* lowercase hex */;
+	keyType: 'rsa' | 'ec' | 'unknown';
+	keyBits: number | null;
+	sigAlg: string;
+	sanCount: number;
 }
 export interface SiblingObservation {
 	key: string /* 's\x00' + reversed(apex) + '\x00' + sibling */;
@@ -40,7 +51,8 @@ export interface ScanPage {
 export interface IndexReader {
 	scan(domain: string, opts: { limit: number; cursor?: string | null }): Promise<ScanPage>; // all names == domain or under it, merged across tiers, expired dropped
 	siblings(apex: string, opts: { limit: number }): Promise<{ siblings: SiblingObservation[]; truncated: boolean }>;
-	meta(): Promise<{ indexStartedAt: string | null; freshThrough: string | null; generation: number }>;
+	// entriesBehind: unread log entries summed over the logs with a cursor; null before any log has one.
+	meta(): Promise<{ indexStartedAt: string | null; freshThrough: string | null; entriesBehind: number | null; generation: number }>;
 }
 
 /** One row of a sorted run. A run holds one kind only: name keys never start with the sibling prefix 's\x00'. */

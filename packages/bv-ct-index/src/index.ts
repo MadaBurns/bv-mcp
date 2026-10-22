@@ -2,9 +2,9 @@
 /**
  * bv-ct-index sidecar Worker entrypoint (US-12).
  *
- * `scheduled`: the tailer (src/tailer/) and the compaction planner. `queue`: the indexer and compaction jobs (one
- * handler for both queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the bearer-authenticated
- * query API (src/api/).
+ * `scheduled`: the tailer (src/tailer/) and the compaction planner. `queue`: the indexer, compaction jobs and tailer
+ * shards (one handler for all three queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the
+ * bearer-authenticated query API (src/api/).
  */
 
 import { handleApiRequest } from './api/handler';
@@ -14,10 +14,12 @@ import { COMPACTION_CRON, runCompactionCron } from './indexer/plan';
 import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
+import { runFanout, runShard, type ShardRequest } from './tailer/fanout';
 import type { ObservationBatch } from './types';
 
 export const ENTRIES_QUEUE = 'bv-ct-index-entries';
 export const COMPACT_QUEUE = 'bv-ct-index-compact';
+export const TAIL_QUEUE = 'bv-ct-index-tail';
 
 export interface Env {
 	/** R2 bucket `bv-ct-index`: the sorted runs (codec.ts). */
@@ -31,8 +33,40 @@ export interface Env {
 	ENTRIES: Queue<ObservationBatch>;
 	/** Queue `bv-ct-index-compact`: compaction jobs (src/indexer/compact.ts), produced by the hourly planner. */
 	COMPACT: Queue<CompactionJob>;
+	/**
+	 * Queue `bv-ct-index-tail`: one message per tailer shard (src/tailer/fanout.ts), produced by the minute cron.
+	 * Unbound, the tailer runs over every log in the cron invocation alone.
+	 */
+	TAIL?: Queue<ShardRequest>;
+	/**
+	 * Var: 'on' makes the tailer store each certificate's details (serial, key, signature, SAN count) on its name
+	 * rows; anything else stores none. Older versions cannot read a row with details, and compaction carries the
+	 * details forward, so once this has been on, never roll back to a version before it (runbook, "Certificate
+	 * details"). Turning it off stops new details but does not remove stored ones.
+	 */
+	CERT_DETAILS?: string;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
+	/**
+	 * Optional secrets: one read key per calling Worker, accepted only with that Worker's X-BV-Caller
+	 * (src/api/auth.ts READ_CALLERS). Unset means that caller is refused.
+	 */
+	CT_INDEX_KEY_BV_MCP?: string;
+	CT_INDEX_KEY_BV_WEB_PROD?: string;
+	CT_INDEX_KEY_BV2_OPS?: string;
+	CT_INDEX_KEY_BV2_RECON?: string;
+	CT_INDEX_KEY_BV2_CERTSTREAM?: string;
+}
+
+/** One shard per message; never retried (max_retries 0): the next tick re-plans the same logs from their cursors. */
+async function tailShards(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+	for (const message of batch.messages) {
+		const { shard, summary, skipped } = await runShard(env, message.body);
+		console.log(
+			JSON.stringify(summary ? { event: 'ct_tailer_tick', shard, ...summary } : { event: 'ct_tailer_shard_skipped', shard, skipped }),
+		);
+		message.ack();
+	}
 }
 
 export default {
@@ -48,8 +82,13 @@ export default {
 		switch (controller.cron) {
 			case '* * * * *': {
 				// The tailer (src/tailer/): CT log entries -> ObservationBatch messages on ENTRIES.
-				const summary = await runTailer(env, { scheduledTime: controller.scheduledTime });
-				console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
+				if (!env.TAIL) {
+					const summary = await runTailer(env, { scheduledTime: controller.scheduledTime });
+					console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
+					break;
+				}
+				const fanout = await runFanout(env, controller.scheduledTime, env.TAIL);
+				console.log(JSON.stringify({ event: 'ct_tailer_fanout', ...fanout }));
 				break;
 			}
 			case COMPACTION_CRON: {
@@ -65,6 +104,7 @@ export default {
 	async queue(batch, env) {
 		if (batch.queue === ENTRIES_QUEUE) await indexEntries(batch, env);
 		else if (batch.queue === COMPACT_QUEUE) await runCompactionBatch(batch, env);
+		else if (batch.queue === TAIL_QUEUE) await tailShards(batch, env);
 		else throw new Error(`bv-ct-index has no consumer for queue ${batch.queue}`);
 	},
 } satisfies ExportedHandler<Env, unknown>;

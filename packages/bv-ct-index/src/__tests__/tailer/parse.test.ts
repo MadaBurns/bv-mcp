@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nameKey, siblingKey } from '../../codec';
 import { checkpointTreeSize, parseDataTile, precertTbsFromLeafInput, selectLogs, tilePath } from '../../tailer/ct';
 import { MAX_MESSAGE_BYTES, newObservationSet, newRows, observeCert, toBatches } from '../../tailer/observations';
-import { parseTbsCertificate } from '../../tailer/x509';
+import { parseTbsCertificate, type CertFacts } from '../../tailer/x509';
 import type { NameObservation, RunRow } from '../../types';
 import {
 	LOG_LIST,
@@ -32,8 +32,14 @@ function onlyTbs(tileLeaf: string): Uint8Array {
 	return tbs;
 }
 
-function factsOf(expected: { names: string[]; notBefore: number; notAfter: number; issuer: string }) {
-	return { names: expected.names, notBefore: expected.notBefore, notAfter: expected.notAfter, issuer: expected.issuer };
+function factsOf(expected: Omit<CertFacts, 'keyType'> & { keyType: string; apexes: string[] }) {
+	const { apexes: _apexes, ...facts } = expected;
+	return facts;
+}
+
+/** A synthetic certificate: the given fields over fixed details. */
+function cert(facts: Pick<CertFacts, 'names' | 'notBefore' | 'notAfter' | 'issuer'>): CertFacts {
+	return { serial: '01', sigAlg: 'sha256WithRSAEncryption', keyType: 'rsa', keyBits: 2048, ...facts };
 }
 
 describe('parseTbsCertificate on real precert leaves', () => {
@@ -54,6 +60,10 @@ describe('parseTbsCertificate on real precert leaves', () => {
 			notBefore: MULTI_APEX_FACTS.notBefore,
 			notAfter: MULTI_APEX_FACTS.notAfter,
 			issuer: MULTI_APEX_FACTS.issuer,
+			serial: MULTI_APEX_FACTS.serial,
+			sigAlg: MULTI_APEX_FACTS.sigAlg,
+			keyType: MULTI_APEX_FACTS.keyType,
+			keyBits: MULTI_APEX_FACTS.keyBits,
 		});
 	});
 
@@ -211,7 +221,7 @@ describe('observeCert', () => {
 	it('emits siblings at exactly 32 apexes', () => {
 		const set = newObservationSet();
 		const names = Array.from({ length: 32 }, (_, i) => `www.apex${i}.example`);
-		observeCert({ names, notBefore: 1, notAfter: 2, issuer: 'CA' }, set, { badNames: 0, noApex: 0 });
+		observeCert(cert({ names, notBefore: 1, notAfter: 2, issuer: 'CA' }), set, { badNames: 0, noApex: 0 });
 		expect(set.siblings.size).toBe(32 * 31);
 	});
 
@@ -219,7 +229,7 @@ describe('observeCert', () => {
 		const set = newObservationSet();
 		const skips = { badNames: 0, noApex: 0 };
 		observeCert(
-			{ names: ['bad name.example', 'a..example', 'co.uk', '192.0.2.1', 'ok.example'], notBefore: 1, notAfter: 2, issuer: 'CA' },
+			cert({ names: ['bad name.example', 'a..example', 'co.uk', '192.0.2.1', 'ok.example'], notBefore: 1, notAfter: 2, issuer: 'CA' }),
 			set,
 			skips,
 		);
@@ -227,9 +237,45 @@ describe('observeCert', () => {
 		expect(skips).toEqual({ badNames: 2, noApex: 2 });
 	});
 
+	it('adds the certificate details to every name row only when asked, with the SAN count of the whole certificate', () => {
+		const plain = newObservationSet();
+		const withDetails = newObservationSet();
+		const facts = parseTbsCertificate(onlyTbs(STATIC_PRECERT_TILE_LEAF));
+		observeCert(facts, plain, { badNames: 0, noApex: 0 });
+		observeCert(facts, withDetails, { badNames: 0, noApex: 0 }, true);
+		expect([...plain.names.values()].every((row) => row.details === undefined)).toBe(true);
+		const rows = [...withDetails.names.values()];
+		expect(rows.length).toBeGreaterThan(0);
+		for (const row of rows) {
+			expect(row.details).toEqual({
+				notBefore: STATIC_PRECERT_FACTS.notBefore,
+				serial: STATIC_PRECERT_FACTS.serial,
+				keyType: 'rsa',
+				keyBits: 2048,
+				sigAlg: 'sha256WithRSAEncryption',
+				sanCount: STATIC_PRECERT_FACTS.names.length,
+			});
+		}
+		// Siblings carry no details.
+		expect([...withDetails.siblings.values()].every((row) => !('details' in row))).toBe(true);
+	});
+
+	it('cuts an oversized serial and signature algorithm from the log', () => {
+		const set = newObservationSet();
+		observeCert(
+			{ ...cert({ names: ['ok.example'], notBefore: 1, notAfter: 2, issuer: 'CA' }), serial: 'a'.repeat(500), sigAlg: '1.'.repeat(100) },
+			set,
+			{ badNames: 0, noApex: 0 },
+			true,
+		);
+		const details = [...set.names.values()][0]!.details!;
+		expect(details.serial).toHaveLength(128);
+		expect(details.sigAlg).toHaveLength(64);
+	});
+
 	it('cuts an oversized issuer', () => {
 		const set = newObservationSet();
-		observeCert({ names: ['ok.example'], notBefore: 1, notAfter: 2, issuer: 'I'.repeat(5000) }, set, { badNames: 0, noApex: 0 });
+		observeCert(cert({ names: ['ok.example'], notBefore: 1, notAfter: 2, issuer: 'I'.repeat(5000) }), set, { badNames: 0, noApex: 0 });
 		expect([...set.names.values()][0]!.issuer).toHaveLength(256);
 	});
 });

@@ -13,7 +13,7 @@ import cursorErrorsSql from '../../../migrations/0003_cursor_errors.sql?raw';
 import { nameKey } from '../../codec';
 import type { Env } from '../../index';
 import { LOG_LIST_URL, TILE_WIDTH, tilePath } from '../../tailer/ct';
-import { resetLogListMemo, runTailer } from '../../tailer';
+import { HEADER_SLOTS, WINDOW, resetLogListMemo, runTailer, type TailerOptions } from '../../tailer';
 import type { ObservationBatch } from '../../types';
 import {
 	MULTI_APEX_TILE_LEAF,
@@ -204,6 +204,31 @@ describe('runTailer', () => {
 		expect(queue.options.every((options) => (options as { contentType?: string }).contentType === 'json')).toBe(true);
 	});
 
+	it('sends certificate details only when CERT_DETAILS is on', async () => {
+		const tail = async (certDetails?: string) => {
+			resetLogListMemo();
+			await db.prepare('DELETE FROM log_cursors').run();
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const queue = fakeQueue();
+			await runTailer(
+				{ CURSORS: db, ENTRIES: queue.queue, CERT_DETAILS: certDetails },
+				{ scheduledTime: NOW, now: NOW, fetch: fakeNetwork().fetch },
+			);
+			return queue.sent.flatMap((batch) => batch.names);
+		};
+		for (const off of [undefined, 'off', 'ON', '1']) expect((await tail(off)).every((row) => row.details === undefined)).toBe(true);
+		const on = await tail('on');
+		expect(on).toHaveLength(1);
+		expect(on[0]!.details).toEqual({
+			notBefore: RFC6962_PRECERT_FACTS.notBefore,
+			serial: RFC6962_PRECERT_FACTS.serial,
+			keyType: 'ec',
+			keyBits: 256,
+			sigAlg: 'ecdsa-with-SHA256',
+			sanCount: RFC6962_PRECERT_FACTS.names.length,
+		});
+	});
+
 	it('writes no cursor until the send has resolved', async () => {
 		await seed(RFC.log_id, 'rfc6962', RFC.url, 990);
 		await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 5 * TILE_WIDTH + 17);
@@ -317,9 +342,14 @@ describe('runTailer', () => {
 			});
 			const summary = await run(net, fakeQueue());
 
+			// Each window asks for up to WINDOW pages at once. The short page is followed by an empty one, so it is a
+			// replica lagging, not the log's page cap: the next window still asks for 256-entry pages.
 			expect(net.calls.filter((url) => url.includes('get-entries'))).toEqual([
 				`${RFC.url}ct/v1/get-entries?start=400&end=655`,
+				`${RFC.url}ct/v1/get-entries?start=656&end=911`,
+				`${RFC.url}ct/v1/get-entries?start=912&end=999`,
 				`${RFC.url}ct/v1/get-entries?start=604&end=859`,
+				`${RFC.url}ct/v1/get-entries?start=860&end=999`,
 			]);
 			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 604, last_error: null });
 			expect(summary).toMatchObject({ entries: 204, errors: {}, deferred: { [RFC.log_id]: 'get-entries 604-859: no entries served yet' } });
@@ -328,7 +358,9 @@ describe('runTailer', () => {
 		it('still records an error for an entries array longer than the range asked for', async () => {
 			await seed(RFC.log_id, 'rfc6962', RFC.url, 999);
 			const net = intercept(fakeNetwork(), (url) =>
-				url.includes('get-entries?') ? Response.json({ entries: [{ leaf_input: RFC6962_PRECERT_LEAF_INPUT }, { leaf_input: RFC6962_PRECERT_LEAF_INPUT }] }) : undefined,
+				url.includes('get-entries?')
+					? Response.json({ entries: [{ leaf_input: RFC6962_PRECERT_LEAF_INPUT }, { leaf_input: RFC6962_PRECERT_LEAF_INPUT }] })
+					: undefined,
 			);
 			const summary = await run(net, fakeQueue());
 
@@ -363,7 +395,9 @@ describe('runTailer', () => {
 
 		it('skips the rest of the tick on HTTP 429 (TrustAsia log2026a), keeping the pages read before it and recording no error', async () => {
 			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
-			const net = intercept(fakeNetwork(), (url) => (url.includes('get-entries?start=988') ? new Response('', { status: 429 }) : undefined));
+			const net = intercept(fakeNetwork(), (url) =>
+				url.includes('get-entries?start=988') ? new Response('', { status: 429 }) : undefined,
+			);
 			const summary = await run(net, fakeQueue());
 
 			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 988, last_error: null });
@@ -393,10 +427,16 @@ describe('runTailer', () => {
 				return new Promise<Response>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
 			}) as typeof fetch;
 			// Tick 0 visits the RFC log first, so the hang starts before the static log is read.
-			const summary = await runTailer({ CURSORS: db, ENTRIES: fakeQueue().queue }, { scheduledTime: 0, now: NOW, fetch: net.fetch, fetchTimeoutMs: 50 });
+			const summary = await runTailer(
+				{ CURSORS: db, ENTRIES: fakeQueue().queue },
+				{ scheduledTime: 0, now: NOW, fetch: net.fetch, fetchTimeoutMs: 50 },
+			);
 
 			expect(net.calls.filter((url) => url.startsWith(hanging))).toHaveLength(1);
-			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980, last_error: expect.stringMatching(/timeout.*\(https:\/\/rfc\.ct\.test\/2027h1\/ct\/v1\/get-entries\?start=980&end=999\)$/i) });
+			expect(await cursor(RFC.log_id)).toMatchObject({
+				next_index: 980,
+				last_error: expect.stringMatching(/timeout.*\(https:\/\/rfc\.ct\.test\/2027h1\/ct\/v1\/get-entries\?start=980&end=999\)$/i),
+			});
 			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH, last_error: null });
 			expect(Object.keys(summary.errors)).toEqual([RFC.log_id]);
 		});
@@ -458,6 +498,124 @@ describe('runTailer', () => {
 		};
 		expect(await firstHead(0)).toBe(`${RFC.url}ct/v1/get-sth`);
 		expect(await firstHead(60_000)).toBe(`${STATIC.monitoring_url}checkpoint`);
+	});
+
+	// 2026-10-22: one tick read ~22k entries a minute against ~212k logged, so the 2027h1 shards fell 13M-68M behind.
+	describe('throughput', () => {
+		const tick = (net: { fetch: typeof fetch }, queue: FakeQueue, options: Partial<TailerOptions> = {}) =>
+			runTailer({ CURSORS: db, ENTRIES: queue.queue }, { scheduledTime: NOW, now: NOW, fetch: net.fetch, ...options });
+
+		/** Wraps a fake network so every response's headers arrive after `delayMs`, and counts requests awaiting them. */
+		const slow = (net: ReturnType<typeof fakeNetwork>, delayMs: number) => {
+			const original = net.fetch;
+			const stats = { waiting: 0, maxWaiting: 0, tilesInFlight: 0, maxTilesInFlight: 0 };
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				const tile = url.includes('/tile/data/');
+				stats.waiting++;
+				stats.maxWaiting = Math.max(stats.maxWaiting, stats.waiting);
+				if (tile) stats.maxTilesInFlight = Math.max(stats.maxTilesInFlight, ++stats.tilesInFlight);
+				try {
+					await new Promise<void>((resolve, reject) => {
+						const timer = setTimeout(resolve, delayMs);
+						init?.signal?.addEventListener('abort', () => {
+							clearTimeout(timer);
+							reject(init.signal!.reason);
+						});
+					});
+					return await original(input, init);
+				} finally {
+					stats.waiting--;
+					if (tile) stats.tilesInFlight--;
+				}
+			}) as typeof fetch;
+			return stats;
+		};
+
+		it("learns a log's page cap from a short page followed by a full one, and asks for that many per page after", async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 600);
+			const net = fakeNetwork({ pageCap: 32 }); // Google's RFC 6962 logs: 32 entries a page whatever is asked for
+			const summary = await tick(net, fakeQueue());
+
+			const pages = net.calls
+				.filter((url) => url.includes('get-entries'))
+				.map((url) => new URL(url).searchParams)
+				.map((query) => Number(query.get('end')) - Number(query.get('start')) + 1);
+			// The first window asks for 256-entry pages (600-855, 856-999) and gets 32 from each; every later page asks
+			// for 32, from 632 to the tree tip (984-999 is the last, clipped to 16).
+			expect(pages).toEqual([256, 144, ...Array<number>(11).fill(32), 16]);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000, last_error: null });
+			expect(summary).toMatchObject({ entries: 400, errors: {}, deferred: {} });
+		});
+
+		it('requests up to WINDOW tiles of one log together and still advances the cursor in order', async () => {
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 0);
+			const net = fakeNetwork({ staticSize: 8 * TILE_WIDTH + 17 });
+			const stats = slow(net, 5);
+			await tick(net, fakeQueue());
+
+			expect(stats.maxTilesInFlight).toBe(WINDOW);
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 8 * TILE_WIDTH, last_error: null });
+		});
+
+		it('keeps at most HEADER_SLOTS requests waiting for headers, and a request waiting for a slot does not time out', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 0);
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 0);
+			// Two windows of WINDOW requests (4 pages of 256, 4 tiles) want 8 slots at once. Each request takes 30 ms, so one that waited for a slot
+			// would pass the 50 ms timeout if its timer started before it had the slot.
+			const net = fakeNetwork({ staticSize: 8 * TILE_WIDTH + 17, pageCap: 256 });
+			const stats = slow(net, 30);
+			const summary = await tick(net, fakeQueue(), { fetchTimeoutMs: 50 });
+
+			expect(stats.maxWaiting).toBe(HEADER_SLOTS);
+			expect(summary.errors).toEqual({});
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000 });
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 8 * TILE_WIDTH });
+		});
+
+		it('sends a log’s rows once it holds flushRows of them, before its later pages are fetched', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const net = fakeNetwork();
+			const events: string[] = [];
+			const original = net.fetch;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (String(input).includes('get-entries')) events.push('fetch');
+				return original(input, init);
+			}) as typeof fetch;
+			const queue = fakeQueue(async () => {
+				events.push('send');
+			});
+			await tick(net, queue, { flushRows: 1 });
+
+			expect(events.indexOf('send')).toBeGreaterThan(-1);
+			expect(events.indexOf('send')).toBeLessThan(events.lastIndexOf('fetch'));
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000 });
+		});
+
+		it('stops the tick at a failed mid-tick send and keeps the cursor where the last good send left it', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const net = fakeNetwork();
+			const queue = fakeQueue(async () => {
+				throw new Error('queue unavailable');
+			});
+			const summary = await tick(net, queue, { flushRows: 1 });
+
+			expect(net.calls.filter((url) => url.includes('get-entries'))).toHaveLength(1);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980, last_error: 'queue send: queue unavailable' });
+			expect(summary.errors).toEqual({ [RFC.log_id]: 'queue send: queue unavailable' });
+		});
+
+		it('tails only the logs it is given (one shard of a fan-out)', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 4 * TILE_WIDTH);
+			const net = fakeNetwork();
+			const summary = await tick(net, fakeQueue(), { logIds: new Set([STATIC.log_id]) });
+
+			expect(net.calls.some((url) => url.startsWith(RFC.url))).toBe(false);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980 });
+			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH });
+			expect(summary.logs).toBe(1);
+		});
 	});
 
 	it('does not move a cursor that another tick moved meanwhile', async () => {
