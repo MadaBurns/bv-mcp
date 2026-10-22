@@ -94,7 +94,7 @@
 		"drizzle:check": "npm run drizzle:check:registry && npm run drizzle:check:tenant"
 	},
 	"dependencies": {
-		"@blackveil/dns-checks": "^1.0.4",
+		"@blackveil/dns-checks": "^1.60.2",
 		"@streamparser/json-whatwg": "^0.0.26",
 		"@typesafe-ai/sdk": "^0.6.0",
 		"drizzle-orm": "0.45.4",
@@ -116,7 +116,7 @@
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.71.2",
-		"vitest": "4.1.11",
+		"vitest": "4.1.12",
 		"wrangler": "4.148.0"
 	},
 	"pnpm": {
