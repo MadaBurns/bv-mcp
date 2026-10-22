@@ -41,6 +41,8 @@ const lines = [
 	`## 3. Queues`,
 	`npx wrangler queues create ${WORKER}-entries`,
 	`npx wrangler queues create ${WORKER}-compact`,
+	`npx wrangler queues create ${WORKER}-tail`,
+	`#   ${WORKER}-tail carries the tailer's shards: each consumer invocation is its own top-level invocation with its own connection limit.`,
 	``,
 	`## 4. D1 database`,
 	`npx wrangler d1 create ${D1_NAME}`,
