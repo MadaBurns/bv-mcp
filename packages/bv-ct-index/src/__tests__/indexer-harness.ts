@@ -6,7 +6,9 @@
  */
 
 import { env } from 'cloudflare:workers';
+import cursorsSql from '../../migrations/0001_log_cursors.sql?raw';
 import catalogSql from '../../migrations/0002_catalog.sql?raw';
+import cursorErrorsSql from '../../migrations/0003_cursor_errors.sql?raw';
 import { apexOf, mergeObservations, nameKey, siblingKey } from '../codec';
 import type { Env } from '../index';
 import type { CompactionJob, CompactionLimits, JobOutcome } from '../indexer/compact';
@@ -30,11 +32,13 @@ const base = env as unknown as Env;
  */
 export async function applyCatalog(): Promise<void> {
 	const db = base.CURSORS;
-	const statements = catalogSql
-		.split(';')
+	// Every migration, in order: the reader's meta() also reads log_cursors (the tailer backlog).
+	// Comments are stripped before the split: 0001's comments hold semicolons.
+	const statements = [cursorsSql, catalogSql, cursorErrorsSql]
+		.flatMap((sql) => sql.replace(/--.*$/gm, '').split(';'))
 		.map((statement) => statement.trim())
-		.filter((statement) => statement.replace(/^--.*$/gm, '').trim() !== '');
-	const drops = ['runs', 'meta', 'ops_ledger'].map((table) => `DROP TABLE IF EXISTS ${table}`);
+		.filter((statement) => statement !== '');
+	const drops = ['log_cursors', 'runs', 'meta', 'ops_ledger'].map((table) => `DROP TABLE IF EXISTS ${table}`);
 	await db.batch([...drops, ...statements].map((statement) => db.prepare(statement)));
 	const keys = await objectKeys();
 	if (keys.length > 0) await base.INDEX.delete(keys);

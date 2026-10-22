@@ -48,6 +48,11 @@
 			{
 				"binding": "COMPACT",
 				"queue": "bv-ct-index-compact"
+			},
+			{
+				// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
+				"binding": "TAIL",
+				"queue": "bv-ct-index-tail"
 			}
 		],
 		"consumers": [
@@ -65,6 +70,13 @@
 				"max_batch_size": 1,
 				"max_batch_timeout": 1,
 				"max_retries": 3
+			},
+			{
+				// One tailer shard per invocation; never retried, as the next minute's tick re-plans the same logs.
+				"queue": "bv-ct-index-tail",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 0
 			}
 		]
 	},

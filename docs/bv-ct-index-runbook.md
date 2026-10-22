@@ -35,7 +35,7 @@ different application with that name is live on this account. The only name for 
 ## 2. Provision (fresh account only)
 
 `npm run provision:ct-index` **prints** the ordered, idempotent commands and executes nothing. Run them one at a time. In order:
-check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries` and `bv-ct-index-compact`, the D1 database
+check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact` and `bv-ct-index-tail`, the D1 database
 `bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0003: `log_cursors`, then
 `runs` / `meta` / `ops_ledger`, then the `log_cursors` error columns), then deploy.
 
@@ -115,10 +115,12 @@ The Worker has no `workers.dev` hostname and no route, so `/health` is only reac
 ```bash
 D1="npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc"
 
-# a. Tailer ticks every minute (leave running for a few minutes, Ctrl-C to stop)
-npx wrangler tail bv-ct-index --format json | grep --line-buffered ct_tailer_tick
+# a. Tailer ticks every minute: one ct_tailer_fanout line per tick, and one ct_tailer_tick line per shard (Ctrl-C to stop)
+npx wrangler tail bv-ct-index --format json | grep --line-buffered -E 'ct_tailer_(tick|fanout)'
 
-# b. Cursors advancing: updated_at moves and next_index grows; last_error empty for most logs
+# b. Cursors advancing: updated_at moves and next_index grows; last_error empty for most logs. `behind` is how far each
+#    log's head was ahead of its cursor at the last write. fresh_through (check d) does NOT show this.
+$D1 --command "SELECT log_id, url, tree_size - next_index AS behind, updated_at FROM log_cursors ORDER BY behind DESC LIMIT 15"
 $D1 --command "SELECT log_id, kind, next_index, tree_size, updated_at, last_error, last_error_at FROM log_cursors ORDER BY updated_at DESC LIMIT 30"
 $D1 --command "SELECT COUNT(*) AS logs, SUM(next_index IS NULL) AS never_read, SUM(last_error_at >= updated_at) AS erroring FROM log_cursors"
 
@@ -135,16 +137,65 @@ $D1 --command "SELECT * FROM ops_ledger ORDER BY day DESC LIMIT 3"
 What good looks like in the first hour:
 
 - `ct_tailer_tick` lines show `killed:false`, `cursorsWritten` above zero, `precerts` in the thousands, `errors` small or empty.
-  A `subrequests` count near 900 means the tick used its whole fetch budget; that is normal under load.
+  A `subrequests` count near 3,000 means the shard used its whole fetch budget; that is normal while it catches up.
+- `ct_tailer_fanout` shows `shards: 4`, an empty `failed`, and a `backlog` that falls from tick to tick. See 6b.
 - `log_cursors.updated_at` is within the last few minutes for most logs. `never_read` is zero after a few ticks. A log whose
   `last_error_at` is not older than `updated_at` is currently erroring: one or two is normal, most of them is not.
 - `runs` has tier-0 rows with `meta.fresh_through` within a couple of minutes of now, then tier-1 rows after the first `:17` mark.
   There is no `meta/index.json` object and no R2 listing endpoint in `wrangler`: the D1 `runs` table **is** the index of R2 objects.
   `r2_key` values look like `runs/t0/<ms>-<uuid>`; fetch one with `npx wrangler r2 object get bv-ct-index/<r2_key> --remote` if you
   must eyeball it (it is binary).
-- Dashboard (Workers & Pages, `bv-ct-index`): no sustained error rate on the queue consumers, and the two queues drain rather than grow.
+- Dashboard (Workers & Pages, `bv-ct-index`): no sustained error rate on the queue consumers, and `bv-ct-index-entries` and
+  `bv-ct-index-compact` drain rather than grow. `bv-ct-index-tail` never holds more than a tick's four messages.
 
 If a kill-switch or generation problem appears, see steps 9 and 10.
+
+### 6b. The tailer falls behind the logs
+
+Seen on 2026-10-22. `fresh_through` was current, but the 2027h1 shards were 13M to 68M entries behind their heads, about 651M in
+total, and the gap was growing. Over 6.7 minutes the logs grew by about 212k entries a minute and the tailer read about 22k. A
+certificate logged then would reach the index days later.
+
+Why: one invocation ticked every minute with six lanes for 20 seconds, so it could make about 280 fetches. Each visit read at most
+1,024 entries before the log went to the back of the queue, so a busy log got about one visit, about 1k entries, a tick. Google's
+RFC 6962 logs serve 32 entries a page however many are asked for. Head reads that timed out on small logs used up lane time too.
+
+The fix, in the tailer since 2026-10-23:
+
+- The cron splits the logs into four shards, furthest behind first, and sends each as one message to the `bv-ct-index-tail` queue.
+  Each queue consumer invocation is its own top-level invocation, so each shard gets its own six header slots and subrequest
+  limit. A service binding to the Worker itself would not: a Worker reached through a service binding shares the caller's
+  connection limit ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections)).
+- A shard message older than 50 seconds is dropped unread (`ct_tailer_shard_skipped`, `skipped: "stale"`), because the next
+  tick has already sent a fresh one for the same logs. The queue never retries a shard (`max_retries: 0`) for the same reason.
+- A visit asks for up to four pages or tiles of one log at once, and learns a log's page size from a short page that has a full
+  one after it.
+- A request's timeout starts when it gets a header slot, not while it waits for one. A request that gets its slot after the fetch
+  phase has ended is not sent, so queued requests cannot run into the next tick.
+- A log's rows count as sent, for skipping the same rows on another log, only once its own sends have resolved.
+- The fetch phase is 35 seconds, up to 3,000 fetches per shard. Rows are sent once a log holds 2,000 of them, so memory stays
+  flat: a held row costs about 400 bytes, and the four shards may share one 128 MB isolate.
+
+**Before the first deploy with this change**, the queue must exist. A producer bound to a missing queue fails the deploy:
+
+```bash
+npx wrangler queues create bv-ct-index-tail
+```
+
+Watch after the deploy (read-only):
+
+```bash
+# Total backlog: run it twice, an hour apart. It must fall.
+$D1 --command "SELECT SUM(tree_size - next_index) AS behind, datetime('now') AS at FROM log_cursors"
+```
+
+The `backlog` field on `ct_tailer_fanout` is the same number. Expect it to fall by roughly the read rate minus about 212k entries a
+minute. If it does not fall, read the per-shard `ct_tailer_tick` lines: `entries` per shard and `errors`. Each tick should log
+four `ct_tailer_tick` lines with different `shard` values. If `ct_tailer_shard_skipped` lines with `stale` keep appearing, the
+consumer is not running the shards side by side, and the four share one minute between them. More traffic also means
+more queue messages, more tier-0 runs and more compaction. Check the cost watch (step 11) daily for the first week.
+
+Rollback: `npx wrangler rollback --name bv-ct-index`. The cursors only move forward, so a rollback loses nothing already read.
 
 ### 6a. Compaction stalled: tier 0 grows and tier 1 does not (SQ-362)
 
@@ -281,8 +332,8 @@ route or by repointing first: record the refusal on the US-12 story and ask for 
 ## 8. Repoint `BV_CERTSTREAM`
 
 `BV_CERTSTREAM` is a service binding. It lives in the **private overlay** `.dev/wrangler.deploy.jsonc` (gitignored; the public
-`wrangler.jsonc` does not declare it). Change only the `service` field of the existing entry, from `bv-certstream-worker` to
-`bv-ct-index`:
+`wrangler.jsonc` does not declare it). Since 2026-08-21 the overlay has **no** `BV_CERTSTREAM` entry: it was removed because the name
+`bv-certstream-worker` holds a foreign application (see the comment in the overlay). Add the entry, pointing at `bv-ct-index`:
 
 ```jsonc
 "services": [
@@ -292,8 +343,10 @@ route or by repointing first: record the refusal on the US-12 story and ask for 
 
 Overlay `services` merge by `binding` name (`scripts/lib/overlay-merge.mjs`), so only this entry changes. Then, in this order:
 
-1. Make bv-mcp's key equal the sidecar's, unless you reused the existing value in step 3:
-   `printf %s "$CT_INDEX_ADMIN_KEY" | npx wrangler secret put BV_CERTSTREAM_ADMIN_KEY --config .dev/wrangler.deploy.jsonc`
+1. Give bv-mcp its own read key, not the admin key. Generate one value, then set it on both sides:
+   `printf %s "$BV_MCP_READ_KEY" | npx wrangler secret put CT_INDEX_KEY_BV_MCP --name bv-ct-index`, then
+   `printf %s "$BV_MCP_READ_KEY" | npx wrangler secret put BV_CERTSTREAM_ADMIN_KEY --config .dev/wrangler.deploy.jsonc`. bv-mcp
+   sends `X-BV-Caller: bv-mcp` with it, so it works for bv-mcp alone.
 2. `npm run deploy:prod` (or `npm run deploy:prod:staged`, then `npm run deploy:prod:promote`, if you want the staged flow).
 3. Verify through the product. Call `discover_subdomains` for a domain the index should know (use the owner key, see
    `bv-mcp-operations`), and look in `wrangler tail` for the `ct_source` log line: source `certstream` with outcome `ok`, not
@@ -305,9 +358,11 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
 
 ## 9. Rollback
 
-- **Binding**: set the `service` back to `bv-certstream-worker` in `.dev/wrangler.deploy.jsonc`, restore the old
-  `BV_CERTSTREAM_ADMIN_KEY` if you changed it in step 8, and `npm run deploy:prod`. The sidecar keeps running and indexing.
-- **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`.
+- **Binding**: remove the `BV_CERTSTREAM` entry from `.dev/wrangler.deploy.jsonc` (never point it back at
+  `bv-certstream-worker`) and `npm run deploy:prod`. bv-mcp then uses crt.sh and CertSpotter alone. The sidecar keeps running and
+  indexing.
+- **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
+  never roll back to a version older than the one that added it. Older versions cannot read the stored details.
 - **Index contents** (a bad compaction, a bad snapshot): roll the catalog back to a retained generation. The previous generation is
   kept for a week after each weekly snapshot.
 
@@ -319,6 +374,28 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   Pick a generation that has `runs` rows: pointing at one with none leaves the index empty for readers. This is one write and takes
   effect on the next request. Objects are only deleted when no generation references them, so the older
   generation's files are intact.
+
+### 9b. Certificate details (`CERT_DETAILS`)
+
+The tailer can store, on each name, the details of the certificate it came from: its start date, serial number, key type and
+size, signature algorithm, and how many names it covers. `/cert-meta` returns them, so callers can show key strength without asking
+CertSpotter. The details come from the CT log entry itself. The certificate-chain check is not among them, because that needs the
+site's live certificate chain.
+
+The `CERT_DETAILS` var switches this. Unset, or any value other than `on`, stores no details. It is off by default for one reason:
+**older versions of this Worker cannot read a row that has details**, and compaction carries the details forward, so they never
+disappear by themselves. Turn it on in two steps:
+
+1. Deploy a version that contains the details reader (any version since this section was added), with `CERT_DETAILS` unset. Watch
+   a day of normal health (section 6). Rolling back is still safe at this point.
+2. Set `CERT_DETAILS: bindings.text('on')` in `cloudflare.config.ts` (and `"vars": { "CERT_DETAILS": "on" }` in `wrangler.jsonc`),
+   merge, and deploy. From here on, a rollback must go to a version that reads details, never to an older one.
+
+What to expect: details appear only for certificates logged after step 2. A name whose latest certificate was logged earlier
+answers `/cert-meta` with null detail fields, so callers keep their other source for those. Most certificates renew within 90
+days, so coverage grows over the following weeks. Each name row grows by about 80 bytes before compression (six fields; a typical serial alone is 32 to 36 hex characters).
+
+Turning it off again stops new details but does not remove stored ones.
 
 ## 10. Kill switch and the ops ledger
 
@@ -374,7 +451,7 @@ requires a one-to-one match with a wrangler config **on disk in bv-web-prod** an
 "bv-ct-index": {
 	"owner": "bv-mcp",
 	"evidence": "declared in bv-mcp packages/bv-ct-index (cloudflare.config.ts); bv-mcp service-binds it as BV_CERTSTREAM once the repoint lands; sibling of bv-whois and bv-infra-probe",
-	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries and bv-ct-index-compact; the index is forward-only and cannot be rebuilt from the logs."
+	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries, bv-ct-index-compact and bv-ct-index-tail; the index is forward-only and cannot be rebuilt from the logs."
 }
 ```
 
