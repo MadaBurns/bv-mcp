@@ -41,6 +41,7 @@ import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
 import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
+import { certstreamHeaders } from '../lib/certstream-headers';
 
 /**
  * Synchronous handler budget for `discover_subdomains` (ms).
@@ -2063,7 +2064,7 @@ async function queryCertstreamEndpoint<T>(
 	try {
 		const forceRefreshParam = options?.forceRefresh ? '&force_refresh=true' : '';
 		const response = await certstream.fetch(`https://certstream/${path}?domain=${encodeURIComponent(domain)}${forceRefreshParam}`, {
-			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
+			headers: certstreamHeaders(certstreamAuthToken),
 			signal: composed.signal,
 		});
 		if (!response.ok) return { data: null, outcome: await classifyHttpFailure(response) };

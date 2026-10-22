@@ -40,6 +40,15 @@ export interface Env {
 	TAIL?: Queue<ShardRequest>;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
+	/**
+	 * Optional secrets: one read key per calling Worker, accepted only with that Worker's X-BV-Caller
+	 * (src/api/auth.ts READ_CALLERS). Unset means that caller is refused.
+	 */
+	CT_INDEX_KEY_BV_MCP?: string;
+	CT_INDEX_KEY_BV_WEB_PROD?: string;
+	CT_INDEX_KEY_BV2_OPS?: string;
+	CT_INDEX_KEY_BV2_RECON?: string;
+	CT_INDEX_KEY_BV2_CERTSTREAM?: string;
 }
 
 /** One shard per message; never retried (max_retries 0): the next tick re-plans the same logs from their cursors. */

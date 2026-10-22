@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { API_BUDGET_MS, PAGE_LIMIT, handleApiRequest, parseDomain } from '../api/handler';
-import { isAuthorized } from '../api/auth';
+import { READ_CALLERS, isAuthorized } from '../api/auth';
 import { nameKey, siblingKey } from '../codec';
 import type { IndexReader, NameObservation, ScanPage, SiblingObservation } from '../types';
 
@@ -20,11 +20,23 @@ interface ApiBody {
 	error?: string;
 	cursor?: string | null;
 	truncated?: boolean;
-	coverage: { source?: string; historyWindow?: string; truncated?: boolean; indexStartedAt?: string | null; freshThrough?: string | null };
+	coverage: {
+		source?: string;
+		historyWindow?: string;
+		truncated?: boolean;
+		indexStartedAt?: string | null;
+		freshThrough?: string | null;
+		entriesBehind?: number | null;
+	};
 }
 
 const KEY = 'test-admin-key';
-const META = { indexStartedAt: '2026-10-17T00:00:00.000Z', freshThrough: '2026-10-17T05:00:00.000Z', generation: 1 };
+const META = {
+	indexStartedAt: '2026-10-17T00:00:00.000Z',
+	freshThrough: '2026-10-17T05:00:00.000Z',
+	entriesBehind: 656_475_397,
+	generation: 1,
+};
 const NOT_AFTER = 1_800_000_000; // 2027-01-15T08:00:00.000Z
 const FIRST_SEEN = 1_790_000_000;
 
@@ -116,6 +128,7 @@ describe('GET /enumerate', () => {
 			source: 'bv-ct-index',
 			indexStartedAt: META.indexStartedAt,
 			freshThrough: META.freshThrough,
+			entriesBehind: META.entriesBehind,
 			historyWindow: 'forward-from',
 			truncated: false,
 		});
@@ -241,7 +254,7 @@ describe('faults are 503, never an empty 200', () => {
 	});
 
 	it('answers 503 from an index that has never been populated, not an empty 200', async () => {
-		const { reader } = fakeReader({ meta: { indexStartedAt: null, freshThrough: null, generation: 1 } });
+		const { reader } = fakeReader({ meta: { indexStartedAt: null, freshThrough: null, entriesBehind: null, generation: 1 } });
 		for (const path of ['/enumerate', '/sans', '/cert-meta']) {
 			const { response, body } = await call(reader, `${path}?domain=example.com`);
 			expect(response.status).toBe(503);
@@ -288,6 +301,49 @@ describe('authentication', () => {
 	it('accepts the right key', async () => {
 		const { response } = await call(reader, '/enumerate?domain=example.com');
 		expect(response.status).toBe(200);
+	});
+
+	describe('per-caller read keys', () => {
+		const READ_KEY = 'test-read-key-bv-mcp';
+		const keys = { CT_INDEX_ADMIN_KEY: KEY, CT_INDEX_KEY_BV_MCP: READ_KEY, CT_INDEX_KEY_BV2_RECON: 'test-read-key-recon' };
+		const status = async (headers: Record<string, string>, env: Parameters<typeof handleApiRequest>[1] = keys) =>
+			(await handleApiRequest(new Request('https://bv-ct-index/enumerate?domain=example.com', { headers }), env, { reader })).status;
+
+		it('accepts a read key from the caller it was issued to', async () => {
+			expect(await status({ authorization: `Bearer ${READ_KEY}`, 'x-bv-caller': 'bv-mcp' })).toBe(200);
+		});
+
+		it.each([
+			['without X-BV-Caller', { authorization: `Bearer ${READ_KEY}` }],
+			['from another known caller', { authorization: `Bearer ${READ_KEY}`, 'x-bv-caller': 'bv2-recon' }],
+			['from an unknown caller', { authorization: `Bearer ${READ_KEY}`, 'x-bv-caller': 'someone-else' }],
+			['from a caller named like an object key', { authorization: `Bearer ${READ_KEY}`, 'x-bv-caller': 'constructor' }],
+			['with the wrong key for its caller', { authorization: 'Bearer test-read-key-recon', 'x-bv-caller': 'bv-mcp' }],
+		])('refuses a read key %s', async (_label, headers) => {
+			expect(await status(headers)).toBe(401);
+		});
+
+		it('refuses a caller whose secret is unset or empty, whatever key it sends', async () => {
+			for (const authorization of ['Bearer ', 'Bearer undefined', `Bearer ${READ_KEY}`]) {
+				expect(await status({ authorization, 'x-bv-caller': 'bv2-ops' })).toBe(401);
+				expect(await status({ authorization, 'x-bv-caller': 'bv-mcp' }, { CT_INDEX_ADMIN_KEY: KEY, CT_INDEX_KEY_BV_MCP: '' })).toBe(401);
+			}
+		});
+
+		it('still accepts the admin key, with or without X-BV-Caller', async () => {
+			expect(await status({ authorization: `Bearer ${KEY}` })).toBe(200);
+			expect(await status({ authorization: `Bearer ${KEY}`, 'x-bv-caller': 'bv-mcp' })).toBe(200);
+		});
+
+		it('names each calling Worker with its own secret', () => {
+			expect(READ_CALLERS).toEqual({
+				'bv-mcp': 'CT_INDEX_KEY_BV_MCP',
+				'bv-web-prod': 'CT_INDEX_KEY_BV_WEB_PROD',
+				'bv2-ops': 'CT_INDEX_KEY_BV2_OPS',
+				'bv2-recon': 'CT_INDEX_KEY_BV2_RECON',
+				'bv2-certstream': 'CT_INDEX_KEY_BV2_CERTSTREAM',
+			});
+		});
 	});
 
 	it('compares the key itself, not its length', async () => {

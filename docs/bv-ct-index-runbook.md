@@ -332,8 +332,8 @@ route or by repointing first: record the refusal on the US-12 story and ask for 
 ## 8. Repoint `BV_CERTSTREAM`
 
 `BV_CERTSTREAM` is a service binding. It lives in the **private overlay** `.dev/wrangler.deploy.jsonc` (gitignored; the public
-`wrangler.jsonc` does not declare it). Change only the `service` field of the existing entry, from `bv-certstream-worker` to
-`bv-ct-index`:
+`wrangler.jsonc` does not declare it). Since 2026-08-21 the overlay has **no** `BV_CERTSTREAM` entry: it was removed because the name
+`bv-certstream-worker` holds a foreign application (see the comment in the overlay). Add the entry, pointing at `bv-ct-index`:
 
 ```jsonc
 "services": [
@@ -343,8 +343,10 @@ route or by repointing first: record the refusal on the US-12 story and ask for 
 
 Overlay `services` merge by `binding` name (`scripts/lib/overlay-merge.mjs`), so only this entry changes. Then, in this order:
 
-1. Make bv-mcp's key equal the sidecar's, unless you reused the existing value in step 3:
-   `printf %s "$CT_INDEX_ADMIN_KEY" | npx wrangler secret put BV_CERTSTREAM_ADMIN_KEY --config .dev/wrangler.deploy.jsonc`
+1. Give bv-mcp its own read key, not the admin key. Generate one value, then set it on both sides:
+   `printf %s "$BV_MCP_READ_KEY" | npx wrangler secret put CT_INDEX_KEY_BV_MCP --name bv-ct-index`, then
+   `printf %s "$BV_MCP_READ_KEY" | npx wrangler secret put BV_CERTSTREAM_ADMIN_KEY --config .dev/wrangler.deploy.jsonc`. bv-mcp
+   sends `X-BV-Caller: bv-mcp` with it, so it works for bv-mcp alone.
 2. `npm run deploy:prod` (or `npm run deploy:prod:staged`, then `npm run deploy:prod:promote`, if you want the staged flow).
 3. Verify through the product. Call `discover_subdomains` for a domain the index should know (use the owner key, see
    `bv-mcp-operations`), and look in `wrangler tail` for the `ct_source` log line: source `certstream` with outcome `ok`, not
@@ -356,8 +358,9 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
 
 ## 9. Rollback
 
-- **Binding**: set the `service` back to `bv-certstream-worker` in `.dev/wrangler.deploy.jsonc`, restore the old
-  `BV_CERTSTREAM_ADMIN_KEY` if you changed it in step 8, and `npm run deploy:prod`. The sidecar keeps running and indexing.
+- **Binding**: remove the `BV_CERTSTREAM` entry from `.dev/wrangler.deploy.jsonc` (never point it back at
+  `bv-certstream-worker`) and `npm run deploy:prod`. bv-mcp then uses crt.sh and CertSpotter alone. The sidecar keeps running and
+  indexing.
 - **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`.
 - **Index contents** (a bad compaction, a bad snapshot): roll the catalog back to a retained generation. The previous generation is
   kept for a week after each weekly snapshot.
