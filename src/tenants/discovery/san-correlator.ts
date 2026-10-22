@@ -37,6 +37,7 @@ import { validateDomain } from '../../lib/sanitize';
 import { fetchCertspotterEntries } from '../../tools/discover-subdomains';
 import { buildSanCertificateProvenance, MAX_SAN_PROVENANCE_OBSERVATIONS, type SanCertificateProvenance } from './san-provenance';
 import { compareSanCertificateProvenance, type SanProvenanceComparison } from './san-provenance-comparison';
+import { certstreamHeaders } from '../../lib/certstream-headers';
 
 /**
  * Default WHOLE-CALL budget (ms): certstream + crt.sh + the Certspotter failover
@@ -266,7 +267,7 @@ async function attemptCertstreamSans(
 	let response: Response;
 	try {
 		response = await certstream.fetch(`https://certstream/sans?domain=${encodeURIComponent(seedLower)}`, {
-			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
+			headers: certstreamHeaders(certstreamAuthToken),
 			signal: controller.signal,
 		});
 	} catch {

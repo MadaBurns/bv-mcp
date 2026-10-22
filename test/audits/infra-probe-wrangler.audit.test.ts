@@ -19,7 +19,7 @@ interface WranglerConfig {
 	compatibility_flags?: string[];
 	workers_dev?: boolean;
 	preview_urls?: boolean;
-	services?: Array<{ binding?: string; service?: string }>;
+	services?: Array<{ binding?: string; service?: string; entrypoint?: string }>;
 	kv_namespaces?: Array<{ binding?: string; id?: string }>;
 	main?: string;
 	routes?: unknown;
@@ -191,14 +191,16 @@ describe('infra probe wrangler wiring', () => {
 			expect(ctIndexConfig.queues?.producers).toEqual([
 				{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' },
 				{ binding: 'COMPACT', queue: 'bv-ct-index-compact' },
+				{ binding: 'TAIL', queue: 'bv-ct-index-tail' },
 			]);
 			expect(one(/\bENTRIES:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-entries']);
 			expect(one(/\bCOMPACT:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-compact']);
+			expect(one(/\bTAIL:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-tail']);
 		});
 
-		it('consumes both of its queues with the same bounded batch settings as the test config', () => {
+		it('consumes its three queues with the same bounded batch settings as the test config', () => {
 			const consumers = ctIndexConfig.queues?.consumers ?? [];
-			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact']);
+			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact', 'bv-ct-index-tail']);
 			expect([...cfConsumers.keys()]).toEqual(consumers.map((c) => c.queue));
 			for (const consumer of consumers) {
 				const cfConsumer = cfConsumers.get(consumer.queue) ?? '';
@@ -210,6 +212,13 @@ describe('infra probe wrangler wiring', () => {
 			}
 			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
 			expect(consumers[0]?.max_batch_size).toBe(100);
+			// One tailer shard per invocation, never retried: a retry would overlap the next minute's tick.
+			expect(consumers[2]).toMatchObject({ max_batch_size: 1, max_retries: 0 });
+		});
+
+		it('fans the tailer out over a queue, not a service binding (a bound Worker shares the caller connection limit)', () => {
+			expect(ctIndexConfig.services).toBeUndefined();
+			expect(src).not.toMatch(/bindings\.worker\(/);
 		});
 
 		it('requires the CT_INDEX_ADMIN_KEY secret in both configs', () => {

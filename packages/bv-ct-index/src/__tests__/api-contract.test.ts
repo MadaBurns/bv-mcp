@@ -98,7 +98,7 @@ const reader: IndexReader = {
 		};
 	},
 	async meta() {
-		return { indexStartedAt: '2026-10-17T00:00:00.000Z', freshThrough: '2026-10-17T05:00:00.000Z', generation: 1 };
+		return { indexStartedAt: '2026-10-17T00:00:00.000Z', freshThrough: '2026-10-17T05:00:00.000Z', entriesBehind: 0, generation: 1 };
 	},
 };
 

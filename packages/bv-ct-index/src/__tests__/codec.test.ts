@@ -23,7 +23,7 @@ import {
 	streamRun,
 } from '../codec';
 import type { Env } from '../index';
-import type { BlockIndexEntry, NameObservation, RunDescriptor, RunRow, SiblingObservation } from '../types';
+import type { BlockIndexEntry, CertDetails, NameObservation, RunDescriptor, RunRow, SiblingObservation } from '../types';
 
 const MAX = String.fromCharCode(0xffff);
 const DAY = 86_400;
@@ -240,6 +240,73 @@ describe('mergeObservations', () => {
 		mergeObservations(a, b);
 		expect([a, b]).toEqual(snapshot);
 		expect(() => mergeObservations(a, obs('api.example.com'))).toThrow(RangeError);
+	});
+});
+
+describe('certificate details', () => {
+	const details = (serial: string, overrides: Partial<CertDetails> = {}): CertDetails => ({
+		notBefore: NOW - DAY,
+		serial,
+		keyType: 'ec',
+		keyBits: 256,
+		sigAlg: 'ecdsa-with-SHA256',
+		sanCount: 2,
+		...overrides,
+	});
+	const old = obs('www.example.com', { firstSeen: 100, notAfter: NOW + 90 * DAY, issuer: 'R11' });
+	const newer = obs('www.example.com', { firstSeen: 200, notAfter: NOW + 95 * DAY, issuer: 'E6', details: details('0a') });
+	const older = obs('www.example.com', {
+		firstSeen: 50,
+		notAfter: NOW + 10 * DAY,
+		issuer: 'R10',
+		details: details('0b', { keyType: 'rsa', keyBits: 2048 }),
+	});
+
+	it('takes the details whole from the row with the larger notAfter, like the issuer', () => {
+		expect(mergeObservations(old, newer)).toEqual({ ...newer, firstSeen: 100 });
+		expect(mergeObservations(older, newer).details).toEqual(newer.details);
+		// The later row predates the details: none are kept, rather than another certificate's.
+		expect(mergeObservations(old, older)).toEqual({ ...old, firstSeen: 50 });
+		expect(mergeObservations(old, older).details).toBeUndefined();
+	});
+
+	it('stays commutative when the same certificate arrives with and without details', () => {
+		const sameCertOld = obs('www.example.com', { notAfter: NOW + 95 * DAY, issuer: 'E6' });
+		expect(mergeObservations(sameCertOld, newer)).toEqual(mergeObservations(newer, sameCertOld));
+		expect(mergeObservations(sameCertOld, newer).details).toEqual(newer.details);
+		for (const [x, y, z] of [
+			[old, newer, older],
+			[older, old, newer],
+			[newer, older, old],
+		] as const) {
+			expect(mergeObservations(mergeObservations(x, y), z)).toEqual(mergeObservations(x, mergeObservations(y, z)));
+		}
+	});
+
+	it('round-trips rows with details next to rows without, and a null key size', async () => {
+		const rows = [
+			newer,
+			obs('api.example.com'),
+			obs('*.dev.example.com', { details: details('ff', { keyType: 'unknown', keyBits: null, sigAlg: '1.2.999' }) }),
+		];
+		const run = await encodeRun(rows);
+		expect(await decodeBlock(run.bytes)).toEqual([...rows].sort(byKey));
+	});
+
+	it('reads a run written before the details (7-column name rows)', async () => {
+		const plain = obs('a.example.com');
+		const line = [plain.key, plain.name, plain.apex, plain.firstSeen, plain.notAfter, plain.issuer, '0'].join('\t');
+		expect(await decodeBlock(await deflateText(`${line}\n`))).toEqual([plain]);
+	});
+
+	it.each([
+		['an unknown key type', ['1', 'ab', 'dsa', '1024', 'x', '1']],
+		['a non-integer key size', ['1', 'ab', 'rsa', '2k', 'x', '1']],
+		['a missing column', ['1', 'ab', 'rsa', '2048', 'x']],
+	])('refuses a details row with %s', async (_label, tail) => {
+		const plain = obs('a.example.com');
+		const line = [plain.key, plain.name, plain.apex, plain.firstSeen, plain.notAfter, plain.issuer, '0', ...tail].join('\t');
+		await expect(decodeBlock(await deflateText(`${line}\n`))).rejects.toThrow(RangeError);
 	});
 });
 

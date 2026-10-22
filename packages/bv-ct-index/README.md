@@ -18,7 +18,8 @@ One Worker, two cron triggers, two queue consumers, three bindings. Source of tr
 config) and [`cloudflare.config.ts`](./cloudflare.config.ts) (deploy config); an audit asserts they agree.
 
 ```
-CT logs ──(cron * * * * *)──> tailer ──> queue bv-ct-index-entries ──> indexer ──> R2 sorted runs (tier 0) + D1 catalog
+(cron * * * * *) fan-out ──> queue bv-ct-index-tail ──> one tailer shard per message
+CT logs ──> tailer shards ──> queue bv-ct-index-entries ──> indexer ──> R2 sorted runs (tier 0) + D1 catalog
                                                                                           │
                               (cron 17 * * * *) planner ──> queue bv-ct-index-compact ──> compaction jobs (tier 0 → 1 → 2 → 3)
                                                                                           │
@@ -27,7 +28,7 @@ bv-mcp  ──(service binding BV_CERTSTREAM)──> fetch: /enumerate /sans /ce
 
 | Piece          | Where                 | What it does                                                                                                                                                                                                                                                                                                             |
 | -------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Tailer         | `src/tailer/`         | Every minute, six concurrent lanes read the Chrome CT log list (cached up to an hour) and tail every usable or qualified log whose temporal interval has not ended, except the Geomys and IPng operators, each from its cursor. It parses **precert leaves only** (23,414 of 23,417 sampled final certs embed their SCTs, so tailing precerts avoids counting each cert twice) and sends `ObservationBatch` messages. A log seen for the first time starts at its current tree size: the index is **forward-only**. |
+| Tailer         | `src/tailer/`         | Every minute, the cron splits the logs into four shards, the logs furthest behind first, and sends each shard as one message to the `bv-ct-index-tail` queue (`src/tailer/fanout.ts`), so each shard runs in its own consumer invocation with its own connection limit. Each shard reads the Chrome CT log list (cached up to an hour) and tails its share of every usable or qualified log whose temporal interval has not ended, except the Geomys and IPng operators, each from its cursor. It asks a log for up to four pages or tiles at once, keeps at most six requests waiting for headers (the platform limit per invocation), learns a log's page size (Google's logs serve 32 entries a page), and sends rows as it goes so its memory stays flat. It parses **precert leaves only** (23,414 of 23,417 sampled final certs embed their SCTs, so tailing precerts avoids counting each cert twice) and sends `ObservationBatch` messages. A log seen for the first time starts at its current tree size: the index is **forward-only**. |
 | Indexer        | `src/indexer/write.ts` | Queue consumer (batch 100). Validates each observation against the key helpers and writes exactly one tier-0 sorted run to R2 plus a `runs` row in D1.                                                                                                                                                                  |
 | Compactor      | `src/indexer/plan.ts`, `compact.ts` | Hourly at :17 the planner enqueues jobs (one key range each): tier 0 → 1 (per hour), 1 → 2 (per UTC day), 2 + 3 → 3 (shards of about 10 MB). T1 and T2 jobs take at most `MAX_JOB_INPUTS` (32) runs and `MAX_JOB_ROWS` (750k) rows, T3 jobs at most `MAX_T3_JOB_ROWS` (1.5M) rows, and a T2 run that straddles a T3 cut is first re-cut T2 → T2. Output is streamed through `createRunWriter`, so a job holds one block per input, never a whole run.                                                                          |
 | Generations    | `src/indexer/generations.ts` | Once a week the planner snapshots the catalog under a new generation. The previous generation stays for a week, so a rollback is one `UPDATE` (see the runbook).                                                                                                                                                         |
@@ -56,18 +57,29 @@ registrable apex and answers a healthy empty list.
 
 ## Routes and auth
 
-All routes are `GET ?domain=<hostname>` and need `Authorization: Bearer <CT_INDEX_ADMIN_KEY>` (constant-time compare; unset secret
-fails closed with 401). `GET /health` is the only open route and returns `{"ok":true,"worker":"bv-ct-index"}`. The Worker has no
+All routes are `GET ?domain=<hostname>` and need a bearer key (constant-time compare; an unset secret fails closed with 401). Two
+kinds of key work:
+
+- `CT_INDEX_ADMIN_KEY`, on its own.
+- A **read key per calling Worker**, accepted only when the request names that Worker in `X-BV-Caller`: `bv-mcp`
+  (`CT_INDEX_KEY_BV_MCP`), `bv-web-prod` (`CT_INDEX_KEY_BV_WEB_PROD`), `bv2-ops` (`CT_INDEX_KEY_BV2_OPS`), `bv2-recon`
+  (`CT_INDEX_KEY_BV2_RECON`) and `bv2-certstream` (`CT_INDEX_KEY_BV2_CERTSTREAM`). The list is `READ_CALLERS` in
+  `src/api/auth.ts`. Each is optional: an unset key refuses that caller, and rotating one touches no other caller.
+
+Every answer carries `coverage.entriesBehind`: the log entries the tailer has not read yet, summed over every log. `freshThrough`
+alone hides that, as it moves with every write however far behind the tailer is. A caller that needs recent certificates should
+treat a large `entriesBehind` as "recent names may be missing" and keep its other sources. `GET /health` is the only open route and returns `{"ok":true,"worker":"bv-ct-index"}`. The Worker has no
 `workers.dev` hostname and no route: it is reachable only through the `BV_CERTSTREAM` service binding.
 
-The same secret value is bv-mcp's `BV_CERTSTREAM_ADMIN_KEY` (bv-mcp falls back to `BV_INTERNAL_DEV_KEY` when it is unset). Setting
-only one side makes every `/enumerate` call 401, and bv-mcp then falls through to crt.sh.
+bv-mcp sends `X-BV-Caller: bv-mcp` and its `BV_CERTSTREAM_ADMIN_KEY` secret as the bearer (bv-mcp falls back to
+`BV_INTERNAL_DEV_KEY` when it is unset). That value must equal `CT_INDEX_KEY_BV_MCP` here, or the admin key. Setting only one side
+makes every call 401, and bv-mcp then falls through to crt.sh.
 
 | Route                 | Used by                                           | Notes                                                                    |
 | --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
 | `/enumerate?domain=d` | `discover_subdomains`                             | Up to 500 names per page; `&cursor=` for the next page.                  |
 | `/sans?domain=d`      | `discover_subdomains`, SAN correlation            | Sibling apexes on shared certificates, up to 500.                        |
-| `/cert-meta?domain=d` | `scan_domain` Cloudflare-CDN attribution          | Issuer of the exact name; `issuer: null` (HTTP 200) when never seen.    |
+| `/cert-meta?domain=d` | `scan_domain` Cloudflare-CDN attribution          | Issuer of the exact name; `issuer: null` (HTTP 200) when never seen. With `CERT_DETAILS` on (runbook 9b), also `notBefore`, `serial`, `keyType`, `keyBits`, `sigAlg` and `sanCount` of the same certificate; each is null on a row written without them. |
 
 Full status-code table and the `ct_index_unavailable` / `ct_index_timeout` / `index_not_ready` 503 bodies:
 [`docs/design/bv-ct-index-query-api.md`](../../docs/design/bv-ct-index-query-api.md). A reader fault is **never** an empty 200,
