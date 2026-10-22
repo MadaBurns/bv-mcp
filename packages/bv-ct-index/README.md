@@ -79,7 +79,7 @@ makes every call 401, and bv-mcp then falls through to crt.sh.
 | --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
 | `/enumerate?domain=d` | `discover_subdomains`                             | Up to 500 names per page; `&cursor=` for the next page.                  |
 | `/sans?domain=d`      | `discover_subdomains`, SAN correlation            | Sibling apexes on shared certificates, up to 500.                        |
-| `/cert-meta?domain=d` | `scan_domain` Cloudflare-CDN attribution          | Issuer of the exact name; `issuer: null` (HTTP 200) when never seen.    |
+| `/cert-meta?domain=d` | `scan_domain` Cloudflare-CDN attribution          | Issuer of the exact name; `issuer: null` (HTTP 200) when never seen. With `CERT_DETAILS` on (runbook 9b), also `notBefore`, `serial`, `keyType`, `keyBits`, `sigAlg` and `sanCount` of the same certificate; each is null on a row written without them. |
 
 Full status-code table and the `ct_index_unavailable` / `ct_index_timeout` / `index_not_ready` 503 bodies:
 [`docs/design/bv-ct-index-query-api.md`](../../docs/design/bv-ct-index-query-api.md). A reader fault is **never** an empty 200,

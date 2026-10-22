@@ -6,13 +6,16 @@
  */
 
 import { apexOf, mergeObservations, nameKey, siblingKey } from '../codec';
-import type { NameObservation, ObservationBatch, RunRow, SiblingObservation } from '../types';
+import type { CertDetails, NameObservation, ObservationBatch, RunRow, SiblingObservation } from '../types';
 import type { CertFacts } from './x509';
 
 /** Contract v2: a cert spanning more apexes than this yields no sibling rows. */
 export const MAX_SIBLING_APEXES = 32;
 /** The issuer is a CA's name, but it comes from an untrusted log; a longer one is cut rather than carried. */
 export const MAX_ISSUER_LENGTH = 256;
+/** The serial and signature algorithm also come from the untrusted log; DER allows a 20-byte serial (40 hex). */
+export const MAX_SERIAL_LENGTH = 128;
+export const MAX_SIG_ALG_LENGTH = 64;
 /** Queues caps a message at 128 KB; batches are sent as JSON and kept under this many UTF-8 bytes. */
 export const MAX_MESSAGE_BYTES = 120_000;
 
@@ -38,38 +41,54 @@ function put<T extends RunRow>(rows: Map<string, T>, row: T): void {
 	rows.set(row.key, held ? (mergeObservations(held, row) as T) : row);
 }
 
+function detailsOf(cert: CertFacts): CertDetails {
+	return {
+		notBefore: cert.notBefore,
+		serial: cert.serial.slice(0, MAX_SERIAL_LENGTH),
+		keyType: cert.keyType,
+		keyBits: cert.keyBits,
+		sigAlg: cert.sigAlg.slice(0, MAX_SIG_ALG_LENGTH),
+		sanCount: cert.names.length,
+	};
+}
+
 /**
  * Adds one precert's observations: a NameObservation per name (wildcards folded by `nameKey`, firstSeen =
  * notBefore), and, when the cert spans 2..32 distinct apexes, a SiblingObservation for each ordered pair.
+ * With `withDetails`, each name row also carries the certificate's details (the CERT_DETAILS switch).
  */
-export function observeCert(cert: CertFacts, into: ObservationSet, skips: SkipCounts): void {
-	const issuer = cert.issuer.slice(0, MAX_ISSUER_LENGTH);
+export function observeCert(cert: CertFacts, into: ObservationSet, skips: SkipCounts, withDetails = false): void {
+	const base = { firstSeen: cert.notBefore, notAfter: cert.notAfter, issuer: cert.issuer.slice(0, MAX_ISSUER_LENGTH) };
+	const details = withDetails ? detailsOf(cert) : undefined;
 	const apexes = new Set<string>();
 	for (const raw of cert.names) {
-		let folded: ReturnType<typeof nameKey>;
-		try {
-			folded = nameKey(raw);
-		} catch {
-			skips.badNames++;
-			continue;
-		}
-		const apex = apexOf(folded.name);
-		if (!apex) {
-			skips.noApex++;
-			continue;
-		}
-		apexes.add(apex);
-		put(into.names, {
-			key: folded.key,
-			name: folded.name,
-			apex,
-			firstSeen: cert.notBefore,
-			notAfter: cert.notAfter,
-			issuer,
-			wildcard: folded.wildcard,
-		});
+		const row = nameRow(raw, base, skips);
+		if (!row) continue;
+		if (details) row.details = details;
+		apexes.add(row.apex);
+		put(into.names, row);
 	}
-	if (apexes.size < 2 || apexes.size > MAX_SIBLING_APEXES) return;
+	if (apexes.size >= 2 && apexes.size <= MAX_SIBLING_APEXES) addSiblings(into, apexes, cert);
+}
+
+/** One SAN name as a row, or null (counted in `skips`) when the codec refuses it or it has no registrable apex. */
+function nameRow(raw: string, base: Pick<NameObservation, 'firstSeen' | 'notAfter' | 'issuer'>, skips: SkipCounts): NameObservation | null {
+	let folded: ReturnType<typeof nameKey>;
+	try {
+		folded = nameKey(raw);
+	} catch {
+		skips.badNames++;
+		return null;
+	}
+	const apex = apexOf(folded.name);
+	if (!apex) {
+		skips.noApex++;
+		return null;
+	}
+	return { key: folded.key, name: folded.name, apex, ...base, wildcard: folded.wildcard };
+}
+
+function addSiblings(into: ObservationSet, apexes: ReadonlySet<string>, cert: CertFacts): void {
 	for (const apex of apexes) {
 		for (const sibling of apexes) {
 			if (apex === sibling) continue;
@@ -78,10 +97,13 @@ export function observeCert(cert: CertFacts, into: ObservationSet, skips: SkipCo
 	}
 }
 
+/** Field-by-field equality; details, the one nested field, compare by serial (one serial, one certificate). */
 function sameRow(a: RunRow, b: RunRow): boolean {
 	const left = a as unknown as Record<string, unknown>;
 	const right = b as unknown as Record<string, unknown>;
-	return Object.keys(left).every((field) => left[field] === right[field]);
+	const serial = (row: Record<string, unknown>) => (row.details as CertDetails | undefined)?.serial;
+	if (serial(left) !== serial(right)) return false;
+	return Object.keys({ ...left, ...right }).every((field) => field === 'details' || left[field] === right[field]);
 }
 
 /**

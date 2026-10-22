@@ -154,6 +154,8 @@ interface Tick {
 	fetchUntil: number;
 	fetchTimeoutMs: number;
 	flushRows: number;
+	/** CERT_DETAILS is 'on': name rows carry the certificate details (see the Env field). */
+	certDetails: boolean;
 	states: LogState[];
 	/** Rows sent this tick, by key: the cross-log dedup (observations.ts `newRows`). */
 	emitted: Map<string, RunRow>;
@@ -267,7 +269,7 @@ function observeEntry(tick: Tick, state: LogState, readTbs: () => Uint8Array | n
 		const tbs = readTbs();
 		if (!tbs) return;
 		tick.precerts++;
-		observeCert(parseTbsCertificate(tbs), state.observations, tick.skips);
+		observeCert(parseTbsCertificate(tbs), state.observations, tick.skips, tick.certDetails);
 	} catch {
 		tick.badEntries++;
 	}
@@ -522,7 +524,7 @@ function summarize(tick: Tick, killed: boolean, cursorsWritten: number): TickSum
 	};
 }
 
-function newTick(env: Pick<Env, 'ENTRIES'>, options: Omit<TailerOptions, 'scheduledTime' | 'now' | 'logIds'>): Tick {
+function newTick(env: Pick<Env, 'ENTRIES' | 'CERT_DETAILS'>, options: Omit<TailerOptions, 'scheduledTime' | 'now' | 'logIds'>): Tick {
 	return {
 		fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
 		queue: env.ENTRIES,
@@ -530,6 +532,7 @@ function newTick(env: Pick<Env, 'ENTRIES'>, options: Omit<TailerOptions, 'schedu
 		fetchUntil: Date.now() + (options.fetchPhaseMs ?? FETCH_PHASE_MS),
 		fetchTimeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
 		flushRows: options.flushRows ?? FLUSH_ROWS,
+		certDetails: env.CERT_DETAILS === 'on',
 		states: [],
 		emitted: new Map(),
 		sendFailed: false,
@@ -556,7 +559,7 @@ async function addToLedger(db: D1Database, now: number, subrequests: number, d1R
 	await db.prepare(ADD_TO_LEDGER).bind(new Date(now).toISOString().slice(0, 10), subrequests, d1Rows).run();
 }
 
-export async function runTailer(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options: TailerOptions): Promise<TickSummary> {
+export async function runTailer(env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS'>, options: TailerOptions): Promise<TickSummary> {
 	const now = options.now ?? Date.now();
 	const tick = newTick(env, options);
 	const db = env.CURSORS;
@@ -610,7 +613,7 @@ export interface PlanInputs {
  * log-list fetch and D1 reads go to the ops ledger like a tick's.
  */
 export async function loadPlanInputs(
-	env: Pick<Env, 'CURSORS' | 'ENTRIES'>,
+	env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS'>,
 	options: { now?: number; fetch?: typeof fetch } = {},
 ): Promise<PlanInputs> {
 	const now = options.now ?? Date.now();

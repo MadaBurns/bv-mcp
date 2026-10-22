@@ -72,7 +72,7 @@ function byId(a: string, b: string): number {
 }
 
 /** The kill switch, then the tailed logs split into shards by how far each is behind. */
-export async function planShards(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options: FanoutOptions = {}): Promise<ShardPlan> {
+export async function planShards(env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS'>, options: FanoutOptions = {}): Promise<ShardPlan> {
 	const inputs = await loadPlanInputs(env, options);
 	if (inputs.killed) return { killed: true, shards: [], logs: 0, backlog: 0 };
 	return {
@@ -85,7 +85,7 @@ export async function planShards(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options:
 
 /** One tick fanned out: plan the shards and send them, one message each, to the tail queue. */
 export async function runFanout(
-	env: Pick<Env, 'CURSORS' | 'ENTRIES'>,
+	env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS'>,
 	scheduledTime: number,
 	tail: Pick<Queue<ShardRequest>, 'sendBatch'>,
 	options: FanoutOptions = {},
@@ -123,7 +123,7 @@ function isShardRequest(body: unknown): body is ShardRequest {
  * plans the same logs again from their cursors.
  */
 export async function runShard(
-	env: Pick<Env, 'CURSORS' | 'ENTRIES'>,
+	env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS'>,
 	body: unknown,
 	options: { now?: number; fetch?: typeof fetch } = {},
 ): Promise<ShardOutcome> {
