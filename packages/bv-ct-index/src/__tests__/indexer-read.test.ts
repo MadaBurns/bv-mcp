@@ -160,6 +160,8 @@ describe('createReader faults', () => {
 		await env.CURSORS.batch([
 			insert.bind('a', 'https://a.test/', 1_000, 1_500),
 			insert.bind('b', 'https://b.test/', 7, 7),
+			// A stale head below the cursor counts as 0, not -100 against the other logs.
+			insert.bind('d', 'https://d.test/', 200, 100),
 			// Never read: no cursor yet, so it adds nothing rather than nulling the sum.
 			insert.bind('c', 'https://c.test/', null, 9_999),
 		]);
