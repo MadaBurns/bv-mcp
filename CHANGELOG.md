@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- The root package's `@blackveil/dns-checks` dependency range is raised from `^1.0.4` to `^1.60.2`, the version this Worker and the `blackveil-dns` CLI/stdio bundle are built and tested against (`dist` imports the `.`, `./scoring` and `./whois` entry points). The old floor let an install of `blackveil-dns` resolve any 1.x release.
+
+### Release notes
+
+- npm publish cycle prepared (operator-run; nothing is published by the repository). The npm registry still serves `blackveil-dns` 2.13.0 (2026-05-30) and `@blackveil/dns-checks` 1.3.12. The publish brings them to `blackveil-dns` v3.100.1 (81 public tools, 36 `check_*` tools, from `npm run check:tool-surface`) and `@blackveil/dns-checks` 1.60.2 (tag `dns-checks-v1.60.2`, source unchanged since). Publish `@blackveil/dns-checks` first: the `blackveil-dns` bundle imports it as an external dependency. The scoring library that bv-web-prod vendors is a tarball pinned by version (`vendor/blackveil-dns-checks-1.60.1.tgz`), so publishing 1.60.2 to npm does not change what bv-web-prod consumes.
+
 ## [3.100.1] - 2026-10-20
 
 Patch release: one wording fix in the OSINT report (#1270). `@blackveil/dns-checks` 1.60.2 and scoring model 1.40.0 are unchanged.
