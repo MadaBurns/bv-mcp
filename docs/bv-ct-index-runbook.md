@@ -35,7 +35,7 @@ different application with that name is live on this account. The only name for 
 ## 2. Provision (fresh account only)
 
 `npm run provision:ct-index` **prints** the ordered, idempotent commands and executes nothing. Run them one at a time. In order:
-check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries` and `bv-ct-index-compact`, the D1 database
+check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact` and `bv-ct-index-tail`, the D1 database
 `bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0003: `log_cursors`, then
 `runs` / `meta` / `ops_ledger`, then the `log_cursors` error columns), then deploy.
 
@@ -145,7 +145,8 @@ What good looks like in the first hour:
   There is no `meta/index.json` object and no R2 listing endpoint in `wrangler`: the D1 `runs` table **is** the index of R2 objects.
   `r2_key` values look like `runs/t0/<ms>-<uuid>`; fetch one with `npx wrangler r2 object get bv-ct-index/<r2_key> --remote` if you
   must eyeball it (it is binary).
-- Dashboard (Workers & Pages, `bv-ct-index`): no sustained error rate on the queue consumers, and the two queues drain rather than grow.
+- Dashboard (Workers & Pages, `bv-ct-index`): no sustained error rate on the queue consumers, and `bv-ct-index-entries` and
+  `bv-ct-index-compact` drain rather than grow. `bv-ct-index-tail` never holds more than a tick's four messages.
 
 If a kill-switch or generation problem appears, see steps 9 and 10.
 
@@ -161,13 +162,25 @@ RFC 6962 logs serve 32 entries a page however many are asked for. Head reads tha
 
 The fix, in the tailer since 2026-10-23:
 
-- The cron splits the logs into four shards, furthest behind first, and runs each in its own invocation through the Worker's own
-  `TAILER` service binding (`TailShard`). Each invocation gets its own six header slots and subrequest limit.
+- The cron splits the logs into four shards, furthest behind first, and sends each as one message to the `bv-ct-index-tail` queue.
+  Each queue consumer invocation is its own top-level invocation, so each shard gets its own six header slots and subrequest
+  limit. A service binding to the Worker itself would not: a Worker reached through a service binding shares the caller's
+  connection limit ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections)).
+- A shard message older than 50 seconds is dropped unread (`ct_tailer_shard_skipped`, `skipped: "stale"`), because the next
+  tick has already sent a fresh one for the same logs. The queue never retries a shard (`max_retries: 0`) for the same reason.
 - A visit asks for up to four pages or tiles of one log at once, and learns a log's page size from a short page that has a full
   one after it.
-- A request's timeout starts when it gets a header slot, not while it waits for one.
+- A request's timeout starts when it gets a header slot, not while it waits for one. A request that gets its slot after the fetch
+  phase has ended is not sent, so queued requests cannot run into the next tick.
+- A log's rows count as sent, for skipping the same rows on another log, only once its own sends have resolved.
 - The fetch phase is 35 seconds, up to 3,000 fetches per shard. Rows are sent once a log holds 2,000 of them, so memory stays
   flat: a held row costs about 400 bytes, and the four shards may share one 128 MB isolate.
+
+**Before the first deploy with this change**, the queue must exist. A producer bound to a missing queue fails the deploy:
+
+```bash
+npx wrangler queues create bv-ct-index-tail
+```
 
 Watch after the deploy (read-only):
 
@@ -177,7 +190,9 @@ $D1 --command "SELECT SUM(tree_size - next_index) AS behind, datetime('now') AS 
 ```
 
 The `backlog` field on `ct_tailer_fanout` is the same number. Expect it to fall by roughly the read rate minus about 212k entries a
-minute. If it does not fall, read the per-shard `ct_tailer_tick` lines: `entries` per shard and `errors`. More traffic also means
+minute. If it does not fall, read the per-shard `ct_tailer_tick` lines: `entries` per shard and `errors`. Each tick should log
+four `ct_tailer_tick` lines with different `shard` values. If `ct_tailer_shard_skipped` lines with `stale` keep appearing, the
+consumer is not running the shards side by side, and the four share one minute between them. More traffic also means
 more queue messages, more tier-0 runs and more compaction. Check the cost watch (step 11) daily for the first week.
 
 Rollback: `npx wrangler rollback --name bv-ct-index`. The cursors only move forward, so a rollback loses nothing already read.
@@ -410,7 +425,7 @@ requires a one-to-one match with a wrangler config **on disk in bv-web-prod** an
 "bv-ct-index": {
 	"owner": "bv-mcp",
 	"evidence": "declared in bv-mcp packages/bv-ct-index (cloudflare.config.ts); bv-mcp service-binds it as BV_CERTSTREAM once the repoint lands; sibling of bv-whois and bv-infra-probe",
-	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries and bv-ct-index-compact; the index is forward-only and cannot be rebuilt from the logs."
+	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries, bv-ct-index-compact and bv-ct-index-tail; the index is forward-only and cannot be rebuilt from the logs."
 }
 ```
 

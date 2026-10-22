@@ -36,7 +36,7 @@
 
 import type { Env } from '../index';
 import { limiter } from '../indexer/blocks';
-import type { RunRow } from '../types';
+import type { ObservationBatch, RunRow } from '../types';
 import {
 	LOG_LIST_URL,
 	TILE_WIDTH,
@@ -217,17 +217,19 @@ function canFetch(tick: Tick): boolean {
 
 /**
  * GETs `url` and reads its body with `read`. The request waits for a header slot; its timeout starts with the slot
- * and covers the body. A 429 is a Deferral, any other non-2xx an HttpError; a network failure or timeout names the
- * URL (the bare abort message does not).
+ * and covers the body, and a request that gets its slot after the fetch phase ended is not sent (a Deferral), so
+ * queued requests cannot run into the next tick. A 429 is a Deferral, any other non-2xx an HttpError; a network
+ * failure or timeout names the URL (the bare abort message does not).
  */
 async function get<T>(tick: Tick, url: string, read: (response: Response) => Promise<T>): Promise<T> {
-	tick.fetches++;
-	const named = (error: unknown) => new Error(`${describe(error)} (${url})`);
+	const named = (error: unknown) => (error instanceof Deferral ? error : new Error(`${describe(error)} (${url})`));
 	let response: Response;
 	try {
-		response = await tick.slot(() =>
-			tick.fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(tick.fetchTimeoutMs) }),
-		);
+		response = await tick.slot(() => {
+			if (Date.now() >= tick.fetchUntil) throw new Deferral('fetch phase ended before this request had a slot');
+			tick.fetches++;
+			return tick.fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(tick.fetchTimeoutMs) });
+		});
 	} catch (error) {
 		throw named(error);
 	}
@@ -380,16 +382,21 @@ async function readTiles(tick: Tick, state: LogState, end: number): Promise<void
 }
 
 /**
- * Sends a log's held rows, minus those another log already sent this tick, and moves its sentThrough to the entry
- * they cover. A failure is recorded on the log and stops the tick.
+ * The dedup memory one flush works against: reads see the rows already sent this tick, writes stay here until this
+ * flush's own sends resolve. So a log never drops a row on the strength of another log's send that is still in flight
+ * and may yet fail (two logs in flight may both send a row; the merge makes that harmless).
  */
-async function flush(tick: Tick, state: LogState): Promise<void> {
-	if (tick.sendFailed || state.next === state.sentThrough) return;
-	if (tick.emitted.size > MAX_EMITTED) tick.emitted.clear();
-	const through = state.next!;
-	const rows = newRows(state.observations, tick.emitted);
-	const batches = toBatches(state.log.logId, state.sentThrough!, through, rows);
-	state.observations = newObservationSet();
+class StagedRows extends Map<string, RunRow> {
+	constructor(private readonly sent: ReadonlyMap<string, RunRow>) {
+		super();
+	}
+	override get(key: string): RunRow | undefined {
+		return super.get(key) ?? this.sent.get(key);
+	}
+}
+
+/** Sends the batches together; a failure is recorded on the log and stops the tick. */
+async function sendAll(tick: Tick, state: LogState, batches: readonly ObservationBatch[]): Promise<void> {
 	try {
 		await Promise.all(
 			batches.map((batch) => {
@@ -402,6 +409,22 @@ async function flush(tick: Tick, state: LogState): Promise<void> {
 		tick.sendFailed = true;
 		throw new SendFailed(state.error);
 	}
+}
+
+/**
+ * Sends a log's held rows, minus those another log's resolved sends already covered this tick, and moves its
+ * sentThrough to the entry they cover. A failure is recorded on the log and stops the tick.
+ */
+async function flush(tick: Tick, state: LogState): Promise<void> {
+	if (tick.sendFailed || state.next === state.sentThrough) return;
+	if (tick.emitted.size > MAX_EMITTED) tick.emitted.clear();
+	const through = state.next!;
+	const staged = new StagedRows(tick.emitted);
+	const rows = newRows(state.observations, staged);
+	const batches = toBatches(state.log.logId, state.sentThrough!, through, rows);
+	state.observations = newObservationSet();
+	await sendAll(tick, state, batches);
+	for (const [key, row] of staged) tick.emitted.set(key, row);
 	tick.names += rows.names.length;
 	tick.siblings += rows.siblings.length;
 	tick.batches += batches.length;

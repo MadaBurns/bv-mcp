@@ -35,6 +35,8 @@ export default defineConfig({
 			triggers.scheduled({ schedule: '17 * * * *' }),
 			triggers.queue({ name: 'bv-ct-index-entries', maxBatchSize: 100, maxBatchTimeout: 30, maxRetries: 3 }),
 			triggers.queue({ name: 'bv-ct-index-compact', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 3 }),
+			// One tailer shard per invocation; never retried, as the next minute's tick re-plans the same logs.
+			triggers.queue({ name: 'bv-ct-index-tail', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 0 }),
 		],
 		env: {
 			INDEX: bindings.r2({ name: 'bv-ct-index' }),
@@ -42,8 +44,8 @@ export default defineConfig({
 			CURSORS: bindings.d1({ name: 'bv-ct-index-cursors', id: resolveCtIndexD1Id(process.env[CT_INDEX_D1_ID_ENV]) }),
 			ENTRIES: bindings.queue({ name: 'bv-ct-index-entries' }),
 			COMPACT: bindings.queue({ name: 'bv-ct-index-compact' }),
-			// This Worker's own TailShard entrypoint: the cron fans the tailer out to one invocation per shard (src/tailer/).
-			TAILER: bindings.worker({ worker: 'bv-ct-index', exportName: 'TailShard' }),
+			// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
+			TAIL: bindings.queue({ name: 'bv-ct-index-tail' }),
 			CT_INDEX_ADMIN_KEY: bindings.secret(),
 		},
 	},

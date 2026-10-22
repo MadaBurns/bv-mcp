@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * The tailer fanned out: each `* * * * *` tick splits the tailed logs into shards and runs every shard at once in
- * its own invocation (TailShard in src/index.ts, reached through this Worker's own TAILER service binding). An
- * invocation can only have HEADER_SLOTS fetches waiting for headers, so one invocation could not read the logs as
- * fast as they grow (measured 2026-10-22: about 212k entries a minute against about 22k read). Shards are
- * independent: each runs the whole tick of src/tailer/index.ts over its own logs, with its own cursors, kill-switch
- * check and ledger row update.
+ * The tailer fanned out: each `* * * * *` tick splits the tailed logs into shards and sends one message per shard to
+ * the `bv-ct-index-tail` queue, whose consumer runs that shard's tick (src/tailer/index.ts) over its own logs, with
+ * its own cursors, kill-switch check and ledger row update.
+ *
+ * Why a queue: an invocation can have only HEADER_SLOTS requests waiting for headers, and one invocation could not
+ * read the logs as fast as they grow (measured 2026-10-22: about 212k entries a minute against about 22k read). A
+ * Worker reached through a service binding shares the caller's connection limit (Cloudflare limits docs,
+ * "Simultaneous open connections"), so binding the Worker to itself adds no slots. Each queue consumer invocation is
+ * its own top-level invocation.
  */
 
 import type { Env } from '../index';
-import { describeError, loadPlanInputs, type TickSummary } from './index';
+import { describeError, loadPlanInputs, runTailer, type TickSummary } from './index';
 
-/** Invocations a tick fans out to. A request may make at most 32 Worker invocations, so this stays well under it. */
+/** Shards a tick fans out to. */
 export const SHARDS = 4;
+/**
+ * A shard message older than this is dropped unread: the next minute's tick has already sent a fresh one for the same
+ * logs, and running both would read the same entries twice. Queue consumers that are slow to scale out shed load here.
+ */
+export const STALE_SHARD_MS = 50_000;
 
 export interface ShardPlan {
 	killed: boolean;
@@ -23,7 +31,7 @@ export interface ShardPlan {
 	backlog: number;
 }
 
-/** What the cron hands one shard (TailShard.tailLogs in src/index.ts). */
+/** One message on the `bv-ct-index-tail` queue. */
 export interface ShardRequest {
 	scheduledTime: number;
 	shard: number;
@@ -35,10 +43,8 @@ export interface FanoutSummary {
 	logs: number;
 	backlog: number;
 	shards: number;
-	entries: number;
-	subrequests: number;
-	/** shard -> why its invocation failed. The other shards' cursors are unaffected. */
-	failed: Record<number, string>;
+	/** Why the shard messages could not be sent, if they could not; this tick then reads nothing. */
+	failed: string | null;
 }
 
 interface FanoutOptions {
@@ -52,10 +58,17 @@ interface FanoutOptions {
  * shards. A log with no cursor yet counts as not behind.
  */
 export function partitionLogs(logIds: readonly string[], behind: ReadonlyMap<string, number>, shards: number): string[][] {
-	const sorted = [...logIds].sort((a, b) => (behind.get(b) ?? 0) - (behind.get(a) ?? 0) || (a < b ? -1 : a > b ? 1 : 0));
+	const lag = (logId: string) => behind.get(logId) ?? 0;
+	const sorted = [...logIds].sort((a, b) => lag(b) - lag(a) || byId(a, b));
 	const out: string[][] = Array.from({ length: Math.max(1, shards) }, () => []);
 	sorted.forEach((logId, i) => out[i % out.length]!.push(logId));
 	return out.filter((shard) => shard.length > 0);
+}
+
+/** Code-unit order, so the deal does not depend on the runtime's locale. */
+function byId(a: string, b: string): number {
+	if (a === b) return 0;
+	return a < b ? -1 : 1;
 }
 
 /** The kill switch, then the tailed logs split into shards by how far each is behind. */
@@ -70,31 +83,57 @@ export async function planShards(env: Pick<Env, 'CURSORS' | 'ENTRIES'>, options:
 	};
 }
 
-/** One tick fanned out: plan the shards, run them all at once through `tailShard`, and total what they did. */
+/** One tick fanned out: plan the shards and send them, one message each, to the tail queue. */
 export async function runFanout(
 	env: Pick<Env, 'CURSORS' | 'ENTRIES'>,
 	scheduledTime: number,
-	tailShard: (request: ShardRequest) => Promise<TickSummary>,
+	tail: Pick<Queue<ShardRequest>, 'sendBatch'>,
 	options: FanoutOptions = {},
 ): Promise<FanoutSummary> {
 	const plan = await planShards(env, options);
-	const summary: FanoutSummary = {
-		killed: plan.killed,
-		logs: plan.logs,
-		backlog: plan.backlog,
-		shards: plan.shards.length,
-		entries: 0,
-		subrequests: 0,
-		failed: {},
-	};
-	const results = await Promise.allSettled(plan.shards.map((logIds, shard) => tailShard({ scheduledTime, shard, logIds })));
-	for (const [shard, result] of results.entries()) {
-		if (result.status === 'rejected') {
-			summary.failed[shard] = describeError(result.reason);
-			continue;
-		}
-		summary.entries += result.value.entries;
-		summary.subrequests += result.value.subrequests;
+	const summary: FanoutSummary = { killed: plan.killed, logs: plan.logs, backlog: plan.backlog, shards: plan.shards.length, failed: null };
+	if (plan.shards.length === 0) return summary;
+	try {
+		await tail.sendBatch(plan.shards.map((logIds, shard) => ({ body: { scheduledTime, shard, logIds }, contentType: 'json' as const })));
+	} catch (error) {
+		summary.failed = describeError(error);
 	}
 	return summary;
+}
+
+export interface ShardOutcome {
+	shard: number;
+	/** The shard's tick, or null when the message was dropped as stale or malformed. */
+	summary: TickSummary | null;
+	skipped?: 'stale' | 'malformed';
+}
+
+function isShardRequest(body: unknown): body is ShardRequest {
+	const request = body as Partial<ShardRequest> | null;
+	return (
+		typeof request?.scheduledTime === 'number' &&
+		typeof request.shard === 'number' &&
+		Array.isArray(request.logIds) &&
+		request.logIds.every((logId) => typeof logId === 'string')
+	);
+}
+
+/**
+ * Runs one shard message from the tail queue. A stale or malformed message is dropped, not retried: the next tick
+ * plans the same logs again from their cursors.
+ */
+export async function runShard(
+	env: Pick<Env, 'CURSORS' | 'ENTRIES'>,
+	body: unknown,
+	options: { now?: number; fetch?: typeof fetch } = {},
+): Promise<ShardOutcome> {
+	if (!isShardRequest(body)) return { shard: -1, summary: null, skipped: 'malformed' };
+	if ((options.now ?? Date.now()) - body.scheduledTime > STALE_SHARD_MS) return { shard: body.shard, summary: null, skipped: 'stale' };
+	const summary = await runTailer(env, {
+		scheduledTime: body.scheduledTime,
+		now: options.now,
+		fetch: options.fetch,
+		logIds: new Set(body.logIds),
+	});
+	return { shard: body.shard, summary };
 }
