@@ -15,6 +15,17 @@ export interface NameObservation {
 	notAfter: number /* epoch s, max seen */;
 	issuer: string;
 	wildcard: boolean;
+	/** The certificate details of the certificate this row's notAfter and issuer came from; absent on rows written before them. */
+	details?: CertDetails;
+}
+/** What the scanners show about a certificate beyond its names and dates (same vocabulary as @blackveil/dns-checks CertMetadata). */
+export interface CertDetails {
+	notBefore: number /* epoch s, of this certificate */;
+	serial: string /* lowercase hex */;
+	keyType: 'rsa' | 'ec' | 'unknown';
+	keyBits: number | null;
+	sigAlg: string;
+	sanCount: number;
 }
 export interface SiblingObservation {
 	key: string /* 's\x00' + reversed(apex) + '\x00' + sibling */;

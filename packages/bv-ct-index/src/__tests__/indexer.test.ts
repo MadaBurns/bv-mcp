@@ -10,9 +10,12 @@ import { runCompactionJob } from '../indexer/compact';
 import { runCompactionCron } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import { KILLED_RETRY_DELAY_SECONDS, indexEntries } from '../indexer/write';
+import type { NameObservation } from '../types';
 import {
+	DAY_S,
 	HOUR_MS,
 	T,
+	T_S,
 	applyCatalog,
 	batchBody,
 	catalog,
@@ -123,6 +126,33 @@ describe('T0 indexer', () => {
 		expect(batch.acked).toEqual(['m1', 'm2']);
 		expect(batch.ackedAll).toBe(true);
 		expect((await createReader(env, () => T).scan('example.com', { limit: 10 })).names.map((row) => row.name)).toEqual(['ok.example.com']);
+	});
+
+	it('stores certificate details from the queue, and drops malformed details but keeps the row and its names', async () => {
+		const env = testEnv();
+		const details = {
+			notBefore: T_S - DAY_S,
+			serial: '0a1b',
+			keyType: 'ec' as const,
+			keyBits: 256,
+			sigAlg: 'ecdsa-with-SHA256',
+			sanCount: 3,
+		};
+		const malformed = [
+			{ ...details, serial: 'XYZ' },
+			{ ...details, keyType: 'dsa' },
+			{ ...details, keyBits: -1 },
+			{ ...details, sigAlg: 'x'.repeat(65) },
+			{ ...details, sanCount: 1.5 },
+			'not an object',
+		];
+		const rows = [obs('good.example.com', { details }), ...malformed.map((bad, i) => ({ ...obs(`bad${i}.example.com`), details: bad }))];
+		const outcome = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody(rows as NameObservation[], [])]), env, T);
+
+		expect(outcome).toMatchObject({ names: rows.length, rejected: 0 });
+		const stored = (await createReader(env, () => T).scan('example.com', { limit: 10 })).names;
+		expect(stored.find((row) => row.name === 'good.example.com')?.details).toEqual(details);
+		expect(stored.filter((row) => row.name.startsWith('bad')).map((row) => row.details)).toEqual(malformed.map(() => undefined));
 	});
 });
 

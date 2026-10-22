@@ -361,7 +361,8 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
 - **Binding**: remove the `BV_CERTSTREAM` entry from `.dev/wrangler.deploy.jsonc` (never point it back at
   `bv-certstream-worker`) and `npm run deploy:prod`. bv-mcp then uses crt.sh and CertSpotter alone. The sidecar keeps running and
   indexing.
-- **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`.
+- **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
+  never roll back to a version older than the one that added it. Older versions cannot read the stored details.
 - **Index contents** (a bad compaction, a bad snapshot): roll the catalog back to a retained generation. The previous generation is
   kept for a week after each weekly snapshot.
 
@@ -373,6 +374,28 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   Pick a generation that has `runs` rows: pointing at one with none leaves the index empty for readers. This is one write and takes
   effect on the next request. Objects are only deleted when no generation references them, so the older
   generation's files are intact.
+
+### 9b. Certificate details (`CERT_DETAILS`)
+
+The tailer can store, on each name, the details of the certificate it came from: its start date, serial number, key type and
+size, signature algorithm, and how many names it covers. `/cert-meta` returns them, so callers can show key strength without asking
+CertSpotter. The details come from the CT log entry itself. The certificate-chain check is not among them, because that needs the
+site's live certificate chain.
+
+The `CERT_DETAILS` var switches this. Unset, or any value other than `on`, stores no details. It is off by default for one reason:
+**older versions of this Worker cannot read a row that has details**, and compaction carries the details forward, so they never
+disappear by themselves. Turn it on in two steps:
+
+1. Deploy a version that contains the details reader (any version since this section was added), with `CERT_DETAILS` unset. Watch
+   a day of normal health (section 6). Rolling back is still safe at this point.
+2. Set `CERT_DETAILS: bindings.text('on')` in `cloudflare.config.ts` (and `"vars": { "CERT_DETAILS": "on" }` in `wrangler.jsonc`),
+   merge, and deploy. From here on, a rollback must go to a version that reads details, never to an older one.
+
+What to expect: details appear only for certificates logged after step 2. A name whose latest certificate was logged earlier
+answers `/cert-meta` with null detail fields, so callers keep their other source for those. Most certificates renew within 90
+days, so coverage grows over the following weeks. Each name row grows by about 80 bytes before compression (six fields; a typical serial alone is 32 to 36 hex characters).
+
+Turning it off again stops new details but does not remove stored ones.
 
 ## 10. Kill switch and the ops ledger
 

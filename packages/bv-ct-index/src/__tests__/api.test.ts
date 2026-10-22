@@ -217,6 +217,29 @@ describe('GET /cert-meta', () => {
 		expect(body.coverage.truncated).toBe(false);
 	});
 
+	it("returns the certificate's details with the issuer, or null details for a row written before them", async () => {
+		const details = {
+			notBefore: FIRST_SEEN + 86_400,
+			serial: '0a1b',
+			keyType: 'rsa' as const,
+			keyBits: 2048,
+			sigAlg: 'sha256WithRSAEncryption',
+			sanCount: 4,
+		};
+		const withDetails = await call(fakeReader({ names: [row('example.com', { details })] }).reader, '/cert-meta?domain=example.com');
+		expect(withDetails.body).toMatchObject({
+			notBefore: '2026-09-22T14:13:20.000Z',
+			serial: '0a1b',
+			keyType: 'rsa',
+			keyBits: 2048,
+			sigAlg: 'sha256WithRSAEncryption',
+			sanCount: 4,
+		});
+		const without = await call(fakeReader({ names: [row('example.com')] }).reader, '/cert-meta?domain=example.com');
+		expect(without.body).toMatchObject({ notBefore: null, serial: null, keyType: null, keyBits: null, sigAlg: null, sanCount: null });
+		expect(without.body).toMatchObject({ issuer: "Let's Encrypt R11" });
+	});
+
 	it('gives no issuer when only a child name was seen (the first row is not the exact name)', async () => {
 		const { reader } = fakeReader({ names: [row('api.example.com')] });
 		const { response, body } = await call(reader, '/cert-meta?domain=example.com');

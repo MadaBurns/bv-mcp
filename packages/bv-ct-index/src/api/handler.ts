@@ -15,7 +15,7 @@
  */
 
 import { apexOf, nameKey } from '../codec';
-import type { IndexReader, SiblingObservation } from '../types';
+import type { CertDetails, IndexReader, SiblingObservation } from '../types';
 import { authenticate, type ApiKeys } from './auth';
 
 /** Page size, matching the 500-name display cap bv-mcp already applies. */
@@ -128,18 +128,39 @@ async function sans(reader: IndexReader, domain: string) {
 	};
 }
 
+/**
+ * The /cert-meta detail fields. They belong to the same certificate as notAfter and issuer, and are all null when
+ * the row predates them (or CERT_DETAILS was off when it was written), so a caller keeps its other source for those.
+ */
+function detailsOf(details: CertDetails | undefined) {
+	if (!details) return { notBefore: null, serial: null, keyType: null, keyBits: null, sigAlg: null, sanCount: null };
+	const { serial, keyType, keyBits, sigAlg, sanCount } = details;
+	return { notBefore: isoOf(details.notBefore), serial, keyType, keyBits, sigAlg: sigAlg || null, sanCount };
+}
+
 async function certMeta(reader: IndexReader, domain: string) {
 	const [page, meta] = await Promise.all([reader.scan(domain, { limit: 1 }), reader.meta()]);
 	populated(meta);
 	// The domain's own key sorts first in its range, so the first row is the exact name when it exists. It is
 	// already merged across runs: the issuer is the one from the row with the largest notAfter.
 	const exact = page.names.find((row) => row.name === domain);
+	if (!exact)
+		return {
+			domain,
+			issuer: null,
+			firstSeen: null,
+			notAfter: null,
+			wildcard: false,
+			...detailsOf(undefined),
+			coverage: coverageOf(meta, false),
+		};
 	return {
 		domain,
-		issuer: exact?.issuer || null,
-		firstSeen: exact ? isoOf(exact.firstSeen) : null,
-		notAfter: exact ? isoOf(exact.notAfter) : null,
-		wildcard: exact?.wildcard ?? false,
+		issuer: exact.issuer || null,
+		firstSeen: isoOf(exact.firstSeen),
+		notAfter: isoOf(exact.notAfter),
+		wildcard: exact.wildcard,
+		...detailsOf(exact.details),
 		coverage: coverageOf(meta, false),
 	};
 }

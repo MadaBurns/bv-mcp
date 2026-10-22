@@ -15,6 +15,11 @@ export const RFC6962_PRECERT_FACTS = {
 	notBefore: 1792195200,
 	notAfter: 1800057599,
 	issuer: 'ZeroSSL ECC DV SSL CA 2',
+	// Serial, signature and key checked with `openssl asn1parse` on the TBS (2026-10-23).
+	serial: 'df27a36975197dd88ec805465bdb6ba2',
+	sigAlg: 'ecdsa-with-SHA256',
+	keyType: 'ec' as const,
+	keyBits: 256,
 	apexes: ['4f6k.com'],
 };
 
@@ -35,6 +40,11 @@ export const STATIC_PRECERT_FACTS = {
 	notBefore: 1792213443,
 	notAfter: 1799989442,
 	issuer: 'YR2',
+	// Checked with `openssl asn1parse`: an 18-byte serial, and a 257-byte modulus whose first byte is the sign byte.
+	serial: '057c3fa20338283c6da7cea77ec87c2068f5',
+	sigAlg: 'sha256WithRSAEncryption',
+	keyType: 'rsa' as const,
+	keyBits: 2048,
 	apexes: ['bluemoonstudio.au', 'totallyrenewableyack.org.au'],
 };
 
@@ -51,6 +61,10 @@ export const MULTI_APEX_FACTS = {
 	notBefore: 1792213308,
 	notAfter: 1799989307,
 	issuer: 'WR1',
+	serial: '85486aaaabf80559136d59a58af23aaf',
+	sigAlg: 'sha256WithRSAEncryption',
+	keyType: 'rsa' as const,
+	keyBits: 2048,
 };
 
 /** The Chrome CT log list v3 (version 95.2, 2026-10-16T13:42:55Z), trimmed to a few logs and without public keys. */

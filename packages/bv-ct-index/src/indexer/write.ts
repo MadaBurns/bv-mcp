@@ -19,7 +19,7 @@
 
 import { encodeRun, nameKey, serializeBlockIndex, siblingKey } from '../codec';
 import type { Env } from '../index';
-import type { NameObservation, SiblingObservation } from '../types';
+import type { CertDetails, NameObservation, SiblingObservation } from '../types';
 import { CURRENT_GENERATION_SQL, RUNS_PREFIX, isKilled, ledgerStatement } from './catalog';
 
 /** While the kill switch is on, batches are retried after this delay (the queue drops a message after 3 retries). */
@@ -35,23 +35,57 @@ function epochs(o: Fields): boolean {
 	return Number.isSafeInteger(o.firstSeen) && Number.isSafeInteger(o.notAfter);
 }
 
+const KEY_TYPES = new Set<unknown>(['rsa', 'ec', 'unknown']);
+const SERIAL = /^[0-9a-f]{0,128}$/;
+const MAX_SIG_ALG_LENGTH = 64;
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** One check per CertDetails field; a queued details object is kept only when every field passes. */
+const DETAIL_CHECKS: Record<keyof CertDetails, (value: unknown) => boolean> = {
+	notBefore: Number.isSafeInteger,
+	serial: (value) => typeof value === 'string' && SERIAL.test(value),
+	keyType: (value) => KEY_TYPES.has(value),
+	keyBits: (value) => value === null || count(value),
+	sigAlg: (value) => typeof value === 'string' && value.length <= MAX_SIG_ALG_LENGTH,
+	sanCount: count,
+};
+const DETAIL_FIELDS = Object.keys(DETAIL_CHECKS) as Array<keyof CertDetails>;
+
+/** Queued certificate details, or undefined when absent or malformed: bad details never cost a row its names. */
+function certDetails(value: unknown): CertDetails | undefined {
+	if (!isFields(value) || !DETAIL_FIELDS.every((field) => DETAIL_CHECKS[field](value[field]))) return undefined;
+	return Object.fromEntries(DETAIL_FIELDS.map((field) => [field, value[field]])) as unknown as CertDetails;
+}
+
+/** Whether `key` is exactly the key the codec derives from `name` (and `name` is already in its folded form). */
+function codecAgrees(key: string, name: string): boolean {
+	try {
+		const derived = nameKey(name);
+		return derived.key === key && derived.name === name;
+	} catch {
+		return false;
+	}
+}
+
+type NameFields = Fields & { key: string; name: string; apex: string; issuer: string; wildcard: boolean };
+
+function hasNameFields(o: Fields): o is NameFields {
+	return ['key', 'name', 'apex', 'issuer'].every((field) => typeof o[field] === 'string') && typeof o.wildcard === 'boolean';
+}
+
 /**
  * A queued observation is stored only if its key is exactly the key the codec derives from its name. A key
  * that disagreed (e.g. a name row keyed into the sibling keyspace) would sort into another domain's range or
  * make the run undecodable, and every read of that range would fail.
  */
 function nameObservation(o: unknown): NameObservation | null {
-	if (!isFields(o) || !epochs(o)) return null;
+	if (!isFields(o) || !epochs(o) || !hasNameFields(o)) return null;
 	const { key, name, apex, issuer, wildcard } = o;
-	if (typeof key !== 'string' || typeof name !== 'string' || typeof apex !== 'string') return null;
-	if (typeof issuer !== 'string' || typeof wildcard !== 'boolean') return null;
-	try {
-		const derived = nameKey(name);
-		if (derived.key !== key || derived.name !== name) return null;
-	} catch {
-		return null;
-	}
-	return { key, name, apex, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number, issuer, wildcard };
+	if (!codecAgrees(key, name)) return null;
+	const row: NameObservation = { key, name, apex, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number, issuer, wildcard };
+	const details = certDetails(o.details);
+	if (details) row.details = details;
+	return row;
 }
 
 function siblingObservation(o: unknown): SiblingObservation | null {

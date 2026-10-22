@@ -204,6 +204,31 @@ describe('runTailer', () => {
 		expect(queue.options.every((options) => (options as { contentType?: string }).contentType === 'json')).toBe(true);
 	});
 
+	it('sends certificate details only when CERT_DETAILS is on', async () => {
+		const tail = async (certDetails?: string) => {
+			resetLogListMemo();
+			await db.prepare('DELETE FROM log_cursors').run();
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 980);
+			const queue = fakeQueue();
+			await runTailer(
+				{ CURSORS: db, ENTRIES: queue.queue, CERT_DETAILS: certDetails },
+				{ scheduledTime: NOW, now: NOW, fetch: fakeNetwork().fetch },
+			);
+			return queue.sent.flatMap((batch) => batch.names);
+		};
+		for (const off of [undefined, 'off', 'ON', '1']) expect((await tail(off)).every((row) => row.details === undefined)).toBe(true);
+		const on = await tail('on');
+		expect(on).toHaveLength(1);
+		expect(on[0]!.details).toEqual({
+			notBefore: RFC6962_PRECERT_FACTS.notBefore,
+			serial: RFC6962_PRECERT_FACTS.serial,
+			keyType: 'ec',
+			keyBits: 256,
+			sigAlg: 'ecdsa-with-SHA256',
+			sanCount: RFC6962_PRECERT_FACTS.names.length,
+		});
+	});
+
 	it('writes no cursor until the send has resolved', async () => {
 		await seed(RFC.log_id, 'rfc6962', RFC.url, 990);
 		await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 5 * TILE_WIDTH + 17);

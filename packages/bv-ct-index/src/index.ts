@@ -38,6 +38,13 @@ export interface Env {
 	 * Unbound, the tailer runs over every log in the cron invocation alone.
 	 */
 	TAIL?: Queue<ShardRequest>;
+	/**
+	 * Var: 'on' makes the tailer store each certificate's details (serial, key, signature, SAN count) on its name
+	 * rows; anything else stores none. Older versions cannot read a row with details, and compaction carries the
+	 * details forward, so once this has been on, never roll back to a version before it (runbook, "Certificate
+	 * details"). Turning it off stops new details but does not remove stored ones.
+	 */
+	CERT_DETAILS?: string;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 	/**
