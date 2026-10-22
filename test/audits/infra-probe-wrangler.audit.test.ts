@@ -19,7 +19,7 @@ interface WranglerConfig {
 	compatibility_flags?: string[];
 	workers_dev?: boolean;
 	preview_urls?: boolean;
-	services?: Array<{ binding?: string; service?: string }>;
+	services?: Array<{ binding?: string; service?: string; entrypoint?: string }>;
 	kv_namespaces?: Array<{ binding?: string; id?: string }>;
 	main?: string;
 	routes?: unknown;
@@ -210,6 +210,16 @@ describe('infra probe wrangler wiring', () => {
 			}
 			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
 			expect(consumers[0]?.max_batch_size).toBe(100);
+		});
+
+		it('binds only its own TailShard entrypoint as TAILER (the tailer fan-out), in both configs', () => {
+			// A service binding to any other Worker name would hand the tailer's shards to someone else's code.
+			expect(ctIndexConfig.services).toEqual([{ binding: 'TAILER', service: 'bv-ct-index', entrypoint: 'TailShard' }]);
+			expect(one(/\bTAILER:\s*bindings\.worker\(\{\s*worker:\s*['"]([^'"]+)['"],\s*exportName:\s*['"]([^'"]+)['"]/)).toEqual([
+				'bv-ct-index',
+				'TailShard',
+			]);
+			expect(src.match(/bindings\.worker\(/g)).toHaveLength(1);
 		});
 
 		it('requires the CT_INDEX_ADMIN_KEY secret in both configs', () => {

@@ -42,6 +42,8 @@ export default defineConfig({
 			CURSORS: bindings.d1({ name: 'bv-ct-index-cursors', id: resolveCtIndexD1Id(process.env[CT_INDEX_D1_ID_ENV]) }),
 			ENTRIES: bindings.queue({ name: 'bv-ct-index-entries' }),
 			COMPACT: bindings.queue({ name: 'bv-ct-index-compact' }),
+			// This Worker's own TailShard entrypoint: the cron fans the tailer out to one invocation per shard (src/tailer/).
+			TAILER: bindings.worker({ worker: 'bv-ct-index', exportName: 'TailShard' }),
 			CT_INDEX_ADMIN_KEY: bindings.secret(),
 		},
 	},

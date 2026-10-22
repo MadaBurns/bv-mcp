@@ -4,16 +4,19 @@
  *
  * `scheduled`: the tailer (src/tailer/) and the compaction planner. `queue`: the indexer and compaction jobs (one
  * handler for both queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the bearer-authenticated
- * query API (src/api/).
+ * query API (src/api/). `TailShard`: one shard of the tailer, reached only through this Worker's own TAILER
+ * binding, so the cron can fan the tailer out to several invocations.
  */
 
+import { WorkerEntrypoint } from 'cloudflare:workers';
 import { handleApiRequest } from './api/handler';
 import type { CompactionJob } from './indexer/compact';
 import { runCompactionBatch } from './indexer/compact';
 import { COMPACTION_CRON, runCompactionCron } from './indexer/plan';
 import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
-import { runTailer } from './tailer';
+import { runTailer, type TickSummary } from './tailer';
+import { runFanout, type ShardRequest } from './tailer/fanout';
 import type { ObservationBatch } from './types';
 
 export const ENTRIES_QUEUE = 'bv-ct-index-entries';
@@ -31,8 +34,20 @@ export interface Env {
 	ENTRIES: Queue<ObservationBatch>;
 	/** Queue `bv-ct-index-compact`: compaction jobs (src/indexer/compact.ts), produced by the hourly planner. */
 	COMPACT: Queue<CompactionJob>;
+	/** Service binding to this Worker's own TailShard entrypoint. Unbound, the tailer runs in the cron invocation alone. */
+	TAILER?: Service<TailShard>;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
+}
+
+/** One shard of a fanned-out tailer tick. Each call is a separate invocation with its own limits. */
+export class TailShard extends WorkerEntrypoint<Env> {
+	/** Not `tail`: that name is the Tail Worker handler on WorkerEntrypoint. */
+	async tailLogs(request: ShardRequest): Promise<TickSummary> {
+		const summary = await runTailer(this.env, { scheduledTime: request.scheduledTime, logIds: new Set(request.logIds) });
+		console.log(JSON.stringify({ event: 'ct_tailer_tick', shard: request.shard, ...summary }));
+		return summary;
+	}
 }
 
 export default {
@@ -48,8 +63,14 @@ export default {
 		switch (controller.cron) {
 			case '* * * * *': {
 				// The tailer (src/tailer/): CT log entries -> ObservationBatch messages on ENTRIES.
-				const summary = await runTailer(env, { scheduledTime: controller.scheduledTime });
-				console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
+				const tailer = env.TAILER;
+				if (!tailer) {
+					const summary = await runTailer(env, { scheduledTime: controller.scheduledTime });
+					console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
+					break;
+				}
+				const fanout = await runFanout(env, controller.scheduledTime, (request) => tailer.tailLogs(request) as Promise<TickSummary>);
+				console.log(JSON.stringify({ event: 'ct_tailer_fanout', ...fanout }));
 				break;
 			}
 			case COMPACTION_CRON: {

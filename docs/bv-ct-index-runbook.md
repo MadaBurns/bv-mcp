@@ -115,10 +115,12 @@ The Worker has no `workers.dev` hostname and no route, so `/health` is only reac
 ```bash
 D1="npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc"
 
-# a. Tailer ticks every minute (leave running for a few minutes, Ctrl-C to stop)
-npx wrangler tail bv-ct-index --format json | grep --line-buffered ct_tailer_tick
+# a. Tailer ticks every minute: one ct_tailer_fanout line per tick, and one ct_tailer_tick line per shard (Ctrl-C to stop)
+npx wrangler tail bv-ct-index --format json | grep --line-buffered -E 'ct_tailer_(tick|fanout)'
 
-# b. Cursors advancing: updated_at moves and next_index grows; last_error empty for most logs
+# b. Cursors advancing: updated_at moves and next_index grows; last_error empty for most logs. `behind` is how far each
+#    log's head was ahead of its cursor at the last write. fresh_through (check d) does NOT show this.
+$D1 --command "SELECT log_id, url, tree_size - next_index AS behind, updated_at FROM log_cursors ORDER BY behind DESC LIMIT 15"
 $D1 --command "SELECT log_id, kind, next_index, tree_size, updated_at, last_error, last_error_at FROM log_cursors ORDER BY updated_at DESC LIMIT 30"
 $D1 --command "SELECT COUNT(*) AS logs, SUM(next_index IS NULL) AS never_read, SUM(last_error_at >= updated_at) AS erroring FROM log_cursors"
 
@@ -135,7 +137,8 @@ $D1 --command "SELECT * FROM ops_ledger ORDER BY day DESC LIMIT 3"
 What good looks like in the first hour:
 
 - `ct_tailer_tick` lines show `killed:false`, `cursorsWritten` above zero, `precerts` in the thousands, `errors` small or empty.
-  A `subrequests` count near 900 means the tick used its whole fetch budget; that is normal under load.
+  A `subrequests` count near 3,000 means the shard used its whole fetch budget; that is normal while it catches up.
+- `ct_tailer_fanout` shows `shards: 4`, an empty `failed`, and a `backlog` that falls from tick to tick. See 6b.
 - `log_cursors.updated_at` is within the last few minutes for most logs. `never_read` is zero after a few ticks. A log whose
   `last_error_at` is not older than `updated_at` is currently erroring: one or two is normal, most of them is not.
 - `runs` has tier-0 rows with `meta.fresh_through` within a couple of minutes of now, then tier-1 rows after the first `:17` mark.
@@ -145,6 +148,39 @@ What good looks like in the first hour:
 - Dashboard (Workers & Pages, `bv-ct-index`): no sustained error rate on the queue consumers, and the two queues drain rather than grow.
 
 If a kill-switch or generation problem appears, see steps 9 and 10.
+
+### 6b. The tailer falls behind the logs
+
+Seen on 2026-10-22. `fresh_through` was current, but the 2027h1 shards were 13M to 68M entries behind their heads, about 651M in
+total, and the gap was growing. Over 6.7 minutes the logs grew by about 212k entries a minute and the tailer read about 22k. A
+certificate logged then would reach the index days later.
+
+Why: one invocation ticked every minute with six lanes for 20 seconds, so it could make about 280 fetches. Each visit read at most
+1,024 entries before the log went to the back of the queue, so a busy log got about one visit, about 1k entries, a tick. Google's
+RFC 6962 logs serve 32 entries a page however many are asked for. Head reads that timed out on small logs used up lane time too.
+
+The fix, in the tailer since 2026-10-23:
+
+- The cron splits the logs into four shards, furthest behind first, and runs each in its own invocation through the Worker's own
+  `TAILER` service binding (`TailShard`). Each invocation gets its own six header slots and subrequest limit.
+- A visit asks for up to four pages or tiles of one log at once, and learns a log's page size from a short page that has a full
+  one after it.
+- A request's timeout starts when it gets a header slot, not while it waits for one.
+- The fetch phase is 35 seconds, up to 3,000 fetches per shard. Rows are sent once a log holds 2,000 of them, so memory stays
+  flat: a held row costs about 400 bytes, and the four shards may share one 128 MB isolate.
+
+Watch after the deploy (read-only):
+
+```bash
+# Total backlog: run it twice, an hour apart. It must fall.
+$D1 --command "SELECT SUM(tree_size - next_index) AS behind, datetime('now') AS at FROM log_cursors"
+```
+
+The `backlog` field on `ct_tailer_fanout` is the same number. Expect it to fall by roughly the read rate minus about 212k entries a
+minute. If it does not fall, read the per-shard `ct_tailer_tick` lines: `entries` per shard and `errors`. More traffic also means
+more queue messages, more tier-0 runs and more compaction. Check the cost watch (step 11) daily for the first week.
+
+Rollback: `npx wrangler rollback --name bv-ct-index`. The cursors only move forward, so a rollback loses nothing already read.
 
 ### 6a. Compaction stalled: tier 0 grows and tier 1 does not (SQ-362)
 

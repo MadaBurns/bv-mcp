@@ -39,6 +39,14 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"services": [
+		{
+			// This Worker's own TailShard entrypoint: the cron fans the tailer out to one invocation per shard (src/tailer/).
+			"binding": "TAILER",
+			"service": "bv-ct-index",
+			"entrypoint": "TailShard"
+		}
+	],
 	"queues": {
 		"producers": [
 			{
