@@ -9,6 +9,7 @@ import { type AsnDohResolver, detectCdnFromAsn } from '../../lib/cdn-asn-detecti
 import { parseDmarcTags } from '../check-dmarc';
 import { isCompletedCheck } from '../../lib/ungraded-display';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
+import { certstreamHeaders } from '../../lib/certstream-headers';
 
 export interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
@@ -210,7 +211,7 @@ export async function fetchCertIssuerFromCertstream(
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		const response = await certstream.fetch(`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`, {
-			...(authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {}),
+			headers: certstreamHeaders(authToken),
 			signal: controller.signal,
 		});
 		if (!response.ok) {

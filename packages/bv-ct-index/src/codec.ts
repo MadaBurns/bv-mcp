@@ -15,7 +15,7 @@
  */
 
 import { parse } from 'tldts';
-import type { BlockIndexEntry, NameObservation, RunRow, SiblingObservation } from './types';
+import type { BlockIndexEntry, CertDetails, NameObservation, RunRow, SiblingObservation } from './types';
 
 /** Joins reversed labels inside a key. */
 export const LABEL_SEPARATOR = '\x01';
@@ -98,9 +98,12 @@ export function isSiblingRow(row: RunRow): row is SiblingObservation {
 	return row.key.startsWith(SIBLING_PREFIX);
 }
 
-/** The fields a merge takes from the later row, as a tie-break when both rows have the same notAfter. */
+/**
+ * The fields a merge takes from the later row, as a tie-break when both rows have the same notAfter. The serial
+ * is last ('' without details), so a row with details beats the same certificate's row from before them.
+ */
 function tieFields(row: RunRow): string[] {
-	return isSiblingRow(row) ? [row.apex, row.sibling] : [row.issuer, row.apex, row.name];
+	return isSiblingRow(row) ? [row.apex, row.sibling] : [row.issuer, row.apex, row.name, row.details?.serial ?? ''];
 }
 
 function laterOf(a: RunRow, b: RunRow): RunRow {
@@ -132,7 +135,18 @@ export function mergeObservations(a: RunRow, b: RunRow): RunRow {
 		return { key: later.key, apex: later.apex, sibling: later.sibling, firstSeen, notAfter: later.notAfter };
 	}
 	const wildcard = (a as NameObservation).wildcard || (b as NameObservation).wildcard;
-	return { key: later.key, name: later.name, apex: later.apex, firstSeen, notAfter: later.notAfter, issuer: later.issuer, wildcard };
+	const merged: NameObservation = {
+		key: later.key,
+		name: later.name,
+		apex: later.apex,
+		firstSeen,
+		notAfter: later.notAfter,
+		issuer: later.issuer,
+		wildcard,
+	};
+	// Details describe one certificate, so they come whole from the later row, like the issuer, or not at all.
+	if (later.details) merged.details = later.details;
+	return merged;
 }
 
 const ESCAPES: Record<string, string> = { '\\': '\\\\', '\t': '\\t', '\n': '\\n', '\r': '\\r' };
@@ -162,11 +176,49 @@ function parseEpoch(text: string): number {
 	return value;
 }
 
-/** Name rows have 7 columns, sibling rows 5; the key comes first so the TSV text sorts by key. */
+const KEY_TYPES = new Set(['rsa', 'ec', 'unknown']);
+
+function detailFields(details: CertDetails): string[] {
+	return [
+		epochText(details.notBefore),
+		details.serial,
+		details.keyType,
+		details.keyBits === null ? '' : epochText(details.keyBits),
+		details.sigAlg,
+		epochText(details.sanCount),
+	];
+}
+
+function parseDetails(f: readonly string[], line: string): CertDetails {
+	const [notBefore, serial, keyType, keyBits, sigAlg, sanCount] = f as [string, string, string, string, string, string];
+	if (!KEY_TYPES.has(keyType)) throw new RangeError(`malformed name row: ${JSON.stringify(line)}`);
+	return {
+		notBefore: parseEpoch(notBefore),
+		serial,
+		keyType: keyType as CertDetails['keyType'],
+		keyBits: keyBits === '' ? null : parseEpoch(keyBits),
+		sigAlg,
+		sanCount: parseEpoch(sanCount),
+	};
+}
+
+/**
+ * Name rows have 7 columns, or 13 with certificate details; sibling rows 5. The key comes first so the TSV text
+ * sorts by key. A reader takes both name-row widths, so runs written before the details stay readable.
+ */
 function rowLine(row: RunRow): string {
 	const fields = isSiblingRow(row)
 		? [row.key, row.apex, row.sibling, epochText(row.firstSeen), epochText(row.notAfter)]
-		: [row.key, row.name, row.apex, epochText(row.firstSeen), epochText(row.notAfter), row.issuer, row.wildcard ? '1' : '0'];
+		: [
+				row.key,
+				row.name,
+				row.apex,
+				epochText(row.firstSeen),
+				epochText(row.notAfter),
+				row.issuer,
+				row.wildcard ? '1' : '0',
+				...(row.details ? detailFields(row.details) : []),
+			];
 	return `${fields.map(escapeField).join('\t')}\n`;
 }
 
@@ -177,9 +229,17 @@ function parseRow(line: string): RunRow {
 		if (f.length !== 5) throw new RangeError(`sibling row needs 5 columns, got ${f.length}`);
 		return { key, apex: f[1]!, sibling: f[2]!, firstSeen: parseEpoch(f[3]!), notAfter: parseEpoch(f[4]!) };
 	}
-	if (f.length !== 7 || (f[6] !== '0' && f[6] !== '1')) throw new RangeError(`malformed name row: ${JSON.stringify(line)}`);
-	return {
-		key,
+	return parseNameRow(f, line);
+}
+
+const NAME_ROW_WIDTHS = new Set([7, 13]);
+const WILDCARD_FLAGS = new Set(['0', '1']);
+
+/** A name row of either width: 7 columns, or 13 with certificate details. */
+function parseNameRow(f: readonly string[], line: string): NameObservation {
+	if (!NAME_ROW_WIDTHS.has(f.length) || !WILDCARD_FLAGS.has(f[6]!)) throw new RangeError(`malformed name row: ${JSON.stringify(line)}`);
+	const row: NameObservation = {
+		key: f[0]!,
 		name: f[1]!,
 		apex: f[2]!,
 		firstSeen: parseEpoch(f[3]!),
@@ -187,6 +247,8 @@ function parseRow(line: string): RunRow {
 		issuer: f[5]!,
 		wildcard: f[6] === '1',
 	};
+	if (f.length === 13) row.details = parseDetails(f.slice(7), line);
+	return row;
 }
 
 async function deflateRaw(chunks: Uint8Array[]): Promise<Uint8Array> {

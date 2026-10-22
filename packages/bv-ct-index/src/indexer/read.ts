@@ -159,13 +159,19 @@ export function createReader(env: Env, clock: () => number = Date.now): IndexRea
 			return { siblings: page.rows as SiblingObservation[], truncated: page.truncated };
 		},
 		async meta() {
+			// One round trip: the meta keys, plus the tailer's backlog as a row of its own (null with no cursors yet).
+			// Each log counts at least 0: a log can serve a stale head below the cursor, and a negative difference
+			// would otherwise cancel other logs' unread entries.
 			const { results } = await env.CURSORS.prepare(
-				"SELECT k, v FROM meta WHERE k IN ('current_generation', 'index_started_at', 'fresh_through')",
-			).all<{ k: string; v: string }>();
+				"SELECT k, v FROM meta WHERE k IN ('current_generation', 'index_started_at', 'fresh_through') " +
+					"UNION ALL SELECT 'entries_behind', CAST(SUM(MAX(tree_size - next_index, 0)) AS TEXT) FROM log_cursors",
+			).all<{ k: string; v: string | null }>();
 			const meta = new Map(results.map((row) => [row.k, row.v]));
+			const behind = meta.get('entries_behind');
 			return {
 				indexStartedAt: meta.get('index_started_at') ?? null,
 				freshThrough: meta.get('fresh_through') ?? null,
+				entriesBehind: behind == null ? null : Number(behind),
 				generation: Number(meta.get('current_generation') ?? DEFAULT_GENERATION),
 			};
 		},

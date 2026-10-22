@@ -365,6 +365,8 @@ describe('correlateSans', () => {
 		const init = csFetch.mock.calls[0][1] as RequestInit | undefined;
 		const headers = new Headers(init?.headers);
 		expect(headers.get('authorization')).toBe('Bearer secret-token');
+		// bv-ct-index accepts a read key only from the caller it was issued to.
+		expect(headers.get('x-bv-caller')).toBe('bv-mcp');
 		expect(directFetch).not.toHaveBeenCalled();
 	});
 
