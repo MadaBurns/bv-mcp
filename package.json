@@ -96,7 +96,7 @@
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.60.2",
 		"@streamparser/json-whatwg": "^0.0.26",
-		"@typesafe-ai/sdk": "^0.6.0",
+		"@typesafe-ai/sdk": "^0.7.0",
 		"drizzle-orm": "0.45.4",
 		"marked": "^18.1.0",
 		"pdf-lib": "^1.17.1",
