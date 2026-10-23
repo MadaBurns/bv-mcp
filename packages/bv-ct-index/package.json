@@ -15,11 +15,11 @@
 		"tldts": "^7.4.18"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-plugin": "^1.4.0",
+		"@cloudflare/vitest-plugin": "^1.4.5",
 		"@cloudflare/workers-types": "^5.20260929.1",
 		"cf": "1.0.0-beta.14",
 		"typescript": "^6.0.0",
 		"vitest": "4.1.12",
-		"wrangler": "4.149.0"
+		"wrangler": "4.151.0"
 	}
 }
