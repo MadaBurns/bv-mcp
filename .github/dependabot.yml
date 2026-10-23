@@ -19,6 +19,8 @@ updates:
     # (1.3.1 → wrangler 4.143.0): keep wrangler in the `cloudflare` group below so
     # the two move in one PR and no second nested wrangler reappears.
     ignore:
+      # cf is pinned exactly in every sidecar; the audit 'pins cf exactly to the version measured for function-form configs' blocks a blind bump (dependabot #1275 closed 2026-10-23).
+      - dependency-name: 'cf'
       - dependency-name: 'vitest'
         update-types: ['version-update:semver-major']
       - dependency-name: '@vitest/*'
