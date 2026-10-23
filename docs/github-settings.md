@@ -6,6 +6,8 @@ These settings must be configured manually in the GitHub web UI.
 
 Set to: `Source-available DNS & email security scanner for MCP clients. 81 MCP tools for SPF, DMARC, DKIM, DNSSEC, SSL/TLS, brand audit, authoritative DNS infrastructure, and more.`
 
+Keep the About line, and any npm package description or README text, on the BUSL positioning: "source-available", never the OSI term (`test/audits/busl-positioning.audit.test.ts` enforces it on the README). npm publishing itself stays closed per #719; the unlock conditions and publish order are in `.claude/skills/bv-mcp-release/SKILL.md`.
+
 ## Repository topics
 
 Add these topics: `mcp`, `dns-security`, `email-security`, `spf`, `dmarc`, `dkim`, `dnssec`, `cloudflare-workers`, `security-scanner`, `model-context-protocol`

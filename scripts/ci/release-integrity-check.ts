@@ -8,6 +8,11 @@
  *   - `npm run publish:registry` → `mcp-publisher publish`
  *   - the root package's `prepack`, which npm runs for `npm publish` / `npm pack`
  *
+ * `--mode publish` also reads the version embedded in the built `dist/index.js`
+ * and `dist/stdio.js` and blocks when it differs from the release version: `dist`
+ * is gitignored build output that `npm pack` ships, so a stale build otherwise
+ * passes every source-level check. Run `npm run build` first.
+ *
  * All decision logic lives in the pure `scripts/release-integrity.ts` so it can
  * be unit-tested in the Workers pool; this file is the untestable half on
  * purpose — it exists only to turn git and the version files into that module's
@@ -28,7 +33,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { assessReleaseIntegrity, parseChangelogHeadings, selectReleaseTag, type DnsChecksIdentityInput, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
+import { assessReleaseIntegrity, extractEmbeddedVersion, parseChangelogHeadings, selectReleaseTag, type DnsChecksIdentityInput, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
 
 function git(args: string[]): { ok: boolean; stdout: string } {
 	const res = spawnSync('git', args, { encoding: 'utf8' });
@@ -49,7 +54,22 @@ function versionOf(obj: Record<string, unknown> | null): string | null {
 	return typeof v === 'string' ? v : null;
 }
 
-function readVersionSurfaces(): VersionSurfaces {
+/** The bundles `npm pack` ships that inline the package version (`cli.js` does not). Unreadable → null, never a guess. */
+const DIST_VERSION_BUNDLES = ['dist/index.js', 'dist/stdio.js'];
+
+function readDistVersions(): Record<string, string | null> {
+	const out: Record<string, string | null> = {};
+	for (const path of DIST_VERSION_BUNDLES) {
+		try {
+			out[path] = extractEmbeddedVersion(readFileSync(path, 'utf8'));
+		} catch {
+			out[path] = null;
+		}
+	}
+	return out;
+}
+
+function readVersionSurfaces(mode: ReleaseMode): VersionSurfaces {
 	const server = readJson('server.json');
 	// server.json is currently remotes-only; a `packages` stanza is the foot-gun
 	// that returns only if one is re-added. Absent → null → not enforced.
@@ -69,6 +89,8 @@ function readVersionSurfaces(): VersionSurfaces {
 		serverJson: versionOf(server),
 		serverJsonPackage: versionOf(firstPackage),
 		changelogHeadings: parseChangelogHeadings(changelog),
+		// Only `publish` packs dist (via `prepack`); deploy compiles from source.
+		...(mode === 'publish' ? { distVersions: readDistVersions() } : {}),
 	};
 }
 
@@ -138,7 +160,7 @@ function main(): void {
 		exactTag,
 		porcelain,
 		gitUnavailable,
-		versions: readVersionSurfaces(),
+		versions: readVersionSurfaces(mode),
 		allowUnpinned: process.env.BV_ALLOW_UNPINNED_DEPLOY === '1',
 		expectVersion,
 		skipGit,

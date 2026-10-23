@@ -50,6 +50,25 @@ export interface VersionSurfaces {
 	serverJsonPackage: string | null;
 	/** Every `## [X.Y.Z]` heading token found in CHANGELOG.md, in file order. */
 	changelogHeadings: string[];
+	/**
+	 * Version literal embedded in each built `dist` bundle, keyed by path
+	 * (`null` = bundle missing or no literal found). `prepack` packs `dist`, which
+	 * is gitignored build output, so a stale `dist` ships an old `serverInfo.version`
+	 * under a new package version while every source surface still agrees.
+	 * Mandatory in `publish` mode (absent fails closed); other modes never read `dist`.
+	 */
+	distVersions?: Record<string, string | null>;
+}
+
+/**
+ * Pull the `package.json` version tsup/esbuild inlines into a bundle from
+ * `src/lib/server-version.ts` (`import pkg from '../../package.json'`). Both
+ * bundles carry it as `package_default = { …version: "X.Y.Z"` — `dist/index.js`
+ * after tree-shaking, `dist/stdio.js` as the whole manifest. Returns null when
+ * the literal is absent so an unrecognisable bundle blocks instead of passing.
+ */
+export function extractEmbeddedVersion(bundle: string): string | null {
+	return /\bpackage_default\s*=\s*\{[^}]*?\bversion:\s*"([^"]+)"/.exec(bundle)?.[1] ?? null;
 }
 
 export type ReleaseMode = 'deploy' | 'publish' | 'sidecar';
@@ -196,6 +215,16 @@ export function parseChangelogHeadings(changelog: string): string[] {
 	return out;
 }
 
+function distViolations(dist: VersionSurfaces['distVersions'], version: string): string[] {
+	if (dist === undefined) return ['dist: bundle versions were not read, so the built output is unverified'];
+	const entries = Object.entries(dist);
+	if (entries.length === 0) return ['dist: no bundles were inspected; run `npm run build`'];
+	return entries.flatMap(([path, found]) => {
+		if (found === null) return [`${path}: no embedded version found (missing or unbuilt); run \`npm run build\``];
+		return found === version ? [] : [`${path}: embeds ${found}, expected ${version}; run \`npm run build\``];
+	});
+}
+
 function collectSurfaceViolations(versions: VersionSurfaces, version: string): string[] {
 	const violations: string[] = [];
 	const named: Array<[string, string | null]> = [
@@ -215,6 +244,13 @@ function collectSurfaceViolations(versions: VersionSurfaces, version: string): s
 		violations.push(`CHANGELOG.md: no "## [${version}]" heading`);
 	}
 	return violations;
+}
+
+function collectReleaseViolations(mode: ReleaseMode, versions: VersionSurfaces, version: string): string[] {
+	const source = collectSurfaceViolations(versions, version);
+	// `publish` packs gitignored build output, so it must prove that output is
+	// current. Other modes never pack `dist`; an unrequested read is ignored.
+	return mode === 'publish' ? [...source, ...distViolations(versions.distVersions, version)] : source;
 }
 
 function renderBlocked(mode: ReleaseMode, violations: string[], overrideRequested: boolean): string {
@@ -294,7 +330,7 @@ export function assessReleaseIntegrity(input: ReleaseIntegrityInput): ReleaseInt
 				message: 'RELEASE CHECK MISCONFIGURED — --skip-git requires an explicit --expect-version.',
 			};
 		}
-		const violations = collectSurfaceViolations(versions, expectVersion);
+		const violations = collectReleaseViolations(mode, versions, expectVersion);
 		if (violations.length === 0) {
 			return {
 				ok: true,
@@ -378,7 +414,7 @@ export function assessReleaseIntegrity(input: ReleaseIntegrityInput): ReleaseInt
 	if (version === null) {
 		violations.push('no release version could be established, so the version surfaces were not checked');
 	} else {
-		violations.push(...collectSurfaceViolations(versions, version));
+		violations.push(...collectReleaseViolations(mode, versions, version));
 	}
 
 	if (violations.length === 0) {

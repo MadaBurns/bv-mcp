@@ -22,6 +22,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	assessReleaseIntegrity,
+	extractEmbeddedVersion,
 	parseChangelogHeadings,
 	selectReleaseTag,
 	versionFromTag,
@@ -66,7 +67,9 @@ describe('assessReleaseIntegrity — PERMITS a correct release', () => {
 	});
 
 	it('passes the same tree for publish — the stricter mode must not block a correct release', () => {
-		const v = assessReleaseIntegrity(pinned({ mode: 'publish' }));
+		const v = assessReleaseIntegrity(
+			pinned({ mode: 'publish', versions: surfaces({ distVersions: { 'dist/index.js': VERSION, 'dist/stdio.js': VERSION } }) }),
+		);
 		expect(v.ok).toBe(true);
 		expect(v.code).toBe('ok');
 	});
@@ -333,5 +336,74 @@ describe('assessReleaseIntegrity — sidecar mode (SQ-242)', () => {
 		const v = assessReleaseIntegrity(pinned({ exactTag: null }));
 		expect(v.ok).toBe(false);
 		expect(v.violations.join('\n')).toContain('HEAD is not at a tag');
+	});
+});
+
+describe('assessReleaseIntegrity — publish proves dist is current', () => {
+	const bundles = (index: string | null, stdio: string | null = index) => ({ 'dist/index.js': index, 'dist/stdio.js': stdio });
+	const publish = (o: Partial<ReleaseIntegrityInput> = {}, distVersions?: Record<string, string | null>) =>
+		assessReleaseIntegrity(pinned({ mode: 'publish', versions: surfaces({ distVersions }), ...o }));
+
+	it('PERMITS when every packed bundle embeds the package version', () => {
+		const v = publish({}, bundles(VERSION));
+		expect(v.ok).toBe(true);
+		expect(v.violations).toEqual([]);
+	});
+
+	it('BLOCKS a stale dist (dist embeds 3.99.0, package is 3.55.0) and names the file and both versions', () => {
+		const v = publish({}, bundles('3.99.0'));
+		expect(v.ok).toBe(false);
+		expect(v.violations).toContain('dist/index.js: embeds 3.99.0, expected 3.55.0; run `npm run build`');
+		expect(v.violations).toContain('dist/stdio.js: embeds 3.99.0, expected 3.55.0; run `npm run build`');
+	});
+
+	it('BLOCKS when only one bundle is stale — both are packed', () => {
+		const v = publish({}, bundles(VERSION, '3.99.0'));
+		expect(v.ok).toBe(false);
+		expect(v.violations.join('\n')).toContain('dist/stdio.js: embeds 3.99.0');
+		expect(v.violations.join('\n')).not.toContain('dist/index.js');
+	});
+
+	it('BLOCKS a missing or unrecognisable bundle rather than treating it as current', () => {
+		const v = publish({}, bundles(null));
+		expect(v.ok).toBe(false);
+		expect(v.violations.join('\n')).toContain('dist/index.js: no embedded version found');
+	});
+
+	it('BLOCKS when the dist versions were never read — absence is not a pass', () => {
+		expect(publish({}, undefined).ok).toBe(false);
+		expect(publish({}, {}).ok).toBe(false);
+	});
+
+	it('also applies on the --skip-git shape, and reports alongside other violations', () => {
+		const v = publish({ skipGit: true, expectVersion: VERSION, versions: surfaces({ packageLock: '3.54.0', distVersions: bundles('3.99.0') }) });
+		expect(v.ok).toBe(false);
+		expect(v.violations.join('\n')).toContain('package-lock.json: is 3.54.0');
+		expect(v.violations.join('\n')).toContain('dist/index.js: embeds 3.99.0');
+	});
+
+	it('ignores dist in deploy mode — deploy compiles from source and never packs dist', () => {
+		expect(assessReleaseIntegrity(pinned({ versions: surfaces({ distVersions: bundles('3.99.0') }) })).ok).toBe(true);
+	});
+});
+
+describe('extractEmbeddedVersion', () => {
+	// Shapes copied from a real `npm run build`: tree-shaken in index.js, whole manifest in stdio.js.
+	const indexBundle = '// package.json\nvar package_default = {\n  version: "3.99.0"};\n\n// src/lib/server-version.ts';
+	const stdioBundle =
+		'var package_default;\nvar init_package = __esm({\n  "package.json"() {\n    package_default = {\n      name: "blackveil-dns",\n      version: "3.99.0",\n      license: "BUSL-1.1",\n      bin: {\n        "blackveil-dns-mcp": "dist/stdio.js",\n      }\n    };\n  }\n});';
+
+	it('reads the version from both bundle shapes', () => {
+		expect(extractEmbeddedVersion(indexBundle)).toBe('3.99.0');
+		expect(extractEmbeddedVersion(stdioBundle)).toBe('3.99.0');
+	});
+
+	it('returns null when no package manifest literal is present', () => {
+		expect(extractEmbeddedVersion('const version = "3.99.0";')).toBeNull();
+		expect(extractEmbeddedVersion('')).toBeNull();
+	});
+
+	it('does not read a version from a later object in the file', () => {
+		expect(extractEmbeddedVersion('var package_default = {\n  name: "x" };\nconst other = { version: "9.9.9" };')).toBeNull();
 	});
 });
