@@ -86,6 +86,23 @@ Two transferable lessons:
 - **MCP Registry is published manually** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*` — this IS the authoritative path, not a fallback. The server entry is **remotes-only**.
 - Verify what's live: query the registry with `?version=latest` (CDN-cached — cache-bust, and check `?version=X.Y.Z` before trusting `latest`). `registry-drift-check.yml` compares live prod vs registry every 12h and opens a `registry-drift` issue on drift.
 
+## npm publishing — KILLED; read this before any `npm publish` (SQ-392)
+
+**Ruling.** npm publishing stays **KILLED**, per the 2026-10-09 twin ruling ("npm publishing — KILL (stays closed per #719)", `docs/superpowers/scratch/twin-parked-items-adjudication-2026-10-09.md:50-52`; that scratch file is gitignored, so it exists only in the maintainer's main checkout) and #719. The SQ-391 prepared publish of `blackveil-dns` 3.100.1 + `@blackveil/dns-checks` 1.60.2 does NOT override it: a prepared command is not an unlock. `README.md` "frozen at 2.13.0" stays true while the KILL holds; do not edit it.
+
+**Unlock needs BOTH, never one:**
+
+1. A **named external requester** (a person or company asking for the npm library/CLI, or a paying customer whose integration needs it). Downloads, "it would be nice" and internal tidiness do not count.
+2. **OIDC trusted publishing only** — a GitHub Actions job with `id-token: write` (and the `production` environment) plus an npm trusted publisher configured on **both** packages (operator-only: setup needs interactive 2FA). **Never a local token publish** and never a revived `NPM_TOKEN`: the stored token is past npm's 90-day limit (E401 on 2026-08-21) and npm ends 2FA-bypass token publishing in January 2027.
+
+**When unlocked — order and version:**
+
+- Publish **`@blackveil/dns-checks` first, then `blackveil-dns`**: the `blackveil-dns` bundle imports it as an external dependency, and the root `dependencies` floor (`^1.60.2`) must already resolve on the registry.
+- Publish a **NEW patch version cut at a commit that already carries the `^1.60.2` floor (i.e. 3.100.2)**. Never publish from the existing `v3.100.1` tag: it pins `@blackveil/dns-checks: ^1.0.4` (the floor was raised after the tag), and the root `prepack` requires HEAD == the version tag, so a 3.100.1 publish would freeze the old floor. Follow the normal bump-and-tag flow above for 3.100.2; do not move or reuse `v3.100.1`.
+- Build first (`npm -w packages/dns-checks run build && npm run build`). The root `prepack` (`check:release-integrity:publish`) now also **fails when the embedded version in `dist/index.js` or `dist/stdio.js` differs from the release version** — `dist` is gitignored build output that `npm pack` ships, and a stale build (`3.99.0` under a `3.100.x` package) used to pass every source check. The same gate guards `publish:registry`, so build before that too.
+- `@blackveil/dns-checks` is immutable per version: its description still says "16 checks" but the package exports 17 check functions (see CHANGELOG `[Unreleased]`). Fixing the text changes tag identity for 1.60.2, so correct it only in the NEXT dns-checks version, never in place.
+- Any npm About text, package description or README wording follows the BUSL positioning — "source-available", never the open-source term. `test/audits/busl-positioning.audit.test.ts` enforces it on the README, CONTRIBUTING, CLAUDE.md and scoring config; apply the same rule to anything you publish.
+
 ## Registry publish must FOLLOW the prod deploy (ordering)
 
 `mcp-publisher publish` advertises `X.Y.Z` on the registry's `?version=latest` (sets `isLatest=true`) — a **public liveness claim**. The registry remote points at prod (`dns-mcp.blackveilsecurity.com`). So publishing the registry entry for a version prod isn't serving yet = advertising a version that doesn't exist in prod — the **same stale-prod class as the v2.10.2–v2.10.6 silent-prod-stale incidents**, just from the other direction.
@@ -111,8 +128,10 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 
 ```bash
 npm -w packages/dns-checks run build && npm run build
-npm publish --access public                      # root pkg (blackveil-dns) - only if npm is intended + token present
-npm publish -w packages/dns-checks --access public  # REQUIRED TOO: the root publish does NOT ship the workspace package
+# npm publish is KILLED (#719) - see "npm publishing — KILLED" above before running either line. When unlocked it is OIDC-only (never a local token),
+# and the order is dns-checks FIRST, then the root package, from a NEW patch version (3.100.2), never the v3.100.1 tag:
+npm publish -w packages/dns-checks --access public  # 1st: the root publish does NOT ship the workspace package, and the root bundle imports it
+npm publish --access public                      # 2nd: root pkg (blackveil-dns); prepack gates tag, version surfaces and a current dist
 npm run check:cf-binding-parity  # runbook step 1 (first cf deploy; see bv-mcp-operations): cf build vs wrangler.production.jsonc must be identical
 npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY (via cf deploy --mode production; PRIMARY rollback: npx wrangler rollback <version-id> --name bv-dns-security-mcp -y; secondary: injector + npx wrangler rollback <version-id> --config wrangler.production.jsonc -y)
 npm run deploy:whois             # sidecar: bv-whois (cf deploy from packages/bv-whois/cloudflare.config.ts; its wrangler.jsonc is only the vitest config)
