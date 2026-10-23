@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.101.1] - 2026-10-23
+
+### Changed
+
+- Dependencies: `@typesafe-ai/sdk` 0.6.0 → 0.7.0 (#1287); codeql-action pins bumped (#1288). No scoring, detection or tool-surface change.
+
 ## [3.101.0] - 2026-10-23
 
 ### Added
