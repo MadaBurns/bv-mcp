@@ -8,8 +8,17 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.101.0] - 2026-10-23
+
+### Added
+
+- bv-ct-index: the tailer fans out across logs and windows its reads so it keeps up with CT publication (it had been reading about 10% of new entries; #1278); per-caller read keys and the tailer backlog on every answer, step 0 of serving callers other than this Worker (#1279); certificate details (key type and size, signature algorithm, serial, SAN count) stored from every precert and returned by `/cert-meta`, off until `CERT_DETAILS=on` (#1280).
+
 ### Changed
 
+- Worker: bv-ct-index requests now name the caller (`X-BV-Caller: bv-mcp`) and carry the read-key bearer when one is configured; without it the index answers 401 and the lookup falls through to public sources (#1279).
+- Release tooling: the root `prepack` now fails when the embedded version in `dist/index.js` or `dist/stdio.js` differs from the release version, so a stale build cannot ship (#1282).
+- CI: the repo-wide BUSL positioning sweep now runs inside the required File hygiene check, so a docs-only PR can no longer add an offender unseen (#1283); Dependabot ignores `cf` because the sidecar pin is audit-enforced (#1285); codeql-action pins bumped (#1277).
 - The root package's `@blackveil/dns-checks` dependency range is raised from `^1.0.4` to `^1.60.2`, the version this Worker and the `blackveil-dns` CLI/stdio bundle are built and tested against (`dist` imports the `.`, `./scoring` and `./whois` entry points). The old floor let an install of `blackveil-dns` resolve any 1.x release.
 
 ### Release notes
