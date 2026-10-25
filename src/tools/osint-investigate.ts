@@ -17,6 +17,8 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { formatCoverageLine } from '../lib/ct-coverage';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
+import { BLOCKED_HOSTS } from '../lib/config';
+import { isPublicSmtpAddress } from '../lib/smtp-starttls-targets';
 import { markUnmeasured } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
@@ -116,11 +118,11 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
 
 /**
  * The binding IS bound and the call still yielded no data: the credential was rejected
- * (`unauthorized`), the credential was accepted but the target is not on the operator-authorized
- * recon watchlist (`target_not_authorized` — a policy answer, see `reconUnavailable`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
- * failed schema validation (`malformed`), or the fetch threw (`transport`).
+ * (`unauthorized`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
+ * failed schema validation (`malformed`), or the fetch threw (`transport`). A watchlist refusal
+ * (`target_not_authorized`) is a policy answer and an access refusal — see `targetNotAuthorized`.
  *
- * Those five are exactly what remains once `unbound` and `not_found` are excluded by the `reason`
+ * Those four are exactly what remains once `unbound`, `not_found` and `target_not_authorized` are excluded by the `reason`
  * type — they are routed to `unprovisioned()` and `notFound()` — so this prose no longer has to
  * hedge about the id being unknown or expired. That hedge existed only because `callRecon*` used
  * to collapse every condition into one `null`; it does not any more.
@@ -137,12 +139,33 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
  * bv-recon response contract drifted, `transport`/`upstream_status` mean wait and re-poll.
  */
 function upstreamUnavailable(
-	reason: Exclude<ReconFailureReason, 'unbound' | 'not_found'>,
+	reason: Exclude<ReconFailureReason, 'unbound' | 'not_found' | 'target_not_authorized'>,
 	title: string,
 	detail: string,
 	meta: Record<string, unknown> = {},
 ): CheckResult {
 	return transientUnmeasured('upstreamUnavailable', title, detail, { reconFailureReason: reason, ...meta });
+}
+
+/**
+ * The recon watchlist refused the target (403 `target_not_authorized`): a permanent policy answer, so it
+ * is an ACCESS REFUSAL (`src/lib/unmeasured-result.ts`), not an unmeasured outage. The dispatch chokepoint
+ * surfaces it as `isError` and does NOT stamp `checkStatus: 'error'` — that is the retryable class and a
+ * caller would loop on a refusal. The marker is set LAST so `meta` cannot overwrite it. `partial: true`
+ * keeps it out of the cache so the target can be authorized and re-tried.
+ */
+function targetNotAuthorized(title: string, detail: string, meta: Record<string, unknown>): CheckResult {
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(CATEGORY, title, 'info', detail, {
+				reconFailureReason: 'target_not_authorized',
+				reconUpstreamStatus: 403,
+				...meta,
+				targetNotAuthorized: true,
+			}),
+		]),
+		partial: true,
+	};
 }
 
 /**
@@ -180,11 +203,7 @@ function reconUnavailable(
 ): CheckResult {
 	if (reason === 'unbound') return unprovisioned(prose.unbound);
 	if (reason === 'not_found') return notFound(title, prose.notFound, meta);
-	if (reason === 'target_not_authorized')
-		return upstreamUnavailable(reason, title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, {
-			reconUpstreamStatus: 403,
-			...meta,
-		});
+	if (reason === 'target_not_authorized') return targetNotAuthorized(title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, meta);
 	return upstreamUnavailable(reason, title, prose.upstream, meta);
 }
 
@@ -328,11 +347,75 @@ async function investigationOwnerMismatch(id: string, options: ReconToolOptions)
 	return Boolean(owner && owner !== options.principalId);
 }
 
+/**
+ * Trust-boundary validation for the `query` forwarded to bv-recon. Each checker returns a
+ * client-safe problem string, or undefined when the query is acceptable for that investigation type.
+ * The recon watchlist is the authorisation gate; this is the defence in depth beneath it, so a
+ * CRLF/NUL/script/SQL string, a private IP or a metadata host never reaches a recon lookup even if
+ * a target is later seeded or the gate regresses.
+ */
+type QueryChecker = (query: string) => string | undefined;
+
+function domainProblem(query: string): string | undefined {
+	const result = validateDomain(query);
+	return result.valid ? undefined : (result.error ?? 'invalid domain');
+}
+
+/** Dotted-decimal, single-integer or hex IPv4-literal shapes; a colon (IPv6 attempt) is checked separately. */
+const IP_LITERAL_SHAPE = /^(?:\d+(?:\.\d+){0,3}|0x[0-9a-f]+(?:\.[0-9a-fx]+){0,3})$/i;
+const ORG_NAME_CHARSET = /^[\p{L}\p{N} .,&'-]+$/u;
+const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+const USERNAME_CHARSET = /^[A-Za-z0-9._-]{1,64}$/;
+const EMAIL_LOCAL_PART = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._%+'-]{1,64}(?<!\.)$/;
+
+function publicIpProblem(query: string): string | undefined {
+	return isPublicSmtpAddress(query)
+		? undefined
+		: 'IP address must be a public IPv4 address (private, loopback, link-local and reserved ranges are not allowed)';
+}
+
+function orgNameProblem(query: string): string | undefined {
+	if (!ORG_NAME_CHARSET.test(query) || !HAS_LETTER_OR_DIGIT.test(query)) {
+		return "organisation name may contain only letters, digits, spaces and . , & ' -";
+	}
+	return BLOCKED_HOSTS.includes(query.toLowerCase()) ? 'reserved hostname is not allowed' : undefined;
+}
+
+/** deep_infrastructure: a valid domain, OR a public IP, OR an organisation name. */
+function infrastructureProblem(query: string): string | undefined {
+	if (query.includes(':') || IP_LITERAL_SHAPE.test(query)) return publicIpProblem(query);
+	// A dotted token without whitespace is a hostname attempt, never an organisation name.
+	if (query.includes('.') && !/\s/.test(query)) return domainProblem(query);
+	return orgNameProblem(query);
+}
+
+function emailProblem(query: string): string | undefined {
+	const at = query.indexOf('@');
+	if (at < 1 || at !== query.lastIndexOf('@')) return 'must be a valid email address';
+	if (!EMAIL_LOCAL_PART.test(query.slice(0, at))) return 'email local part contains invalid characters';
+	return domainProblem(query.slice(at + 1));
+}
+
+function usernameProblem(query: string): string | undefined {
+	return USERNAME_CHARSET.test(query) ? undefined : "username must be 1-64 characters of letters, digits, '.', '_' or '-'";
+}
+
+const QUERY_CHECKERS: Record<ReconInvestigationType, QueryChecker> = {
+	domain: domainProblem,
+	supply_chain: domainProblem,
+	deep_infrastructure: infrastructureProblem,
+	email: emailProblem,
+	username: usernameProblem,
+};
+
 export async function osintInvestigateStart(
 	type: ReconInvestigationType,
 	query: string,
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
+	// "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call.
+	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid query: ${problem}`);
 	const outcome = await callReconInvestigateStart(
 		options.reconBinding,
 		options.reconAuthToken,

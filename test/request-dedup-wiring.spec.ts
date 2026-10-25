@@ -50,7 +50,7 @@ describe('handleToolsCall dedup wiring', () => {
 	it('reads an idem: key for a mutating tool (dedup path entered)', async () => {
 		const { kv } = fakeKv();
 		await handleToolsCall(
-			{ name: 'scan_buckets_start', arguments: { target: 'acme.example' } },
+			{ name: 'scan_buckets_start', arguments: { target: 'acme.com' } },
 			undefined,
 			{ rateLimitKv: kv, keyHash: 'key_abc' },
 		);
@@ -61,7 +61,7 @@ describe('handleToolsCall dedup wiring', () => {
 
 	it('does NOT enter the dedup path without a principal (no idem: read)', async () => {
 		const { kv } = fakeKv();
-		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.example' } }, undefined, { rateLimitKv: kv });
+		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.com' } }, undefined, { rateLimitKv: kv });
 		const getMock = kv.get as ReturnType<typeof vi.fn>;
 		const sawIdemKey = getMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].startsWith('idem:'));
 		expect(sawIdemKey).toBe(false);
@@ -74,7 +74,7 @@ describe('handleToolsCall dedup wiring', () => {
 	// for authenticated callers); an ipHash-only principal must be SKIPPED.
 	it('does NOT dedup an unauthenticated caller (ipHash principalId, no keyHash)', async () => {
 		const { kv } = fakeKv();
-		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.example' } }, undefined, {
+		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.com' } }, undefined, {
 			rateLimitKv: kv,
 			principalId: 'i_deadbeef', // ipHash for an unauth caller — keyHash deliberately absent
 		});
@@ -91,7 +91,7 @@ describe('handleToolsCall dedup wiring', () => {
 	// real handleToolsCall, not just the wrapper in a vacuum.
 	it('stores a successful mutating result and replays it on a duplicate', async () => {
 		const { kv } = fakeKv();
-		const args = { target: 'acme.example' };
+		const args = { target: 'acme.com' };
 		const opts = { rateLimitKv: kv, keyHash: 'key_abc' };
 
 		const first = await handleToolsCall({ name: 'scan_buckets_start', arguments: args }, undefined, opts);

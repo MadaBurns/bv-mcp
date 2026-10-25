@@ -31,6 +31,7 @@ import { buildCheckResult, createFinding, type CheckResult } from '../lib/scorin
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS, targetRunningSince } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
@@ -72,7 +73,10 @@ interface TargetRowSlim {
 	created_at: number;
 }
 
-function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
+const rejected = createRejectedRequestBuilder<'invalidInput' | 'notFound'>(CATEGORY, 'Brand audit get report');
+
+/** A not-yet-ready audit is a poll-again state, not a rejected request, so it stays a plain finding. */
+function notReadyResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Brand audit get report: ${flag}`, 'high', message, { [flag]: true, ...extra }),
 	]);
@@ -237,7 +241,7 @@ export async function brandAuditGetReport(
 ): Promise<CheckResult> {
 	const { auditId, target } = args;
 	if (typeof auditId !== 'string' || auditId.trim().length === 0) {
-		return errorResult('invalidInput', 'auditId is required.');
+		return rejected('invalidInput', 'auditId is required.');
 	}
 
 	const auditRow = (await deps.db
@@ -248,7 +252,7 @@ export async function brandAuditGetReport(
 		.first()) as AuditRowSlim | null;
 
 	if (!auditRow || auditRow.owner_id !== ownerId) {
-		return errorResult('notFound', `No brand audit found with id ${auditId}.`, { auditId });
+		return rejected('notFound', `No brand audit found with id ${auditId}.`, { auditId });
 	}
 
 	if (target) {
@@ -260,7 +264,7 @@ export async function brandAuditGetReport(
 			.first()) as TargetRowSlim | null;
 
 		if (!targetRow) {
-			return errorResult('notFound', `Target ${target} not in audit ${auditId}.`, { auditId, target });
+			return rejected('notFound', `Target ${target} not in audit ${auditId}.`, { auditId, target });
 		}
 
 		// Dead-zone closure (2026-05-21 brand-beta.example.com hang). A `running` target past
@@ -298,7 +302,7 @@ export async function brandAuditGetReport(
 					: targetRow.status;
 
 		if (renderedStatus !== 'completed' && renderedStatus !== 'failed') {
-			return errorResult(
+			return notReadyResult(
 				'notReady',
 				`Target ${target} is currently ${targetRow.status}. Poll again with brand_audit_status.`,
 				{ auditId, target, currentStatus: targetRow.status },
@@ -401,7 +405,7 @@ export async function brandAuditGetReport(
 	}
 
 	if (renderedAuditStatus !== 'completed' && renderedAuditStatus !== 'failed') {
-		return errorResult(
+		return notReadyResult(
 			'notReady',
 			`Audit ${auditId} is currently ${renderedAuditStatus}. Poll again with brand_audit_status.`,
 			{ auditId, currentStatus: renderedAuditStatus },

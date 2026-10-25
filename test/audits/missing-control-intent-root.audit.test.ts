@@ -168,7 +168,6 @@ const INTERPOLATION_REVIEWED: readonly { file: string; title: string; reason: st
  * names a real qualifying-severity hole fails the staleness check in section C.
  */
 const INERT_HOLES: readonly { file: string; expression: string; reason: string }[] = [
-	{ file: 'tools/brand-audit-single.ts', expression: 'verdict.limit ?? 0', reason: '`limit?: number`, defaulted to 0' },
 	{ file: 'tools/check-dnskey-strength.ts', expression: 'algorithm', reason: '`parseDnskeyAlgorithm(): number | null`, null-guarded' },
 	{ file: 'tools/check-fast-flux.ts', expression: 'allUniqueIps.size', reason: '`Set#size`' },
 	{ file: 'tools/check-fast-flux.ts', expression: 'effectiveRounds', reason: '`Math.max(3, Math.min(5, rounds ?? 3))`' },
@@ -386,7 +385,7 @@ function parseMetadata(source: string | null): Record<string, unknown> | undefin
  * Same computed-key recognizer as the sibling file (kept identical so both trees enforce the
  * SAME understood-shapes contract). The root tree's own discovery run turned up a shape the
  * sibling tree does not have: `{ [flag]: true }` / `{ [marker]: true }` — a dynamically-keyed
- * boolean status flag in several async/error-result builders (`async-start-result.ts`,
+ * boolean status flag in several async/error-result builders (`async-start-error-result.ts`,
  * `brand-audit-*.ts`, `discover-brand-domains-start.ts`, `osint-investigate.ts`,
  * `scan-buckets.ts`). That shape cannot be SUBJECT_TERMS_METADATA_KEY (whose value is always an
  * array or an array-referencing identifier, never a boolean) and it cannot arm or disarm the
@@ -793,11 +792,12 @@ describe('missing-control intent (root tree) — interpolated values must not ar
 
 	it('is NOT vacuous: stripped of every declaration and inert entry, the measured population still arms', () => {
 		// The gate above passes because each site is DEFENDED, not because the probe stopped probing:
-		// with the defences ignored, all 19 sites SQ-102 measured are armed again.
+		// with the defences ignored, the sites SQ-102 measured are armed again. 19 at SQ-102; 18 since
+		// SQ-397 deleted the brand_audit_single quota finding (now a rejected request, not a finding).
 		const undefended = INTERPOLATING_AT_RISK.filter(
 			(s) => armedBy(s, STANDALONE_HOSTILE_VALUES, { declarations: false, inert: false }).length > 0,
 		);
-		expect(undefended.length, 'the exact-match probe went blind — it should still arm the undefended sites').toBeGreaterThanOrEqual(19);
+		expect(undefended.length, 'the exact-match probe went blind — it should still arm the undefended sites').toBeGreaterThanOrEqual(18);
 	});
 
 	it('every declaration and every INERT_HOLES entry is load-bearing (none decorative, none stale)', () => {
@@ -885,7 +885,7 @@ describe('missing-control intent (root tree) — computed metadata keys are hand
 		// module load had NOT skipped these, this whole file would already be a thrown error instead
 		// of a running test — so passing this test at all is already partial proof, but pin the exact
 		// known sites too, so a future regression (someone re-tightening the skip condition) is named.
-		const flagSites = SITES.filter((s) => s.file === 'tools/async-start-result.ts' || s.file === 'tools/brand-audit-watch.ts');
+		const flagSites = SITES.filter((s) => s.file === 'tools/async-start-error-result.ts' || s.file === 'tools/brand-audit-watch.ts');
 		expect(flagSites.length, 'expected the known boolean-flag computed-key sites to still be discovered').toBeGreaterThan(0);
 		for (const s of flagSites) {
 			expect(parseSubjectTermDeclarations(s.metadataSource), `${ref(s)} must not be read as a subject-term declaration`).toEqual([]);

@@ -31,12 +31,13 @@ describe('osint investigation tools', () => {
 		const f = r.findings[0];
 		expect(f.metadata?.reconFailureReason).toBe('target_not_authorized');
 		expect(f.metadata?.reconUpstreamStatus).toBe(403);
-		expect(f.metadata?.upstreamUnavailable).toBe(true);
+		expect(f.metadata?.targetNotAuthorized).toBe(true);
+		expect(f.metadata?.upstreamUnavailable).toBeUndefined();
 		expect(f.detail).toContain('watchlist');
 		expect(f.detail.toLowerCase()).not.toContain('credential problem\u0000');
 		expect(f.detail).toContain('not an outage or a credential problem');
 		expect(f.detail).not.toContain('check the operator credential');
-		expect(r.checkStatus).toBe('error');
+		expect(r.checkStatus).toBeUndefined();
 		expect(r.partial).toBe(true);
 		expect(sink).not.toHaveBeenCalled();
 	});

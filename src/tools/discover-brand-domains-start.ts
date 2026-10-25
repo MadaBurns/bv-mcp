@@ -28,7 +28,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
-import { createAsyncStartErrorResultBuilder } from './async-start-result';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
@@ -74,7 +74,7 @@ export interface DiscoverBrandDomainsStartDeps {
 	now?: () => number;
 }
 
-const buildErrorResult = createAsyncStartErrorResultBuilder<'invalidInput' | 'persistenceFailure' | 'enqueueFailure'>(
+const buildErrorResult = createRejectedRequestBuilder<'invalidInput' | 'persistenceFailure' | 'enqueueFailure'>(
 	CATEGORY,
 	'Discover brand domains start',
 );
@@ -180,6 +180,9 @@ interface DiscoverTargetRow {
 	completed_at: number | null;
 }
 
+const findingsRejected = createRejectedRequestBuilder<'invalidInput' | 'notFound'>(CATEGORY, 'Discover brand domains findings');
+
+/** A still-running discovery is a poll-again state, not a rejected request, so it stays a plain finding. */
 function findingsError(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Discover brand domains findings: ${flag}`, 'high', message, { [flag]: true, ...extra }),
@@ -197,7 +200,7 @@ function safeParse(json: string | null): unknown {
 
 function validateOperationId(operationId: string): CheckResult | undefined {
 	if (typeof operationId !== 'string' || operationId.trim().length === 0) {
-		return findingsError('invalidInput', 'operationId is required.');
+		return findingsRejected('invalidInput', 'operationId is required.');
 	}
 	return undefined;
 }
@@ -210,7 +213,7 @@ async function ownedAuditNotFound(db: D1Database, operationId: string, ownerId: 
 		.first()) as DiscoverAuditRow | null;
 
 	if (!audit || audit.owner_id !== ownerId) {
-		return findingsError('notFound', `No discovery operation found with id ${operationId}.`, { operationId });
+		return findingsRejected('notFound', `No discovery operation found with id ${operationId}.`, { operationId });
 	}
 	return undefined;
 }
@@ -223,7 +226,7 @@ async function discoveryTargetResult(db: D1Database, operationId: string): Promi
 		.first()) as DiscoverTargetRow | null;
 
 	if (!targetRow) {
-		return findingsError('notFound', `No discovery target found for operation ${operationId}.`, { operationId });
+		return findingsRejected('notFound', `No discovery target found for operation ${operationId}.`, { operationId });
 	}
 
 	if (targetRow.status !== 'completed' && targetRow.status !== 'failed') {

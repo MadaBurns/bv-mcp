@@ -900,6 +900,20 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'discover_brand_domains_start',
 	'discover_brand_domains_status',
 	'discover_brand_domains_findings',
+	// brand-audit async/watch tools whose rejected requests (invalid input, unknown id, quota,
+	// persistence failure) are tool errors carrying a kind-only `structuredContent` (SQ-394). A
+	// strict MCP client (TS SDK `callTool`) validates `structuredContent` against `outputSchema`
+	// even when `isError` is true, so publishing the CheckResult schema (required score/passed)
+	// would turn that clean tool error into a schema-validation exception. Success results are
+	// unchanged: they still return the same CheckResult `structuredContent`.
+	'brand_audit_batch_start',
+	'brand_audit_status',
+	'brand_audit_get_report',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
+	// brand_audit_single: success is a CheckResult, but its sync quota refusal is the same kind-only
+	// tool error (SQ-397), so the same outputSchema-vs-error-structuredContent reasoning applies.
+	'brand_audit_single',
 	// OSINT + bucket recon families. These are CheckResult-SHAPED only because the tool
 	// registry's return type is CheckResult — nothing in them is a measurement of the
 	// target's security posture. Every branch emits `severity: 'info'`, INCLUDING success:

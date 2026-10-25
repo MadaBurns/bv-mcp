@@ -24,6 +24,7 @@
  */
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 import { runBrandAuditPipeline, type BrandAuditPipelineDeps, type BrandAuditPipelineOptions } from '../lib/brand-audit-pipeline';
 
 /**
@@ -85,6 +86,8 @@ function buildAsyncHandoffResult(target: string, deadlineMs?: number): CheckResu
  * Programmer-error throws (invalid seed domain) propagate from `discoverBrandDomains`.
  * Discovery failures surface as a `missingControl: true` summary finding with zero candidates.
  */
+const rejectedRequest = createRejectedRequestBuilder(CATEGORY, 'Brand-audit');
+
 /**
  * Consume one quota unit. Returns the refusal result when the unit is denied,
  * `null` when it was granted (or no quota is wired).
@@ -94,15 +97,12 @@ async function chargeQuotaUnit(enforce: EnforceBrandAuditQuota | undefined, targ
 	const verdict = await enforce(1);
 	if (verdict.allowed) return null;
 	const retryHint = typeof verdict.retryAfterMs === 'number' ? ` retry after ${Math.ceil(verdict.retryAfterMs / 1000)}s` : '';
-	return buildCheckResult(CATEGORY, [
-		createFinding(
-			CATEGORY,
-			'Brand-audit quota exceeded',
-			'high',
-			`Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`,
-			{ quotaExceeded: true, target, limit: verdict.limit ?? 0, remaining: verdict.remaining ?? 0, retryAfterMs: verdict.retryAfterMs },
-		),
-	]);
+	return rejectedRequest('quotaExceeded', `Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`, {
+		target,
+		limit: verdict.limit ?? 0,
+		remaining: verdict.remaining ?? 0,
+		retryAfterMs: verdict.retryAfterMs,
+	});
 }
 
 export async function brandAuditSingle(

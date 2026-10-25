@@ -31,7 +31,7 @@
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditFormat } from '../lib/db/brand-audit-schema';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
-import { createAsyncStartErrorResultBuilder } from './async-start-result';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
@@ -103,7 +103,7 @@ export interface BrandAuditBatchStartDeps {
 	now?: () => number;
 }
 
-const buildErrorResult = createAsyncStartErrorResultBuilder<
+const buildErrorResult = createRejectedRequestBuilder<
 	'invalidInput' | 'batchTooLarge' | 'quotaExceeded' | 'persistenceFailure'
 >(CATEGORY, 'Brand audit batch start');
 

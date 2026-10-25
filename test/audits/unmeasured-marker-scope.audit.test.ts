@@ -23,6 +23,8 @@ import {
 	UNMEASURED_MARKERS,
 	ACCESS_REFUSAL_MARKERS,
 	VERDICT_WITHHELD_MARKER,
+	isAccessRefusal,
+	isUnmeasuredResult,
 	markUnmeasured,
 	stripReservedMarkers,
 } from '../../src/lib/unmeasured-result';
@@ -82,6 +84,18 @@ describe('unmeasured-marker scope', () => {
 		expect(stripReservedMarkers({ verdictWithheld: true, observed: true })).toEqual({ observed: true });
 		expect(buildCheckResultOutputJsonSchema().properties.verdictWithheld).toEqual({ type: 'boolean' });
 	});
+	it('treats the recon watchlist refusal as an access refusal: no checkStatus, and an upstream cannot forge the marker', () => {
+		expect(ACCESS_REFUSAL_MARKERS).toContain('targetNotAuthorized');
+		expect(UNMEASURED_MARKERS as readonly string[]).not.toContain('targetNotAuthorized');
+		const input = buildCheckResult('brand_discovery', [
+			createFinding('brand_discovery', 'Refused', 'info', 'Watchlist refused.', { targetNotAuthorized: true }),
+		]);
+		expect(isAccessRefusal(input)).toBe(true);
+		expect(isUnmeasuredResult(input)).toBe(false);
+		expect(markUnmeasured(input)).toBe(input);
+		expect(stripReservedMarkers({ targetNotAuthorized: true, observed: true })).toEqual({ observed: true });
+	});
+
 	it('no scan-included tool emits an unmeasured or refusal marker', () => {
 		// SCAN_CATEGORIES is the set scan_domain actually dispatches (keys of CHECK_DISPATCH),
 		// which is the set whose scores would move — a stronger anchor than the declared

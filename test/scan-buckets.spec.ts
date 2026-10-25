@@ -51,10 +51,11 @@ describe('scan_buckets tools', () => {
 		const f = r.findings[0];
 		expect(f.metadata?.reconFailureReason).toBe('target_not_authorized');
 		expect(f.metadata?.reconUpstreamStatus).toBe(403);
-		expect(f.metadata?.upstreamUnavailable).toBe(true);
+		expect(f.metadata?.targetNotAuthorized).toBe(true);
+		expect(f.metadata?.upstreamUnavailable).toBeUndefined();
 		expect(f.detail).toContain('watchlist');
 		expect(f.detail).toContain('not an outage or a credential problem');
-		expect(r.checkStatus).toBe('error');
+		expect(r.checkStatus).toBeUndefined();
 		expect(r.partial).toBe(true);
 		expect(sink).not.toHaveBeenCalled();
 	});
@@ -283,7 +284,7 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart, scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const scanKv = kv();
 		await scanBucketsStart(
-			{ target: 'acme-corp.test', providers: ['azure'] },
+			{ target: 'acme-corp.com', providers: ['azure'] },
 			{ reconBinding: binding({ scanId: 's1', status: 'running' }), reconAuthToken: 't', bucketScanKv: scanKv as unknown as KVNamespace },
 		);
 

@@ -27,6 +27,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 import type { BrandAuditWatchInterval, BrandAuditWatchRow } from '../lib/db/brand-audit-schema';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -56,9 +57,10 @@ export interface BrandAuditWatchDeps {
 	now?: () => number;
 }
 
-function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
-	return buildCheckResult(CATEGORY, [createFinding(CATEGORY, `Brand audit watch: ${flag}`, 'high', message, { [flag]: true, ...extra })]);
-}
+const errorResult = createRejectedRequestBuilder<'invalidInput' | 'notFound' | 'watchLimitExceeded' | 'persistenceFailure'>(
+	CATEGORY,
+	'Brand audit watch',
+);
 
 function checkDomainPresent(args: RegisterBrandAuditWatchArgs): CheckResult | undefined {
 	if (!args.domain || typeof args.domain !== 'string') return errorResult('invalidInput', 'domain is required.');
