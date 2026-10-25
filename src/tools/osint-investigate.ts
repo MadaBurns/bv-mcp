@@ -17,6 +17,8 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { formatCoverageLine } from '../lib/ct-coverage';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
+import { BLOCKED_HOSTS } from '../lib/config';
+import { isPublicSmtpAddress } from '../lib/smtp-starttls-targets';
 import { markUnmeasured } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
@@ -328,11 +330,86 @@ async function investigationOwnerMismatch(id: string, options: ReconToolOptions)
 	return Boolean(owner && owner !== options.principalId);
 }
 
+/**
+ * Trust-boundary validation for the `query` forwarded to bv-recon. Each checker returns a
+ * client-safe problem string, or undefined when the query is acceptable for that investigation type.
+ * The recon watchlist is the authorisation gate; this is the defence in depth beneath it, so a
+ * CRLF/NUL/script/SQL string, a private IP or a metadata host never reaches a recon lookup even if
+ * a target is later seeded or the gate regresses.
+ */
+type QueryChecker = (query: string) => string | undefined;
+
+/**
+ * A start that reached no investigation (refused, unprovisioned, unavailable) abstains: the
+ * abstention shape is `checkStatus: 'error'` (already stamped by `markUnmeasured`) PLUS no verdict
+ * scalars. `buildCheckResult` derives `score: 100, passed: true` from the lone `info` finding, which
+ * a consumer keying on the scalars reads as a clean pass over a probe that never ran. It stays a
+ * normal (non-`isError`) result: a policy refusal is not a tool failure.
+ */
+function abstain(result: CheckResult): CheckResult {
+	return { ...result, score: 0, passed: false };
+}
+
+function domainProblem(query: string): string | undefined {
+	const result = validateDomain(query);
+	return result.valid ? undefined : (result.error ?? 'invalid domain');
+}
+
+/** Dotted-decimal, single-integer or hex IPv4-literal shapes; a colon (IPv6 attempt) is checked separately. */
+const IP_LITERAL_SHAPE = /^(?:\d+(?:\.\d+){0,3}|0x[0-9a-f]+(?:\.[0-9a-fx]+){0,3})$/i;
+const ORG_NAME_CHARSET = /^[\p{L}\p{N} .,&'-]+$/u;
+const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+const USERNAME_CHARSET = /^[A-Za-z0-9._-]{1,64}$/;
+const EMAIL_LOCAL_PART = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._%+'-]{1,64}(?<!\.)$/;
+
+function publicIpProblem(query: string): string | undefined {
+	return isPublicSmtpAddress(query)
+		? undefined
+		: 'IP address must be a public IPv4 address (private, loopback, link-local and reserved ranges are not allowed)';
+}
+
+function orgNameProblem(query: string): string | undefined {
+	if (!ORG_NAME_CHARSET.test(query) || !HAS_LETTER_OR_DIGIT.test(query)) {
+		return "organisation name may contain only letters, digits, spaces and . , & ' -";
+	}
+	return BLOCKED_HOSTS.includes(query.toLowerCase()) ? 'reserved hostname is not allowed' : undefined;
+}
+
+/** deep_infrastructure: a valid domain, OR a public IP, OR an organisation name. */
+function infrastructureProblem(query: string): string | undefined {
+	if (query.includes(':') || IP_LITERAL_SHAPE.test(query)) return publicIpProblem(query);
+	// A dotted token without whitespace is a hostname attempt, never an organisation name.
+	if (query.includes('.') && !/\s/.test(query)) return domainProblem(query);
+	return orgNameProblem(query);
+}
+
+function emailProblem(query: string): string | undefined {
+	const at = query.indexOf('@');
+	if (at < 1 || at !== query.lastIndexOf('@')) return 'must be a valid email address';
+	if (!EMAIL_LOCAL_PART.test(query.slice(0, at))) return 'email local part contains invalid characters';
+	return domainProblem(query.slice(at + 1));
+}
+
+function usernameProblem(query: string): string | undefined {
+	return USERNAME_CHARSET.test(query) ? undefined : "username must be 1-64 characters of letters, digits, '.', '_' or '-'";
+}
+
+const QUERY_CHECKERS: Record<ReconInvestigationType, QueryChecker> = {
+	domain: domainProblem,
+	supply_chain: domainProblem,
+	deep_infrastructure: infrastructureProblem,
+	email: emailProblem,
+	username: usernameProblem,
+};
+
 export async function osintInvestigateStart(
 	type: ReconInvestigationType,
 	query: string,
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
+	// "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call.
+	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid query: ${problem}`);
 	const outcome = await callReconInvestigateStart(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -343,17 +420,19 @@ export async function osintInvestigateStart(
 		options.onBindingDegradation,
 	);
 	if (!outcome.ok)
-		return reconUnavailable(
-			outcome.reason,
-			`OSINT ${type} investigation could not be started`,
-			{
-				unbound: `OSINT ${type} investigation is not provisioned in this deployment for ${query}.`,
-				// A 404 on the START route cannot mean "unknown id" — no id exists yet. It means the
-				// recon service does not expose this investigation type (route/contract drift).
-				notFound: `The recon service has no ${type} investigation endpoint, so no investigation was started for ${query}.`,
-				upstream: `The recon service did not start a ${type} investigation for ${query}. Nothing was read and no investigation exists — retry, or check the operator credential if this persists.`,
-			},
-			{ type },
+		return abstain(
+			reconUnavailable(
+				outcome.reason,
+				`OSINT ${type} investigation could not be started`,
+				{
+					unbound: `OSINT ${type} investigation is not provisioned in this deployment for ${query}.`,
+					// A 404 on the START route cannot mean "unknown id" — no id exists yet. It means the
+					// recon service does not expose this investigation type (route/contract drift).
+					notFound: `The recon service has no ${type} investigation endpoint, so no investigation was started for ${query}.`,
+					upstream: `The recon service did not start a ${type} investigation for ${query}. Nothing was read and no investigation exists — retry, or check the operator credential if this persists.`,
+				},
+				{ type },
+			),
 		);
 	const started = outcome.data;
 	await rememberInvestigationOwner(started.investigationId, options);

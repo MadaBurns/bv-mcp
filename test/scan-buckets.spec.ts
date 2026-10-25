@@ -283,7 +283,7 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart, scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const scanKv = kv();
 		await scanBucketsStart(
-			{ target: 'acme-corp.test', providers: ['azure'] },
+			{ target: 'acme-corp.com', providers: ['azure'] },
 			{ reconBinding: binding({ scanId: 's1', status: 'running' }), reconAuthToken: 't', bucketScanKv: scanKv as unknown as KVNamespace },
 		);
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 /** Cloud-bucket discovery tools — thin fail-soft proxies over bv-recon's bucket-scanner. */
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { validateDomain } from '../lib/sanitize';
 import { markUnmeasured, stripReservedMarkers } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
@@ -374,6 +375,10 @@ export async function scanBucketsStart(
 	args: { target: string; providers?: string[] },
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
+	// Trust-boundary check before any binding call: the recon watchlist authorises targets, this is the
+	// defence in depth beneath it. "Invalid target:" is a client-visible error prefix (error allowlist).
+	const problem = args.target === args.target.trim() ? validateDomain(args.target).error : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid target: ${problem}`);
 	const started = await callReconBucketScanStart(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -381,8 +386,8 @@ export async function scanBucketsStart(
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!started.ok)
-		return reconFailureResult(started, {
+	if (!started.ok) {
+		const failure = reconFailureResult(started, {
 			unbound: `Bucket discovery is not provisioned in this deployment for ${args.target}.`,
 			notFound: {
 				title: 'Bucket scan was not started',
@@ -393,6 +398,10 @@ export async function scanBucketsStart(
 				detail: `The recon service did not start a bucket scan for ${args.target}. Nothing was scanned — retry, and if it persists this is a recon-service problem, not a result.`,
 			},
 		});
+		// Abstain: `checkStatus: 'error'` is already stamped; also drop the `score: 100, passed: true`
+		// that buildCheckResult derives from the lone info finding. A refusal is still not an `isError`.
+		return { ...failure, score: 0, passed: false };
+	}
 	const start = started.data;
 	await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv);
 	return buildCheckResult(CATEGORY, [
