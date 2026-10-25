@@ -757,7 +757,8 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution).toBeDefined();
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
-		expect(attribution!.detail).toContain('is registered to a different organisation');
+		expect(attribution!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(attribution!.detail).not.toContain('registered to a different organisation');
 	});
 
 	it('CONTROL — a DIFFERENT registrar on each side is not ownership evidence', async () => {
@@ -768,7 +769,8 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		});
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
-		expect(attribution!.detail).toContain('is registered to a different organisation');
+		expect(attribution!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(attribution!.detail).not.toContain('registered to a different organisation');
 	});
 
 	it('CONTROL — TWO DIFFERENT brand-protection registrars are not a match either', async () => {
@@ -786,7 +788,8 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		});
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
-		expect(attribution!.detail).toContain('is registered to a different organisation');
+		expect(attribution!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(attribution!.detail).not.toContain('registered to a different organisation');
 	});
 
 	it('CONTROL — an absent registrar ID on either side is never treated as a match', async () => {
@@ -804,7 +807,8 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		});
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
-		expect(attribution!.detail).toContain('is registered to a different organisation');
+		expect(attribution!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(attribution!.detail).not.toContain('registered to a different organisation');
 	});
 
 	it('CONTROL — a shared corporate registrar does NOT excuse live mail infrastructure', async () => {

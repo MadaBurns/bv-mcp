@@ -1723,6 +1723,36 @@ describe('checkShadowDomains — D4 ownership-gated severity', () => {
 	});
 });
 
+describe('checkShadowDomains — split-platform estate wording (#1291)', () => {
+	it('reports distinct DNS with shared mail without claiming a different registrant', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target || name === 'example.net') {
+				if (type === 'NS' || type === '2') {
+					const label = name === target ? 'primary' : 'secondary';
+					return Promise.resolve(nsRecords(name, [`ns1.${label}.example.test.`, `ns2.${label}.example.test.`]));
+				}
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.platform.example.test.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.10']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains(target);
+		const finding = result.findings.find((f) => f.metadata?.variant === 'example.net');
+		expect(finding).toBeDefined();
+		expect(finding!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(finding!.metadata?.ownershipSignals).toEqual(['distinct_infrastructure']);
+		expect(finding!.severity).toBe('info');
+		expect(finding!.title).toBe('Confusable label, ownership not established: example.net');
+		expect(finding!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(finding!.detail).not.toMatch(/registered to a different organisation|unrelated domain/i);
+	});
+});
+
 describe('checkShadowDomains — D4 wording: no ownership framing on a non-owned candidate', () => {
 	async function run(domain: string) {
 		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');

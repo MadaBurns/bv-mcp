@@ -268,13 +268,17 @@ describe('checkLookalikes — exact-label TLD cohort on the seed A (#974 reopene
 		const { attribution, threat } = await runFor(['example.com']);
 		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(attribution!.metadata?.attributionConfidence).toBe('single_signal');
-		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
+		expect(threat!.detail).toContain('before blocking mail or requesting takedown');
+		expect(threat!.detail).toContain('Monitor while uncertain');
+		expect(threat!.detail).toContain('If confirmed external and suspected of impersonation');
 	});
 
 	it('a 3-variant cohort on a SHARED_NS_APEXES platform stays third_party', async () => {
 		const { attribution, threat } = await runFor(['example.com', 'example.net', 'example.io'], PLATFORM_NS);
 		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
-		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
+		expect(threat!.detail).toContain('before blocking mail or requesting takedown');
+		expect(threat!.detail).toContain('Monitor while uncertain');
+		expect(threat!.detail).toContain('If confirmed external and suspected of impersonation');
 	});
 });
 
@@ -297,6 +301,8 @@ describe('checkLookalikes — large-cohort exception to the shared-NS exclusion 
 	it('a 4-variant cohort on the same platform stays third_party with takedown advice — below the large-cohort threshold', async () => {
 		const { attribution, threat } = await runFor(SIX_VARIANTS.slice(0, 4), PLATFORM_NS);
 		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
-		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
+		expect(threat!.detail).toContain('before blocking mail or requesting takedown');
+		expect(threat!.detail).toContain('Monitor while uncertain');
+		expect(threat!.detail).toContain('If confirmed external and suspected of impersonation');
 	});
 });

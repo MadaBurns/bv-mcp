@@ -753,8 +753,8 @@ async function checkLookalikesCore(
 
 		// #832 — an UNMEASURED ownership verdict withholds the impersonation-
 		// shaped finding (and its counters) for this candidate in this run: the
-		// comparison that would justify "does not appear to belong to the
-		// scanned organisation" never completed, and near-complete runs have
+		// comparison needed to emit an observed-threat finding never completed,
+		// and near-complete runs have
 		// proven the same candidate `owned_by_seed` (jcpenny.com, full 8/8 NS
 		// match). The attribution finding above still names the candidate with
 		// its unmeasured verdict, and the run-level scan_status notice below

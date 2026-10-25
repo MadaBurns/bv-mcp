@@ -1961,7 +1961,9 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		expect(threat!.detail).toMatch(/mail infrastructure/i);
 		expect(threat!.detail).toMatch(/disposable MX provider/i);
 		// Explicitly disclaims ownership, per the ruling.
-		expect(threat!.detail).toMatch(/does not appear to belong to the scanned organisation/i);
+		expect(threat!.detail).toContain('ownership of');
+		expect(threat!.detail).toContain('has not been established by this check');
+		expect(threat!.detail).toContain('before blocking mail or requesting takedown');
 		// Banned framing — title AND detail (a split surface where the prose
 		// contradicts the axis marker is the failure mode this pins).
 		for (const text of [threat!.title, threat!.detail]) {

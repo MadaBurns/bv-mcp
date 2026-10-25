@@ -24,8 +24,7 @@
  *    summary finding, and every sub-100 `lookalikes` category score
  *    unreachable — a live typosquat with active MX on a disposable provider
  *    scored 100/passed. These findings assert NOTHING about ownership (they
- *    say explicitly that the domain does not appear to belong to the scanned
- *    organisation) and demand no action ON that domain; only defensive
+ *    say explicitly that ownership has not been established by this check) and demand no action ON that domain; only defensive
  *    options on the scanned organisation's own side are suggested.
  *
  *  - `'scan_status'` — the RUN itself, not any candidate: the "no active
@@ -246,19 +245,16 @@ export function buildRegisteredDarkFinding(result: LookalikeResult, seedDomain: 
 /**
  * AXIS 1 — the registration record corroborates that this is the scanned
  * organisation's OWN defensive registration. Emitted INSTEAD of the neutral D4
- * gate template, which would otherwise state positively that the domain "is
- * registered to a different organisation" — a claim the nameserver evidence
- * alone never supported and which is simply false here.
+ * gate template. The generic template now abstains on ownership (#1291);
+ * this stronger wording additionally records the corroborated defensive shape.
  *
  * `brandHeld.registrarIanaId === null` (#949) marks the ENTERPRISE-GATED
  * NS-SET corroborator form: RDAP published no IANA registrar ID for either
  * domain (routine for `.uk` / `.nz` / `.dk` ccTLDs), so the wording must not
  * cite a registrar ID it doesn't have — it cites the shared, non-self-service
- * nameserver platform instead. D4 WORDING FIX: this is the surface that used
- * to leave such a candidate to the generic non-owned gate, which — for a
- * `third_party` verdict — says "is registered to a different organisation";
- * routing it here instead means an unattributed/no-IANA-ID candidate that IS
- * corroborated this way never reaches that sentence.
+ * nameserver platform instead. A structural `third_party` verdict remains in
+ * metadata; neither this annotation nor the generic gate verifies registrant
+ * identity.
  *
  * SEVERITY IS `info`, EXACTLY AS {@link applyOwnershipGate} WOULD HAVE CAPPED
  * IT. This branch changes what the report SAYS, never what it SCORES:
@@ -489,7 +485,7 @@ function describeAttribution(
 	if (labelCohort) {
 		return `it resolves to the same web address set as ${seedDomain} and shares identical nameservers and mail hosts with other exact-label variants of it, the shape of the scanned organisation's own brand-variant portfolio, though those records can be copied and ownership is not established`;
 	}
-	return `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
+	return `ownership of ${candidateDomain} has not been established by this check, this finding claims no control over it, and no change to it is requested`;
 }
 
 function describeRemediation(
@@ -504,7 +500,7 @@ function describeRemediation(
 	if (copyableMatch) {
 		return `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`;
 	}
-	return `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
+	return `Confirm ownership of ${candidateDomain} before blocking mail or requesting takedown. Monitor while uncertain. If confirmed external and suspected of impersonation, block or quarantine its mail and report it to its registrar or a takedown provider.`;
 }
 
 function threatObservationMetadata(
@@ -545,12 +541,11 @@ function threatObservationMetadata(
  *    intent.
  *    "Impersonation-shaped" / "consistent with pre-phishing staging" is the
  *    ceiling; the words "malicious"/"attacker" are deliberately absent;
- *  - says EXPLICITLY that the domain does not appear to belong to the scanned
- *    organisation, so no reader can mistake this for an ownership claim;
+ *  - says EXPLICITLY that ownership has not been established by this check;
  *  - never uses "your", "shadow domain", or any ownership/control framing;
  *  - demands no action ON the observed domain. Only defensive options that
- *    need no access to it (monitor, block at the gateway, report for
- *    takedown) are offered.
+ *    need no access to it are offered; blocking and takedown require ownership
+ *    confirmation first.
  *
  * Pinned by `test/check-lookalikes.spec.ts`'s Task 7b block, which asserts
  * both the positive wording and the banned-framing negatives on title AND
