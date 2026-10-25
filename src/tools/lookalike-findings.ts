@@ -500,7 +500,7 @@ function describeRemediation(
 	if (copyableMatch) {
 		return `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`;
 	}
-	return `Confirm ${candidateDomain} against the scanned organisation's domain portfolio before blocking mail or requesting takedown. Monitor it while ownership is uncertain. If confirmed outside the scanned organisation and suspected of impersonation, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
+	return `Confirm ownership of ${candidateDomain} before blocking mail or requesting takedown. Monitor while uncertain. If confirmed external and suspected of impersonation, block or quarantine its mail and report it to its registrar or a takedown provider.`;
 }
 
 function threatObservationMetadata(
