@@ -898,7 +898,7 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 			verdict: 'third_party',
 			strength: 'none',
 			signals: ['distinct_infrastructure'],
-			rationale: `${candidateDomain} is registered with its own nameservers, distinct from ${seedApex} — no ownership signal links it to this organisation.`,
+			rationale: `${candidateDomain} is registered with its own nameservers, distinct from ${seedApex} — this nameserver comparison did not establish common ownership.`,
 		};
 	}
 
@@ -1350,25 +1350,21 @@ export function buildNonOwnedGateFinding(
 	const metadata = buildOwnershipGateMetadata(finding, ownership, confidence);
 
 	const relation =
-		ownership.verdict === 'third_party'
-			? 'is registered to a different organisation'
-			: ownership.verdict === 'unmeasured'
-				? 'could not be compared against the scanned organisation in this run — the lookups feeding the ownership comparison did not complete'
-				: 'could not be attributed to the scanned organisation';
+		ownership.verdict === 'unmeasured'
+			? 'could not be compared against the scanned organisation in this run — the lookups feeding the ownership comparison did not complete'
+			: 'could not be attributed to the scanned organisation';
 	const hedge =
 		confidence === 'uncorroborated'
 			? ` The shared label is under ${MIN_ATTRIBUTION_LABEL_LENGTH} characters and nothing else corroborates a link, so the name similarity alone means little.`
 			: '';
 	// #832: an `unmeasured` verdict must not be TITLED "Unrelated domain" — that
 	// is the very third-party claim the degraded comparison failed to earn.
-	// #929 (PR #937 review): `unattributed` earns no "Unrelated" title either —
-	// nothing was measured that says the domain is anyone else's.
+	// #1291: neither non-owned verdict verifies a different registrant.
+	// Distinct nameservers establish infrastructure, not organisational identity.
 	const title =
 		ownership.verdict === 'unmeasured'
 			? `Confusable label, ownership unmeasured this run: ${domain}`
-			: ownership.verdict === 'unattributed'
-				? `Confusable label, ownership not established: ${domain}`
-				: `Unrelated domain, confusable label: ${domain}`;
+			: `Confusable label, ownership not established: ${domain}`;
 	return createFinding(
 		options.category,
 		title,

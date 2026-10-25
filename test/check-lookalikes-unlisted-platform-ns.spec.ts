@@ -330,6 +330,29 @@ describe('isBrandHeldRegistration — enterprise-gated NS set as leg 1 when RDAP
 		expect(result).toEqual({ brandHeld: false });
 	});
 
+	it.each([
+		{ registrarId: '299', redirect: 'https://www.brand.example/', expected: true },
+		{ registrarId: '299', redirect: undefined, expected: false },
+		{ registrarId: null, redirect: 'https://www.brand.example/', expected: false },
+	])(
+		'different enterprise NS pairs with shared mail: registrar=$registrarId redirect=$redirect -> $expected (#1291)',
+		({ registrarId, redirect, expected }) => {
+			const result = isBrandHeldRegistration({
+				seedDomain: SEED_DOMAIN,
+				candidateDomain: CANDIDATE_DOMAIN,
+				seedRegistrarIanaId: registrarId,
+				candidateRegistrarIanaId: registrarId,
+				candidateMxExchanges: ['mail.platform.example.test'],
+				candidateNsHosts: ['dns1.platform.example.test', 'dns2.platform.example.test'],
+				seedNsHosts: ['udns1.platform.example.test', 'udns2.platform.example.test'],
+				isEnterpriseGatedNsHost: (host) => host.endsWith('.platform.example.test'),
+				candidateHttpRedirectLocation: redirect,
+			});
+			expect(result.brandHeld).toBe(expected);
+			if (expected) expect(result).toEqual({ brandHeld: true, registrarIanaId: '299', reason: 'redirect-to-target' });
+		},
+	);
+
 	it('the pre-existing IANA-registrar-ID leg is unaffected: a shared brand-protection registrar ID still corroborates regardless of NS evidence', () => {
 		const result = isBrandHeldRegistration({
 			seedDomain: SEED_DOMAIN,
