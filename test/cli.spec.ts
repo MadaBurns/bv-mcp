@@ -165,6 +165,25 @@ describe('blackveil CLI', () => {
 		expect(await runCli(['check', 'dnssec', 'example.com'], h)).toBe(0);
 	});
 
+	it('sends only the arguments the check declares (check_root_server_set takes no domain)', async () => {
+		// Every tool rejects undeclared arguments, so `check root_server_set <domain>` must not forward `domain`.
+		const tools = {
+			tools: [
+				{
+					name: 'check_root_server_set',
+					inputSchema: { type: 'object', properties: { format: { type: 'string' } }, additionalProperties: false },
+					outputSchema: { type: 'object' },
+					annotations: { readOnlyHint: true },
+				},
+			],
+		};
+		const result = { category: 'root_server_set', passed: true, score: 100, findings: [], checkStatus: 'completed' };
+		const h = harness({}, [tools, toolResult(result)]);
+		expect(await runCli(['check', 'root_server_set', 'example.com', '--force-refresh'], h)).toBe(0);
+		const call = h.calls.find((c) => c.method === 'tools/call') as { params: { arguments: Record<string, unknown> } };
+		expect(call.params.arguments).toEqual({ format: 'full' });
+	});
+
 	it('returns incomplete for a non-completed check even when partial is absent', async () => {
 		const tools = { tools: [{ name: 'check_dnssec', outputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] };
 		const result = { category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'error' };

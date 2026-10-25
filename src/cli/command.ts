@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { createEvidenceSnapshot, verifyEvidenceSnapshot, type EvidenceSnapshot } from './evidence';
-import { DEFAULT_MCP_ENDPOINT, McpClientError, McpHttpClient, type ToolCallResult } from './mcp-http-client';
+import { DEFAULT_MCP_ENDPOINT, McpClientError, McpHttpClient, type ListedTool, type ToolCallResult } from './mcp-http-client';
 import {
 	BatchResultSchema,
 	CheckResultSchema,
@@ -331,6 +331,18 @@ async function runScan(parsed: ParsedArgs, deps: CliDependencies): Promise<CliEx
 	return (await callPolicy(client, domain, baseline, deps.io)).exit;
 }
 
+/**
+ * Arguments for `blackveil check`, limited to the keys the tool's published inputSchema declares.
+ * Every tool rejects undeclared arguments, and some checks take no domain (check_root_server_set).
+ * A tool that publishes no properties gets the full set, as before.
+ */
+function checkArguments(tool: ListedTool, domain: string, forceRefresh: boolean): Record<string, unknown> {
+	const declared = tool.inputSchema?.properties;
+	const wanted: Record<string, unknown> = { domain, format: 'full', ...(forceRefresh ? { force_refresh: true } : {}) };
+	if (!declared) return wanted;
+	return Object.fromEntries(Object.entries(wanted).filter(([key]) => key in declared));
+}
+
 async function runCheck(parsed: ParsedArgs, deps: CliDependencies): Promise<CliExitCode> {
 	assertOptions(parsed, ['--format', '--out'], ['--force-refresh', '--force']);
 	if (parsed.positionals.length !== 2) throw new CliUsageError('Expected a check name and one domain');
@@ -345,15 +357,7 @@ async function runCheck(parsed: ParsedArgs, deps: CliDependencies): Promise<CliE
 	if (!tool || tool.annotations?.readOnlyHint !== true || tool.outputSchema === undefined) {
 		throw new CliUsageError(`${toolName} is not a public read-only CheckResult tool`);
 	}
-	const result = await client.callTool(
-		toolName,
-		{
-			domain,
-			format: 'full',
-			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
-		},
-		{ readOnly: true },
-	);
+	const result = await client.callTool(toolName, checkArguments(tool, domain, parsed.flags.has('--force-refresh')), { readOnly: true });
 	const errorExit = classifyToolError(result, deps.io, toolName);
 	if (errorExit !== undefined) return errorExit;
 	const structured = CheckResultSchema.safeParse(requireStructured(result, toolName));
