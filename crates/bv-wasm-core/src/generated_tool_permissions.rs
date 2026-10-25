@@ -14,7 +14,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "batch_scan_status" => PermissionMode::ReadOnly,
         "brand_audit_batch_start" => PermissionMode::WorkspaceWrite,
         "brand_audit_get_report" => PermissionMode::ReadOnly,
-        "brand_audit_single" => PermissionMode::ReadOnly,
+        "brand_audit_single" => PermissionMode::WorkspaceWrite,
         "brand_audit_status" => PermissionMode::ReadOnly,
         "check_agent_discovery" => PermissionMode::ReadOnly,
         "check_authoritative_dns_infra" => PermissionMode::ReadOnly,

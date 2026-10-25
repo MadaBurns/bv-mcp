@@ -74,4 +74,4 @@ Rate limiting uses a three-tier cascade: Durable Object → KV → in-memory. In
 - **KV error swallowing with fallback**: Throughout session.ts, rate-limiter.ts, cache.ts — KV failures degrade gracefully to in-memory with `logError()` logging. This is the documented resilience pattern.
 - **HSTS preload header**: Operational decision appropriate for an HTTPS-only Cloudflare Worker.
 - **`initialize` exempt from control-plane rate limit**: Session creation has its own dedicated rate limiter (30/min). Double-limiting causes mcp-remote reconnection storms.
-- **Passthrough Zod schemas (`.passthrough()`)**: Intentional (except the `.strict()` recon schemas) — tools may receive extra properties from different MCP client versions. Unknown properties are ignored, not processed.
+- **Strict tool-argument schemas (`.strict()`)**: Every tool argument schema rejects unknown keys with `Invalid request: unknown argument(s): <keys>` (an allowlisted `Invalid` prefix) and publishes `additionalProperties: false`. A `.passthrough()` tool schema is a regression, caught by `test/audits/tool-args-strict.audit.test.ts`. The internal door strips its own door-only keys before dispatch.

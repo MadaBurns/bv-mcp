@@ -24,6 +24,10 @@ const ToolListSchema = z
 				.object({
 					name: z.string().min(1),
 					outputSchema: z.record(z.string(), z.unknown()).optional(),
+					inputSchema: z
+						.object({ properties: z.record(z.string(), z.unknown()).optional() })
+						.passthrough()
+						.optional(),
 					annotations: z.object({ readOnlyHint: z.boolean().optional() }).passthrough().optional(),
 				})
 				.passthrough(),
