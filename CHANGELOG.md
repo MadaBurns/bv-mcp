@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.103.2] - 2026-10-26
+
+### Fixed
+
+- Ownership wording in shadow-domain and lookalike reports now states when common ownership was not established, rather than claiming a different registrant from nameserver differences alone. Lookalike advice requires ownership confirmation before blocking mail or requesting takedown, while preserving the compact response budget. Ownership verdicts, signals, severity and scoring are unchanged (#1306; partially addresses #1291).
+
 ## [3.103.1] - 2026-10-25
 
 ### Fixed
