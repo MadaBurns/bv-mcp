@@ -8,6 +8,24 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.102.0] - 2026-10-25
+
+### Changed
+
+- **Rejected requests are tool errors, not scored findings (#1299).** When `brand_audit_batch_start`, `brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_start`, `discover_brand_domains_findings`, `register_brand_audit_watch`, `delete_brand_audit_watch` or `brand_audit_single` rejects or fails a request, the result is now `isError: true` with `structuredContent {kind, message, ...extras}`. Previously it was a passing, scored HIGH finding about the domain. The kinds are `invalidInput`, `notFound`, `quotaExceeded`, `batchTooLarge`, `watchLimitExceeded`, `persistenceFailure`, `enqueueFailure` and `readFailure`. Success output is unchanged.
+- **Six tools no longer publish an `outputSchema` (#1299).** These are `brand_audit_batch_start`, `brand_audit_status`, `brand_audit_get_report`, `register_brand_audit_watch`, `delete_brand_audit_watch` and `brand_audit_single`. The `discover_brand_domains_*` tools already published none. Their error `structuredContent` has no `score` or `passed`, and MCP clients validate `structuredContent` against `outputSchema` even when `isError` is set. The tool count is unchanged.
+- **A bv-recon watchlist refusal is an access refusal (#1299).** The five `osint_investigate_*_start` tools and `scan_buckets_start` now return `isError` carrying the `targetNotAuthorized` marker, never the retryable `checkStatus: 'error'`.
+
+### Fixed
+
+- **Recon input validation (#1299).** The OSINT start tools and `scan_buckets_start` reject IP literals, `localhost`, CRLF, NUL, script and SQL text, path traversal and URLs at the MCP boundary, before any call to bv-recon.
+- **Refusals are never cached (#1299).** Cache keys are not principal-scoped, so a quota or tier refusal for one caller used to be served to every caller for the same arguments until the TTL expired.
+- **Session tombstone outage is logged (#1297).** The KV tombstone probe still fails open, but it now logs when the read throws.
+
+### Dependencies
+
+- undici 7.30.1 and zod 4.6.7 across the dev toolchain (#1298). This clears all `npm audit` findings (5 high, all dev scope).
+
 ## [3.101.2] - 2026-10-25
 
 ### Changed
