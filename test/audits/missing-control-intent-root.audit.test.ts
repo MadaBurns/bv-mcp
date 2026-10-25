@@ -386,7 +386,7 @@ function parseMetadata(source: string | null): Record<string, unknown> | undefin
  * Same computed-key recognizer as the sibling file (kept identical so both trees enforce the
  * SAME understood-shapes contract). The root tree's own discovery run turned up a shape the
  * sibling tree does not have: `{ [flag]: true }` / `{ [marker]: true }` — a dynamically-keyed
- * boolean status flag in several async/error-result builders (`async-start-result.ts`,
+ * boolean status flag in several async/error-result builders (`async-start-error-result.ts`,
  * `brand-audit-*.ts`, `discover-brand-domains-start.ts`, `osint-investigate.ts`,
  * `scan-buckets.ts`). That shape cannot be SUBJECT_TERMS_METADATA_KEY (whose value is always an
  * array or an array-referencing identifier, never a boolean) and it cannot arm or disarm the
@@ -885,7 +885,7 @@ describe('missing-control intent (root tree) — computed metadata keys are hand
 		// module load had NOT skipped these, this whole file would already be a thrown error instead
 		// of a running test — so passing this test at all is already partial proof, but pin the exact
 		// known sites too, so a future regression (someone re-tightening the skip condition) is named.
-		const flagSites = SITES.filter((s) => s.file === 'tools/async-start-result.ts' || s.file === 'tools/brand-audit-watch.ts');
+		const flagSites = SITES.filter((s) => s.file === 'tools/async-start-error-result.ts' || s.file === 'tools/brand-audit-watch.ts');
 		expect(flagSites.length, 'expected the known boolean-flag computed-key sites to still be discovered').toBeGreaterThan(0);
 		for (const s of flagSites) {
 			expect(parseSubjectTermDeclarations(s.metadataSource), `${ref(s)} must not be read as a subject-term declaration`).toEqual([]);

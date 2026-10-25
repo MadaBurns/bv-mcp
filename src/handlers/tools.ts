@@ -77,6 +77,7 @@ import { checkRootServerSet } from '../tools/check-root-server-set';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
+import { getRejectedRequest } from '../tools/async-start-error-result';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
 import { discoverBrandDomainsStart, discoverBrandDomainsFindings } from '../tools/discover-brand-domains-start';
@@ -101,6 +102,7 @@ import {
 	extractScanProfile,
 	resolveToolAlias,
 	validateToolArgs,
+	type OutputFormat,
 } from './tool-args';
 import { resolveToolOutputFormat } from './tool-output';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
@@ -1282,6 +1284,27 @@ function buildToolErrorResult(message: string): McpToolResult {
 	return { content: [mcpError(message)], isError: true };
 }
 
+/**
+ * A result that is not a security verdict, rendered as a failed tool call: an access refusal
+ * (tier denied / not owned) or a rejected request (invalid input, unknown id, quota, persistence
+ * or enqueue failure). A rejection carries its machine-readable `kind` in `structuredContent` and
+ * NO `score`/`passed`. `undefined` for an ordinary result.
+ */
+function refusalToolResult(result: CheckResult, format: OutputFormat): McpToolResult | undefined {
+	const rejected = getRejectedRequest(result);
+	if (rejected) return { content: [mcpError(rejected.text)], structuredContent: rejected.structured, isError: true };
+	if (isAccessRefusal(result)) return { ...buildToolResult(formatAccessRefusal(result), result, format), isError: true };
+	return undefined;
+}
+
+/**
+ * Hand the CheckResult to the caller's `resultCapture` (the /internal `?format=structured` door),
+ * except for a rejected request: that door would otherwise return the raw scored CheckResult.
+ */
+function captureResult(runtimeOptions: ToolRuntimeOptions | undefined, result: CheckResult): void {
+	if (!getRejectedRequest(result)) runtimeOptions?.resultCapture?.(result);
+}
+
 function summarizeM365LogResult(result: unknown): Record<string, unknown> {
 	const r = result && typeof result === 'object' && !Array.isArray(result) ? (result as Record<string, unknown>) : {};
 	const data = r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? (r.data as Record<string, unknown>) : undefined;
@@ -1504,9 +1527,14 @@ export async function handleToolsCall(
 				// below — for a security tool, "refused" and "clean" must never be
 				// indistinguishable to a machine consumer. NOT `checkStatus: 'error'`: that is the
 				// retryable class, and an agentic caller would loop on a permanent refusal.
-				const accessRefused = isAccessRefusal(result);
-				const measured = isCompletedCheck(result) && !accessRefused;
-				runtimeOptions?.resultCapture?.(result);
+				//
+				// A rejected or failed REQUEST (bad input, unknown id, quota, persistence/enqueue
+				// failure) is the same class of non-verdict: it says nothing about the domain, so
+				// it must not surface as a scored HIGH finding with `passed: true`. See
+				// `refusalToolResult` / `captureResult`.
+				const refusal = refusalToolResult(result, effectiveFormat);
+				const measured = isCompletedCheck(result) && !refusal;
+				captureResult(runtimeOptions, result);
 				logResult = measured && result.passed ? 'pass' : 'fail';
 				logDetails = result;
 				logToolSuccess({
@@ -1516,9 +1544,7 @@ export async function handleToolsCall(
 					logDetails,
 					cacheStatus,
 				});
-				if (accessRefused) {
-					return { ...buildToolResult(formatAccessRefusal(result), result, effectiveFormat), isError: true };
-				}
+				if (refusal) return refusal;
 				if (name === 'check_lookalikes' && effectiveFormat === 'compact') {
 					// #1130: a large brand emits one or two findings per registered candidate
 					// (google.com: 76 findings, 69 KB) and overflowed the MCP tool-result cap in

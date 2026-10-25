@@ -15,6 +15,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS, targetRunningSince } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
@@ -50,11 +51,7 @@ interface BrandAuditTargetRow {
 	result_json: string | null;
 }
 
-function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Brand audit status: ${flag}`, 'high', message, { [flag]: true, ...extra }),
-	]);
-}
+const errorResult = createRejectedRequestBuilder<'invalidInput' | 'notFound' | 'readFailure'>(CATEGORY, 'Brand audit status');
 
 export async function brandAuditStatus(
 	auditId: string,
