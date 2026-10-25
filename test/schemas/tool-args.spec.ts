@@ -28,9 +28,58 @@ describe('BaseDomainArgs', () => {
 	it('rejects missing domain', () => {
 		expect(() => BaseDomainArgs.parse({})).toThrow();
 	});
-	it('passes through unknown properties', () => {
-		const result = BaseDomainArgs.parse({ domain: 'example.com', extra: true });
-		expect((result as Record<string, unknown>).extra).toBe(true);
+	it('rejects unknown properties (strict schema)', () => {
+		const result = BaseDomainArgs.safeParse({ domain: 'example.com', extra: true });
+		expect(result.success).toBe(false);
+		expect(result.error?.issues[0]).toMatchObject({ code: 'unrecognized_keys', keys: ['extra'], path: [] });
+	});
+});
+
+describe('validateToolArgs — unknown-argument error', () => {
+	it('names every unknown top-level key under the allowlisted "Invalid" prefix', async () => {
+		const { validateToolArgs } = await import('../../src/handlers/tool-args');
+		expect(() => validateToolArgs('check_spf', { domain: 'example.com', extra: true, other: 1 })).toThrow(
+			'Invalid request: unknown argument(s): extra, other',
+		);
+	});
+
+	it('path-qualifies an unknown key inside the nested compare_baseline policy object', async () => {
+		const { validateToolArgs } = await import('../../src/handlers/tool-args');
+		expect(() => validateToolArgs('compare_baseline', { domain: 'example.com', baseline: { require_spf: true, bogus: 1 } })).toThrow(
+			'Invalid request: unknown argument(s): baseline.bogus',
+		);
+	});
+
+	it('reaches the client verbatim through sanitizeErrorMessage (not the generic fallback)', async () => {
+		const { validateToolArgs } = await import('../../src/handlers/tool-args');
+		const { sanitizeErrorMessage } = await import('../../src/lib/json-rpc');
+		let caught: unknown;
+		try {
+			validateToolArgs('scan_domain', { domain: 'example.com', domian: 'typo.example' });
+		} catch (err) {
+			caught = err;
+		}
+		expect(sanitizeErrorMessage(caught, 'FALLBACK')).toBe('Invalid request: unknown argument(s): domian');
+	});
+
+	it('accepts format on tools that previously relied on passthrough for it', async () => {
+		const { validateToolArgs } = await import('../../src/handlers/tool-args');
+		const cases: Array<[string, Record<string, unknown>]> = [
+			['discover_brand_domains_status', { operationId: 'op_1' }],
+			['discover_brand_domains_findings', { operationId: 'op_1' }],
+			['brand_audit_status', { auditId: 'audit_1' }],
+			['brand_audit_get_report', { auditId: 'audit_1' }],
+			['list_brand_audit_watches', {}],
+			['register_brand_audit_watch', { domain: 'example.com', interval: 'daily' }],
+			['delete_brand_audit_watch', { watchId: 'watch_1' }],
+			['query_signins', { ms_tenant_id: 'tenant' }],
+			['query_ual', { ms_tenant_id: 'tenant' }],
+			['get_ca_policies', { ms_tenant_id: 'tenant' }],
+			['assess_coverage', { ms_tenant_id: 'tenant' }],
+		];
+		for (const [tool, args] of cases) {
+			expect(validateToolArgs(tool, { ...args, format: 'compact' }).format, tool).toBe('compact');
+		}
 	});
 });
 

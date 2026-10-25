@@ -25,7 +25,7 @@ import {
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
-import { normalizeToolName } from '../handlers/tool-args';
+import { declaredToolArgKeys, normalizeToolName } from '../handlers/tool-args';
 import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -255,6 +255,22 @@ export function extractAccessLogDomain(args: Record<string, unknown> | undefined
 		return args.domains.find((value): value is string => typeof value === 'string' && value.length > 0);
 	}
 	return undefined;
+}
+
+/**
+ * Whether a raw (pre-validation) tools/call asks for a metered force_refresh.
+ * Only tools whose strict schema DECLARES force_refresh are metered: on any other
+ * tool the key is rejected as an unknown argument, so the call never runs and
+ * must not burn a force-refresh quota unit.
+ */
+function isMeteredForceRefresh(toolName: string, argsRaw: unknown): boolean {
+	if (!declaredToolArgKeys(toolName).has('force_refresh')) return false;
+	return (
+		typeof argsRaw === 'object' &&
+		argsRaw !== null &&
+		!Array.isArray(argsRaw) &&
+		(argsRaw as Record<string, unknown>).force_refresh === true
+	);
 }
 
 function getToolCallLogInput(
@@ -1145,13 +1161,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// bypass the scan cache repeatedly and amplify backend load.
 		const argsRaw =
 			typeof params === 'object' && params !== null && 'arguments' in params ? (params as Record<string, unknown>).arguments : undefined;
-		const forceRefresh =
-			argsRaw !== null &&
-			typeof argsRaw === 'object' &&
-			!Array.isArray(argsRaw) &&
-			(argsRaw as Record<string, unknown>).force_refresh === true;
 
-		if (forceRefresh) {
+		if (isMeteredForceRefresh(toolName, argsRaw)) {
 			const forceRefreshResult = await checkToolDailyRateLimit(
 				options.ip,
 				'__force_refresh__',

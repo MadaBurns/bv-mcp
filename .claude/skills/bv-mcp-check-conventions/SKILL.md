@@ -218,9 +218,10 @@ another finding and zero a category. Only `subdomain_takeover` is capped. See
 ## Other conventions
 
 - **Zod** centralized in `src/schemas/`. Tool `inputSchema` via
-  `z.toJSONSchema()` (Zod v4); runtime validation via `validateToolArgs()`. Use
-  `.passthrough()` and `.transform().pipe()` for case-insensitive enum
-  normalization.
+  `z.toJSONSchema()` (Zod v4); runtime validation via `validateToolArgs()`. Tool
+  argument schemas are `.strict()`: unknown keys are rejected, never use
+  `.passthrough()` (guarded by `test/audits/tool-args-strict.audit.test.ts`).
+  Use `.transform().pipe()` for case-insensitive enum normalization.
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain
   inputs, **after** Zod — see **bv-mcp-security-surface**.
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts`.

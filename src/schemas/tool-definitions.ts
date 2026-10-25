@@ -199,8 +199,8 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	}
 	// `additionalProperties: false` (from a `.strict()` runtime schema) is KEPT so
 	// the published surface is HONEST about extra-prop handling: the runtime hard-
-	// rejects unknown props, so the schema must say so too (F6). `.passthrough()`
-	// schemas never reach here with `false` — they emit `{}`, cleaned away above.
+	// rejects unknown props, so the schema must say so too (F6). Every tool schema
+	// is `.strict()`, so every tool publishes it; test/audits/tool-args-strict pins that.
 	return jsonSchema as McpTool['inputSchema'];
 }
 

@@ -51,7 +51,7 @@ import {
 	parseScanTimeout,
 	type ToolPolicyBlock,
 } from './lib/config';
-import { normalizeToolName } from './handlers/tool-args';
+import { declaredToolArgKeys, normalizeToolName } from './handlers/tool-args';
 import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
 import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
@@ -356,6 +356,47 @@ async function adoptProvenLegacyWatch(
 	if (!parsed.proof) return { ok: true };
 	const adoption = await adoptAnonymousBrandAuditWatchInternal(db, { canonicalOwnerId: input.canonicalOwnerId, ...parsed.proof });
 	return adoption.status === 'ambiguous' ? { ok: false, status: 409, error: 'legacy_watch_ambiguous' } : { ok: true };
+}
+
+/**
+ * Door-only argument keys: the internal door consumes them itself (legacy watch
+ * adoption above) and must strip them before `handleToolsCall`, whose strict tool
+ * schemas reject any undeclared key. bv-web also sends `watchId` to the list tool,
+ * whose handler ignores it; delete declares `watchId`, so it is forwarded there.
+ */
+const DOOR_ONLY_TOOL_ARGS: Readonly<Record<string, readonly string[]>> = {
+	list_brand_audit_watches: ['legacyWebhookTokenFingerprint', 'watchId'],
+	delete_brand_audit_watch: ['legacyWebhookTokenFingerprint'],
+};
+
+/** Copy of `args` without the door-only keys for `toolName` (canonical name). */
+function stripDoorOnlyArgs(toolName: string, args: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+	if (!args || !Object.hasOwn(DOOR_ONLY_TOOL_ARGS, toolName)) return args;
+	const forwarded = { ...args };
+	for (const key of DOOR_ONLY_TOOL_ARGS[toolName]) delete forwarded[key];
+	return forwarded;
+}
+
+/** Security allowlist of caller arguments the batch door may relay (not shape validation). */
+const ALLOWED_BATCH_ARGS: ReadonlySet<string> = new Set([
+	'format',
+	'profile',
+	'force_refresh',
+	'selector',
+	'record_type',
+	'include_providers',
+	'mx_hosts',
+]);
+
+/**
+ * Arguments the batch door relays to every item. The allowlist is shared across
+ * tools, but every tool schema is strict, so a key is relayed only when the target
+ * tool (canonical name) also declares it: a door-carried `profile` must never fail
+ * a check_* item that has no such argument.
+ */
+function pickBatchForwardArgs(toolName: string, rawArgs: Record<string, unknown>): Record<string, unknown> {
+	const declared = declaredToolArgKeys(toolName);
+	return Object.fromEntries(Object.entries(rawArgs).filter(([key]) => ALLOWED_BATCH_ARGS.has(key) && declared.has(key)));
 }
 
 type LegacyWatchProof = { webhookTokenFingerprint: string; watchId?: string };
@@ -727,7 +768,8 @@ internalRoutes.post('/tools/call', async (c) => {
 
 	const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
 
-	const result = await handleToolsCall({ name: body.name, arguments: body.arguments }, c.env.SCAN_CACHE, {
+	const toolArguments = stripDoorOnlyArgs(normalizedToolName, body.arguments);
+	const result = await handleToolsCall({ name: body.name, arguments: toolArguments }, c.env.SCAN_CACHE, {
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
 		providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
 			.map((h) => h.trim())
@@ -1090,13 +1132,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 	if (policyDenial) return c.json(policyDenial, 403, { 'Cache-Control': 'no-store' });
 
 	const toolName = body.tool;
-	const rawArgs = body.arguments ?? {};
-	// ALLOWED_BATCH_ARGS filtering stays (security allowlist, not shape validation)
-	const ALLOWED_BATCH_ARGS = new Set(['format', 'profile', 'force_refresh', 'selector', 'record_type', 'include_providers', 'mx_hosts']);
-	const extraArgs: Record<string, unknown> = {};
-	for (const [k, v] of Object.entries(rawArgs)) {
-		if (ALLOWED_BATCH_ARGS.has(k)) extraArgs[k] = v;
-	}
+	const extraArgs = pickBatchForwardArgs(normalizedToolName, body.arguments ?? {});
 	const concurrency = body.concurrency ?? BATCH_DEFAULT_CONCURRENCY;
 
 	const url = new URL(c.req.url);

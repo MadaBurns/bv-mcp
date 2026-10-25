@@ -91,41 +91,23 @@ describe('TOOLS', () => {
 	});
 
 	// F6: the published inputSchema must be HONEST about extra-prop handling.
-	// Tools whose runtime args schema is `.strict()` hard-reject unknown props,
-	// so their published schema MUST advertise additionalProperties:false (else
-	// the surface lies — "extra params allowed" while the runtime rejects them).
-	// Every other tool uses `.passthrough()` and must NOT carry the strict marker.
-	const STRICT_RUNTIME_TOOLS = new Set([
-		'scan_buckets_start',
-		'scan_buckets_status',
-		'scan_buckets_findings',
-		'osint_investigate_domain_start',
-		'osint_investigate_infrastructure_start',
-		'osint_investigate_supply_chain_start',
-		'osint_investigate_username_start',
-		'osint_investigate_email_start',
-		'osint_investigation_status',
-		'osint_investigation_report',
-	]);
-
-	it('strict-runtime tools publish additionalProperties:false (schema matches runtime)', () => {
-		for (const name of STRICT_RUNTIME_TOOLS) {
-			const tool = TOOLS.find((t) => t.name === name)!;
-			expect(tool, `${name} not found in TOOLS`).toBeDefined();
-			expect((tool.inputSchema as Record<string, unknown>).additionalProperties, `${name} should advertise additionalProperties:false`).toBe(
-				false,
-			);
+	// Every runtime args schema is `.strict()` and hard-rejects unknown props, so
+	// every published schema MUST advertise additionalProperties:false (else the
+	// surface lies — "extra params allowed" while the runtime rejects them).
+	it('every tool publishes additionalProperties:false (schema matches the strict runtime)', () => {
+		expect(TOOLS.length).toBeGreaterThan(0);
+		for (const tool of TOOLS) {
+			expect(
+				(tool.inputSchema as Record<string, unknown>).additionalProperties,
+				`${tool.name} should advertise additionalProperties:false`,
+			).toBe(false);
 		}
 	});
 
-	it('non-strict tools never publish additionalProperties: false', () => {
-		for (const tool of TOOLS) {
-			if (STRICT_RUNTIME_TOOLS.has(tool.name)) continue;
-			expect(
-				(tool.inputSchema as Record<string, unknown>).additionalProperties,
-				`${tool.name} unexpectedly carries additionalProperties:false`,
-			).not.toBe(false);
-		}
+	it('the nested compare_baseline policy object also publishes additionalProperties:false', () => {
+		const tool = TOOLS.find((t) => t.name === 'compare_baseline')!;
+		const baseline = tool.inputSchema.properties.baseline as Record<string, unknown>;
+		expect(baseline.additionalProperties).toBe(false);
 	});
 
 	it('properties include descriptions from .describe()', () => {

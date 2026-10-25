@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { TOOL_SCHEMA_MAP } from '../schemas/tool-args';
 import type { OutputFormat, Profile } from '../schemas/primitives';
@@ -60,6 +60,19 @@ function isMissingField(issue: ZodError['issues'][number]): boolean {
 	return issue.code === 'invalid_type' && issue.message.includes('received undefined');
 }
 
+/**
+ * Every tool schema is `.strict()`: an undeclared key is a caller error. Name the
+ * keys (path-qualified when nested, e.g. `baseline.foo`) under the allowlisted
+ * "Invalid" prefix so the message reaches the client instead of the generic
+ * fallback. Returns undefined for any other issue.
+ */
+function formatUnknownArgs(issue: ZodError['issues'][number]): string | undefined {
+	if (issue.code !== 'unrecognized_keys') return undefined;
+	const path = issue.path.join('.');
+	const keys = issue.keys.map((key) => (path ? `${path}.${key}` : key));
+	return `Invalid request: unknown argument(s): ${keys.join(', ')}`;
+}
+
 /** Format a ZodError into an error message matching the existing prefix convention. */
 function formatZodError(err: ZodError, toolName?: string): string {
 	const issue = err.issues[0];
@@ -93,6 +106,23 @@ function formatZodError(err: ZodError, toolName?: string): string {
 	return `Invalid ${path}: ${issue.message}`;
 }
 
+/**
+ * Top-level argument keys each tool's (strict) schema declares, keyed by canonical
+ * tool name. Callers that relay or meter arguments before validation (the internal
+ * batch door, the force_refresh quota gate) consult this so they never forward or
+ * charge for a key the target tool would reject.
+ */
+const DECLARED_TOOL_ARG_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+	Object.entries(TOOL_SCHEMA_MAP).flatMap(([name, schema]) =>
+		schema instanceof z.ZodObject ? [[name, new Set(Object.keys(schema.shape))] as const] : [],
+	),
+);
+
+/** Declared top-level argument keys for a canonical tool name; empty for an unknown tool. */
+export function declaredToolArgKeys(toolName: string): ReadonlySet<string> {
+	return DECLARED_TOOL_ARG_KEYS.get(toolName) ?? new Set();
+}
+
 /** Validate tool arguments against the tool's Zod schema. Throws with prefixed error message. */
 export function validateToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
 	const schema = TOOL_SCHEMA_MAP[toolName];
@@ -101,7 +131,7 @@ export function validateToolArgs(toolName: string, args: Record<string, unknown>
 		return schema.parse(args) as Record<string, unknown>;
 	} catch (err) {
 		if (err instanceof ZodError) {
-			throw new Error(formatZodError(err, toolName));
+			throw new Error(formatUnknownArgs(err.issues[0]) ?? formatZodError(err, toolName));
 		}
 		throw err;
 	}

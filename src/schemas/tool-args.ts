@@ -25,7 +25,7 @@ export const BaseDomainArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** scan_domain */
 export const ScanDomainArgs = z
@@ -35,7 +35,7 @@ export const ScanDomainArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh scan. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** batch_scan */
 export const BatchScanArgs = z
@@ -44,7 +44,7 @@ export const BatchScanArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 export const BatchScanStartArgs = BatchScanArgs.extend({
 	idempotency_key: z.string().min(8).max(128).describe('Caller-stable replay key for this exact batch request.'),
@@ -58,7 +58,7 @@ export const BatchScanJobArgs = z
 			.describe('Job ID returned by batch_scan_start.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** compare_domains */
 export const CompareDomainsArgs = z
@@ -67,7 +67,7 @@ export const CompareDomainsArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** check_dkim */
 export const CheckDkimArgs = z
@@ -77,7 +77,7 @@ export const CheckDkimArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** check_resolver_consistency */
 export const CheckResolverConsistencyArgs = z
@@ -86,14 +86,14 @@ export const CheckResolverConsistencyArgs = z
 		record_type: RecordTypeSchema.optional().describe('Record type. Omit for A/AAAA/MX/TXT/NS.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** check_root_server_set */
 export const RootServerSetArgs = z
 	.object({
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** explain_finding */
 export const ExplainFindingArgs = z
@@ -103,7 +103,7 @@ export const ExplainFindingArgs = z
 		details: z.string().max(2000).optional().describe('Additional detail from check result.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** compare_baseline */
 export const CompareBaselineArgs = z
@@ -134,12 +134,12 @@ export const CompareBaselineArgs = z
 							: 'expected a policy/requirements object (e.g. { grade, require_spf }) for compliance enforcement, not a prior-scan reference. For drift-over-time vs a previous scan (incl. the literal "cached"), use the analyze_drift tool instead.',
 				},
 			)
-			.passthrough()
+			.strict()
 			.describe(
 				'Policy/requirements baseline OBJECT for compliance enforcement — "does this domain meet these required controls?" (grade/score floors, require_* flags, max_*_findings). NOT a prior scan. For drift-over-time vs a previous ScanScore (or the literal "cached"), use analyze_drift instead.',
 			),
 	})
-	.passthrough();
+	.strict();
 
 /** get_domain_rank */
 export const GetDomainRankArgs = z
@@ -159,7 +159,7 @@ export const GetDomainRankArgs = z
 			.describe('Sector label (e.g., "finance"). Forwarded to the cohort endpoint; sector filtering is planned for a future release.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** get_benchmark */
 export const GetBenchmarkArgs = z
@@ -167,7 +167,7 @@ export const GetBenchmarkArgs = z
 		profile: BenchmarkProfileSchema.optional().describe('Profile to benchmark (default "mail_enabled").'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** get_provider_insights */
 export const GetProviderInsightsArgs = z
@@ -176,7 +176,7 @@ export const GetProviderInsightsArgs = z
 		profile: BenchmarkProfileSchema.optional().describe('Profile (default "mail_enabled").'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** assess_spoofability — same as BaseDomainArgs */
 export const AssessSpoofabilityArgs = BaseDomainArgs;
@@ -204,7 +204,7 @@ export const ValidateFixArgs = z
 		expected: z.string().max(1000).optional().describe('Expected DNS record value to verify against'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** map_supply_chain — same as BaseDomainArgs */
 export const MapSupplyChainArgs = BaseDomainArgs;
@@ -230,7 +230,7 @@ export const PrioritizePortfolioLeadsArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough()
+	.strict()
 	.refine((v) => (v.domains == null) !== (v.brand == null), {
 		message: 'Provide exactly one of `domains` or `brand`.',
 	});
@@ -256,7 +256,7 @@ export const AnalyzeDriftArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /**
  * generate — consolidated remediation-artifact generator (replaces the six
@@ -312,7 +312,7 @@ export const GenerateArgs = z
 		force_refresh: z.boolean().optional().describe('fix_plan: bypass cache and run a fresh scan.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** check_fast_flux — domain + rounds + format */
 export const CheckFastFluxArgs = z
@@ -322,7 +322,7 @@ export const CheckFastFluxArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /**
  * check_agent_discovery — assess the security posture of IETF BANDAID
@@ -349,7 +349,7 @@ export const CheckAgentDiscoveryArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /**
  * check_subdomain_takeover — sweep an explicit subdomain list (or fall back to
@@ -369,7 +369,7 @@ export const CheckSubdomainTakeoverArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** Brand-discovery signal kinds (case-insensitive). */
 const DiscoverSignalSchema = z
@@ -460,7 +460,7 @@ export const DiscoverBrandDomainsArgs = z
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /**
  * discover_brand_domains_start — async producer mirroring discover_brand_domains.
@@ -473,15 +473,17 @@ export const DiscoverBrandDomainsStartArgs = DiscoverBrandDomainsArgs;
 export const DiscoverBrandDomainsStatusArgs = z
 	.object({
 		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** discover_brand_domains_findings — fetch the discovery CheckResult for an async run. Domainless. */
 export const DiscoverBrandDomainsFindingsArgs = z
 	.object({
 		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** Brand-audit output mode — JSON, Markdown, or both. Distinct from FormatSchema's `full|compact`. */
 export const BrandAuditFormatSchema = z
@@ -528,7 +530,7 @@ export const BrandAuditSingleArgs = z
 					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
 			),
 	})
-	.passthrough();
+	.strict();
 
 /** brand_audit_batch_start — enqueue async brand audits for up to 50 targets. */
 export const BrandAuditBatchStartArgs = z
@@ -566,25 +568,31 @@ export const BrandAuditBatchStartArgs = z
 			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
 		),
 	})
-	.passthrough();
+	.strict();
 
 /** brand_audit_status — poll status of an enqueued audit. */
 export const BrandAuditStatusArgs = z
 	.object({
 		auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** brand_audit_get_report — fetch result JSON for an audit or single target. */
 export const BrandAuditGetReportArgs = z
 	.object({
 		auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
 		target: z.string().min(1).max(253).optional().describe('Specific target domain. Omit for audit-level aggregate.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** list_brand_audit_watches — enumerate the caller's recurring brand-audit watches. */
-export const ListBrandAuditWatchesArgs = z.object({}).passthrough();
+export const ListBrandAuditWatchesArgs = z
+	.object({
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+	})
+	.strict();
 
 /** register_brand_audit_watch — create a recurring brand-audit watch. */
 export const RegisterBrandAuditWatchArgs = z
@@ -597,15 +605,17 @@ export const RegisterBrandAuditWatchArgs = z
 			.max(2048)
 			.optional()
 			.describe('Optional webhook URL — POSTed on classification drift. Re-validated for SSRF at both register and delivery time.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** delete_brand_audit_watch — remove a recurring brand-audit watch the caller owns. */
 export const DeleteBrandAuditWatchArgs = z
 	.object({
 		watchId: z.string().min(1).max(64).describe('Watch ID returned by register_brand_audit_watch.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 export const ScanBucketsStartArgs = z
 	.object({
@@ -660,8 +670,9 @@ export const QuerySigninsArgs = z
 		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
 		failures_only: z.boolean().optional().describe('When true, return only failed sign-ins.'),
 		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** query_ual — deprecated compatibility input schema, retained until removal. */
 export const QueryUalArgs = z
@@ -670,22 +681,25 @@ export const QueryUalArgs = z
 		operation: z.string().max(200).optional().describe('Filter to a specific Unified Audit Log operation (e.g., "MailItemsAccessed").'),
 		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
 		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** get_ca_policies */
 export const GetCaPoliciesArgs = z
 	.object({
 		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /** assess_coverage */
 export const AssessCoverageArgs = z
 	.object({
 		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
-	.passthrough();
+	.strict();
 
 /**
  * Map of every tool name to its Zod argument schema.

@@ -13,8 +13,8 @@ applyTo: src/schemas/**/*.ts
 
 ## Key patterns
 
-### Passthrough policy
-Tool argument schemas use `.passthrough()` — preserves unknown properties for forward compatibility with different MCP client versions. Do not use `.strict()` or `.strip()` on them. The exceptions are the recon schemas (`ScanBuckets{Start,Status,Findings}Args`, `OsintInvestigateArgs`, `OsintInvestigationIdArgs`), which are `.strict()` because their arguments are forwarded to bv-recon.
+### Strict argument policy
+Every tool argument schema in `TOOL_SCHEMA_MAP` is `.strict()` (operator decision 2026-10-25), including nested objects such as the `compare_baseline` `baseline`. An undeclared key fails validation with `Invalid request: unknown argument(s): <keys>`, and the published `inputSchema` carries `additionalProperties: false`. Never use `.passthrough()` or a bare strip-mode `z.object()` on a tool argument schema; declare every key the tool accepts (including `format` when the tool formats output). `test/audits/tool-args-strict.audit.test.ts` is the guard: it fails for any entry that does not reject an unknown key or does not publish `additionalProperties: false`.
 
 ### Enum normalization
 Use `.transform().pipe()` for case-insensitive enum matching:
@@ -41,7 +41,7 @@ MCP `tools/list` response derives JSON Schema from Zod via `z.toJSONSchema()` (Z
 
 ## Adding a new tool schema
 
-1. Define the schema in `src/schemas/tool-args.ts` using `BaseDomainArgs.extend({...}).passthrough()` for domain tools
+1. Define the schema in `src/schemas/tool-args.ts` using `BaseDomainArgs.extend({...})` for domain tools (it inherits `.strict()`; never add `.passthrough()`)
 2. Add the schema to `TOOL_SCHEMA_MAP` keyed by tool name
 3. Add the tool entry to `TOOL_DEFS` in `src/schemas/tool-definitions.ts` — the `inputSchema` field is derived automatically
 
