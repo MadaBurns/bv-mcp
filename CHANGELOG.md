@@ -8,10 +8,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.103.0] - 2026-10-25
+
 ### Changed
 
 - **Every tool rejects unknown arguments.** All tool argument schemas are now strict, including the nested `compare_baseline` `baseline` object. A call that carries an undeclared key fails with `Invalid request: unknown argument(s): <keys>` (nested keys are path-qualified, e.g. `baseline.foo`). Before, the key was silently accepted and ignored on 76 of the 86 tools. Every tool's `inputSchema` now publishes `additionalProperties: false` to match. `format` is now declared on `discover_brand_domains_status`, `discover_brand_domains_findings`, `brand_audit_status`, `brand_audit_get_report`, the three brand-audit watch tools and the four M365 tools, so it is still accepted there. A `force_refresh` sent to a tool that does not declare it is rejected without using up a free-tier force-refresh quota unit. The internal door strips its own legacy-watch proof keys before dispatch, and `/internal/tools/batch` forwards an allowlisted argument only to tools that declare it. The tool count is unchanged.
 - **Tool annotations tell the truth.** `openWorldHint` is now per-tool (default `true`) and `false` for the 15 tools that read only our own D1/KV/DO state, bundled data or the stored state of a job already started (`explain_finding`, `get_benchmark`, `get_provider_insights`, `get_domain_rank`, `batch_scan_status`, `batch_scan_findings`, `brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`, `list_brand_audit_watches`, `delete_brand_audit_watch`, `scan_buckets_status`, `scan_buckets_findings`, `osint_investigation_status`). `batch_scan_start` now advertises `idempotentHint: true`; `brand_audit_single` advertises `readOnlyHint: false` and `idempotentHint: false` because each uncached call charges a monthly quota unit, which also puts it in the request-dedup window and moves its WASM permission mode from `ReadOnly` to `WorkspaceWrite`. The 15 previously undescribed input properties (`query`, `investigationId`, the `scan_buckets_*` args and the `batch_scan_status`/`batch_scan_findings` `format`) now carry descriptions, and an audit pins all of the above.
+
+### Fixed
+
+- **`blackveil check` sends only the arguments the tool declares (#1301).** With every tool now rejecting undeclared arguments, `blackveil check root_server_set <domain>` was rejected because that tool takes no domain. The CLI now reads each tool's published `inputSchema`.
 
 ## [3.102.0] - 2026-10-25
 
