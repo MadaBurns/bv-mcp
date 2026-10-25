@@ -964,12 +964,8 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 /** Lenient CheckResult output schema — derived once, shared across all CheckResult tools. */
 const CHECK_RESULT_OUTPUT_SCHEMA = buildCheckResultOutputJsonSchema();
 
-export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [string, ToolDef]) => ({
-	name,
-	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
-	inputSchema: toInputSchema(def.schema),
-	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
-	annotations: {
+function toolAnnotations(name: string, def: ToolDef): NonNullable<McpTool['annotations']> {
+	return {
 		title: def.lifecycle?.status === 'deprecated' ? `Deprecated: ${toolNameToTitle(name)}` : toolNameToTitle(name),
 		readOnlyHint: !def.mutating,
 		destructiveHint: Boolean(def.destructive),
@@ -977,7 +973,15 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [str
 		// delete-by-id) sets `idempotent: true` explicitly to override it (F5).
 		idempotentHint: def.idempotent ?? !def.mutating,
 		openWorldHint: def.openWorld ?? true,
-	},
+	};
+}
+
+export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [string, ToolDef]) => ({
+	name,
+	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
+	inputSchema: toInputSchema(def.schema),
+	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
+	annotations: toolAnnotations(name, def),
 	group: def.group,
 	...(def.tier !== undefined && { tier: def.tier }),
 	scanIncluded: def.scanIncluded,
