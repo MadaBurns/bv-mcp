@@ -9,6 +9,7 @@ import { env } from 'cloudflare:workers';
 import cursorsSql from '../../migrations/0001_log_cursors.sql?raw';
 import catalogSql from '../../migrations/0002_catalog.sql?raw';
 import cursorErrorsSql from '../../migrations/0003_cursor_errors.sql?raw';
+import runKeysSql from '../../migrations/0004_runs_r2_key.sql?raw';
 import { apexOf, mergeObservations, nameKey, siblingKey } from '../codec';
 import type { Env } from '../index';
 import type { CompactionJob, CompactionLimits, JobOutcome } from '../indexer/compact';
@@ -34,7 +35,7 @@ export async function applyCatalog(): Promise<void> {
 	const db = base.CURSORS;
 	// Every migration, in order: the reader's meta() also reads log_cursors (the tailer backlog).
 	// Comments are stripped before the split: 0001's comments hold semicolons.
-	const statements = [cursorsSql, catalogSql, cursorErrorsSql]
+	const statements = [cursorsSql, catalogSql, cursorErrorsSql, runKeysSql]
 		.flatMap((sql) => sql.replace(/--.*$/gm, '').split(';'))
 		.map((statement) => statement.trim())
 		.filter((statement) => statement !== '');
