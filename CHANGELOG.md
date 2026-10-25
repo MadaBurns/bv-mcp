@@ -8,6 +8,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.103.1] - 2026-10-25
+
+### Fixed
+
+- bv-ct-index: compaction cleanup no longer scans the whole runs catalog to check whether an R2 object is still referenced. Migration `0004_runs_r2_key.sql` adds an index on `runs.r2_key`; cleanup selection and the R2 deletion policy are unchanged (#1303). The migration is applied to the remote D1 database separately, before the sidecar deploy.
+
+### Changed
+
+- Release tooling: `.claude/skills/bv-mcp-release/scripts/verify-release.sh <X.Y.Z>` replaces the hand-written post-deploy probe (#1304).
+
 ## [3.103.0] - 2026-10-25
 
 ### Changed
