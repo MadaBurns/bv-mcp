@@ -23,7 +23,7 @@
  *   impersonation  → high     (low confidence + no infra share — likely typo-squat)
  */
 
-import type { CheckResult } from '../lib/scoring';
+import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { createRejectedRequestBuilder } from './async-start-error-result';
 import { runBrandAuditPipeline, type BrandAuditPipelineDeps, type BrandAuditPipelineOptions } from '../lib/brand-audit-pipeline';
 
