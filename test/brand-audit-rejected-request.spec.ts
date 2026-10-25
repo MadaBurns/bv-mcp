@@ -240,6 +240,33 @@ describe('brand_audit_single quota refusal (SQ-397)', () => {
 		}
 	});
 
+	it('cache: a quota refusal is never cached, so another principal on the same args is not refused', async () => {
+		// The brand_audit_single cache key carries no principal (src/handlers/tools.ts cacheKey), so a cached
+		// refusal would be served to every caller for the same domain until the TTL expired.
+		vi.resetModules();
+		vi.doMock('../src/lib/brand-audit-pipeline', () => ({
+			runBrandAuditPipeline: vi.fn().mockResolvedValue({ category: 'brand_discovery', passed: true, score: 100, findings: [] }),
+		}));
+		const puts: string[] = [];
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(async (key: string) => void puts.push(key)),
+			delete: vi.fn().mockResolvedValue(undefined),
+		} as unknown as KVNamespace;
+		try {
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const args = { domain: 'cache-probe.example.com' };
+			const refused = await handleToolsCall({ name: 'brand_audit_single', arguments: args }, kv, runtime({ authTier: 'developer', rateLimitKv: undefined }));
+			expect(refused.isError).toBe(true);
+			expect(puts.filter((k) => !k.endsWith(':computing')), 'a refusal must not be written to the scan cache').toEqual([]);
+			const other = await handleToolsCall({ name: 'brand_audit_single', arguments: args }, kv, runtime({ principalId: 'principal-other' }));
+			expect(other.isError, 'a second principal must not inherit the first principal\'s quota refusal').not.toBe(true);
+		} finally {
+			vi.doUnmock('../src/lib/brand-audit-pipeline');
+			vi.resetModules();
+		}
+	});
+
 	it('outputSchema: brand_audit_single publishes none, so the kind-only error structuredContent validates', async () => {
 		const { TOOLS, NON_CHECK_RESULT_TOOLS } = await import('../src/schemas/tool-definitions');
 		expect(NON_CHECK_RESULT_TOOLS.has('brand_audit_single')).toBe(true);

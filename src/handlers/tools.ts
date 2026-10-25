@@ -1500,13 +1500,16 @@ export async function handleToolsCall(
 					// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
 					// kv.put entirely instead of the old put-then-delete anti-pattern that drove
 					// ~13M wasted SCAN_CACHE writes/week (bv-web 2026-05-14 analytics, cluster F5).
+					// Never cache a refusal or a rejected request either: cache keys are not
+					// principal-scoped, so one caller's quota or tier refusal would be served to
+					// every caller for the same arguments until the TTL expired.
 					const tracked = await runWithCacheTracked(
 						cacheKey,
 						runRegisteredTool,
 						scanCacheKV,
 						registeredTool.cacheTtlSeconds,
 						/* skipCache */ extractForceRefresh(validatedArgs),
-						(r) => !r.partial,
+						(r) => !r.partial && !getRejectedRequest(r) && !isAccessRefusal(r),
 					);
 					result = tracked.data;
 					cacheStatus = tracked.cacheStatus;
