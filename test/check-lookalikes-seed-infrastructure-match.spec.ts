@@ -169,7 +169,9 @@ describe('checkLookalikes — agency-hosted defensive cohort (#974)', () => {
 	it('shared-provider MX only (distinct A) is unchanged: third_party with the takedown advice', async () => {
 		const { attribution, threat } = await runFor({ NS: AGENCY_NS.map((h) => `${h}.`), A: ['198.51.100.7'], MX: mxRecords(SEED_MX) });
 		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
-		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
+		expect(threat!.detail).toContain('before blocking mail or requesting takedown');
+		expect(threat!.detail).toContain('Monitor while uncertain');
+		expect(threat!.detail).toContain('If confirmed external and suspected of impersonation');
 	});
 
 	it('a one-signal third_party (distinct NS, A and MX) reports single_signal, not corroborated', async () => {
