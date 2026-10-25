@@ -52,9 +52,10 @@ describe('scan_buckets_start boundary validation', () => {
 		expect(b.fetch).toHaveBeenCalledTimes(1);
 	});
 
-	// The watchlist refuses the target (403) or no BV_RECON binding exists: the scan never started, so the
-	// result abstains (checkStatus 'error', no score 100 / passed true) and stays a normal non-error result.
-	it('watchlist refusal carries the abstention shape and stays a non-error result', async () => {
+	// The watchlist refuses the target (403): an ACCESS REFUSAL (isError, no checkStatus 'error' — that is the
+	// retryable class). No BV_RECON binding: UNMEASURED (checkStatus 'error' + verdictWithheld via the #695
+	// chokepoint). Neither rewrites score/passed.
+	it('watchlist refusal is an access refusal (isError, no checkStatus)', async () => {
 		const refusing = {
 			fetch: vi.fn(
 				async () =>
@@ -65,24 +66,28 @@ describe('scan_buckets_start boundary validation', () => {
 			),
 		};
 		const result = await start('isc.org', refusing as unknown as ReturnType<typeof binding>);
-		expect(result.isError).not.toBe(true);
+		expect(result.isError).toBe(true);
 		const sc = result.structuredContent as Record<string, unknown>;
-		expect(sc.checkStatus).toBe('error');
-		expect(sc.passed).toBe(false);
-		expect(sc.score).not.toBe(100);
-		expect(sc.score).toBe(0);
-		expect((sc.findings as Array<{ severity: string }>)[0].severity).toBe('info');
+		expect(sc.checkStatus).toBeUndefined();
+		expect(sc.verdictWithheld).toBeUndefined();
+		expect(sc.passed).toBe(true);
+		expect(sc.score).toBe(100);
+		const finding = (sc.findings as Array<{ severity: string; metadata: Record<string, unknown> }>)[0];
+		expect(finding.severity).toBe('info');
+		expect(finding.metadata.targetNotAuthorized).toBe(true);
+		expect(finding.metadata.upstreamUnavailable).toBeUndefined();
 	});
 
-	it('unprovisioned (no binding) carries the abstention shape', async () => {
+	it('unprovisioned (no binding) is unmeasured via the chokepoint', async () => {
 		const result = await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'isc.org' } }, undefined, {
 			principalId: 'owner-a',
 		});
 		expect(result.isError).not.toBe(true);
 		const sc = result.structuredContent as Record<string, unknown>;
 		expect(sc.checkStatus).toBe('error');
-		expect(sc.passed).toBe(false);
-		expect(sc.score).toBe(0);
+		expect(sc.verdictWithheld).toBe(true);
+		expect(sc.passed).toBe(true);
+		expect(sc.score).toBe(100);
 	});
 
 	it('a >253-character target is still rejected by the schema', async () => {

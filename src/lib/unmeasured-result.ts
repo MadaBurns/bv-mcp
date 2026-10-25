@@ -27,7 +27,7 @@
  *   dashboard tallying upstream failures. It is also SILENT in binding-degradation
  *   telemetry, whereas a genuine failure alerts.
  *
- * - **Access refusal** (`tierDenied`, `notOwned`) — the caller was refused. Also
+ * - **Access refusal** (`tierDenied`, `notOwned`, `targetNotAuthorized`) — the caller was refused. Also
  *   nothing measured, but the cause is authorization, not availability. These
  *   surface as a FAILED tool call (`isError`), matching what a free caller already
  *   receives from a paid-gated tool (HTTP 403 / -32003) instead of a green
@@ -58,8 +58,13 @@ import type { CheckResult, Finding } from './scoring';
  */
 export const UNMEASURED_MARKERS = ['unprovisioned', 'upstreamUnavailable', 'upstreamNotFound'] as const;
 
-/** Markers meaning "the caller was refused" — authorization, not availability. */
-export const ACCESS_REFUSAL_MARKERS = ['tierDenied', 'notOwned'] as const;
+/**
+ * Markers meaning "the caller was refused" — authorization, not availability.
+ *
+ * `targetNotAuthorized` = the recon watchlist (bv-recon's second gate) refused the target while the
+ * credential itself was accepted: a permanent policy answer, not an outage.
+ */
+export const ACCESS_REFUSAL_MARKERS = ['tierDenied', 'notOwned', 'targetNotAuthorized'] as const;
 
 /** Top-level result marker, emitted locally only after an unmeasured finding marker is established. */
 export const VERDICT_WITHHELD_MARKER = 'verdictWithheld' as const;

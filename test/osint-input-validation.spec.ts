@@ -112,10 +112,10 @@ describe('osint_investigate_*_start boundary validation', () => {
 		expect(b.fetch).not.toHaveBeenCalled();
 	});
 
-	// A valid-looking target that bv-recon refuses (watchlist 403) or a deployment with no BV_RECON binding:
-	// the probe never ran, so the result must abstain (checkStatus 'error', no score 100 / passed true) while
-	// staying a normal non-error result carrying the explanatory info finding.
-	describe('abstains when the start did not reach an investigation', () => {
+	// A valid-looking target that bv-recon refuses (watchlist 403) is an ACCESS REFUSAL (isError, no
+	// checkStatus 'error': that is the retryable class); a deployment with no BV_RECON binding is UNMEASURED
+	// (checkStatus 'error' + verdictWithheld via the #695 chokepoint). Neither rewrites score/passed.
+	describe('start that did not reach an investigation follows the unmeasured-result SSOT', () => {
 		const refusing = () => ({
 			fetch: vi.fn(
 				async () =>
@@ -133,26 +133,30 @@ describe('osint_investigate_*_start boundary validation', () => {
 			['osint_investigate_username_start', 'blackveilsecurity'],
 		];
 
-		it.each(START_CASES)('%s: watchlist refusal carries the abstention shape', async (tool, query) => {
+		it.each(START_CASES)('%s: watchlist refusal is an access refusal (isError, no checkStatus)', async (tool, query) => {
 			const result = await call(tool, query, refusing() as unknown as ReturnType<typeof binding>);
-			expect(result.isError).not.toBe(true);
+			expect(result.isError).toBe(true);
 			const sc = result.structuredContent as Record<string, unknown>;
-			expect(sc.checkStatus).toBe('error');
-			expect(sc.passed).toBe(false);
-			expect(sc.score).not.toBe(100);
-			expect(sc.score).toBe(0);
-			const findings = sc.findings as Array<{ severity: string; title: string }>;
+			expect(sc.checkStatus).toBeUndefined();
+			expect(sc.verdictWithheld).toBeUndefined();
+			// score/passed are NOT rewritten by this ticket's SSOT rule.
+			expect(sc.passed).toBe(true);
+			expect(sc.score).toBe(100);
+			const findings = sc.findings as Array<{ severity: string; title: string; metadata: Record<string, unknown> }>;
 			expect(findings[0].severity).toBe('info');
 			expect(findings[0].title).toMatch(/could not be started/);
+			expect(findings[0].metadata.targetNotAuthorized).toBe(true);
+			expect(findings[0].metadata.upstreamUnavailable).toBeUndefined();
 		});
 
-		it.each(START_CASES)('%s: unprovisioned (no binding) carries the abstention shape', async (tool, query) => {
+		it.each(START_CASES)('%s: unprovisioned (no binding) is unmeasured via the chokepoint', async (tool, query) => {
 			const result = await handleToolsCall({ name: tool, arguments: { query } }, undefined, { authTier: 'owner', principalId: 'owner-a' });
 			expect(result.isError).not.toBe(true);
 			const sc = result.structuredContent as Record<string, unknown>;
 			expect(sc.checkStatus).toBe('error');
-			expect(sc.passed).toBe(false);
-			expect(sc.score).toBe(0);
+			expect(sc.verdictWithheld).toBe(true);
+			expect(sc.passed).toBe(true);
+			expect(sc.score).toBe(100);
 		});
 	});
 

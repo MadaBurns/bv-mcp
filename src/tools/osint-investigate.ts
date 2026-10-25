@@ -118,11 +118,11 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
 
 /**
  * The binding IS bound and the call still yielded no data: the credential was rejected
- * (`unauthorized`), the credential was accepted but the target is not on the operator-authorized
- * recon watchlist (`target_not_authorized` — a policy answer, see `reconUnavailable`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
- * failed schema validation (`malformed`), or the fetch threw (`transport`).
+ * (`unauthorized`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
+ * failed schema validation (`malformed`), or the fetch threw (`transport`). A watchlist refusal
+ * (`target_not_authorized`) is a policy answer and an access refusal — see `targetNotAuthorized`.
  *
- * Those five are exactly what remains once `unbound` and `not_found` are excluded by the `reason`
+ * Those four are exactly what remains once `unbound`, `not_found` and `target_not_authorized` are excluded by the `reason`
  * type — they are routed to `unprovisioned()` and `notFound()` — so this prose no longer has to
  * hedge about the id being unknown or expired. That hedge existed only because `callRecon*` used
  * to collapse every condition into one `null`; it does not any more.
@@ -139,12 +139,33 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
  * bv-recon response contract drifted, `transport`/`upstream_status` mean wait and re-poll.
  */
 function upstreamUnavailable(
-	reason: Exclude<ReconFailureReason, 'unbound' | 'not_found'>,
+	reason: Exclude<ReconFailureReason, 'unbound' | 'not_found' | 'target_not_authorized'>,
 	title: string,
 	detail: string,
 	meta: Record<string, unknown> = {},
 ): CheckResult {
 	return transientUnmeasured('upstreamUnavailable', title, detail, { reconFailureReason: reason, ...meta });
+}
+
+/**
+ * The recon watchlist refused the target (403 `target_not_authorized`): a permanent policy answer, so it
+ * is an ACCESS REFUSAL (`src/lib/unmeasured-result.ts`), not an unmeasured outage. The dispatch chokepoint
+ * surfaces it as `isError` and does NOT stamp `checkStatus: 'error'` — that is the retryable class and a
+ * caller would loop on a refusal. The marker is set LAST so `meta` cannot overwrite it. `partial: true`
+ * keeps it out of the cache so the target can be authorized and re-tried.
+ */
+function targetNotAuthorized(title: string, detail: string, meta: Record<string, unknown>): CheckResult {
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(CATEGORY, title, 'info', detail, {
+				reconFailureReason: 'target_not_authorized',
+				reconUpstreamStatus: 403,
+				...meta,
+				targetNotAuthorized: true,
+			}),
+		]),
+		partial: true,
+	};
 }
 
 /**
@@ -182,11 +203,7 @@ function reconUnavailable(
 ): CheckResult {
 	if (reason === 'unbound') return unprovisioned(prose.unbound);
 	if (reason === 'not_found') return notFound(title, prose.notFound, meta);
-	if (reason === 'target_not_authorized')
-		return upstreamUnavailable(reason, title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, {
-			reconUpstreamStatus: 403,
-			...meta,
-		});
+	if (reason === 'target_not_authorized') return targetNotAuthorized(title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, meta);
 	return upstreamUnavailable(reason, title, prose.upstream, meta);
 }
 
@@ -339,17 +356,6 @@ async function investigationOwnerMismatch(id: string, options: ReconToolOptions)
  */
 type QueryChecker = (query: string) => string | undefined;
 
-/**
- * A start that reached no investigation (refused, unprovisioned, unavailable) abstains: the
- * abstention shape is `checkStatus: 'error'` (already stamped by `markUnmeasured`) PLUS no verdict
- * scalars. `buildCheckResult` derives `score: 100, passed: true` from the lone `info` finding, which
- * a consumer keying on the scalars reads as a clean pass over a probe that never ran. It stays a
- * normal (non-`isError`) result: a policy refusal is not a tool failure.
- */
-function abstain(result: CheckResult): CheckResult {
-	return { ...result, score: 0, passed: false };
-}
-
 function domainProblem(query: string): string | undefined {
 	const result = validateDomain(query);
 	return result.valid ? undefined : (result.error ?? 'invalid domain');
@@ -420,19 +426,17 @@ export async function osintInvestigateStart(
 		options.onBindingDegradation,
 	);
 	if (!outcome.ok)
-		return abstain(
-			reconUnavailable(
-				outcome.reason,
-				`OSINT ${type} investigation could not be started`,
-				{
-					unbound: `OSINT ${type} investigation is not provisioned in this deployment for ${query}.`,
-					// A 404 on the START route cannot mean "unknown id" — no id exists yet. It means the
-					// recon service does not expose this investigation type (route/contract drift).
-					notFound: `The recon service has no ${type} investigation endpoint, so no investigation was started for ${query}.`,
-					upstream: `The recon service did not start a ${type} investigation for ${query}. Nothing was read and no investigation exists — retry, or check the operator credential if this persists.`,
-				},
-				{ type },
-			),
+		return reconUnavailable(
+			outcome.reason,
+			`OSINT ${type} investigation could not be started`,
+			{
+				unbound: `OSINT ${type} investigation is not provisioned in this deployment for ${query}.`,
+				// A 404 on the START route cannot mean "unknown id" — no id exists yet. It means the
+				// recon service does not expose this investigation type (route/contract drift).
+				notFound: `The recon service has no ${type} investigation endpoint, so no investigation was started for ${query}.`,
+				upstream: `The recon service did not start a ${type} investigation for ${query}. Nothing was read and no investigation exists — retry, or check the operator credential if this persists.`,
+			},
+			{ type },
 		);
 	const started = outcome.data;
 	await rememberInvestigationOwner(started.investigationId, options);

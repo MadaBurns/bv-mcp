@@ -41,8 +41,8 @@ function unprovisioned(detail: string): CheckResult {
  * deployment" told an operator to configure a binding that is already bound (#695).
  *
  * `marker` separates the two unmeasured-but-bound cases, which must not be conflated:
- * `upstreamUnavailable` = the service failed us (credential refused, target not on the recon
- * watchlist, non-2xx, schema mismatch, fetch threw); `upstreamNotFound` = the service answered normally with a definitive 404 and the
+ * `upstreamUnavailable` = the service failed us (credential refused, non-2xx, schema
+ * mismatch, fetch threw; a watchlist refusal is NOT this — see `targetNotAuthorized`); `upstreamNotFound` = the service answered normally with a definitive 404 and the
  * id simply does not exist. Both withhold the verdict; only the first claims an outage, and
  * claiming one that did not happen is the same class of dishonesty #695 was about.
  *
@@ -58,6 +58,27 @@ function upstreamUnmeasured(
 ): CheckResult {
 	return {
 		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { ...meta, [marker]: true })])),
+		partial: true,
+	};
+}
+
+/**
+ * The recon watchlist refused the target (403 `target_not_authorized`): a permanent policy answer, so it
+ * is an ACCESS REFUSAL (`src/lib/unmeasured-result.ts`), not an unmeasured outage. The dispatch chokepoint
+ * surfaces it as `isError` and does NOT stamp `checkStatus: 'error'` — that is the retryable class and a
+ * caller would loop on a refusal. The marker is set LAST so `meta` cannot overwrite it. `partial: true`
+ * keeps it out of the cache so the target can be authorized and re-tried.
+ */
+function targetNotAuthorized(title: string, detail: string, meta: Record<string, unknown>): CheckResult {
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(CATEGORY, title, 'info', detail, {
+				...meta,
+				reconFailureReason: 'target_not_authorized',
+				reconUpstreamStatus: 403,
+				targetNotAuthorized: true,
+			}),
+		]),
 		partial: true,
 	};
 }
@@ -105,12 +126,12 @@ function reconFailureResult(
 	meta: Record<string, unknown> = {},
 ): CheckResult {
 	if (failure.reason === 'unbound') return unprovisioned(prose.unbound);
+	if (failure.reason === 'target_not_authorized') {
+		const { title, detail } = prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE;
+		return targetNotAuthorized(title, detail, meta);
+	}
 	const notFound = failure.reason === 'not_found';
-	const { title, detail } = notFound
-		? prose.notFound
-		: failure.reason === 'target_not_authorized'
-			? (prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE)
-			: prose.unavailable;
+	const { title, detail } = notFound ? prose.notFound : prose.unavailable;
 	return upstreamUnmeasured(notFound ? 'upstreamNotFound' : 'upstreamUnavailable', title, detail, {
 		...meta,
 		reconFailureReason: failure.reason,
@@ -387,7 +408,7 @@ export async function scanBucketsStart(
 		options.onBindingDegradation,
 	);
 	if (!started.ok) {
-		const failure = reconFailureResult(started, {
+		return reconFailureResult(started, {
 			unbound: `Bucket discovery is not provisioned in this deployment for ${args.target}.`,
 			notFound: {
 				title: 'Bucket scan was not started',
@@ -398,9 +419,6 @@ export async function scanBucketsStart(
 				detail: `The recon service did not start a bucket scan for ${args.target}. Nothing was scanned — retry, and if it persists this is a recon-service problem, not a result.`,
 			},
 		});
-		// Abstain: `checkStatus: 'error'` is already stamped; also drop the `score: 100, passed: true`
-		// that buildCheckResult derives from the lone info finding. A refusal is still not an `isError`.
-		return { ...failure, score: 0, passed: false };
 	}
 	const start = started.data;
 	await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv);
