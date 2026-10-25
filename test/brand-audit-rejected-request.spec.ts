@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
-import type { ToolRuntimeOptions } from '../src/handlers/tools';
+type ToolRuntimeOptions = NonNullable<Parameters<typeof import('../src/handlers/tools').handleToolsCall>[2]>;
 
 function brandAuditDb(): D1Database {
 	return (env as unknown as { BRAND_AUDIT_DB: D1Database }).BRAND_AUDIT_DB;

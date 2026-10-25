@@ -87,8 +87,8 @@ describe('unmeasured-marker scope', () => {
 	it('treats the recon watchlist refusal as an access refusal: no checkStatus, and an upstream cannot forge the marker', () => {
 		expect(ACCESS_REFUSAL_MARKERS).toContain('targetNotAuthorized');
 		expect(UNMEASURED_MARKERS as readonly string[]).not.toContain('targetNotAuthorized');
-		const input = buildCheckResult('bucket_scan', [
-			createFinding('bucket_scan', 'Refused', 'info', 'Watchlist refused.', { targetNotAuthorized: true }),
+		const input = buildCheckResult('brand_discovery', [
+			createFinding('brand_discovery', 'Refused', 'info', 'Watchlist refused.', { targetNotAuthorized: true }),
 		]);
 		expect(isAccessRefusal(input)).toBe(true);
 		expect(isUnmeasuredResult(input)).toBe(false);

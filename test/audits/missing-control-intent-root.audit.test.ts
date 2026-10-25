@@ -168,7 +168,6 @@ const INTERPOLATION_REVIEWED: readonly { file: string; title: string; reason: st
  * names a real qualifying-severity hole fails the staleness check in section C.
  */
 const INERT_HOLES: readonly { file: string; expression: string; reason: string }[] = [
-	{ file: 'tools/brand-audit-single.ts', expression: 'verdict.limit ?? 0', reason: '`limit?: number`, defaulted to 0' },
 	{ file: 'tools/check-dnskey-strength.ts', expression: 'algorithm', reason: '`parseDnskeyAlgorithm(): number | null`, null-guarded' },
 	{ file: 'tools/check-fast-flux.ts', expression: 'allUniqueIps.size', reason: '`Set#size`' },
 	{ file: 'tools/check-fast-flux.ts', expression: 'effectiveRounds', reason: '`Math.max(3, Math.min(5, rounds ?? 3))`' },
@@ -793,11 +792,12 @@ describe('missing-control intent (root tree) — interpolated values must not ar
 
 	it('is NOT vacuous: stripped of every declaration and inert entry, the measured population still arms', () => {
 		// The gate above passes because each site is DEFENDED, not because the probe stopped probing:
-		// with the defences ignored, all 19 sites SQ-102 measured are armed again.
+		// with the defences ignored, the sites SQ-102 measured are armed again. 19 at SQ-102; 18 since
+		// SQ-397 deleted the brand_audit_single quota finding (now a rejected request, not a finding).
 		const undefended = INTERPOLATING_AT_RISK.filter(
 			(s) => armedBy(s, STANDALONE_HOSTILE_VALUES, { declarations: false, inert: false }).length > 0,
 		);
-		expect(undefended.length, 'the exact-match probe went blind — it should still arm the undefended sites').toBeGreaterThanOrEqual(19);
+		expect(undefended.length, 'the exact-match probe went blind — it should still arm the undefended sites').toBeGreaterThanOrEqual(18);
 	});
 
 	it('every declaration and every INERT_HOLES entry is load-bearing (none decorative, none stale)', () => {
