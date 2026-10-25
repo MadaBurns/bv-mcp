@@ -10,21 +10,16 @@ updates:
       semver-minor-days: 7
       semver-patch-days: 3
     open-pull-requests-limit: 10
-    # vitest majors are gated on @cloudflare/vitest-plugin (the renamed
-    # vitest-pool-workers), which peers vitest/@vitest/runner/@vitest/snapshot at a
-    # single major (1.3.1: ^4.1.0). The whole suite runs inside that pool, so a
-    # vitest major bump can't install (npm ci ERESOLVE, #1097) until a plugin
-    # release widens the peer range. Lift this ignore when it does, and bump
-    # vitest + vitest-plugin together. The plugin also pins wrangler EXACTLY
-    # (1.3.1 → wrangler 4.143.0): keep wrangler in the `cloudflare` group below so
-    # the two move in one PR and no second nested wrangler reappears.
+    # @cloudflare/vitest-plugin (the renamed vitest-pool-workers) peers vitest at
+    # ^4.1.0 || ^5.0.0 since 1.4.x, so vitest majors install again (#1097 was the
+    # ERESOLVE when it peered a single major). Bump vitest + vitest-plugin
+    # together if a future plugin narrows the range. The plugin also pins wrangler
+    # EXACTLY (1.4.7 → wrangler 4.152.0): keep wrangler in the `cloudflare` group
+    # below so the two move in one PR, and keep the root's wrangler different from
+    # the sidecars' so each sidecar keeps its nested install (infra-probe audit).
     ignore:
       # cf is pinned exactly in every sidecar; the audit 'pins cf exactly to the version measured for function-form configs' blocks a blind bump (dependabot #1275 closed 2026-10-23).
       - dependency-name: 'cf'
-      - dependency-name: 'vitest'
-        update-types: ['version-update:semver-major']
-      - dependency-name: '@vitest/*'
-        update-types: ['version-update:semver-major']
     groups:
       cloudflare:
         patterns:
