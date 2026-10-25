@@ -8,6 +8,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.101.2] - 2026-10-25
+
+### Changed
+
+- Dependencies: Cloudflare toolchain. Root `wrangler` 4.151.3; sidecar `wrangler` 4.152.0; `@cloudflare/vitest-plugin` 1.4.7; `@cloudflare/workers-types` 5.20261024.1; `miniflare` 5.20261019.2-beta; `esbuild` 0.28.2. Each sidecar keeps its nested `wrangler` install, which supersedes dependabot #1286 (#1292).
+- Dependencies: `eslint` 10.13.0 and `typescript-eslint` 8.72.0 (#1292). `tsup` 9.0.0 and `tldts` 7.4.19 (#1295).
+- Dependencies: `cf` 1.0.0-beta.21 in all four config packages. Before the bump, `cf build` output was re-measured and is byte-identical to beta.14. `cf` now installs per package, so the package-local `cf` binary that `scripts/deploy-private.mjs` calls exists again (#1293).
+- No scoring, detection or tool-surface change.
+
 ## [3.101.1] - 2026-10-23
 
 ### Changed
