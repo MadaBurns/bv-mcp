@@ -200,3 +200,49 @@ describe('producer kinds stay machine-readable', () => {
 		expect(getRejectedRequest(buildCheckResult('brand_discovery', []))).toBeUndefined();
 	});
 });
+
+describe('brand_audit_single quota refusal (SQ-397)', () => {
+	it('producer: the refusal is a quotaExceeded rejected request carrying target/limit/remaining/retryAfterMs', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const { getRejectedRequest } = await import('../src/tools/async-start-error-result');
+		const enforceQuota = vi.fn().mockResolvedValue({ allowed: false, limit: 50, remaining: 0, retryAfterMs: 86_400_000 });
+		const result = await brandAuditSingle('example.com', {}, { enforceQuota });
+		const rejected = getRejectedRequest(result);
+		expect(rejected?.kind).toBe('quotaExceeded');
+		expect(rejected?.text.startsWith('Rate limit exceeded: ')).toBe(true);
+		expect(rejected?.structured).toMatchObject({
+			kind: 'quotaExceeded',
+			target: 'example.com',
+			limit: 50,
+			remaining: 0,
+			retryAfterMs: 86_400_000,
+		});
+		// Direct callers keep the `{ quotaExceeded: true }` metadata.
+		expect(result.findings[0]?.metadata?.quotaExceeded).toBe(true);
+	});
+
+	it('dispatch: a quota refusal is a tool error with no score/passed/findings', async () => {
+		// `handleToolsCall` runs brand_audit_single with an async handoff, which defers the charge until
+		// the pipeline finishes; stub the pipeline so no network discovery runs. The refusal replaces its result.
+		vi.resetModules();
+		vi.doMock('../src/lib/brand-audit-pipeline', () => ({
+			runBrandAuditPipeline: vi.fn().mockResolvedValue({ category: 'brand_discovery', passed: true, score: 100, findings: [] }),
+		}));
+		try {
+			// developer tier, no rateLimitKv -> enforceBrandAuditQuota refuses (limit 50, remaining 0, retry 60s).
+			const out = await call('brand_audit_single', { domain: 'example.com' }, runtime({ authTier: 'developer', rateLimitKv: undefined }));
+			expectToolError(out, 'quotaExceeded');
+			expect(out.text.startsWith('Error: Rate limit exceeded: ')).toBe(true);
+			expect(out.result.structuredContent).toMatchObject({ target: 'example.com', limit: 50, remaining: 0, retryAfterMs: 60_000 });
+		} finally {
+			vi.doUnmock('../src/lib/brand-audit-pipeline');
+			vi.resetModules();
+		}
+	});
+
+	it('outputSchema: brand_audit_single publishes none, so the kind-only error structuredContent validates', async () => {
+		const { TOOLS, NON_CHECK_RESULT_TOOLS } = await import('../src/schemas/tool-definitions');
+		expect(NON_CHECK_RESULT_TOOLS.has('brand_audit_single')).toBe(true);
+		expect(TOOLS.find((t) => t.name === 'brand_audit_single')?.outputSchema).toBeUndefined();
+	});
+});

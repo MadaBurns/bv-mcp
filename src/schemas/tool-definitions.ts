@@ -911,6 +911,9 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'brand_audit_get_report',
 	'register_brand_audit_watch',
 	'delete_brand_audit_watch',
+	// brand_audit_single: success is a CheckResult, but its sync quota refusal is the same kind-only
+	// tool error (SQ-397), so the same outputSchema-vs-error-structuredContent reasoning applies.
+	'brand_audit_single',
 	// OSINT + bucket recon families. These are CheckResult-SHAPED only because the tool
 	// registry's return type is CheckResult — nothing in them is a measurement of the
 	// target's security posture. Every branch emits `severity: 'info'`, INCLUDING success:
