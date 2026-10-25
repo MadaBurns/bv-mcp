@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- **Tool annotations tell the truth.** `openWorldHint` is now per-tool (default `true`) and `false` for the 15 tools that read only our own D1/KV/DO state, bundled data or the stored state of a job already started (`explain_finding`, `get_benchmark`, `get_provider_insights`, `get_domain_rank`, `batch_scan_status`, `batch_scan_findings`, `brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`, `list_brand_audit_watches`, `delete_brand_audit_watch`, `scan_buckets_status`, `scan_buckets_findings`, `osint_investigation_status`). `batch_scan_start` now advertises `idempotentHint: true`; `brand_audit_single` advertises `readOnlyHint: false` and `idempotentHint: false` because each uncached call charges a monthly quota unit, which also puts it in the request-dedup window and moves its WASM permission mode from `ReadOnly` to `WorkspaceWrite`. The 15 previously undescribed input properties (`query`, `investigationId`, the `scan_buckets_*` args and the `batch_scan_status`/`batch_scan_findings` `format`) now carry descriptions, and an audit pins all of the above.
+
 ## [3.102.0] - 2026-10-25
 
 ### Changed

@@ -135,6 +135,13 @@ interface ToolDef {
 	 * unset to use the `!mutating` default.
 	 */
 	idempotent?: boolean;
+	/**
+	 * `openWorldHint` override (default `true`). Set `false` only for a tool that
+	 * reads solely our own state (D1/KV/DO, bundled data, or the stored status of a
+	 * job already started) and never reaches DNS/HTTP/third parties. Drift is
+	 * guarded by test/audits/tool-annotation-truth.audit.test.ts.
+	 */
+	openWorld?: boolean;
 	/** Curated starter-set member (see McpTool.recommended). Mirror SERVER_INSTRUCTIONS. */
 	recommended?: boolean;
 	/** Compatibility lifecycle state; drives title and vendor `_meta` signaling. */
@@ -361,6 +368,7 @@ const TOOL_DEFS = {
 		schema: BatchScanStartArgs,
 		group: 'meta',
 		scanIncluded: false,
+		idempotent: true,
 		mutating: true,
 	},
 	batch_scan_status: {
@@ -368,12 +376,14 @@ const TOOL_DEFS = {
 		schema: BatchScanJobArgs,
 		group: 'meta',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	batch_scan_findings: {
 		description: 'Fetch owner-scoped findings for a completed asynchronous batch scan.',
 		schema: BatchScanJobArgs,
 		group: 'meta',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	compare_domains: {
 		description:
@@ -442,6 +452,7 @@ const TOOL_DEFS = {
 		schema: GetDomainRankArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	get_benchmark: {
 		description:
@@ -449,6 +460,7 @@ const TOOL_DEFS = {
 		schema: GetBenchmarkArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	get_provider_insights: {
 		description:
@@ -456,6 +468,7 @@ const TOOL_DEFS = {
 		schema: GetProviderInsightsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	assess_spoofability: {
 		description:
@@ -475,6 +488,7 @@ const TOOL_DEFS = {
 		schema: ExplainFindingArgs,
 		group: 'meta',
 		scanIncluded: false,
+		openWorld: false,
 		recommended: true,
 	},
 	map_supply_chain: {
@@ -670,6 +684,7 @@ const TOOL_DEFS = {
 		schema: DiscoverBrandDomainsStatusArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	discover_brand_domains_findings: {
 		description:
@@ -677,6 +692,7 @@ const TOOL_DEFS = {
 		schema: DiscoverBrandDomainsFindingsArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	brand_audit_single: {
 		description:
@@ -684,6 +700,7 @@ const TOOL_DEFS = {
 		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		mutating: true,
 	},
 	brand_audit_batch_start: {
 		description:
@@ -699,6 +716,7 @@ const TOOL_DEFS = {
 		schema: BrandAuditStatusArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	brand_audit_get_report: {
 		description:
@@ -706,6 +724,7 @@ const TOOL_DEFS = {
 		schema: BrandAuditGetReportArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	list_brand_audit_watches: {
 		description:
@@ -713,6 +732,7 @@ const TOOL_DEFS = {
 		schema: ListBrandAuditWatchesArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	register_brand_audit_watch: {
 		description:
@@ -728,6 +748,7 @@ const TOOL_DEFS = {
 		schema: DeleteBrandAuditWatchArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		openWorld: false,
 		mutating: true,
 		destructive: true,
 		// delete-by-id: re-deleting the same watchId is a no-op (notFound), so the
@@ -748,6 +769,7 @@ const TOOL_DEFS = {
 		schema: ScanBucketsStatusArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	scan_buckets_findings: {
 		description:
@@ -755,6 +777,7 @@ const TOOL_DEFS = {
 		schema: ScanBucketsFindingsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	osint_investigate_domain_start: {
 		description:
@@ -802,6 +825,7 @@ const TOOL_DEFS = {
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,
+		openWorld: false,
 	},
 	osint_investigation_report: {
 		description:
@@ -952,7 +976,7 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [str
 		// `!mutating` is the default, but a destructive-but-idempotent op (e.g. a
 		// delete-by-id) sets `idempotent: true` explicitly to override it (F5).
 		idempotentHint: def.idempotent ?? !def.mutating,
-		openWorldHint: true,
+		openWorldHint: def.openWorld ?? true,
 	},
 	group: def.group,
 	...(def.tier !== undefined && { tier: def.tier }),

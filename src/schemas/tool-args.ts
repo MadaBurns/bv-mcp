@@ -56,7 +56,7 @@ export const BatchScanJobArgs = z
 			.string()
 			.regex(/^bs_[a-f0-9]{40}$/)
 			.describe('Job ID returned by batch_scan_start.'),
-		format: FormatSchema.optional(),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
 
@@ -609,27 +609,45 @@ export const DeleteBrandAuditWatchArgs = z
 
 export const ScanBucketsStartArgs = z
 	.object({
-		target: z.string().min(1).max(253),
-		providers: z.array(z.string().max(32)).max(8).optional(),
+		target: z.string().min(1).max(253).describe('Domain whose cloud buckets to discover (e.g. example.com).'),
+		providers: z
+			.array(z.string().max(32))
+			.max(8)
+			.optional()
+			.describe('Cloud providers to scan (max 8, e.g. aws, gcp, azure). All providers if omitted.'),
 	})
 	.strict();
 
 export const ScanBucketsStatusArgs = z
 	.object({
-		scanId: z.string().min(1).max(128),
+		scanId: z.string().min(1).max(128).describe('Scan ID returned by scan_buckets_start.'),
 	})
 	.strict();
 
 export const ScanBucketsFindingsArgs = z
 	.object({
-		scanId: z.string().min(1).max(128),
-		target: z.string().min(1).max(253).optional(),
-		providers: z.array(z.string().max(32)).max(8).optional(),
+		scanId: z.string().min(1).max(128).describe('Scan ID returned by scan_buckets_start.'),
+		target: z.string().min(1).max(253).optional().describe('Restrict findings to this domain. All scanned targets if omitted.'),
+		providers: z
+			.array(z.string().max(32))
+			.max(8)
+			.optional()
+			.describe('Restrict findings to these cloud providers (max 8). All providers if omitted.'),
 	})
 	.strict();
 
-export const OsintInvestigateArgs = z.object({ query: z.string().min(1).max(253) }).strict();
-export const OsintInvestigationIdArgs = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+export const OsintInvestigateArgs = z
+	.object({
+		query: z
+			.string()
+			.min(1)
+			.max(253)
+			.describe('Investigation subject, per tool: a domain, public IP, organisation name, email address or username.'),
+	})
+	.strict();
+export const OsintInvestigationIdArgs = z
+	.object({ investigationId: z.string().min(1).max(128).describe('Investigation ID returned by an osint_investigate_*_start tool.') })
+	.strict();
 
 // ---------------------------------------------------------------------------
 // identity_secops — M365 read tools

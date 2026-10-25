@@ -8,11 +8,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { handleToolsCall, MUTATING_DEDUP_TOOLS } from '../src/handlers/tools';
 
 describe('mutating-dedup tool set (SSOT)', () => {
-	it('is exactly the 10 mutating, non-destructive start/register tools', () => {
+	it('is exactly the 11 mutating, non-destructive tools (start/register creators + the quota-charging brand_audit_single)', () => {
 		expect([...MUTATING_DEDUP_TOOLS].sort()).toEqual(
 			[
 				'batch_scan_start',
 				'brand_audit_batch_start',
+				'brand_audit_single',
 				'discover_brand_domains_start',
 				'osint_investigate_domain_start',
 				'osint_investigate_email_start',
@@ -49,11 +50,10 @@ describe('handleToolsCall dedup wiring', () => {
 
 	it('reads an idem: key for a mutating tool (dedup path entered)', async () => {
 		const { kv } = fakeKv();
-		await handleToolsCall(
-			{ name: 'scan_buckets_start', arguments: { target: 'acme.com' } },
-			undefined,
-			{ rateLimitKv: kv, keyHash: 'key_abc' },
-		);
+		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.com' } }, undefined, {
+			rateLimitKv: kv,
+			keyHash: 'key_abc',
+		});
 		const getMock = kv.get as ReturnType<typeof vi.fn>;
 		const sawIdemKey = getMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].startsWith('idem:scan_buckets_start:'));
 		expect(sawIdemKey).toBe(true);
