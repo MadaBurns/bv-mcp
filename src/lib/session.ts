@@ -127,6 +127,10 @@ async function isSessionTombstonedInKV(id: string, kv: KVNamespace): Promise<boo
 		const tombstone = await kv.get(tombstoneKey(id));
 		return tombstone !== null;
 	} catch {
+		// Deliberately fail OPEN (operator decision 2026-10-20): sessions are transport state and auth is
+		// resolved per request (src/index.ts), while fail-closed would 404 every MCP request during a KV
+		// read outage because this revocation check runs first in validateSession. Log so it is visible.
+		logError('[session] KV tombstone read failed; failing open', { category: 'session' });
 		return false;
 	}
 }
