@@ -24,6 +24,11 @@ import { CURRENT_GENERATION_SQL, RUNS_PREFIX, isKilled, ledgerStatement } from '
 
 /** While the kill switch is on, batches are retried after this delay (the queue drops a message after 3 retries). */
 export const KILLED_RETRY_DELAY_SECONDS = 3_600;
+/**
+ * Key filter bits per entry for T0 runs. Each spans the whole keyspace, so every lookup tests every T0 run (a few
+ * hundred at a time): 16 bits keeps false positives near 0.1%, about 20 KB for a 10k-entry run, and T0 runs are few.
+ */
+export const T0_KEY_FILTER_BITS = 16;
 
 type Fields = Record<string, unknown>;
 
@@ -107,13 +112,23 @@ async function putRun(
 	createdAt: string,
 ): Promise<D1PreparedStatement | null> {
 	if (rows.length === 0) return null;
-	const run = await encodeRun(rows);
+	const run = await encodeRun(rows, { filterBitsPerEntry: T0_KEY_FILTER_BITS });
 	await env.INDEX.put(r2Key, run.bytes);
 	// The generation is resolved in the statement itself (see catalog.ts).
 	return env.CURSORS.prepare(
-		`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at)
-		 SELECT g || ':' || ?1, g, 0, ?2, ?3, ?1, ?4, ?5, ?6, ?7 FROM (SELECT ${CURRENT_GENERATION_SQL} AS g)`,
-	).bind(r2Key, run.keyLo, run.keyHi, run.rows, run.bytes.byteLength, serializeBlockIndex(run.blockIndex), createdAt);
+		`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at, key_filter, key_split)
+		 SELECT g || ':' || ?1, g, 0, ?2, ?3, ?1, ?4, ?5, ?6, ?7, ?8, ?9 FROM (SELECT ${CURRENT_GENERATION_SQL} AS g)`,
+	).bind(
+		r2Key,
+		run.keyLo,
+		run.keyHi,
+		run.rows,
+		run.bytes.byteLength,
+		serializeBlockIndex(run.blockIndex),
+		createdAt,
+		run.keyFilter,
+		run.keySplit,
+	);
 }
 
 export interface IndexOutcome {

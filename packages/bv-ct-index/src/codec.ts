@@ -89,6 +89,167 @@ export function rangeFor(domain: string): { lo: string; hi: string } {
 	return { lo: key, hi: `${key}${LABEL_SEPARATOR}\uffff` };
 }
 
+/**
+ * Per-run key filter (D1 `runs.key_filter`, migrations/0005_runs_key_filter.sql): a Bloom filter over the key prefixes
+ * a lookup can probe, so a read skips a run that holds no key in its range without fetching anything from it.
+ *
+ * Entries follow a fixed rule with no public-suffix list in it, so a PSL update can never make a lookup miss a run
+ * written before it. A name key enters its first two labels ('com\x01example'), and also its first three when the TLD
+ * has two letters and the second label at most four characters (co.nz, govt.nz, com.au, gov.uk: second levels that act
+ * as suffixes). A sibling key enters its apex part, 's\x00' + reversed(apex) + '\x00'. A lookup probes the last entry
+ * of its range's own first key (`keyFilterProbe`). No false negatives: every key in the range of a domain D starts with
+ * D's labels, so a two-label D is the key's two-label entry, and a deeper D shares the key's first three labels, so
+ * the rule decides the same for both and D's last entry is one of the key's. A one-label lookup is never pruned.
+ *
+ * Layout: a version byte, then m = 8 * (length - 1) bits, bit j being bit (j % 8) of byte 1 + floor(j / 8). An entry
+ * sets bit `keyFilterHashes(entry)[i] % m` for each probe i. read.ts tests the same bits in SQL.
+ */
+export const KEY_FILTER_VERSION = 1;
+export const KEY_FILTER_PROBES = 6;
+/** Default size, used for compaction outputs: about 2% false positives at 6 probes. */
+export const KEY_FILTER_BITS_PER_ENTRY = 8;
+/**
+ * A run with more distinct entries stores no filter, so every read takes it. Only the large key-range-cut runs of the
+ * upper tiers get there, and range pruning alone already confines a lookup to one or two of those.
+ */
+export const KEY_FILTER_MAX_ENTRIES = 32_768;
+const KEY_FILTER_MIN_BITS = 64;
+
+/** A second level that acts as a public suffix: a two-letter TLD and a second label of at most four characters. */
+function suffixLike(labels: readonly string[]): boolean {
+	return labels[0]!.length === 2 && labels[1]!.length <= 4;
+}
+
+/** The key filter entries of a row key (see KEY_FILTER_VERSION), shallowest first: none for a one-label name. */
+export function keyFilterEntries(key: string): string[] {
+	if (key.startsWith(SIBLING_PREFIX)) return [key.slice(0, key.indexOf('\x00', SIBLING_PREFIX.length) + 1)];
+	const labels = key.split(LABEL_SEPARATOR);
+	if (labels.length < 2) return [];
+	const two = `${labels[0]}${LABEL_SEPARATOR}${labels[1]}`;
+	return labels.length > 2 && suffixLike(labels) ? [two, `${two}${LABEL_SEPARATOR}${labels[2]}`] : [two];
+}
+
+/** The entry a lookup of the range starting at `lo` probes, or null when no filter can prune it (a one-label name). */
+export function keyFilterProbe(lo: string): string | null {
+	return keyFilterEntries(lo).at(-1) ?? null;
+}
+
+/** Two 32-bit hashes of an entry, with cyrb53's mixing: the start and the step of its probe positions. */
+function entryHashes(entry: string): [number, number] {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < entry.length; i++) {
+		const c = entry.charCodeAt(i);
+		h1 = Math.imul(h1 ^ c, 2654435761);
+		h2 = Math.imul(h2 ^ c, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return [h1 >>> 0, h2 >>> 0];
+}
+
+/** Probe i's unsigned 32-bit hash. Below 2^35 before the shift, so exact in a double. */
+function probeHash(start: number, step: number, i: number): number {
+	return (start + i * step) >>> 0;
+}
+
+/** The KEY_FILTER_PROBES hashes of an entry: probe i tests bit `hashes[i] % m` of an m-bit filter. */
+export function keyFilterHashes(entry: string): number[] {
+	const [start, step] = entryHashes(entry);
+	const hashes: number[] = [];
+	for (let i = 0; i < KEY_FILTER_PROBES; i++) hashes.push(probeHash(start, step, i));
+	return hashes;
+}
+
+/**
+ * Collects a run's distinct filter entries as its rows arrive in key order, then builds the filter. The entries of
+ * each depth then arrive in order too, so a repeat is always the entry last seen at its depth. Holds two numbers per
+ * entry, and nothing once the run passes KEY_FILTER_MAX_ENTRIES.
+ */
+class KeyFilterBuilder {
+	private hashes: number[] | null = [];
+	private readonly last: Array<string | undefined> = [];
+
+	constructor(private readonly bitsPerEntry: number) {}
+
+	add(key: string): void {
+		const entries = keyFilterEntries(key);
+		for (let depth = 0; depth < entries.length; depth++) this.addEntry(depth, entries[depth]!);
+	}
+
+	finish(): Uint8Array | null {
+		if (this.hashes === null) return null;
+		const bits = Math.max(KEY_FILTER_MIN_BITS, Math.ceil((this.hashes.length / 2) * (this.bitsPerEntry / 8)) * 8);
+		const filter = new Uint8Array(1 + bits / 8);
+		filter[0] = KEY_FILTER_VERSION;
+		for (let i = 0; i < this.hashes.length; i += 2) setProbeBits(filter, bits, this.hashes[i]!, this.hashes[i + 1]!);
+		return filter;
+	}
+
+	private addEntry(depth: number, entry: string): void {
+		if (this.hashes === null || this.last[depth] === entry) return;
+		this.last[depth] = entry;
+		if (this.hashes.length >= 2 * KEY_FILTER_MAX_ENTRIES) this.hashes = null;
+		else this.hashes.push(...entryHashes(entry));
+	}
+}
+
+function setProbeBits(filter: Uint8Array, bits: number, start: number, step: number): void {
+	for (let i = 0; i < KEY_FILTER_PROBES; i++) {
+		const bit = probeHash(start, step, i) % bits;
+		const at = 1 + (bit >>> 3);
+		filter[at] = filter[at]! | (1 << (bit & 7));
+	}
+}
+
+/**
+ * Interval index (D1 `runs.key_split`). Keys are paths in a binary trie: 7 bits per character (its code + 1, most
+ * significant bit first), then 7 zero bits for the end, so a key sorts before its extensions and every subtree is one
+ * contiguous key range. A run belongs to the lowest node holding both key_lo and key_hi, and its split key is the
+ * smallest key under that node's right child, so key_lo < split <= key_hi (a one-key run's split is its key).
+ *
+ * A run that overlaps the range [a, b) has (1) its split in (a, b]; or (2) its split equal to a or to the split of a
+ * node where a's path turns right, and key_hi >= a; or (3) the split of a node where b's path turns left, and
+ * key_lo < b. (A split equal to b belongs to (1): b is then under the node's right child, so b's path turns right.) That is a relational interval tree (Kriegel, Pötke and Seidl, VLDB 2000): read.ts seeks the few hundred
+ * splits of (2) and (3) and one split range for (1), so the catalog rows it reads follow the runs that overlap.
+ */
+const SYMBOL_BITS = 7;
+const SEVEN_BIT = /^[\x00-\x7e]*$/;
+
+function symbol(key: string, at: number): number {
+	return at < key.length ? key.charCodeAt(at) + 1 : 0;
+}
+
+function pathBit(key: string, bit: number): number {
+	return (symbol(key, Math.floor(bit / SYMBOL_BITS)) >> (SYMBOL_BITS - 1 - (bit % SYMBOL_BITS))) & 1;
+}
+
+/** The split key of the node made of the first `bits` bits of `key`'s path. */
+function splitKey(key: string, bits: number): string {
+	const at = Math.floor(bits / SYMBOL_BITS);
+	const kept = bits % SYMBOL_BITS;
+	const high = (symbol(key, at) >> (SYMBOL_BITS - kept)) << (SYMBOL_BITS - kept);
+	return key.slice(0, at) + String.fromCharCode((high | (1 << (SYMBOL_BITS - 1 - kept))) - 1);
+}
+
+/** The split key of a run with these bounds, or null when a bound holds a character above 0x7e (never a codec key). */
+export function runSplitKey(keyLo: string, keyHi: string): string | null {
+	if (!SEVEN_BIT.test(keyLo) || !SEVEN_BIT.test(keyHi)) return null;
+	if (keyLo === keyHi) return keyLo;
+	let bit = 0;
+	while (pathBit(keyLo, bit) === pathBit(keyHi, bit)) bit++;
+	return splitKey(keyLo, bit);
+}
+
+/** The split keys of the nodes where `key`'s path turns right (`turn` 1) or left (`turn` 0), root first. */
+export function pathSplitKeys(key: string, turn: 0 | 1): string[] {
+	const splits: string[] = [];
+	for (let bit = 0; bit < (key.length + 1) * SYMBOL_BITS; bit++) {
+		if (pathBit(key, bit) === turn) splits.push(splitKey(key, bit));
+	}
+	return splits;
+}
+
 /** The registrable domain, with private suffixes enabled, as bv-mcp computes it (src/lib/public-suffix.ts). */
 export function apexOf(name: string): string | null {
 	return parse(name, { allowPrivateDomains: true }).domain ?? null;
@@ -263,6 +424,15 @@ export interface EncodedRun {
 	keyLo: string;
 	keyHi: string;
 	rows: number;
+	/** The key filter (KEY_FILTER_VERSION), or null for a run with more than KEY_FILTER_MAX_ENTRIES entries. */
+	keyFilter: Uint8Array | null;
+	/** The interval-index split key (runSplitKey). */
+	keySplit: string | null;
+}
+
+export interface RunWriterOptions {
+	/** Key filter bits per distinct entry; KEY_FILTER_BITS_PER_ENTRY when absent. */
+	filterBitsPerEntry?: number;
 }
 
 export interface RunWriter {
@@ -275,7 +445,8 @@ export interface RunWriter {
  * Streaming run encoder: holds the compressed blocks plus one open block, never the decoded rows, so a
  * compaction job can write a merge's output as it streams. `encodeRun` is the in-memory front end.
  */
-export function createRunWriter(): RunWriter {
+export function createRunWriter(options: RunWriterOptions = {}): RunWriter {
+	const filter = new KeyFilterBuilder(options.filterBitsPerEntry ?? KEY_FILTER_BITS_PER_ENTRY);
 	const blocks: Uint8Array[] = [];
 	const blockIndex: BlockIndexEntry[] = [];
 	let open: Uint8Array[] = [];
@@ -302,6 +473,7 @@ export function createRunWriter(): RunWriter {
 				throw new RangeError(`run rows out of order: ${JSON.stringify(row.key)} after ${JSON.stringify(keyHi)}`);
 			}
 			const line = encoder.encode(rowLine(row));
+			filter.add(row.key);
 			if (openBytes > 0 && openBytes + line.byteLength > BLOCK_TARGET_BYTES) await closeBlock();
 			if (open.length === 0) openFirstKey = detached(row.key);
 			open.push(line);
@@ -318,7 +490,8 @@ export function createRunWriter(): RunWriter {
 				bytes.set(block, at);
 				at += block.byteLength;
 			}
-			return { bytes, blockIndex, keyLo, keyHi: detached(keyHi), rows };
+			const hi = detached(keyHi);
+			return { bytes, blockIndex, keyLo, keyHi: hi, rows, keyFilter: filter.finish(), keySplit: runSplitKey(keyLo, hi) };
 		},
 	};
 }
@@ -327,9 +500,9 @@ export function createRunWriter(): RunWriter {
  * Encodes one run: sorts a copy by key, merges rows that share a key (`mergeObservations`), and writes the
  * blocks. Expiry is not applied here; `mergeSortedRuns` drops expired rows on rewrite.
  */
-export async function encodeRun(rows: NameObservation[] | SiblingObservation[]): Promise<EncodedRun> {
+export async function encodeRun(rows: NameObservation[] | SiblingObservation[], options: RunWriterOptions = {}): Promise<EncodedRun> {
 	const sorted = [...(rows as RunRow[])].sort((a, b) => compareText(a.key, b.key));
-	const writer = createRunWriter();
+	const writer = createRunWriter(options);
 	let held: RunRow | undefined;
 	for (const row of sorted) {
 		if (held?.key === row.key) {

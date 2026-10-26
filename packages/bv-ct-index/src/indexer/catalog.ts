@@ -23,7 +23,7 @@ export const DAY_MS = 24 * HOUR_MS;
 /** The current generation as a SQL expression, for statements that must resolve it atomically. */
 export const CURRENT_GENERATION_SQL = `COALESCE((SELECT CAST(v AS INTEGER) FROM meta WHERE k = 'current_generation'), ${DEFAULT_GENERATION})`;
 
-/** Column list of `runs`, in the order of RunDescriptor. */
+/** Column list of `runs`, in the order of RunDescriptor, without the read-path key_filter and key_split. */
 export const RUN_COLUMNS = 'id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at';
 
 export function runId(generation: number, r2Key: string): string {

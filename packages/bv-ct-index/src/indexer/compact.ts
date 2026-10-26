@@ -88,6 +88,8 @@ interface OutputRun {
 	rows: number;
 	bytes: number;
 	blockIndex: BlockIndexEntry[];
+	keyFilter: Uint8Array | null;
+	keySplit: string | null;
 }
 
 /** Writes a merge's output as a sequence of runs, closing one at each cut, kind change or size target. */
@@ -139,6 +141,8 @@ class OutputSink {
 			rows: run.rows,
 			bytes: run.bytes.byteLength,
 			blockIndex: run.blockIndex,
+			keyFilter: run.keyFilter,
+			keySplit: run.keySplit,
 		});
 	}
 }
@@ -199,8 +203,8 @@ export async function runCompactionJob(
 	const statements = outputs.map((out) =>
 		db
 			.prepare(
-				`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at)
-				 SELECT ?4, CAST(?3 AS INTEGER), ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 WHERE ${guard}`,
+				`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at, key_filter, key_split)
+				 SELECT ?4, CAST(?3 AS INTEGER), ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14 WHERE ${guard}`,
 			)
 			.bind(
 				...guardArgs,
@@ -213,6 +217,8 @@ export async function runCompactionJob(
 				out.bytes,
 				serializeBlockIndex(out.blockIndex),
 				createdAt,
+				out.keyFilter,
+				out.keySplit,
 			),
 	);
 	// Last data statement: its guard still sees every input, because SQLite evaluates the uncorrelated subquery once.
