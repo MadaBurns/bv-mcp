@@ -13,6 +13,7 @@ function captureTimers() {
 	const timeouts: Array<{ fn: TimerCallback; delay: number | undefined }> = [];
 	const intervals: Array<{ fn: TimerCallback; delay: number | undefined }> = [];
 	const cleared: unknown[] = [];
+	const clearedTimeouts: unknown[] = [];
 	vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: TimerCallback, delay?: number) => {
 		timeouts.push({ fn, delay });
 		return timeouts.length as unknown as ReturnType<typeof setTimeout>;
@@ -24,7 +25,10 @@ function captureTimers() {
 	vi.spyOn(globalThis, 'clearInterval').mockImplementation(((handle: unknown) => {
 		cleared.push(handle);
 	}) as unknown as typeof clearInterval);
-	return { timeouts, intervals, cleared };
+	vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((handle: unknown) => {
+		clearedTimeouts.push(handle);
+	}) as unknown as typeof clearTimeout);
+	return { timeouts, intervals, cleared, clearedTimeouts };
 }
 
 afterEach(() => {
@@ -65,19 +69,21 @@ describe('createNotificationStream', () => {
 		expect(timers.cleared).toHaveLength(1);
 	});
 
-	it('marks the stream closed when a heartbeat cannot be enqueued, so the TTL timer becomes a no-op', async () => {
+	it('stops both timers immediately on cancellation, before either timer fires', async () => {
 		const timers = captureTimers();
 		const { createNotificationStream } = await import('../src/lib/sse');
 		const reader = createNotificationStream().getReader();
 		await reader.read();
 
-		// Client disconnect: enqueue on a cancelled stream throws inside the heartbeat.
 		await reader.cancel();
+		expect(timers.cleared).toEqual([101]);
+		expect(timers.clearedTimeouts).toEqual([1]);
+		// Even callbacks already queued before cancellation must not touch the closed controller.
+		expect(() => timers.timeouts[0]!.fn()).not.toThrow();
 		expect(() => timers.intervals[0]!.fn()).not.toThrow();
 		expect(timers.cleared).toEqual([101]);
 
-		// closed is now true: the pending TTL callback returns before touching the controller,
-		// and a later heartbeat tick is skipped.
+		// Repeated timer callbacks remain harmless.
 		expect(() => timers.timeouts[0]!.fn()).not.toThrow();
 		expect(() => timers.intervals[0]!.fn()).not.toThrow();
 		expect(timers.cleared).toEqual([101]);

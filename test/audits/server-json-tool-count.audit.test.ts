@@ -39,20 +39,14 @@ describe('smithery.yaml manifest', () => {
 		// endpoint and sees the PUBLIC tools (internal-only tools are hidden from
 		// tools/list). Advertise the public count, matching server.json above.
 		const countPattern = new RegExp(`${PUBLIC_TOOL_COUNT}`);
-		expect(smitheryYamlText).toMatch(
-			countPattern,
-			`smithery.yaml must mention the public tool count (${PUBLIC_TOOL_COUNT}) so the Smithery directory listing is honest`,
-		);
+		expect(smitheryYamlText, `smithery.yaml must mention the public tool count (${PUBLIC_TOOL_COUNT}) so the Smithery directory listing is honest`).toMatch(countPattern);
 	});
 
 	it('mirrors A2 load-bearing vocabulary in smithery.yaml description', () => {
 		// Same A2 vocab checks — Smithery listing must match the registry
-		expect(smitheryYamlText).toMatch(/industry average|percentile|sector/i, 'smithery.yaml must include get_benchmark vocabulary');
-		expect(smitheryYamlText).toMatch(/improved|regressed|drift/i, 'smithery.yaml must include analyze_drift vocabulary');
-		expect(smitheryYamlText).toMatch(/bulk.scan|bulk scan|multiple domains/i, 'smithery.yaml must include batch_scan vocabulary');
-		expect(smitheryYamlText).toMatch(
-			/SPF include chain|subdomailing|dangling/i,
-			'smithery.yaml must include check_subdomailing vocabulary',
-		);
+		expect(smitheryYamlText, 'smithery.yaml must include get_benchmark vocabulary').toMatch(/industry average|percentile|sector/i);
+		expect(smitheryYamlText, 'smithery.yaml must include analyze_drift vocabulary').toMatch(/improved|regressed|drift/i);
+		expect(smitheryYamlText, 'smithery.yaml must include batch_scan vocabulary').toMatch(/bulk.scan|bulk scan|multiple domains/i);
+		expect(smitheryYamlText, 'smithery.yaml must include check_subdomailing vocabulary').toMatch(/SPF include chain|subdomailing|dangling/i);
 	});
 });

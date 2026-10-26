@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
+import type { FixPlanResult } from '../src/tools/generate-fix-plan';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
@@ -213,6 +214,7 @@ describe('formatFixPlan', () => {
 	it('compact mode uses one-liners and caps at 5 actions', async () => {
 		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
 		const actions = Array.from({ length: 7 }, (_, i) => ({
+			priority: i + 1, findingTitle: `Finding ${i + 1}`,
 			category: 'spf' as const,
 			severity: 'high' as const,
 			action: `Action ${i + 1}`,
@@ -220,7 +222,7 @@ describe('formatFixPlan', () => {
 			impact: 'high' as const,
 			dependencies: ['dep'],
 		}));
-		const plan = {
+		const plan: FixPlanResult = {
 			domain: 'test.com',
 			score: 30,
 			grade: 'F',

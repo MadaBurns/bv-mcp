@@ -37,6 +37,11 @@ describe('logToolSuccess', () => {
 			emitRateLimitEvent: vi.fn(),
 			emitSessionEvent: vi.fn(),
 			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 		};
 
 		logToolSuccess({
@@ -73,6 +78,11 @@ describe('logToolSuccess', () => {
 			emitRateLimitEvent: vi.fn(),
 			emitSessionEvent: vi.fn(),
 			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 		};
 
 		logToolSuccess({
@@ -201,6 +211,11 @@ describe('logToolSuccess', () => {
 			emitRateLimitEvent: vi.fn(),
 			emitSessionEvent: vi.fn(),
 			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 		};
 
 		logToolSuccess({
@@ -254,6 +269,11 @@ describe('logToolFailure', () => {
 			emitRateLimitEvent: vi.fn(),
 			emitSessionEvent: vi.fn(),
 			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 		};
 
 		logToolFailure({
@@ -408,6 +428,11 @@ describe('logToolFailure', () => {
 			emitRateLimitEvent: vi.fn(),
 			emitSessionEvent: vi.fn(),
 			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 		};
 
 		logToolFailure({
@@ -463,6 +488,11 @@ describe('logToolFailure outcomeReason — classified by cause, not by the prese
 				emitRateLimitEvent: vi.fn(),
 				emitSessionEvent: vi.fn(),
 				emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
 			} as unknown as import('../src/lib/analytics').AnalyticsClient,
 			error,
 			args: {},

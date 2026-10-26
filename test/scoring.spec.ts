@@ -206,6 +206,8 @@ describe('scoring', () => {
 			const baseline = computeScanScore(baselineResults);
 			const scan = computeScanScore(results);
 			// High provider confidence should never lower the baseline score for equivalent findings.
+			expect(baseline.overall).not.toBeNull();
+			if (baseline.overall === null) throw new Error('Expected a graded baseline');
 			expect(scan.overall).toBeGreaterThanOrEqual(baseline.overall);
 		});
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, expect, it } from 'vitest';
-import { planBrandDiscoverySignals } from '../src/lib/brand-discovery-planner';
+import { assert, describe, expect, it } from 'vitest';
+import { planBrandDiscoverySignals, type PlannerCandidate } from '../src/lib/brand-discovery-planner';
 
 describe('planBrandDiscoverySignals', () => {
 	it('keeps caller-asserted candidates in every candidate-backed signal', () => {
@@ -41,7 +41,7 @@ describe('planBrandDiscoverySignals', () => {
 	});
 
 	it('keeps standard mode conservative and deep mode broader', () => {
-		const candidates = [
+		const candidates: PlannerCandidate[] = [
 			{ domain: 'example.ca', sources: ['tld_sweep'], reasons: ['seed label across .ca'] },
 			{ domain: 'example-support.net', sources: ['enterprise_affix'], reasons: ['enterprise support affix'] },
 			{ domain: 'noise-1.net', sources: ['markov'], reasons: ['markov candidate'] },
@@ -50,6 +50,8 @@ describe('planBrandDiscoverySignals', () => {
 		const standard = planBrandDiscoverySignals({ depth: 'standard', candidates, signals: ['ns'] });
 		const deep = planBrandDiscoverySignals({ depth: 'deep', candidates, signals: ['ns'] });
 
+		assert(standard.candidatesBySignal.ns);
+		assert(deep.candidatesBySignal.ns);
 		expect(standard.candidatesBySignal.ns.length).toBeLessThan(deep.candidatesBySignal.ns.length);
 		expect(deep.candidatesBySignal.ns).toContain('example-support.net');
 	});
@@ -60,23 +62,23 @@ describe('planBrandDiscoverySignals', () => {
 		// dkim_key_reuse / mx_overlap / txt_verification / cname_alignment contributed zero
 		// surfaced findings. Default deep caps should reflect that asymmetry.
 		const candidates = [
-			...Array.from({ length: 88 }, (_, i) => ({
+			...Array.from({ length: 88 }, (_, i): PlannerCandidate => ({
 				domain: `tld-${i}.example`,
-				sources: ['tld_sweep'] as const,
+				sources: ['tld_sweep'],
 				reasons: ['seed label across .ca'],
 			})),
-			...Array.from({ length: 39 }, (_, i) => ({
+			...Array.from({ length: 39 }, (_, i): PlannerCandidate => ({
 				domain: `active-${i}.example`,
-				sources: ['active_lookalike'] as const,
+				sources: ['active_lookalike'],
 				reasons: ['active lookalike candidate'],
 			})),
-			...Array.from({ length: 26 }, (_, i) => ({
+			...Array.from({ length: 26 }, (_, i): PlannerCandidate => ({
 				domain: `enterprise-${i}.example`,
-				sources: ['enterprise_affix'] as const,
+				sources: ['enterprise_affix'],
 				reasons: ['enterprise support affix'],
 			})),
 		];
-		const signals = ['dkim_key_reuse', 'ns', 'mx_platform', 'mx_overlap', 'txt_verification', 'spf_include', 'cname_alignment'] as const;
+		const signals: Parameters<typeof planBrandDiscoverySignals>[0]['signals'] = ['dkim_key_reuse', 'ns', 'mx_platform', 'mx_overlap', 'txt_verification', 'spf_include', 'cname_alignment'];
 
 		const plan = planBrandDiscoverySignals({
 			depth: 'deep',
@@ -103,14 +105,14 @@ describe('planBrandDiscoverySignals', () => {
 	it('keeps every guarded (caller/app_links/bounty_scope) candidate in low-yield signals even when there are more guarded candidates than the signal cap', () => {
 		// A caller asserting 35 candidate_domains exercises this: cap=30 for
 		// dkim_key_reuse must not drop 5 caller-asserted candidates.
-		const guarded = Array.from({ length: 35 }, (_, i) => ({
+		const guarded = Array.from({ length: 35 }, (_, i): PlannerCandidate => ({
 			domain: `asserted-${i}.example`,
-			sources: ['caller_candidate'] as const,
+			sources: ['caller_candidate'],
 			reasons: ['caller supplied candidate'],
 		}));
-		const noise = Array.from({ length: 20 }, (_, i) => ({
+		const noise = Array.from({ length: 20 }, (_, i): PlannerCandidate => ({
 			domain: `noise-${i}.example`,
-			sources: ['markov'] as const,
+			sources: ['markov'],
 			reasons: ['markov candidate'],
 		}));
 		const plan = planBrandDiscoverySignals({

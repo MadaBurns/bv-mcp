@@ -145,7 +145,9 @@ async function fetchWithSameOriginRedirects(fetchFn: FetchFunction, requestedUrl
 	for (let redirects = 0; ; redirects++) {
 		let response: Response;
 		try {
-			response = await fetchFn(current.href, { method: 'GET', redirect: 'manual', credentials: 'omit' });
+			// Keep the portable no-credentials option even though Worker RequestInit omits it.
+			const init: RequestInit & { credentials: 'omit' } = { method: 'GET', redirect: 'manual', credentials: 'omit' };
+			response = await fetchFn(current.href, init);
 		} catch (error) {
 			return { url: current.href, reason: error instanceof RobotsDisallowedError ? 'robots_disallowed' : 'fetch_failed' };
 		}

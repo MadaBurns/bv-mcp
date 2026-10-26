@@ -74,7 +74,7 @@ describe('Internal service binding routes', () => {
 		// bv2-ops recon-sweep queue. This asserts the door reaches the recon worker.
 		it('passes BV_RECON through the internal door so scan_buckets_start reaches bv2-recon', async () => {
 			const reconFetch = vi.fn(
-				async () =>
+				async (_input: RequestInfo | URL) =>
 					new Response(JSON.stringify({ scanId: 'test-scan-123', status: 'started' }), {
 						status: 200,
 						headers: { 'Content-Type': 'application/json' },

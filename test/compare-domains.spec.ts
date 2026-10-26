@@ -252,9 +252,9 @@ describe('compareDomains — per-category claims about an unmeasured domain', ()
 				? // `non_mail` + mta_sts → buildStructuredScanResult reports the category as
 					// N/A with a null score, however the engine scored it.
 					measured('webonly.com', { ssl: 100, mta_sts: 0, dnssec: 100 }, 88, 'B', 'non_mail')
-				: measured('mailer.net', { ssl: 100, mta_sts: 90, dnssec: 30 }, 70, 'C')) as unknown as Parameters<
+				: measured('mailer.net', { ssl: 100, mta_sts: 90, dnssec: 30 }, 70, 'C')) as unknown as NonNullable<Parameters<
 			typeof compareDomains
-		>[1]['scanFn'];
+		>[1]>['scanFn'];
 
 		const result = await compareDomains(['webonly.com', 'mailer.net'], { scanFn: scanStub });
 		const mtaSts = result.categoryComparison.find((cc) => cc.category === 'mta_sts');

@@ -11,7 +11,7 @@ describe('GET /internal/analytics/usage', () => {
 		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request('/analytics/usage?days=7', {}, env);
 		expect(res.status).toBe(200);
-		const body = await res.json();
+		const body = await res.json<{ source: string; usage: Array<{ key_hash: string | null; source: string }> }>();
 		expect(body.usage[0].key_hash).toBe('abc');
 		// window clamped + passed as a bind param (days*86400 seconds)
 		expect(bind).toHaveBeenCalledWith(7 * 86400);
@@ -34,7 +34,7 @@ describe('GET /internal/analytics/usage', () => {
 		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request('/analytics/usage?days=7', {}, env);
 		expect(res.status).toBe(200);
-		const body = await res.json();
+		const body = await res.json<{ source: string; usage: Array<{ key_hash: string | null; source: string }> }>();
 		expect(body.source).toBe('all');
 		expect(body.usage.map((r: { source: string }) => r.source)).toEqual(['public', 'internal']);
 		// legacy NULL rows surface as 'public'; grouped by the coalesced source
@@ -52,7 +52,7 @@ describe('GET /internal/analytics/usage', () => {
 		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request('/analytics/usage?days=7&source=internal', {}, env);
 		expect(res.status).toBe(200);
-		expect((await res.json()).source).toBe('internal');
+		expect((await res.json<{ source: string; usage: Array<{ key_hash: string | null; source: string }> }>()).source).toBe('internal');
 		expect(bind).toHaveBeenCalledWith(7 * 86400, 'internal');
 	});
 
@@ -64,7 +64,7 @@ describe('GET /internal/analytics/usage', () => {
 		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request('/analytics/usage?days=7&source=bogus', {}, env);
 		expect(res.status).toBe(200);
-		expect((await res.json()).source).toBe('all');
+		expect((await res.json<{ source: string; usage: Array<{ key_hash: string | null; source: string }> }>()).source).toBe('all');
 		expect(bind).toHaveBeenCalledWith(7 * 86400);
 	});
 });

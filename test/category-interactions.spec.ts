@@ -6,7 +6,7 @@ import type { ScanScore, CheckCategory } from '@blackveil/dns-checks/scoring';
 
 /** Build a minimal ScanScore with specified category scores. */
 function buildScore(categoryScores: Partial<Record<CheckCategory, number>>, overall = 75): ScanScore {
-	const defaults: Record<CheckCategory, number> = {
+	const defaults: Partial<Record<CheckCategory, number>> = {
 		spf: 100, dmarc: 100, dkim: 100, dnssec: 100, ssl: 100, mta_sts: 100,
 		ns: 100, caa: 100, subdomain_takeover: 100, mx: 100, bimi: 100,
 		tlsrpt: 100, lookalikes: 100, shadow_domains: 100, txt_hygiene: 100,

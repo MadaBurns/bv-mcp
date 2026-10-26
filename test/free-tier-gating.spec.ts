@@ -64,7 +64,7 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(403);
 		const payload = result.payload as {
-			error: { code: number; message: string; data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string } } };
+			error: { code: number; message: string; data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string; cta: string } } };
 		};
 		expect(payload.error.code).toBe(-32003);
 		expect(payload.error.message).toMatch(/upgrade required/i);

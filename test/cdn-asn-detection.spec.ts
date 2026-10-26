@@ -7,7 +7,7 @@ import { parseAsnFromCymru, mapAsnToCdn, detectCdnFromAsn } from '../src/lib/cdn
  * any unmapped name. Mirrors the real `queryTxtRecords(name) => Promise<string[]>`
  * seam (concatenated, unquoted answer strings).
  */
-function mockDoh(answers: Record<string, string>): { queryTxt: ReturnType<typeof vi.fn> } {
+function mockDoh(answers: Record<string, string>) {
 	return {
 		queryTxt: vi.fn(async (name: string) => {
 			const answer = answers[name];
@@ -94,7 +94,7 @@ describe('mapAsnToHosting (Task 3 — cloud-hosting tier)', () => {
 });
 
 describe('detectHostingFromAsn (Task 3)', () => {
-	function mockDoh2(answers: Record<string, string>): { queryTxt: ReturnType<typeof vi.fn> } {
+	function mockDoh2(answers: Record<string, string>) {
 		return { queryTxt: vi.fn(async (name: string) => (answers[name] !== undefined ? [answers[name]] : [])) };
 	}
 	it('attributes a cloud host when an A-record resolves to a hosting ASN', async () => {

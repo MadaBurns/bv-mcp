@@ -1,3 +1,5 @@
+// Standalone RDAP uses the same narrow category boundary as check-rdap-lookup.
+import type { CheckCategory as StandaloneCheckCategory } from '../src/lib/scoring';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -37,6 +39,7 @@ function summaryFinding(seedDomain: string, surfaced: number): Finding {
 function emptyDiscovery(seedDomain: string): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [summaryFinding(seedDomain, 0)],
 	};
@@ -44,11 +47,12 @@ function emptyDiscovery(seedDomain: string): CheckResult {
 
 function rdapResult(): CheckResult {
 	return {
-		category: 'rdap',
+		category: 'rdap' as StandaloneCheckCategory,
+		passed: true,
 		score: 100,
 		findings: [
 			{
-				category: 'rdap',
+				category: 'rdap' as StandaloneCheckCategory,
 				title: 'RDAP registrar',
 				severity: 'info',
 				detail: 'MarkMonitor Inc.',

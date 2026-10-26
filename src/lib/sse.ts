@@ -91,28 +91,35 @@ const NOTIFICATION_STREAM_TTL_MS = 300_000;
  */
 export function createNotificationStream(): ReadableStream<Uint8Array> {
 	const encoder = new TextEncoder();
+	let closed = false;
+	let heartbeat: ReturnType<typeof setInterval>;
+	let expiry: ReturnType<typeof setTimeout>;
+	const cleanup = () => {
+		closed = true;
+		clearInterval(heartbeat);
+		clearTimeout(expiry);
+	};
 	return new ReadableStream({
 		start(controller) {
-			let closed = false;
-
 			controller.enqueue(encoder.encode(': stream opened\n\n'));
 
-			const heartbeat = setInterval(() => {
+			heartbeat = setInterval(() => {
 				if (closed) return;
 				try {
 					controller.enqueue(encoder.encode(': heartbeat\n\n'));
 				} catch {
-					closed = true;
-					clearInterval(heartbeat);
+					cleanup();
 				}
 			}, HEARTBEAT_INTERVAL_MS);
 
-			setTimeout(() => {
+			expiry = setTimeout(() => {
 				if (closed) return;
-				closed = true;
-				clearInterval(heartbeat);
+				cleanup();
 				controller.close();
 			}, NOTIFICATION_STREAM_TTL_MS);
+		},
+		cancel() {
+			cleanup();
 		},
 	});
 }
@@ -135,38 +142,44 @@ export function createStreamingSseResponse<T>(
 	headers: Record<string, string>,
 ): Response {
 	const encoder = new TextEncoder();
+	let closed = false;
+	let heartbeat: ReturnType<typeof setInterval>;
+	const cleanup = () => {
+		closed = true;
+		clearInterval(heartbeat);
+	};
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller) {
-			let closed = false;
-
-			const heartbeat = setInterval(() => {
+			heartbeat = setInterval(() => {
 				if (closed) return;
 				try {
 					controller.enqueue(encoder.encode(': heartbeat\n\n'));
 				} catch {
 					// Stream already closed/errored — clean up
-					clearInterval(heartbeat);
+					cleanup();
 				}
 			}, HEARTBEAT_INTERVAL_MS);
 
 			operation
 				.then((result) => {
 					if (closed) return;
-					closed = true;
-					clearInterval(heartbeat);
-					controller.enqueue(encoder.encode(formatResult(result)));
+					const event = encoder.encode(formatResult(result));
+					cleanup();
+					controller.enqueue(event);
 					controller.close();
 				})
 				.catch((err) => {
 					if (closed) return;
-					closed = true;
-					clearInterval(heartbeat);
+					cleanup();
 					// Emit error as a proper JSON-RPC error SSE event so MCP clients can parse it
 					const message = sanitizeErrorMessage(err, 'Internal error');
 					const jsonRpcErr = { jsonrpc: '2.0', id: null, error: { code: -32603, message } };
 					controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(jsonRpcErr)}\n\n`));
 					controller.close();
 				});
+		},
+		cancel() {
+			cleanup();
 		},
 	});
 

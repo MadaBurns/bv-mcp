@@ -2,7 +2,9 @@
 
 import type { BrandAuditReportEnvelope } from './mcp-http-client';
 
-export function extractEmbeddedBrandAuditResult(envelope: BrandAuditReportEnvelope): BrandAuditReportEnvelope['findings'][number]['metadata']['result'] | null {
+type EmbeddedBrandAuditResult = NonNullable<NonNullable<BrandAuditReportEnvelope['findings'][number]['metadata']>['result']>;
+
+export function extractEmbeddedBrandAuditResult(envelope: BrandAuditReportEnvelope): EmbeddedBrandAuditResult | null {
 	const summary = envelope.findings.find((finding) => finding.metadata?.summary === true);
 	return summary?.metadata?.result ?? null;
 }

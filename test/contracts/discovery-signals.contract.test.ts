@@ -38,7 +38,7 @@ function representativeNsResult(): NsCorrelationResult {
 		seedDomain: 'example.com',
 		seedNs: ['ns1.example.net', 'ns2.example.net'],
 		coOwnedDomains: [
-			{ domain: 'example.org', sharedNs: ['ns1.example.net'], confidence: 0.5 },
+			{ domain: 'example.org', sharedNs: ['ns1.example.net'], confidence: 0.5, matchType: 'set_overlap' },
 		],
 		queryStatus: 'ok',
 	};

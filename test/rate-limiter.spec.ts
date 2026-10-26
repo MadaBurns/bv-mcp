@@ -1,3 +1,4 @@
+import type { QuotaCoordinator } from '../src/lib/quota-coordinator';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
 	checkControlPlaneRateLimit,
@@ -308,12 +309,12 @@ describe('rate-limiter', () => {
 	// Circuit breaker for QuotaCoordinator DO
 	// -----------------------------------------------------------------------
 	describe('DO circuit breaker', () => {
-		function createFailingDO(): DurableObjectNamespace {
+		function createFailingDO(): DurableObjectNamespace<QuotaCoordinator> {
 			return {
 				getByName: () => ({
 					fetch: () => Promise.reject(new Error('DO unavailable')),
 				}),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		}
 
 		it('falls back to in-memory after DO failure', async () => {
@@ -360,7 +361,7 @@ describe('rate-limiter', () => {
 			const fetchSpy = vi.fn();
 			const trackedDO = {
 				getByName: () => ({ fetch: fetchSpy }),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 			const result = await checkToolDailyRateLimit('owner-key', 'scan_domain', Infinity, undefined, trackedDO);
 			expect(result.allowed).toBe(true);
 			expect(result.limit).toBe(Infinity);
@@ -371,7 +372,7 @@ describe('rate-limiter', () => {
 			const fetchSpy = vi.fn();
 			const trackedDO = {
 				getByName: () => ({ fetch: fetchSpy }),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 			const result = await checkGlobalDailyLimit(Infinity, undefined, trackedDO);
 			expect(result.allowed).toBe(true);
 			expect(result.limit).toBe(Infinity);
@@ -400,12 +401,12 @@ describe('rate-limiter', () => {
 	// its cap DOWN by the estimated isolate fan-out.
 	// -----------------------------------------------------------------------
 	describe('global cost ceiling — breaker-open fallback (R9)', () => {
-		function createFailingDO(): DurableObjectNamespace {
+		function createFailingDO(): DurableObjectNamespace<QuotaCoordinator> {
 			return {
 				getByName: () => ({
 					fetch: () => Promise.reject(new Error('DO unavailable')),
 				}),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		}
 
 		function createMemoryKv(): { kv: KVNamespace; state: Map<string, string> } {
@@ -425,7 +426,7 @@ describe('rate-limiter', () => {
 		}
 
 		// Open the breaker by exhausting its failure threshold against the global cap.
-		async function openBreaker(failingDO: DurableObjectNamespace): Promise<void> {
+		async function openBreaker(failingDO: DurableObjectNamespace<QuotaCoordinator>): Promise<void> {
 			for (let i = 0; i < 3; i++) {
 				await checkGlobalDailyLimit(500_000, undefined, failingDO);
 			}
@@ -477,7 +478,7 @@ describe('rate-limiter', () => {
 							headers: { 'content-type': 'application/json' },
 						}),
 				}),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 			const { sink, emitDegradationEvent } = createDegradationSink();
 
 			await checkGlobalDailyLimit(500_000, undefined, workingDO, sink);

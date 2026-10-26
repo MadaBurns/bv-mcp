@@ -210,7 +210,7 @@ function makeDnsQuery(opts: {
 				})),
 			} as DohResponse;
 		}
-		return { Status: 0, Answer: [] } as DohResponse;
+		return { Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] } as DohResponse;
 	};
 }
 
@@ -325,7 +325,7 @@ describe('handleTenantWeeklyRescan', () => {
 		const dnsCalls: string[] = [];
 		const dnsQuery: DnsQueryFn = async (d) => {
 			dnsCalls.push(d);
-			return { Status: 0, Answer: [] } as DohResponse;
+			return { Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] } as DohResponse;
 		};
 		const customEnv: TenantScheduledEnv = {
 			...env,

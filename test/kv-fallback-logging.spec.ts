@@ -1,3 +1,4 @@
+import type { QuotaCoordinator } from '../src/lib/quota-coordinator';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
 	checkRateLimit,
@@ -63,7 +64,7 @@ describe('KV/DO fallback structured logging', () => {
 				get: vi.fn().mockReturnValue({
 					fetch: vi.fn().mockRejectedValue(new Error('DO unavailable')),
 				}),
-			} as unknown as DurableObjectNamespace;
+			} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 
 			await checkRateLimit('192.0.2.1', undefined, quotaCoordinator);
 

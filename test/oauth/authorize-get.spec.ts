@@ -57,7 +57,11 @@ describe('GET /oauth/authorize', () => {
 		url.searchParams.set('code_challenge', 'x'.repeat(43));
 		url.searchParams.set('code_challenge_method', 'S256');
 		const ctx = createExecutionContext();
-		const res = await worker.fetch(new Request(url.toString()), { ...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false', BV_WEB_OAUTH_CONSENT_URL: undefined }, ctx);
+		// Missing consent configuration is intentional; bypass deployment-literal typing only at the Worker boundary.
+		const noConsentEnv: Omit<typeof env, 'BV_WEB_OAUTH_CONSENT_URL'> & { BV_WEB_OAUTH_CONSENT_URL?: string } = {
+			...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false', BV_WEB_OAUTH_CONSENT_URL: undefined,
+		};
+		const res = await worker.fetch(new Request(url.toString()), noConsentEnv as Parameters<typeof worker.fetch>[1], ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(503);
 		const body = await res.text();

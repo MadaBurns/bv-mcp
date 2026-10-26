@@ -8,9 +8,10 @@ const fakeResult = { category: 'brand_discovery', passed: true, score: 100, find
 
 describe('brand audit report fetch helper', () => {
 	it('extracts the embedded target result from get-report envelopes', () => {
-		const envelope = {
+		const envelope: BrandAuditReportEnvelope = {
+			category: 'brand_audit', passed: true, score: 100,
 			findings: [{ metadata: { summary: true, result: fakeResult } }],
-		} as BrandAuditReportEnvelope;
+		};
 
 		expect(extractEmbeddedBrandAuditResult(envelope)).toBe(fakeResult);
 	});
@@ -29,12 +30,13 @@ describe('brand audit report fetch helper', () => {
 			callTool: async () => {
 				calls++;
 				return {
+					category: 'brand_audit', passed: true, score: 100,
 					findings: [
 						{
 							metadata: calls === 1 ? { summary: true, status: 'completed' } : { summary: true, status: 'completed', result: fakeResult },
 						},
 					],
-				} as BrandAuditReportEnvelope;
+				};
 			},
 		});
 

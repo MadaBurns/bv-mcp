@@ -50,9 +50,15 @@ function makeThrowingD1(): D1Database {
 /** D1 stub seeded with a registrar_complement_fast row for the given auditId/target. */
 function makeSeededD1(auditId: string, target: string, fastPayload: unknown): D1Database {
 	const payloadJson = JSON.stringify(fastPayload);
-	function makeStmt(boundArgs: unknown[] = []): ReturnType<typeof makeStmt> {
+	interface SeededStatement {
+		bind(...args: unknown[]): SeededStatement;
+		first(): Promise<{ audit_id: string; target: string; step: string; status: string; payload_json: string; error: null } | null>;
+		run(): Promise<{ meta: { changes: number } }>;
+		all(): Promise<{ results: unknown[] }>;
+	}
+	function makeStmt(boundArgs: unknown[] = []): SeededStatement {
 		return {
-			bind(...args: unknown[]) { return makeStmt(args); },
+			bind(...args: unknown[]): SeededStatement { return makeStmt(args); },
 			async first() {
 				// SELECT brand_audit_steps binds [auditId, target, step].
 				if (boundArgs[0] === auditId && boundArgs[1] === target && boundArgs[2] === 'registrar_complement_fast') {

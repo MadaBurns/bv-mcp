@@ -9,7 +9,7 @@ async function fresh() {
 
 function bindingReturning(body: unknown, status = 200) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })),
 	};
 }
 
@@ -49,7 +49,7 @@ describe('callReconScan', () => {
 		const { callReconScan } = await fresh();
 		// A JSON array is not an object — Zod .object() rejects it
 		const binding = {
-			fetch: vi.fn(async () => new Response(JSON.stringify([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+			fetch: vi.fn<typeof fetch>(async () => new Response(JSON.stringify([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 		};
 		const out = await callReconScan(binding, 'tok', 'MALICIOUS_ASN', { domain: 'x.com' });
 		expect(out).toBeNull();

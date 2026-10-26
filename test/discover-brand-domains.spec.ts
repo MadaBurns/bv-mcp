@@ -37,7 +37,7 @@ function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrela
 	return {
 		seedDomain: 'example.com',
 		seedNs: ['ns1.example.com'],
-		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence })),
+		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence, matchType: 'set_overlap' as const })),
 		queryStatus: 'ok',
 	};
 }
@@ -47,7 +47,7 @@ function okRua(domains: string[]): DmarcRuaResult {
 		seedDomain: 'example.com',
 		dmarcPresent: true,
 		ruaUris: domains.map((d) => `mailto:dmarc@${d}`),
-		ruaDomains: domains.map((d) => ({ domain: d, classification: 'related' as const, confidence: 0.6 })),
+		ruaDomains: domains.map((d) => ({ domain: d, classification: 'related' as const, confidence: 0.6, externalAuthorization: 'confirmed' as const })),
 		queryStatus: 'ok',
 	};
 }
@@ -869,7 +869,7 @@ describe('discoverBrandDomains', () => {
 				createDiscoveryDnsContext({
 					baseQuery: async (name, type) => {
 						baseQueryCalls.push(`${name}:${type}`);
-						return { Status: 0, Answer: [] };
+						return { Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [{ name, type: 1 }], Answer: [] };
 					},
 				}),
 			),
@@ -1000,7 +1000,7 @@ describe('discoverBrandDomains', () => {
 			}),
 		);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		const efficiency = summary?.metadata?.discoveryPerformance?.efficiency as
+		const efficiency = (summary?.metadata?.discoveryPerformance as { efficiency?: { candidateSignalProbes?: number; baselineCandidateSignalProbes?: number; plannerMode?: string } } | undefined)?.efficiency as
 			| { candidateSignalProbes?: number; baselineCandidateSignalProbes?: number; plannerMode?: string }
 			| undefined;
 		expect(efficiency).toMatchObject({

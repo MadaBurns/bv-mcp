@@ -74,7 +74,7 @@ describe('scanDomain outbound provider inference', () => {
 		const finding = spfCheck?.findings.find((f) => f.title === 'Outbound email provider inferred');
 		expect(finding).toBeDefined();
 		expect(finding?.metadata?.signalsUsed).toBeDefined();
-		expect(finding?.metadata?.signalsUsed?.dkimSelectors).toContain('google');
+		expect(finding?.metadata?.signalsUsed).toMatchObject({ dkimSelectors: expect.arrayContaining(['google']) });
 	});
 
 	it('raises outbound inference confidence when SPF and DKIM signals are both present', async () => {
@@ -87,7 +87,7 @@ describe('scanDomain outbound provider inference', () => {
 		expect(finding).toBeDefined();
 		expect(typeof finding?.metadata?.providerConfidence).toBe('number');
 		expect((finding?.metadata?.providerConfidence as number) >= 0.7).toBe(true);
-		expect(finding?.metadata?.signalsUsed?.spfDomains).toContain('_spf.google.com');
-		expect(finding?.metadata?.signalsUsed?.dkimSelectors).toContain('google');
+		expect(finding?.metadata?.signalsUsed).toMatchObject({ spfDomains: expect.arrayContaining(['_spf.google.com']) });
+		expect(finding?.metadata?.signalsUsed).toMatchObject({ dkimSelectors: expect.arrayContaining(['google']) });
 	});
 });

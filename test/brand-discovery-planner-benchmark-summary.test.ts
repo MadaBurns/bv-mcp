@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { formatAcceptanceSummary, summarizeBenchmark } from '../scripts/brand-audit-planner-benchmark-summary.mjs';
 
-function row(overrides) {
+function row(overrides: { metrics?: Record<string, unknown>; domain?: string; mode?: string; exitCode?: number; elapsedMs?: number } = {}) {
 	const metrics = {
 		candidateSignalProbes: 1050,
 		baselineCandidateSignalProbes: 1050,

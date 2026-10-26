@@ -1,3 +1,5 @@
+// Standalone RDAP uses the same narrow category boundary as check-rdap-lookup.
+import type { CheckCategory as StandaloneCheckCategory } from '../src/lib/scoring';
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +30,7 @@ function candidateFinding(domain: string): Finding {
 function discoveryResult(seedDomain: string, candidates: string[]): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [summaryFinding(seedDomain, candidates.length), ...candidates.map(candidateFinding)],
 	};
@@ -36,6 +39,7 @@ function discoveryResult(seedDomain: string, candidates: string[]): CheckResult 
 function tieredEmptyDiscoveryResult(seedDomain: string): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [
 			{
@@ -65,11 +69,12 @@ function tieredEmptyDiscoveryResult(seedDomain: string): CheckResult {
 
 function rdapResult(registrar: string, registrant: string, registrarIanaId: string | null = null): CheckResult {
 	return {
-		category: 'rdap',
+		category: 'rdap' as StandaloneCheckCategory,
+		passed: true,
 		score: 100,
 		findings: [
 			{
-				category: 'rdap',
+				category: 'rdap' as StandaloneCheckCategory,
 				title: 'RDAP registrar',
 				severity: 'info',
 				detail: registrar,
@@ -84,11 +89,12 @@ function rdapUnavailableResult(
 	registrarFailureReason?: string,
 ): CheckResult {
 	return {
-		category: 'rdap',
+		category: 'rdap' as StandaloneCheckCategory,
+		passed: true,
 		score: 100,
 		findings: [
 			{
-				category: 'rdap',
+				category: 'rdap' as StandaloneCheckCategory,
 				title: 'Registration details',
 				severity: 'info',
 				detail: `Source: ${registrarSource}.`,
@@ -301,6 +307,7 @@ describe('runBrandAuditPipeline', () => {
 		const stepStore = createMemoryBrandAuditStepStore();
 		const discovery: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{
@@ -411,6 +418,7 @@ describe('runBrandAuditPipeline', () => {
 		const stepStore = createMemoryBrandAuditStepStore();
 		const sentinel: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE, buildScanCacheKey, buildCheckCacheKey, cacheGet } from '../src/lib/cache';
-import type { CheckResult } from '../src/lib/scoring';
+import { detectDomainContext, type CheckResult } from '../src/lib/scoring';
 import { type ScanDomainResult, SCAN_CATEGORIES } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
@@ -337,6 +337,7 @@ describe('formatScanReport', () => {
 		const mockResult: ScanDomainResult = {
 			domain: 'example.com',
 			score: {
+				evidence: { attempted: 13, completed: 13, ratio: 1 },
 				overall: 85,
 				grade: 'A-',
 				categoryScores: {
@@ -368,6 +369,10 @@ describe('formatScanReport', () => {
 				summary: '2 issue(s) found. Grade: A-',
 			},
 			checks: [],
+			context: detectDomainContext([]),
+			scoringNote: null,
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
 			maturity: { stage: 3, label: 'Enforcing', description: 'Email authentication is actively enforcing.', nextStep: 'Add MTA-STS, DNSSEC, and BIMI.' },
 			cached: false,
 			timestamp: '2026-02-23T12:00:00.000Z',
@@ -412,6 +417,7 @@ describe('formatScanReport', () => {
 		const mockResult: ScanDomainResult = {
 			domain: 'example.com',
 			score: {
+				evidence: { attempted: 13, completed: 13, ratio: 1 },
 				overall: 100,
 				grade: 'A+',
 				categoryScores: {
@@ -433,6 +439,10 @@ describe('formatScanReport', () => {
 				summary: 'Excellent! No security issues found. Grade: A+',
 			},
 			checks: [],
+			context: detectDomainContext([]),
+			scoringNote: null,
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
 			maturity: { stage: 4, label: 'Hardened', description: 'Comprehensive security.', nextStep: '' },
 			cached: true,
 			timestamp: '2026-02-23T12:00:00.000Z',
@@ -1339,13 +1349,13 @@ describe('adaptiveWeightCache eviction (Fix 4)', () => {
 		// Fill with 99 entries, some expired
 		for (let i = 0; i < 50; i++) {
 			_adaptiveWeightCacheForTest.set(`expired:${i}`, {
-				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				weights: { profile: 'mail_enabled', provider: null, blendFactor: 0, weights: {}, sampleCount: 0, boundHits: [] },
 				expires: now - 1000, // expired
 			});
 		}
 		for (let i = 0; i < 49; i++) {
 			_adaptiveWeightCacheForTest.set(`valid:${i}`, {
-				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				weights: { profile: 'mail_enabled', provider: null, blendFactor: 0, weights: {}, sampleCount: 0, boundHits: [] },
 				expires: now + 60_000, // still valid
 			});
 		}
@@ -1353,7 +1363,7 @@ describe('adaptiveWeightCache eviction (Fix 4)', () => {
 
 		// Add one more to hit capacity of 100
 		_adaptiveWeightCacheForTest.set(`valid:99`, {
-			weights: { weights: {}, sampleCount: 0, boundHits: [] },
+			weights: { profile: 'mail_enabled', provider: null, blendFactor: 0, weights: {}, sampleCount: 0, boundHits: [] },
 			expires: now + 60_000,
 		});
 		expect(_adaptiveWeightCacheForTest.size).toBe(100);
@@ -1380,7 +1390,7 @@ describe('adaptiveWeightCache eviction (Fix 4)', () => {
 		// Fill to capacity with all valid entries — oldest has the earliest expiry
 		for (let i = 0; i < 100; i++) {
 			_adaptiveWeightCacheForTest.set(`entry:${i}`, {
-				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				weights: { profile: 'mail_enabled', provider: null, blendFactor: 0, weights: {}, sampleCount: 0, boundHits: [] },
 				expires: now + 60_000 + i * 100, // each one expires slightly later
 			});
 		}

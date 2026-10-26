@@ -1,6 +1,8 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
+		/* Use the generated Workers globals; lib.WebWorker declares a conflicting non-generic Request constructor. */
+		"lib": ["es2024"],
 		"types": ["@cloudflare/vitest-plugin/types", "vite/client"]
 	},
 	/* The Cloudflare env types are generated HERMETICALLY by scripts/ci/typecheck-tests.mjs (issue

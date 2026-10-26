@@ -14,6 +14,7 @@
  * regress.
  */
 
+import type { CheckResult } from '../../src/lib/scoring';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
@@ -150,7 +151,7 @@ describe('processBrandAuditMessage — budget chaos', () => {
 
 		const brandAuditSingle = vi.fn(async (_target: string, _options: { signal?: AbortSignal }) => {
 			// Real timer-free completion — resolves before the abort fires.
-			return { category: 'brand_discovery', score: 100, findings: [] };
+			return { category: 'brand_discovery', score: 100, passed: true, findings: [] } satisfies CheckResult;
 		});
 
 		const verdict = await processBrandAuditMessage(

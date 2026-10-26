@@ -33,6 +33,11 @@ function fakeAnalytics(): { client: AnalyticsClient; emit: ReturnType<typeof vi.
 		emitRateLimitEvent: noop,
 		emitSessionEvent: noop,
 		emitDegradationEvent: emit,
+		emitUngradedNotCachedEvent: noop,
+		emitDohPrimarySummary: noop,
+		emitQuotaShardEvent: noop,
+		emitQueueBatchEvent: noop,
+		emitTailAggregate: noop,
 	};
 	return { client, emit };
 }

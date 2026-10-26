@@ -1,3 +1,4 @@
+import type { QuotaCoordinator } from '../src/lib/quota-coordinator';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -25,7 +26,7 @@ afterEach(() => {
  * A fake QUOTA_COORDINATOR namespace whose evaluate response body is controllable.
  * Counts every `getByName(...).fetch(...)` so we can prove how many round trips ran.
  */
-function fakeNamespace(bodyFactory: () => unknown, status = 200): { ns: DurableObjectNamespace; fetchCount: () => number } {
+function fakeNamespace(bodyFactory: () => unknown, status = 200): { ns: DurableObjectNamespace<QuotaCoordinator>; fetchCount: () => number } {
 	let count = 0;
 	const ns = {
 		getByName: () => ({
@@ -34,7 +35,7 @@ function fakeNamespace(bodyFactory: () => unknown, status = 200): { ns: DurableO
 				return new Response(JSON.stringify(bodyFactory()), { status, headers: { 'content-type': 'application/json' } });
 			},
 		}),
-	} as unknown as DurableObjectNamespace;
+	} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 	return { ns, fetchCount: () => count };
 }
 
@@ -122,7 +123,7 @@ describe('genuine DO-did-not-run fallthrough (degrades + falls to serial)', () =
 					throw new Error('network down');
 				},
 			}),
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		const reasons: QuotaDegradationReason[] = [];
 		const out = await checkIpScopedQuotaBatch('203.0.113.10', 'check_spf', 200, {
 			quotaCoordinator: throwingNs,
@@ -155,7 +156,7 @@ describe('flag-OFF default == today (no routing arg)', () => {
 						),
 				};
 			},
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		// Omit `routing` entirely → defaults to SINGLETON_ROUTING.
 		await checkIpScopedQuotaBatch('203.0.113.11', 'check_spf', 5, { quotaCoordinator: ns });
 		expect(names).toEqual(['global-quota-coordinator']);

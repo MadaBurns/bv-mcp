@@ -12,7 +12,7 @@ const PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 
 
 /** Build one recommendation. productName is cosmetic for these pure tests. */
 function rec(product: RegistrarProductKey, recommended: boolean, priority: ProductPriority): RegistrarProductRecommendation {
-	return { product, productName: product, recommended, priority, justifyingGap: '', relatedFindings: [] };
+	return { product, productName: product, assessed: true, recommended, priority, justifyingGap: '', relatedFindings: [] };
 }
 
 /** Build a RegistrarProductReport with all 4 recommendations in fixed order; missing ones default to not-recommended/none. */

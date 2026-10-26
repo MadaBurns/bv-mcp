@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
+import { getProfileWeights } from '../src/lib/scoring';
 import { SCORING_MODEL_VERSION } from '../src/lib/scoring-version';
+
+function scanDefaults(): Pick<ScanDomainResult, 'context' | 'maturity' | 'scoringNote' | 'adaptiveWeightDeltas' | 'interactionEffects'> {
+	return {
+		context: { profile: 'mail_enabled', signals: [], weights: getProfileWeights('mail_enabled'), detectedProvider: null },
+		maturity: { stage: 0, label: 'Unprotected', description: 'No meaningful protections found.', nextStep: 'Configure SPF.' },
+		scoringNote: null,
+		adaptiveWeightDeltas: null,
+		interactionEffects: [],
+	};
+}
 
 describe('format-scan-report', () => {
 	it('tolerates a non-resolving result (empty checks/categoryScores/findings)', () => {
@@ -47,6 +58,7 @@ describe('format-scan-report', () => {
 
 	it('renders scan summaries without changing report structure', () => {
 		const result: ScanDomainResult = {
+			...scanDefaults(),
 			domain: 'example.com',
 			score: {
 				overall: 72,
@@ -77,6 +89,7 @@ describe('format-scan-report', () => {
 					},
 				],
 				summary: '1 issue(s) found. Grade: C+',
+				evidence: { attempted: 10, completed: 10, ratio: 1 },
 			},
 			checks: [],
 			cached: true,
@@ -98,6 +111,7 @@ describe('format-scan-report', () => {
 
 	it('sanitizes untrusted finding text in scan output', () => {
 		const result: ScanDomainResult = {
+			...scanDefaults(),
 			domain: 'example.com',
 			score: {
 				overall: 10,
@@ -123,12 +137,14 @@ describe('format-scan-report', () => {
 					},
 				],
 				summary: '1 finding',
+				evidence: { attempted: 10, completed: 10, ratio: 1 },
 			},
 			checks: [],
 			maturity: {
 				stage: 0,
 				label: 'Unprotected',
 				description: 'No meaningful protections found.',
+				nextStep: 'Configure SPF.',
 			},
 			cached: false,
 			timestamp: '2026-03-10T00:00:00.000Z',
@@ -143,6 +159,7 @@ describe('format-scan-report', () => {
 
 	it('buildStructuredScanResult returns machine-readable fields', () => {
 		const result = {
+			...scanDefaults(),
 			domain: 'test.com',
 			score: {
 				overall: 85,
@@ -176,6 +193,7 @@ describe('format-scan-report', () => {
 					{ category: 'ns', title: 'Low diversity', severity: 'low', detail: 'Single provider' },
 				],
 				summary: 'Grade: A',
+				evidence: { attempted: 13, completed: 13, ratio: 1 },
 			},
 			checks: [],
 			maturity: { stage: 3, label: 'Enforcing', description: 'DMARC enforced.', nextStep: '' },

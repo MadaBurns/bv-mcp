@@ -112,7 +112,7 @@ async function auditRow(auditId: string) {
 		.first()) as { status: string; completed_targets: number; total_targets: number };
 }
 
-const OK_RESULT = { category: 'brand_discovery', score: 100, findings: [] };
+const OK_RESULT = { category: 'brand_discovery', passed: true, score: 100, findings: [] };
 
 describe('item 1 — running rows age from the claim, not from enqueue', () => {
 	it('the consumer stamps the claim time on the row it claims', async () => {

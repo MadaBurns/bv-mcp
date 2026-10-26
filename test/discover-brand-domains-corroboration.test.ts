@@ -31,7 +31,7 @@ function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrela
 	return {
 		seedDomain: 'example.com',
 		seedNs: ['ns1.example.com'],
-		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence })),
+		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence, matchType: 'set_overlap' as const })),
 		queryStatus: 'ok',
 	};
 }
@@ -41,7 +41,7 @@ function okRua(domains: string[]): DmarcRuaResult {
 		seedDomain: 'example.com',
 		dmarcPresent: true,
 		ruaUris: domains.map((d) => `mailto:dmarc@${d}`),
-		ruaDomains: domains.map((d) => ({ domain: d, classification: 'related' as const, confidence: 0.6 })),
+		ruaDomains: domains.map((d) => ({ domain: d, classification: 'related' as const, confidence: 0.6, externalAuthorization: 'confirmed' as const })),
 		queryStatus: 'ok',
 	};
 }
@@ -87,6 +87,7 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 			queryStatus: 'ok' as const,
 		}),
 		detectCnameAlignment: vi.fn().mockResolvedValue(okEmpty),
+		generateVariants: vi.fn().mockReturnValue([]),
 		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
 		checkLookalikes: vi.fn().mockResolvedValue({
 			category: 'lookalikes',
@@ -159,7 +160,8 @@ describe('discoverBrandDomains — corroboration gate', () => {
 	it('filters generated lookalike seeds corroborated only by NS overlap', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({
-			generateMarkovLookalikes: vi.fn().mockReturnValue(['examp1e.com']),
+			generateVariants: vi.fn().mockReturnValue([]),
+		generateMarkovLookalikes: vi.fn().mockReturnValue(['examp1e.com']),
 			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'examp1e.com', confidence: 1.0 }])),
 		});
 
@@ -180,7 +182,8 @@ describe('discoverBrandDomains — corroboration gate', () => {
 	it('filters active lookalikes corroborated only by broad MX platform plus one NS signal', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({
-			generateMarkovLookalikes: vi.fn().mockReturnValue([]),
+			generateVariants: vi.fn().mockReturnValue([]),
+		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
 			checkLookalikes: vi.fn().mockResolvedValue({
 				category: 'lookalikes',
 				score: 80,
@@ -280,7 +283,8 @@ describe('discoverBrandDomains — corroboration gate', () => {
 	it('filters markov generation corroborated only by broad m365 MX platform', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({
-			generateMarkovLookalikes: vi.fn().mockReturnValue(['upps.com']),
+			generateVariants: vi.fn().mockReturnValue([]),
+		generateMarkovLookalikes: vi.fn().mockReturnValue(['upps.com']),
 			detectSharedMxPlatform: vi.fn().mockResolvedValue({
 				seedDomain: 'example.com',
 				coOwnedDomains: [{ domain: 'upps.com', sharedMxPlatform: 'm365', confidence: 0.55 }],

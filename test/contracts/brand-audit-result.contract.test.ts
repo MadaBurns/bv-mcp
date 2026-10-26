@@ -13,7 +13,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import type { BrandAuditSingleDeps } from '../../src/tools/brand-audit-single';
-import type { CheckResult, Finding } from '../../src/lib/scoring';
+import type { CheckCategory, CheckResult, Finding } from '../../src/lib/scoring';
 
 const BucketSchema = z.enum(['consolidated', 'shadowIt', 'indeterminate', 'impersonation']);
 const ConfidenceTierSchema = z.enum(['high', 'medium', 'low']);
@@ -77,11 +77,13 @@ function candidateFinding(domain: string, signals: string[], conf: number): Find
 
 function rdapResult(registrar: string, source: 'rdap' | 'unknown' | 'notfound' | 'redacted' | 'whois', registrant: string | null = null): CheckResult {
 	return {
-		category: 'rdap',
+		// Standalone intelligence category: mirrors checkRdapLookup's boundary.
+		category: 'rdap' as CheckCategory,
+		passed: true,
 		score: 100,
 		findings: [
 			{
-				category: 'rdap',
+				category: 'rdap' as CheckCategory,
 				title: 'RDAP',
 				severity: 'info',
 				detail: `${registrar}`,
@@ -94,6 +96,7 @@ function rdapResult(registrar: string, source: 'rdap' | 'unknown' | 'notfound' |
 function discovery(seed: string, candidates: Array<{ domain: string; signals: string[]; conf: number }>): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [summaryFinding(seed, candidates.length), ...candidates.map((c) => candidateFinding(c.domain, c.signals, c.conf))],
 	};

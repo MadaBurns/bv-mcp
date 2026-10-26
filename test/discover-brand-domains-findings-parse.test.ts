@@ -44,7 +44,7 @@ function summaryMetadata(result: CheckResult): Record<string, unknown> {
 describe('discoverBrandDomainsFindings result_json parsing', () => {
 	it('surfaces the parsed object for valid JSON', async () => {
 		const { discoverBrandDomainsFindings } = await import('../src/tools/discover-brand-domains-start');
-		const stored = { category: 'brand_discovery', score: 100, findings: [] };
+		const stored = { category: 'brand_discovery', passed: true, score: 100, findings: [] };
 		const result = await discoverBrandDomainsFindings(
 			'op-1',
 			'owner-1',

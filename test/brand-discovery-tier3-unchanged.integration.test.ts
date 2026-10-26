@@ -99,6 +99,7 @@ function makeBoundaryDeps(): DiscoverBrandDomainsDeps {
 		detectSpfInclude: asyncStub(EMPTY_OK),
 		extractSeedSpfIncludes: asyncStub(SPF_SEED_EMPTY),
 		detectCnameAlignment: asyncStub(EMPTY_OK),
+		generateVariants: syncStub([]),
 		generateMarkovLookalikes: syncStub([] as string[]),
 		checkLookalikes: asyncStub(LOOKALIKES_EMPTY),
 		domainLabelSimilarity: syncStub(0),

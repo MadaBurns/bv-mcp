@@ -140,6 +140,10 @@ function runProject(project) {
 		fail(`tsc reported success for ${project} but ${total} diagnostics were parsed — output format changed?`);
 	}
 
+	if (result.status !== 0 && total === 0) {
+		fail(`tsc exited ${result.status} for ${project} without parseable diagnostics:\n${raw}`);
+	}
+
 	return { counts, lines, raw };
 }
 

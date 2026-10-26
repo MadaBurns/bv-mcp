@@ -11,8 +11,8 @@ const executeSource = sourceFiles['../src/mcp/execute.ts'];
 
 function createFakeD1() {
 	const run = vi.fn(async () => ({ success: true }));
-	const bind = vi.fn(() => ({ run }));
-	const prepare = vi.fn(() => ({ bind }));
+	const bind = vi.fn((..._values: unknown[]) => ({ run }));
+	const prepare = vi.fn((_query: string) => ({ bind }));
 	return { db: { prepare } as unknown as D1Database, prepare, bind, run };
 }
 
@@ -440,8 +440,8 @@ describe('MCP access logging execution path', () => {
 describe('MCP access log retention', () => {
 	it('scheduled cleanup deletes MCP access log rows older than 90 days', async () => {
 		const run = vi.fn(async () => ({ success: true }));
-		const bind = vi.fn(() => ({ run }));
-		const prepare = vi.fn(() => ({ bind }));
+		const bind = vi.fn((..._values: unknown[]) => ({ run }));
+		const prepare = vi.fn((_query: string) => ({ bind }));
 		const env = {
 			INTELLIGENCE_DB: { prepare },
 		} as unknown as import('../src/scheduled').ScheduledEnv;
@@ -525,8 +525,8 @@ describe('recordMcpAccessLog routing', () => {
 	it('falls back to inline insert when analyticsQueue is absent', async () => {
 		const mod = await import('../src/mcp/execute');
 		const run = vi.fn(async () => ({ success: true }));
-		const bind = vi.fn(() => ({ run }));
-		const prepare = vi.fn(() => ({ bind }));
+		const bind = vi.fn((..._values: unknown[]) => ({ run }));
+		const prepare = vi.fn((_query: string) => ({ bind }));
 		const options = {
 			intelligenceDb: { prepare } as unknown as D1Database,
 			analyticsPiiLevel: 'coarse' as const,
@@ -614,8 +614,8 @@ describe('recordInternalAccessLog', () => {
 describe('recordMcpAccessLog attribution without cf-connecting-ip (#876)', () => {
 	function baseOptions(overrides: Record<string, unknown>) {
 		const run = vi.fn(async () => ({ success: true }));
-		const bind = vi.fn(() => ({ run }));
-		const prepare = vi.fn(() => ({ bind }));
+		const bind = vi.fn((..._values: unknown[]) => ({ run }));
+		const prepare = vi.fn((_query: string) => ({ bind }));
 		const promises: Promise<unknown>[] = [];
 		const options = {
 			intelligenceDb: { prepare } as unknown as D1Database,

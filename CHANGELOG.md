@@ -8,6 +8,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.103.3] - 2026-10-26
+
+### Fixed
+
+- Preserve fresh cache fallbacks after KV recovery and overlapping writes; deduplicate concurrent misses before sentinel I/O and retain newer in-flight computations during cleanup.
+- Stop SSE timers immediately on cancellation and close streams safely after formatter failures.
+- Abort timed-out tenant webhooks and dispose response bodies without delaying delivery status.
+- Reject failed compiler runs that emit no parseable diagnostics.
+
+### Changed
+
+- Clear all 528 existing test type errors and tighten the hermetic test typecheck baseline to zero.
+- Advance `@blackveil/dns-checks` package and parity corpus to 1.61.0. Sparse score types match measured-only results; undefined scores remain unmeasured. Scoring weights, thresholds and numeric formulas are unchanged.
+
 ## [3.103.2] - 2026-10-26
 
 ### Fixed

@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
+import type { GeneratedRecord } from '../src/tools/generate-records';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
@@ -396,7 +397,7 @@ describe('formatGeneratedRecord', () => {
 
 	it('compact mode omits instructions but keeps warnings', async () => {
 		const { formatGeneratedRecord } = await import('../src/tools/generate-records');
-		const record = {
+		const record: GeneratedRecord = {
 			recordType: 'TXT',
 			name: 'example.com',
 			value: 'v=spf1 -all',

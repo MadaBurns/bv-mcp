@@ -15,6 +15,7 @@ import type { CheckResult } from '../src/lib/scoring';
 function makeResult(candidates: Array<{ domain: string; bucket: string }>): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: candidates.map((c) => ({
 			category: 'brand_discovery',

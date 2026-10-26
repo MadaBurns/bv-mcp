@@ -23,7 +23,7 @@ async function extractText(bytes: Uint8Array): Promise<string> {
 		const filter = obj.dict.get(PDFName.of('Filter'));
 		let data: Uint8Array = obj.contents;
 		if (filter && String(filter) === '/FlateDecode') {
-			const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate'));
+			const stream = new Blob([new Uint8Array(data)]).stream().pipeThrough(new DecompressionStream('deflate'));
 			data = new Uint8Array(await new Response(stream).arrayBuffer());
 		}
 		const src = new TextDecoder('latin1').decode(data);

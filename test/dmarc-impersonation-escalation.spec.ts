@@ -16,7 +16,7 @@
  * rule's `dmarc <= 60` threshold until escalation drops it.
  */
 
-import { describe, it, expect } from 'vitest';
+import { assert, describe, it, expect } from 'vitest';
 import { type CheckResult, buildCheckResult, createFinding } from '../src/lib/scoring';
 import { computeScanScore } from '@blackveil/dns-checks/scoring';
 import { applyInteractionPenalties } from '../src/lib/category-interactions';
@@ -68,6 +68,8 @@ describe('DMARC impersonation escalation — full pipeline coherence', () => {
 		expect(without.ruleFired).toBe(false);
 
 		// The justified-critical case must score strictly worse.
+		assert(typeof withImpersonation.overall === 'number');
+		assert(typeof without.overall === 'number');
 		expect(withImpersonation.overall).toBeLessThan(without.overall);
 	});
 

@@ -2172,7 +2172,8 @@ describe('DNS Security MCP Server', () => {
 		it('returns 404 for OAuth discovery when OAuth is disabled', async () => {
 			const request = new Request('http://example.com/.well-known/oauth-authorization-server');
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, { ...env, ENABLE_OAUTH: 'false' }, ctx);
+			// Deliberately override the deployment's generated literal flag to test the disabled boundary.
+			const response = await worker.fetch(request, { ...env, ENABLE_OAUTH: 'false' as Env['ENABLE_OAUTH'] }, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(404);
 		});
