@@ -394,10 +394,11 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
 - **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
   never roll back to a version older than the one that added it. Older versions cannot read the stored details.
   **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The planner cron stays
-  `2,17,32,47 * * * *`, and the old code's `case '17 * * * *'` matches none of those four firings, so all compaction stops. The
-  only sign is a `ct_cron_unmatched` line in `wrangler tail`, which the current code logs for any schedule it has no case for (a
-  rolled-back version older than this change logs nothing). After a rollback past SQ-402, re-deploy the triggers from that
-  version's commit, or roll forward instead. Check the tail for `ct_cron_unmatched` after any rollback.
+  `2,17,32,47 * * * *`, and the old code's `case '17 * * * *'` matches none of those four firings, so all compaction stops.
+  After any rollback, watch `wrangler tail` across a :02, :17, :32 or :47 firing: the sign that compaction stopped is that NO
+  `ct_compaction_plan` line appears. Do not rely on a `ct_cron_unmatched` line: the current code logs one for any schedule it
+  has no case for, but a rolled-back version older than SQ-412 logs nothing at all. After a rollback past SQ-402, re-deploy
+  the triggers from that version's commit, or roll forward instead.
 - **Known cost, not a defect (SQ-402 N2):** the `:17` full tick re-plans T0 runs from earlier windows whose job is still queued or
   unswapped, under new job ids. The swap guard makes this safe: the second job to reach a shared input returns `stale` and writes
   no catalog rows. The cost is wasted merge work, an orphan output object the weekly GC removes, and, when the first job is slow,
