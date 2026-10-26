@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import catalogSql from '../../migrations/0002_catalog.sql?raw';
 import {
 	BLOCK_TARGET_BYTES,
+	KEY_FILTER_VERSION,
 	apexOf,
 	decodeBlock,
 	encodeRun,
@@ -378,7 +379,16 @@ describe('encodeRun / decodeBlock', () => {
 	});
 
 	it('encodes an empty run as no blocks', async () => {
-		expect(await encodeRun([])).toEqual({ bytes: new Uint8Array(0), blockIndex: [], keyLo: '', keyHi: '', rows: 0 });
+		// The filter of no entries is the version byte and 64 clear bits: it admits no lookup.
+		expect(await encodeRun([])).toEqual({
+			bytes: new Uint8Array(0),
+			blockIndex: [],
+			keyLo: '',
+			keyHi: '',
+			rows: 0,
+			keyFilter: Uint8Array.of(KEY_FILTER_VERSION, 0, 0, 0, 0, 0, 0, 0, 0),
+			keySplit: '',
+		});
 	});
 
 	it('refuses a truncated block rather than return partial rows', async () => {

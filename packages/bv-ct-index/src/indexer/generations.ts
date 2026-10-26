@@ -44,8 +44,9 @@ export async function maybeSnapshot(env: Env, nowMs: number): Promise<number | n
 		db.prepare(`DELETE FROM runs WHERE generation <> CAST(?1 AS INTEGER) AND ${stillCurrent}`).bind(String(from)),
 		db
 			.prepare(
-				`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at)
-				 SELECT CAST(?2 AS INTEGER) || ':' || r2_key, CAST(?2 AS INTEGER), tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at
+				`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at, key_filter, key_split)
+				 SELECT CAST(?2 AS INTEGER) || ':' || r2_key, CAST(?2 AS INTEGER), tier, key_lo, key_hi, r2_key, rows, bytes, block_index,
+					created_at, key_filter, key_split
 				 FROM runs WHERE generation = CAST(?1 AS INTEGER) AND ${stillCurrent}`,
 			)
 			.bind(String(from), String(next)),

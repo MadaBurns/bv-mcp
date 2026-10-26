@@ -36,8 +36,9 @@ different application with that name is live on this account. The only name for 
 
 `npm run provision:ct-index` **prints** the ordered, idempotent commands and executes nothing. Run them one at a time. In order:
 check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact` and `bv-ct-index-tail`, the D1 database
-`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0003: `log_cursors`, then
-`runs` / `meta` / `ops_ledger`, then the `log_cursors` error columns), then deploy.
+`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0005: `log_cursors`, then
+`runs` / `meta` / `ops_ledger`, the `log_cursors` error columns, the `runs_r2_key` index, then the `runs` key filter and
+interval index), then deploy.
 
 Two rules differ from older sidecar runbooks:
 
@@ -99,9 +100,17 @@ The live version `f8b4a245` predates the query API. From a clean checkout at the
 `BV_CT_INDEX_D1_ID` exported:
 
 ```bash
+npx wrangler d1 migrations apply bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc
 npm run deploy:ct-index
 npx wrangler deployments list --name bv-ct-index   # record the new version id
 ```
+
+Apply pending migrations before the deploy, never after. From migration 0005 (SQ-401) on, the Worker writes and reads the
+`runs.key_filter` and `runs.key_split` columns, so a version deployed before 0005 fails every T0 write and every read with
+`no such column`. Rows written before 0005 keep NULL in both columns and are always read, so nothing needs backfilling: they
+leave the catalog as compaction rewrites them. Rolling the code back after 0005 stays correct, because older code leaves
+both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
+run of the current generation.
 
 This redeploy is also required before `npm run deploy:prod` (step 8) will pass `check:sidecar-freshness`, because the live
 version predates the sidecar source. The secret persists across versions, so no `--secrets-file` is needed. Rollback of a bad sidecar deploy:

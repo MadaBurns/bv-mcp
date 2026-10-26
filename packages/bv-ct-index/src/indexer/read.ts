@@ -2,9 +2,9 @@
 /**
  * The read seam (types.ts IndexReader) over the sorted runs of `meta.current_generation`.
  *
- * A scan is ONE D1 query for the current generation's runs whose [key_lo, key_hi] overlaps the key range,
- * with their block indexes; then only the blocks that can hold keys in the range are fetched, with R2 range
- * GETs, at most READ_CONCURRENCY at a time (the first block of every run is requested up front). The runs are
+ * A scan is ONE D1 query (`catalogQuery`) for the current generation's runs whose [key_lo, key_hi] overlaps the key
+ * range and whose key filter admits it, with their block indexes; then only the blocks that can hold keys in the
+ * range are fetched, with R2 range GETs, at most READ_CONCURRENCY at a time (the first block of every run is requested up front). The runs are
  * k-way merged across tiers with `mergeSortedRuns`, which folds rows sharing a key and drops expired rows.
  *
  * Errors: any D1 or R2 fault throws, so the API answers 503 and never an empty page. One exception is retried:
@@ -16,7 +16,18 @@
  * Cursor: base64url of the last key on the page (keys are ASCII). The next page starts after it.
  */
 
-import { SIBLING_PREFIX, decodeBlock, mergeSortedRuns, parseBlockIndex, rangeFor, siblingKey } from '../codec';
+import {
+	KEY_FILTER_VERSION,
+	SIBLING_PREFIX,
+	decodeBlock,
+	keyFilterHashes,
+	keyFilterProbe,
+	mergeSortedRuns,
+	parseBlockIndex,
+	pathSplitKeys,
+	rangeFor,
+	siblingKey,
+} from '../codec';
 import type { Env } from '../index';
 import type { BlockIndexEntry, IndexReader, NameObservation, RunRow, SiblingObservation } from '../types';
 import { MissingRunObjectError, limiter, readRange } from './blocks';
@@ -24,7 +35,7 @@ import { CURRENT_GENERATION_SQL, DEFAULT_GENERATION } from './catalog';
 
 export const READ_CONCURRENCY = 6;
 
-interface ScanQuery {
+export interface ScanQuery {
 	lo: string;
 	hi: string;
 	/** Exclusive start (the cursor key), or null to start at lo. */
@@ -104,12 +115,68 @@ function runRows(
 	})();
 }
 
+/** A BLOB whose byte i is i: `instr(BYTE_VALUES, substr(blob, p, 1)) - 1` is the byte at p, which SQLite has no function for. */
+const BYTE_VALUES = Uint8Array.from({ length: 256 }, (_, i) => i);
+
+/**
+ * SQL that is false only when the key filter in `filter` (codec KEY_FILTER_VERSION) has a clear bit for one of the
+ * probe `hashes`, i.e. the run holds no key the probe covers. A NULL, unknown-version or empty filter is true.
+ * `byteValues` is an expression for BYTE_VALUES. Hashes are cast because D1 binds a JS number as REAL, and
+ * REAL % INTEGER is REAL.
+ */
+export function keyFilterSql(filter: string, byteValues: string, hashes: readonly string[]): string {
+	const bits = `((length(${filter}) - 1) * 8)`;
+	const tests: string[] = [];
+	for (const hash of hashes) {
+		const bit = `(CAST(${hash} AS INTEGER) % ${bits})`;
+		tests.push(`((instr(${byteValues}, substr(${filter}, 2 + ${bit} / 8, 1)) - 1) >> (${bit} % 8)) & 1`);
+	}
+	const version = KEY_FILTER_VERSION.toString(16).padStart(2, '0');
+	return `(${filter} IS NULL OR substr(${filter}, 1, 1) <> X'${version}' OR length(${filter}) < 2 OR (${tests.join(' AND ')}))`;
+}
+
+/** The key filter term of a scan and its parameters (?7 on): none for a lookup that no filter can prune. */
+function filterTerm(lo: string): { sql: string; params: unknown[] } {
+	const probe = keyFilterProbe(lo);
+	if (probe === null) return { sql: '1', params: [] };
+	const hashes = keyFilterHashes(probe);
+	const names: string[] = [];
+	for (let i = 0; i < hashes.length; i++) names.push(`?${8 + i}`);
+	return { sql: keyFilterSql('key_filter', '?7', names), params: [BYTE_VALUES, ...hashes] };
+}
+
+/** The smallest key above every key of a scan range, whose hi ends with U+FFFF after '\x01' (names) or '\x00' (siblings). */
+function rangeBound(hi: string): string {
+	return hi.slice(0, -2) + String.fromCharCode(hi.charCodeAt(hi.length - 2) + 1);
+}
+
+/**
+ * The catalog query of a scan: the current generation's runs whose [key_lo, key_hi] overlaps [start, hi] and whose
+ * key filter admits the range's probe. Candidates come from the interval index (codec runSplitKey) for the range
+ * [lo, bound), a superset of what the overlap test keeps, so each branch reads index rows of overlapping runs only;
+ * runs from before migration 0005 have no split and are read by key_lo.
+ */
+export function catalogQuery(query: ScanQuery): { sql: string; params: unknown[] } {
+	const bound = rangeBound(query.hi);
+	const filter = filterTerm(query.lo);
+	const current = `generation = ${CURRENT_GENERATION_SQL}`;
+	const turns = [JSON.stringify([...pathSplitKeys(query.lo, 1), query.lo]), JSON.stringify(pathSplitKeys(bound, 0))];
+	return {
+		sql: `SELECT r2_key, key_lo, block_index FROM runs WHERE rowid IN (
+				SELECT rowid FROM runs WHERE ${current} AND key_split > ?3 AND key_split <= ?4
+				UNION ALL SELECT rowid FROM runs WHERE ${current} AND key_split IN (SELECT value FROM json_each(?5)) AND key_hi >= ?3
+				UNION ALL SELECT rowid FROM runs WHERE ${current} AND key_split IN (SELECT value FROM json_each(?6)) AND key_lo < ?4
+				UNION ALL SELECT rowid FROM runs WHERE ${current} AND key_split IS NULL AND key_lo <= ?1
+			) AND key_lo <= ?1 AND key_hi >= ?2 AND ${filter.sql}`,
+		params: [query.hi, query.after ?? query.lo, query.lo, bound, ...turns, ...filter.params],
+	};
+}
+
 async function scanOnce(env: Env, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
 	const start = query.after ?? query.lo;
-	const { results } = await env.CURSORS.prepare(
-		`SELECT r2_key, key_lo, block_index FROM runs WHERE generation = ${CURRENT_GENERATION_SQL} AND key_lo <= ?1 AND key_hi >= ?2`,
-	)
-		.bind(query.hi, start)
+	const catalogRuns = catalogQuery(query);
+	const { results } = await env.CURSORS.prepare(catalogRuns.sql)
+		.bind(...catalogRuns.params)
 		.all<CatalogRun>();
 	const slot = limiter(READ_CONCURRENCY);
 	const inputs: AsyncGenerator<RunRow>[] = [];
