@@ -1,0 +1,8 @@
+{
+	"sources": ["packages/bv-ct-index/src"],
+	"exclude": ["**/__tests__/**", "**/*.test.ts", "**/*.d.ts"],
+	"max": 6,
+	"base": "origin/main",
+	"coverageCommand": "npm -w packages/bv-ct-index run test:coverage -- --coverage.reporter=lcov --coverage.reportsDirectory=\"${QUALITY_GATE_COVERAGE_DIR:?run through quality-gate crap, not by hand}\" && node -e \"const fs=require('fs');const f=process.argv[1]+'/lcov.info';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace(/^SF:/gm,'SF:packages/bv-ct-index/'))\" \"$QUALITY_GATE_COVERAGE_DIR\"",
+	"coverageTimeoutMs": 300000
+}
