@@ -175,6 +175,7 @@ describe('compaction output puts', () => {
 		expect(batch.acked).toEqual(['m0']);
 		const done = log.mock.calls.map(([line]) => String(line)).find((line) => line.includes('"ct_compaction_job_done"'));
 		const t1 = (await catalog()).filter((run) => run.tier === 1);
+		expect(done).toBeDefined();
 		expect(JSON.parse(done!)).toMatchObject({
 			event: 'ct_compaction_job_done',
 			id: job.id,
