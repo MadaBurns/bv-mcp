@@ -19,10 +19,10 @@
 		"cpu_ms": 300000
 	},
 	"triggers": {
-		// Tailer every minute; compactor hourly at :17.
+		// Tailer every minute; compaction planner every 15 min (T0 -> T1 each tick, every tier at :17; src/indexer/plan.ts).
 		"crons": [
 			"* * * * *",
-			"17 * * * *"
+			"2,17,32,47 * * * *"
 		]
 	},
 	"r2_buckets": [
