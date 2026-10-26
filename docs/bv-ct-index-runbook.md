@@ -245,7 +245,7 @@ npx wrangler queues info bv-ct-index-compact
 npx wrangler tail bv-ct-index --format json | grep --line-buffered -E 'ct_compaction_plan|ct_compaction_job|bv-ct-index-compact|exceeded'
 ```
 
-Catch-up: no manual step. The first `:17` cron after the deploy plans every T0 run older than the last full hour. At about
+Catch-up: no manual step. The first `:17` cron after the deploy plans every T0 run stamped before the current hour. At about
 235 runs an hour, that is about 8 jobs of at most 32 runs per backlog hour. For example, 30 backlog hours become about 220 jobs,
 sent 100 per `sendBatch`. The consumer takes one job per invocation and scales out. Each job writes its own T1 runs, so tier 1 grows
 and tier 0 drains to the current hour within that hour. A job re-planned by a later cron while it still waits in the queue is
@@ -325,7 +325,8 @@ dev session: it runs the same code on Cloudflare against the **real** R2 and D1 
 crons or consume the queues.
 
 **Run it at peak tier 0, between :30 and :45 past the hour**, and late in the UTC day if you can: that is when a read opens the most
-runs (every live tier-0 run, plus each range's tier-1 runs since the last :17 roll-up). A run just after :17, or just after a drain,
+runs (every live tier-0 run, plus each range's live tier-1 runs: the last roll-up's output, and the runs stamped :02, :17 and :32 of
+this hour, which the roll-up leaves alone until the next :17). A run just after :17, or just after a drain,
 measures the easy case and does not count. Record the tier-0 count with the result:
 
 ```bash
@@ -392,6 +393,15 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   indexing.
 - **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
   never roll back to a version older than the one that added it. Older versions cannot read the stored details.
+  **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The planner cron stays
+  `2,17,32,47 * * * *`, and the old code's `case '17 * * * *'` matches none of those four firings, so all compaction stops. The
+  only sign is a `ct_cron_unmatched` line in `wrangler tail`, which the current code logs for any schedule it has no case for (a
+  rolled-back version older than this change logs nothing). After a rollback past SQ-402, re-deploy the triggers from that
+  version's commit, or roll forward instead. Check the tail for `ct_cron_unmatched` after any rollback.
+- **Known cost, not a defect (SQ-402 N2):** the `:17` full tick re-plans T0 runs from earlier windows whose job is still queued or
+  unswapped, under new job ids. The swap guard makes this safe: the second job to reach a shared input returns `stale` and writes
+  no catalog rows. The cost is wasted merge work, an orphan output object the weekly GC removes, and, when the first job is slow,
+  an extra hour before that window's runs leave tier 0.
 - **Index contents** (a bad compaction, a bad snapshot): roll the catalog back to a retained generation. The previous generation is
   kept for a week after each weekly snapshot.
 

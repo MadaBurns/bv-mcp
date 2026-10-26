@@ -98,8 +98,9 @@ interface OutputRun {
  */
 export const PUT_CONCURRENCY = 6;
 /**
- * Bytes those puts may hold. Past it the job waits for every put before it writes on, so a run bigger than this
- * (a T3 output is ~10 MB) is put on its own, as before, and a job never holds more than one such run.
+ * Bytes those puts may hold. It is checked after a run is added, so held bytes can reach the budget plus one run. Past it
+ * the job waits for puts to settle before it writes on, so a run bigger than this (a T3 output is ~10 MB) is put on its own,
+ * as before, and a job never holds more than one such run.
  */
 export const PUT_BUDGET_BYTES = 4 * 1024 * 1024;
 
@@ -125,6 +126,9 @@ class OutputSink {
 	private nextCut = 0;
 	private readonly puts = new Set<Promise<void>>();
 	private putBytes = 0;
+	/** The first put rejection. A failed put leaves `puts` as soon as it settles, so a race or `all` never sees it. */
+	private putError: unknown = null;
+	private putFailed = false;
 
 	constructor(
 		private readonly bucket: R2Bucket,
@@ -134,6 +138,7 @@ class OutputSink {
 	) {}
 
 	async add(row: RunRow): Promise<void> {
+		this.throwIfPutFailed();
 		let crossedCut = false;
 		while (this.nextCut < this.cuts.length && this.cuts[this.nextCut]! <= row.key) {
 			this.nextCut++;
@@ -154,7 +159,12 @@ class OutputSink {
 	async finish(): Promise<OutputRun[]> {
 		if (this.writer) await this.close();
 		await Promise.all(this.puts);
+		this.throwIfPutFailed();
 		return this.outputs;
+	}
+
+	private throwIfPutFailed(): void {
+		if (this.putFailed) throw this.putError;
 	}
 
 	private async close(): Promise<void> {
@@ -172,7 +182,11 @@ class OutputSink {
 			keySplit: run.keySplit,
 		});
 		this.startPut(r2Key, run.bytes);
-		while (this.puts.size >= PUT_CONCURRENCY || this.putBytes > PUT_BUDGET_BYTES) await Promise.race(this.puts);
+		this.throwIfPutFailed();
+		while (this.puts.size >= PUT_CONCURRENCY || this.putBytes > PUT_BUDGET_BYTES) {
+			await Promise.race(this.puts);
+			this.throwIfPutFailed();
+		}
 	}
 
 	private startPut(r2Key: string, bytes: Uint8Array): void {
@@ -182,12 +196,17 @@ class OutputSink {
 			.then(() => {
 				this.putMs += Date.now() - started;
 			})
+			// Stored, not thrown: this promise never rejects, so a put still running after another failed is never unhandled.
+			// `add`, `close` and `finish` rethrow the first failure, before the job reaches its catalog swap.
+			.catch((error: unknown) => {
+				if (this.putFailed) return;
+				this.putFailed = true;
+				this.putError = error;
+			})
 			.finally(() => {
 				this.puts.delete(put);
 				this.putBytes -= bytes.byteLength;
 			});
-		// `close` or `finish` surfaces a failure; this only keeps a put still running after one from going unhandled.
-		put.catch(() => undefined);
 		this.puts.add(put);
 		this.putBytes += bytes.byteLength;
 	}

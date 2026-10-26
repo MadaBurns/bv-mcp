@@ -166,6 +166,38 @@ describe('compaction output puts', () => {
 		expect(await runCompactionJob(env, job, SMALL, at(0, 2, 17))).toBe('applied');
 	});
 
+	// SQ-412 (B1): a put that rejects at once leaves the in-flight set before anything waits on it, so only a
+	// stored error can fail the job. Without one the job swapped the catalog while an output was never written.
+	it.each([1, 2, 3])('fails a 9-output job, before any swap, when output put %i rejects with no delay', async (failAt) => {
+		const env = testEnv();
+		const job = await plannedJob(env);
+		const before = await catalog();
+		let calls = 0;
+		const immediate = withFault(env.INDEX, 'put', (...args: unknown[]) =>
+			++calls === failAt ? Promise.reject(new Error('immediate put failure')) : env.INDEX.put(...(args as [string, Uint8Array])),
+		);
+		await expect(runCompactionJob(testEnv({ INDEX: immediate }), job, SMALL, at(0, 2, 17))).rejects.toThrow('immediate put failure');
+		expect(await catalog()).toEqual(before);
+		for (const run of before) expect(await env.INDEX.head(run.r2_key)).not.toBeNull();
+		// The same job then applies on its retry, and it is the 9-output shape this test claims.
+		expect(await runCompactionJob(env, job, SMALL, at(0, 2, 17))).toBe('applied');
+		expect((await catalog()).filter((run) => run.tier === 1)).toHaveLength(9);
+	});
+
+	it('throws the first put failure when several puts in flight reject', async () => {
+		const env = testEnv();
+		const job = await plannedJob(env);
+		const before = await catalog();
+		let calls = 0;
+		// Each put rejects after a delay, so the later ones are already running when the first fails.
+		const failing = withFault(env.INDEX, 'put', () => {
+			const n = ++calls;
+			return new Promise((_, reject) => setTimeout(() => reject(new Error(`put failure ${n}`)), 5));
+		});
+		await expect(runCompactionJob(testEnv({ INDEX: failing }), job, SMALL, at(0, 2, 17))).rejects.toThrow(/^put failure 1$/);
+		expect(await catalog()).toEqual(before);
+	});
+
 	it('logs each job with its output count and put time once it is done', async () => {
 		const env = testEnv();
 		const job = await plannedJob(env);
