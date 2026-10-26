@@ -8,6 +8,7 @@ describe('formatBrandAuditMarkdown', () => {
 	it('renders authorized vendor dependencies outside the Shadow IT section', () => {
 		const result: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{
@@ -71,6 +72,7 @@ describe('formatBrandAuditMarkdown', () => {
 	it('annotates defensive registrations with a "(defensive registration)" suffix', () => {
 		const result: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{
@@ -124,6 +126,7 @@ describe('formatBrandAuditMarkdown', () => {
 	it('surfaces discovery depth warnings from the summary metadata', () => {
 		const result: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{

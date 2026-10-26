@@ -1,3 +1,4 @@
+import type { QuotaCoordinator } from '../src/lib/quota-coordinator';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -39,7 +40,7 @@ describe('resetQuotaCoordinatorShards — routing', () => {
 				names.push(name);
 				return { fetch: async () => new Response(null, { status: 204 }) };
 			},
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 
 		await resetQuotaCoordinatorShards(ns);
 
@@ -62,7 +63,7 @@ describe('resetQuotaCoordinatorShards — routing', () => {
 					return new Response(null, { status: 204 });
 				},
 			}),
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		await expect(resetQuotaCoordinatorShards(ns)).resolves.toBeUndefined();
 	});
 });

@@ -1535,7 +1535,7 @@ describe('checkShadowDomains — D4 ownership-gated severity', () => {
 	}
 
 	/** All findings this scan made about one named variant, via metadata (never prose matching). */
-	function forVariant(findings: Array<{ metadata?: Record<string, unknown> }>, variant: string) {
+	function forVariant<T extends { metadata?: Record<string, unknown> }>(findings: T[], variant: string) {
 		return findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === variant);
 	}
 

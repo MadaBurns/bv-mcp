@@ -131,6 +131,7 @@ describe('Tenant Discovery Route Integration', () => {
 		// Verify auto-import call
 		const upsertCall = tenant.calls.find(c => c.sql.includes('INSERT INTO domains'));
 		expect(upsertCall).toBeDefined();
+		if (!upsertCall) throw new Error('Expected domain upsert');
 		expect(upsertCall.binds[0]).toBe('candidate.com');
 		expect(upsertCall.binds[1]).toBe('discovery');
 	});

@@ -115,11 +115,11 @@ describe('dns transport helpers', () => {
 			.fn()
 			.mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError')) as unknown as typeof globalThis.fetch;
 
-		await expect(queryDns('example.com', 'TXT', false, { retries: 0, timeoutMs: 5 })).rejects.toMatchObject<DnsQueryError>({
+		await expect(queryDns('example.com', 'TXT', false, { retries: 0, timeoutMs: 5 })).rejects.toMatchObject({
 			message: 'DNS query timed out after 5ms',
 			domain: 'example.com',
 			recordType: 'TXT',
-		});
+		} satisfies Partial<DnsQueryError>);
 	});
 });
 

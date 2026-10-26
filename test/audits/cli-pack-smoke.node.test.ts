@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const root = fileURLToPath(new URL('../..', import.meta.url));
+const root = fileURLToPath(new URL('../..', import.meta.url).href);
 
 describe('root package CLI pack smoke', () => {
 	it('packs both bins and executes blackveil help', () => {

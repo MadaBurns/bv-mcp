@@ -10,11 +10,12 @@
 
 import { describe, it, expect } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
+import { BRAND_DISCOVERY_CATEGORY } from '../src/lib/brand-audit-category';
 import { findRetryableCandidates, shouldRetryAudit } from '../src/lib/registrar-retry';
 
 function summary(targetSource: string, opts: { failureReason?: string } = {}): CheckResult['findings'][number] {
 	return {
-		category: 'brand_audit',
+		category: BRAND_DISCOVERY_CATEGORY,
 		title: 'Brand audit: classified',
 		severity: 'info',
 		detail: '',
@@ -29,7 +30,7 @@ function summary(targetSource: string, opts: { failureReason?: string } = {}): C
 
 function candidate(domain: string, source: string, opts: { failureReason?: string } = {}): CheckResult['findings'][number] {
 	return {
-		category: 'brand_audit',
+		category: BRAND_DISCOVERY_CATEGORY,
 		title: `Brand candidate: ${domain}`,
 		severity: 'low',
 		detail: '',
@@ -42,7 +43,7 @@ function candidate(domain: string, source: string, opts: { failureReason?: strin
 }
 
 function makeResult(findings: CheckResult['findings']): CheckResult {
-	return { category: 'brand_audit', score: 100, findings };
+	return { category: BRAND_DISCOVERY_CATEGORY, passed: true, score: 100, findings };
 }
 
 describe('findRetryableCandidates', () => {
@@ -89,7 +90,7 @@ describe('findRetryableCandidates', () => {
 			summary('rdap'),
 			// skipped_deadline sets registrarSource='unknown' + registrarEnrichmentStatus='skipped_deadline'.
 			{
-				category: 'brand_audit',
+				category: BRAND_DISCOVERY_CATEGORY,
 				title: 'Brand candidate: late.com',
 				severity: 'info',
 				detail: '',
@@ -106,8 +107,8 @@ describe('findRetryableCandidates', () => {
 
 	it('handles findings with missing/malformed metadata gracefully', () => {
 		const result = makeResult([
-			{ category: 'brand_audit', title: 'no metadata', severity: 'info', detail: '' },
-			{ category: 'brand_audit', title: 'wrong shape', severity: 'info', detail: '', metadata: { foo: 'bar' } },
+			{ category: BRAND_DISCOVERY_CATEGORY, title: 'no metadata', severity: 'info', detail: '' },
+			{ category: BRAND_DISCOVERY_CATEGORY, title: 'wrong shape', severity: 'info', detail: '', metadata: { foo: 'bar' } },
 		]);
 		const retryable = findRetryableCandidates(result);
 		expect(retryable.target).toBeNull();

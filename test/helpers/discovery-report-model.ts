@@ -541,7 +541,7 @@ export function buildDiscoveryReportSidecar(
 			: {
 					elapsedMs: 0,
 					steps: [],
-					stepStatusCounts: {},
+					stepStatusCounts: { completed: 0, partial: 0, failed: 0, skipped: 0 },
 					dns: { queries: 0, cacheHits: 0, errors: 0, cacheHitRatio: 0 },
 					rdap: { queries: 0, cacheHits: 0, errors: 0, cacheHitRatio: 0 },
 					warnings: [],

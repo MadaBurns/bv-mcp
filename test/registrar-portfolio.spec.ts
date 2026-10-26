@@ -8,7 +8,7 @@ function candidate(domain: string, registrar: string, registrarSource = 'rdap'):
 	return {
 		domain,
 		bucket: 'consolidated',
-		relationshipType: 'consolidated',
+		relationshipType: 'owned_primary',
 		evidence: 'test',
 		registrar,
 		registrarSource,

@@ -1,7 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
-import type { Env } from '../src/types/env';
 import { resetSessions } from '../src/lib/session';
 
 describe('Security Hardening - REQUIRE_AUTH', () => {
@@ -22,7 +21,7 @@ describe('Security Hardening - REQUIRE_AUTH', () => {
 	});
 
 	it('rejects unauthenticated requests when REQUIRE_AUTH is "true"', async () => {
-		const authEnv = { ...env, REQUIRE_AUTH: 'true' } as Env;
+		const authEnv = { ...env, REQUIRE_AUTH: 'true' };
 		const request = new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -34,13 +33,13 @@ describe('Security Hardening - REQUIRE_AUTH', () => {
 		
 		// Should be 401 Unauthorized
 		expect(response.status).toBe(401);
-		const body = await response.json() as Record<string, unknown>;
+		const body = await response.json<{ error: { code: number } }>();
 		expect(body.error.code).toBe(-32001); // unauthorized
 	});
 
 	it('allows authenticated requests when REQUIRE_AUTH is "true"', async () => {
 		const TEST_API_KEY = 'test-api-key';
-		const authEnv = { ...env, REQUIRE_AUTH: 'true', BV_API_KEY: TEST_API_KEY } as Env;
+		const authEnv = { ...env, REQUIRE_AUTH: 'true', BV_API_KEY: TEST_API_KEY };
 		const request = new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 

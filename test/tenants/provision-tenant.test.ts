@@ -160,10 +160,10 @@ describe('pure helpers', () => {
 			'--display-name=Acme Corp',
 			'--dry-run',
 		]);
-		expect(out['super-tenant']).toBe('super-tenant-1');
-		expect(out['sub-tenant']).toBe('sub-1');
-		expect(out['display-name']).toBe('Acme Corp');
-		expect(out['dry-run']).toBe(true);
+		expect(out).toHaveProperty('super-tenant', 'super-tenant-1');
+		expect(out).toHaveProperty('sub-tenant', 'sub-1');
+		expect(out).toHaveProperty('display-name', 'Acme Corp');
+		expect(out).toHaveProperty('dry-run', true);
 	});
 
 	it('tenantBindingName replaces hyphens with underscores and uppercases', () => {

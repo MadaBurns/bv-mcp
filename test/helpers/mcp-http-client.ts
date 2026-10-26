@@ -247,7 +247,7 @@ export interface BrandAuditCandidateFinding {
 }
 
 /** Shape of `brand_audit_get_report` STRUCTURED_RESULT payload. */
-export interface BrandAuditReportEnvelope extends CheckResultLike {
+export interface BrandAuditReportEnvelope extends Omit<CheckResultLike, 'findings'> {
 	findings: Array<{
 		metadata?: {
 			summary?: boolean;
@@ -267,7 +267,7 @@ export interface BrandAuditReportEnvelope extends CheckResultLike {
 }
 
 /** Shape of `brand_audit_status` STRUCTURED_RESULT payload. */
-export interface BrandAuditStatusResult extends CheckResultLike {
+export interface BrandAuditStatusResult extends Omit<CheckResultLike, 'findings'> {
 	findings: Array<{
 		metadata?: {
 			summary?: boolean;

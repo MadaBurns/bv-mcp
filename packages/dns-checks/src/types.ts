@@ -268,7 +268,8 @@ export interface ScanScore {
 	overall: number | null;
 	/** Canonical 9-band grade letter, or `null` when `overall` is null. Never a sentinel string. */
 	grade: string | null;
-	categoryScores: Record<CheckCategory, number>;
+	// Only measured categories are present; omitted categories have no score.
+	categoryScores: Partial<Record<CheckCategory, number>>;
 	findings: Finding[];
 	summary: string;
 	/**

@@ -13,7 +13,7 @@
  */
 // bv-oversize-ok: single shared suite by design — assertions must live once and run against both import surfaces
 
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import type { CheckCategory, CheckResult } from '../../scoring';
 
 /** The scoring module under test — source or built package, injected by the caller. */
@@ -487,6 +487,8 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				const hardeningFail = buildCheckResult('dane', [createFinding('dane', 'No DANE', 'high', 'No TLSA records found')]);
 				const scoreWith = computeScanScore([...coreResults, hardeningFail]);
 				// Failed hardening contributes 0 points (score < 50) but never subtracts
+				assert(typeof scoreWithout.overall === 'number');
+				assert(typeof scoreWith.overall === 'number');
 				expect(scoreWith.overall).toBeGreaterThanOrEqual(scoreWithout.overall);
 			});
 
@@ -497,6 +499,8 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				const scoreWithout = computeScanScore(coreResults);
 				const hardeningPass = buildCheckResult('bimi', [createFinding('bimi', 'BIMI record configured', 'info', 'BIMI configured')]);
 				const scoreWith = computeScanScore([...coreResults, hardeningPass]);
+				assert(typeof scoreWithout.overall === 'number');
+				assert(typeof scoreWith.overall === 'number');
 				expect(scoreWith.overall).toBeGreaterThan(scoreWithout.overall);
 			});
 
@@ -550,7 +554,10 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 					passed: false,
 				};
 				// Genuinely measured 0 (no transient status) must still drag the score down.
-				expect(computeScanScore([...passingCore(), httpBad]).overall).toBeLessThan(baseline.overall);
+				const measured = computeScanScore([...passingCore(), httpBad]);
+				assert(typeof baseline.overall === 'number');
+				assert(typeof measured.overall === 'number');
+				expect(measured.overall).toBeLessThan(baseline.overall);
 			});
 
 			it('an UNMEASURED check whose finding text matches the missing-control pattern must NOT arm the critical-gap ceiling', () => {
@@ -727,6 +734,8 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 					{ ...buildCheckResult('lookalikes', []), score: 100, passed: true },
 					{ ...buildCheckResult('shadow_domains', []), score: 100, passed: true },
 				]).overall;
+				assert(typeof withPerfectExtras === 'number');
+				assert(typeof excluded === 'number');
 				expect(excluded).toBeLessThan(withPerfectExtras);
 			});
 		});

@@ -100,8 +100,8 @@ function makeMockD1(rowsBySql: Record<string, unknown[]> = {}) {
 
 function makeFindings(n: number) {
 	return Array.from({ length: n }, (_, i) => ({
-		category: 'spf',
-		severity: 'low',
+		category: 'spf' as const,
+		severity: 'low' as const,
 		title: `finding_${i}`,
 		detail: `detail_${i}`,
 		metadata: { idx: i },

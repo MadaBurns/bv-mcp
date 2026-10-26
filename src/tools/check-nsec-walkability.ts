@@ -41,7 +41,7 @@ interface DenialProbeResult {
 
 /** Random, almost-certainly-nonexistent label so the probe forces an NXDOMAIN/NXNAME reply. */
 function probeNonce(): string {
-	const uuid = globalThis.crypto?.randomUUID?.();
+	const uuid = typeof crypto !== 'undefined' ? crypto.randomUUID?.() : undefined;
 	return (uuid ?? Math.random().toString(36).slice(2)).replace(/-/g, '').slice(0, 16);
 }
 

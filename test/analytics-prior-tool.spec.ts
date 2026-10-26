@@ -176,7 +176,7 @@ describe('readAndUpdateLastTool', () => {
 		const result = readAndUpdateLastTool(sessionId, 'scan_domain');
 		// If it returned a Promise, this check would fail
 		expect(typeof result).toBe('string');
-		expect(result instanceof Promise).toBe(false);
+		expect(result).not.toBeInstanceOf(Promise);
 	});
 
 	it('independent sessions track their own lastTool state', () => {

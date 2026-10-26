@@ -12,7 +12,7 @@
  * NOT a `.spec.ts`/`.test.ts`, so neither vitest run collects it directly.
  */
 
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import type { CheckCategory, CheckResult, DomainContext } from '../../scoring';
 
 /** The scoring module under test — source or built package, injected by the caller. */
@@ -197,6 +197,8 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 
 				expect(auto.profile).toBe('web_only');
 				expect(auto.score.overall).toBe(explicit.overall);
+				assert(typeof legacy.overall === 'number');
+				assert(typeof auto.score.overall === 'number');
 				expect(auto.score.overall).toBeGreaterThan(legacy.overall);
 			});
 
@@ -273,6 +275,8 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const withoutContext = computeScanScore(results);
 				// Without context, email bonus applies. With non_mail, it doesn't.
 				// Both should be high scores but may differ slightly due to bonus
+				assert(typeof withoutContext.overall === 'number');
+				assert(typeof withContext.overall === 'number');
 				expect(withContext.overall).toBeLessThanOrEqual(withoutContext.overall);
 			});
 		});
@@ -290,6 +294,8 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const withEnterprise = computeScanScore(results, enterpriseCtx);
 				const withoutContext = computeScanScore(results);
 				// Enterprise MTA-STS weight (4/22 of protective budget) >= default (3/20)
+				assert(typeof withoutContext.overall === 'number');
+				assert(typeof withEnterprise.overall === 'number');
 				expect(withEnterprise.overall).toBeLessThanOrEqual(withoutContext.overall);
 			});
 
@@ -354,6 +360,8 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				});
 				const defaultScore = computeScanScore(results);
 				const nonMailScore = computeScanScore(results, makeNonMailContext());
+				assert(typeof defaultScore.overall === 'number');
+				assert(typeof nonMailScore.overall === 'number');
 				expect(nonMailScore.overall).toBeGreaterThan(defaultScore.overall);
 			});
 		});

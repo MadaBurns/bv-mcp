@@ -250,7 +250,7 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
                 },
             });
 
-            const innerSummary = inner.findings.find(f => f.metadata?.summary === true);
+            const innerSummary = inner.findings.find((f: BrandAuditFindingLike) => f.metadata?.summary === true);
             if (typeof innerSummary?.metadata?.targetRegistrar === 'string') {
                 primaryRegistrar = innerSummary.metadata.targetRegistrar;
             }

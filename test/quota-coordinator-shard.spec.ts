@@ -1,3 +1,4 @@
+import type { QuotaCoordinator } from '../src/lib/quota-coordinator';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -105,7 +106,7 @@ describe('evaluate payload validation', () => {
 });
 
 describe('routing', () => {
-	function spyNamespace(): { ns: DurableObjectNamespace; names: string[] } {
+	function spyNamespace(): { ns: DurableObjectNamespace<QuotaCoordinator>; names: string[] } {
 		const names: string[] = [];
 		const ns = {
 			getByName: (name: string) => {
@@ -118,7 +119,7 @@ describe('routing', () => {
 						}),
 				};
 			},
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		return { ns, names };
 	}
 
@@ -211,7 +212,7 @@ describe('evaluate response parsing (LINUS MUST-FIX #1)', () => {
 						headers: { 'content-type': 'application/json' },
 					}),
 			}),
-		} as unknown as DurableObjectNamespace;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		await expect(
 			evaluateQuotaWithCoordinator('1.2.3.4', [{ kind: 'scoped-rate', scope: 'tools', ip: '1.2.3.4', minuteLimit: 50, hourLimit: 300 }], malformedNs, SHARDED),
 		).rejects.toBeInstanceOf(MalformedEvaluateResponse);

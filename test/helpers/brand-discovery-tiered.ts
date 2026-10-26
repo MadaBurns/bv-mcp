@@ -41,7 +41,9 @@ export function okNs(domains: Array<{ domain: string; confidence: number }>): Ns
 	return {
 		seedDomain: 'example.com',
 		seedNs: ['ns1.example.com'],
-		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence })),
+		coOwnedDomains: domains.map((d) => ({
+			domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence, matchType: 'set_overlap' as const,
+		})),
 		queryStatus: 'ok',
 	};
 }
@@ -51,7 +53,9 @@ export function okRua(domains: string[]): DmarcRuaResult {
 		seedDomain: 'example.com',
 		dmarcPresent: true,
 		ruaUris: domains.map((d) => `mailto:dmarc@${d}`),
-		ruaDomains: domains.map((d) => ({ domain: d, classification: 'related' as const, confidence: 0.6 })),
+		ruaDomains: domains.map((d) => ({
+			domain: d, classification: 'related' as const, externalAuthorization: 'confirmed' as const, confidence: 0.6,
+		})),
 		queryStatus: 'ok',
 	};
 }
@@ -101,6 +105,7 @@ export function makeTieredDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}
 			queryStatus: 'ok' as const,
 		}),
 		detectCnameAlignment: vi.fn().mockResolvedValue(okEmpty),
+		generateVariants: vi.fn().mockReturnValue([]),
 		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
 		checkLookalikes: vi.fn().mockResolvedValue({
 			category: 'lookalikes',

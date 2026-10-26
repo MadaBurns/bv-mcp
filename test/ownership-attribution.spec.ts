@@ -8,8 +8,8 @@ function registered(ns: string[]): RegistrationState {
 	return { state: 'registered', ns, evidence: ['ns'] };
 }
 const unregistered: RegistrationState = { state: 'unregistered' };
-function unknown(reason: RegistrationState extends { state: 'unknown'; reason: infer R } ? R : never): RegistrationState {
-	return { state: 'unknown', reason } as RegistrationState;
+function unknown(reason: Extract<RegistrationState, { state: 'unknown' }>['reason']): RegistrationState {
+	return { state: 'unknown', reason };
 }
 
 const SEED = 'bnz.co.nz';

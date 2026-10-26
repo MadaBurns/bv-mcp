@@ -101,7 +101,6 @@ describe('TenantFindingDeltaSchema', () => {
 	it('accepts gained / lost / severity_changed only', () => {
 		expect(() => TenantFindingDeltaSchema.parse({ ...baseDelta, delta: 'gained' })).not.toThrow();
 		expect(() => TenantFindingDeltaSchema.parse({ ...baseDelta, delta: 'lost' })).not.toThrow();
-		// @ts-expect-error invalid literal
 		expect(() => TenantFindingDeltaSchema.parse({ ...baseDelta, delta: 'maybe' })).toThrow();
 	});
 });

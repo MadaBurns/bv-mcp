@@ -38,12 +38,12 @@ function scan(checks: CheckResult[], overall: number, grade: string) {
 	return { checks, score: { overall, grade } };
 }
 
-function rdapWithPosture(posture: LockPosture): CheckResult {
-	return { category: 'rdap', passed: true, score: 100, findings: [{ category: 'rdap', title: 'Registration details', severity: 'info', detail: '', metadata: { lockPosture: posture } } as never] } as CheckResult;
+function rdapWithPosture(posture: LockPosture) {
+	return { category: 'rdap', passed: true, score: 100, findings: [{ category: 'rdap', title: 'Registration details', severity: 'info', detail: '', metadata: { lockPosture: posture } }] };
 }
 
-function rdapFailed(): CheckResult {
-	return { category: 'rdap', passed: false, score: 0, findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } } as never] } as CheckResult;
+function rdapFailed() {
+	return { category: 'rdap', passed: false, score: 0, findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } }] };
 }
 
 const lp = (over: Partial<LockPosture>): LockPosture => ({ level: 'unknown', transferLocked: false, deleteLocked: false, updateLocked: false, registryLevel: false, registrarLevel: false, ...over });
@@ -130,6 +130,8 @@ describe('prioritizePortfolioLeads — brand path (injected discovery)', () => {
 		const typo = report.rankedLeads.find((l) => l.domain === 'typo.com')!;
 		const owned = report.rankedLeads.find((l) => l.domain === 'owned1.com')!;
 		// identical reports → owned (×1.0) outranks typo (×0.3)
+		expect(owned.gapSeverity).not.toBeNull();
+		if (owned.gapSeverity === null) throw new Error('Expected assessed owned domain');
 		expect(typo.gapSeverity).toBeLessThan(owned.gapSeverity);
 		expect(typo.ownershipBucket).toBe('impersonation');
 	});

@@ -22,7 +22,10 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
-type TestEnv = typeof env & {
+// This fixture deliberately omits optional production services to isolate queue accounting.
+type TestEnv = Omit<typeof env, 'RATE_LIMIT' | 'QUOTA_COORDINATOR'> & {
+	RATE_LIMIT?: KVNamespace;
+	QUOTA_COORDINATOR?: typeof env.QUOTA_COORDINATOR;
 	BV_MCP_TENANT_KEY?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_REGISTRY_DB?: D1Database;
@@ -120,7 +123,7 @@ function buildEnvWithQueue(rateLimit?: KVNamespace) {
 		[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
 	});
 	const tenant = makeMockD1();
-	const queueSend = vi.fn(async () => {});
+	const queueSend = vi.fn(async (_message: { cycle_id: string; sub_tenant_id: string; domain: string }) => {});
 	const customEnv = {
 		...env,
 		BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
@@ -138,7 +141,7 @@ function buildEnvWithQueue(rateLimit?: KVNamespace) {
 
 async function sendRequest(req: Request, customEnv: TestEnv): Promise<Response> {
 	const ctx = createExecutionContext();
-	const res = await worker.fetch(req, customEnv, ctx);
+	const res = await worker.fetch(req, customEnv as Parameters<typeof worker.fetch>[1], ctx);
 	await waitOnExecutionContext(ctx);
 	return res;
 }
@@ -187,7 +190,7 @@ describe('POST /internal/tenants/scan (mode=queue producer)', () => {
 		expect(res.status).toBe(202);
 		expect(queueSend).toHaveBeenCalledTimes(3);
 		for (const call of queueSend.mock.calls) {
-			const msg = call[0] as { cycle_id: string; sub_tenant_id: string; domain: string };
+			const msg = call[0];
 			expect(typeof msg.cycle_id).toBe('string');
 			expect(msg.sub_tenant_id).toBe(TEST_TENANT_ID);
 			expect(typeof msg.domain).toBe('string');
@@ -201,7 +204,7 @@ describe('POST /internal/tenants/scan (mode=queue producer)', () => {
 		const tenant = makeMockD1({
 			'SELECT domain FROM domains WHERE domain IN (?)': [],
 		});
-		const queueSend = vi.fn(async () => {});
+		const queueSend = vi.fn(async (_message: { cycle_id: string; sub_tenant_id: string; domain: string }) => {});
 		const customEnv = {
 			...env,
 			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,

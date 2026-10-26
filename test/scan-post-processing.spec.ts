@@ -535,7 +535,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 		const inferred = spf?.findings.find((f) => f.title === 'Outbound email provider inferred');
 		expect(inferred).toBeDefined();
 		expect(inferred?.detail).toContain('Google Workspace');
-		expect(inferred?.metadata?.signalsUsed?.dkimSelectors).toContain('google');
+		expect(inferred?.metadata?.signalsUsed).toMatchObject({ dkimSelectors: expect.arrayContaining(['google']) });
 	});
 
 	it('detects Microsoft 365 via DKIM selector hint "selector1"', async () => {
@@ -556,7 +556,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 		const inferred = spf?.findings.find((f) => f.title === 'Outbound email provider inferred');
 		expect(inferred).toBeDefined();
 		expect(inferred?.detail).toContain('Microsoft 365');
-		expect(inferred?.metadata?.signalsUsed?.dkimSelectors).toContain('selector1');
+		expect(inferred?.metadata?.signalsUsed).toMatchObject({ dkimSelectors: expect.arrayContaining(['selector1']) });
 	});
 
 	it('detects Microsoft 365 via DKIM selector hint "selector2"', async () => {
@@ -764,8 +764,8 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 
 		const updated = await applyScanPostProcessing('example.com', results);
 		const inferred = updated.find((r) => r.category === 'spf')?.findings.find((f) => f.title === 'Outbound email provider inferred');
-		expect(inferred?.metadata?.signalsUsed?.spfDomains).toContain('spf.protection.outlook.com');
-		expect(inferred?.metadata?.signalsUsed?.dkimSelectors).toContain('selector1');
+		expect(inferred?.metadata?.signalsUsed).toMatchObject({ spfDomains: expect.arrayContaining(['spf.protection.outlook.com']) });
+		expect(inferred?.metadata?.signalsUsed).toMatchObject({ dkimSelectors: expect.arrayContaining(['selector1']) });
 	});
 
 	it('populates providers array with name and matches fields', async () => {
@@ -1006,7 +1006,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 			const certstream = {
-				fetch: vi.fn(async () =>
+				fetch: vi.fn<typeof fetch>(async () =>
 					new Response(
 						JSON.stringify({
 							domain: 'example.com',
@@ -1049,7 +1049,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 			const certstream = {
-				fetch: vi.fn(async () =>
+				fetch: vi.fn<typeof fetch>(async () =>
 					new Response(JSON.stringify({ issuer: 'CN=Cloudflare Origin SSL ECC Issuer ECC', source: 'crt.sh' }), { status: 200 }),
 				),
 			};
@@ -1077,7 +1077,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 			const certstream = {
-				fetch: vi.fn(async () =>
+				fetch: vi.fn<typeof fetch>(async () =>
 					new Response(JSON.stringify({ issuer: null, source: 'none', error: 'both failed' }), { status: 200 }),
 				),
 			};
@@ -1103,7 +1103,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 			const certstream = {
-				fetch: vi.fn(async () => new Response('Internal Server Error', { status: 500 })),
+				fetch: vi.fn<typeof fetch>(async () => new Response('Internal Server Error', { status: 500 })),
 			};
 
 			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN], { certstream });
@@ -1146,7 +1146,7 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 			const certstream = {
-				fetch: vi.fn(async () =>
+				fetch: vi.fn<typeof fetch>(async () =>
 					new Response(JSON.stringify({ issuer: 'C=US, O=DigiCert Inc, CN=DigiCert Global G2' }), { status: 200 }),
 				),
 			};

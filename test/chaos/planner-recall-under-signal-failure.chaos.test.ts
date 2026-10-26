@@ -33,7 +33,9 @@ function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrela
 	return {
 		seedDomain: 'example.com',
 		seedNs: ['ns1.example.com'],
-		coOwnedDomains: domains.map((d) => ({ domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence })),
+		coOwnedDomains: domains.map((d) => ({
+			domain: d.domain, sharedNs: ['ns1.example.com'], confidence: d.confidence, matchType: 'set_overlap' as const,
+		})),
 		queryStatus: 'ok',
 	};
 }

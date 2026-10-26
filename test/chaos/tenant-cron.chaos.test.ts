@@ -122,7 +122,7 @@ function makeRecordingD1(rowsByTag: Record<string, unknown[]>) {
 }
 
 const okDns: DnsQueryFn = async (_d, _t): Promise<DohResponse> =>
-	({ Status: 0, Answer: [] }) as DohResponse;
+	({ Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] }) as DohResponse;
 
 describe('Tenant cron chaos', () => {
 	it('Hypothesis: when the registry D1 throws on tenant enumeration, handleTenantWeeklyRescan resolves cleanly without re-issuing queue sends', async () => {

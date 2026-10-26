@@ -1,7 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
-import type { Env } from '../src/types/env';
 import { resetSessions } from '../src/lib/session';
 import { resetAllRateLimits, resetGlobalDailyLimit } from '../src/lib/rate-limiter';
 

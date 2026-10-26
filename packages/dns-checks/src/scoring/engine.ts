@@ -177,7 +177,7 @@ const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 's
  */
 function buildGenericContext(
 	results: CheckResult[],
-	categoryScores: Record<CheckCategory, number>,
+	categoryScores: Partial<Record<CheckCategory, number>>,
 	allFindings: Finding[],
 	context: DomainContext | undefined,
 	config: ScoringConfig,
@@ -449,7 +449,7 @@ export function computeScanScore(
 		return {
 			overall: null,
 			grade: null,
-			categoryScores: categoryScores as Record<CheckCategory, number>,
+			categoryScores,
 			findings: [],
 			summary: evidenceNote,
 			evidence,
@@ -479,7 +479,7 @@ export function computeScanScore(
 		return {
 			overall: null,
 			grade: null,
-			categoryScores: {} as Record<CheckCategory, number>,
+			categoryScores: {},
 			findings: [],
 			summary: evidenceNote,
 			evidence: computeScanEvidence(results),
@@ -505,8 +505,8 @@ export function computeScanScore(
 
 	// Build the generic context and delegate to the generic engine. `categoryScores` is a partial
 	// map (never-run + transient categories are absent); the generic engine treats absent scored
-	// keys via `transientFailures` exclusion, so the widening cast is runtime-safe.
-	const genericContext = buildGenericContext(results, categoryScores as Record<CheckCategory, number>, allFindings, context, cfg);
+	// keys via `transientFailures` exclusion. Keep that absence explicit in the types.
+	const genericContext = buildGenericContext(results, categoryScores, allFindings, context, cfg);
 	const genericResult = computeGenericScore(genericContext, config);
 
 	// --- Build summary using original logic ---
@@ -536,7 +536,7 @@ export function computeScanScore(
 		return {
 			overall: null,
 			grade: null,
-			categoryScores: categoryScores as Record<CheckCategory, number>,
+			categoryScores,
 			findings: allFindings,
 			summary: evidenceNote,
 			tierBreakdown: genericResult.tierBreakdown,
@@ -549,7 +549,7 @@ export function computeScanScore(
 	return {
 		overall: genericResult.overall,
 		grade: genericResult.grade,
-		categoryScores: categoryScores as Record<CheckCategory, number>,
+		categoryScores,
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,

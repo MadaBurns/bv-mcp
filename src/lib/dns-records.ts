@@ -182,7 +182,7 @@ function redecodeBinaryStringAsUtf8(s: string): string {
 	const bytes = new Uint8Array(s.length);
 	for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
 	try {
-		return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
 	} catch {
 		// Not valid UTF-8 — return the original string unchanged rather than
 		// silently substituting U+FFFD replacement characters.

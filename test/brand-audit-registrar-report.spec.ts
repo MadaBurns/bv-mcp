@@ -20,7 +20,7 @@ function makeD1ForGetReport(opts: {
 } = {}) {
 	const auditStatus = opts.auditStatus ?? 'completed';
 	const targetStatus = opts.targetStatus ?? 'completed';
-	const resultJson = opts.resultJson !== undefined ? opts.resultJson : JSON.stringify({ category: 'brand_discovery', score: 100, findings: [] });
+	const resultJson = opts.resultJson !== undefined ? opts.resultJson : JSON.stringify({ category: 'brand_discovery', passed: true, score: 100, findings: [] });
 
 	const db = {
 		prepare(sql: string) {
@@ -101,7 +101,7 @@ function makeD1ForStatus(opts: { targets?: { target: string }[] } = {}) {
 								completed_at: 1_750_000_080_000,
 								error: null,
 								pdf_r2_key: null,
-								result_json: JSON.stringify({ category: 'brand_discovery', score: 100, findings: [] }),
+								result_json: JSON.stringify({ category: 'brand_discovery', passed: true, score: 100, findings: [] }),
 							})),
 							success: true,
 							meta: {},

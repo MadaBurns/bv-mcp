@@ -232,7 +232,7 @@ describe('enrichCertificateIntelligence', () => {
 	});
 
 	it('uses an injected DER parser when one is available', async () => {
-		const derKeyParser: DerKeyParser = vi.fn(() => ({ keyType: 'ec', keyBits: 256, sigAlg: 'sha256WithRSAEncryption' }));
+		const derKeyParser: DerKeyParser = vi.fn<DerKeyParser>(() => ({ keyType: 'ec', keyBits: 256, sigAlg: 'sha256WithRSAEncryption' }));
 		const fetchFn = vi.fn(async () => okResponse([issuance({ cert: { data: 'BASE64DER' } })]));
 		const out = await enrichCertificateIntelligence({ domain: 'example.com', nowSeconds: NOW, fetchFn, derKeyParser });
 		expect(derKeyParser).toHaveBeenCalledWith('BASE64DER');

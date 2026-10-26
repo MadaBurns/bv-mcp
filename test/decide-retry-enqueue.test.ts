@@ -7,13 +7,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { CheckResult } from '../src/lib/scoring';
+import type { CheckCategory, CheckResult } from '../src/lib/scoring';
 import { decideRetryEnqueue } from '../src/lib/registrar-retry';
 import type { BrandAuditQueueMessage } from '../src/queue/brand-audit-consumer';
 
+// Mirror the standalone category boundary used by brand-audit tools.
 function summary(targetSource: string, failureReason?: string): CheckResult['findings'][number] {
 	return {
-		category: 'brand_audit',
+		category: 'brand_audit' as CheckCategory,
 		title: 'summary',
 		severity: 'info',
 		detail: '',
@@ -27,7 +28,7 @@ function summary(targetSource: string, failureReason?: string): CheckResult['fin
 
 function candidate(domain: string, source: string, failureReason?: string): CheckResult['findings'][number] {
 	return {
-		category: 'brand_audit',
+		category: 'brand_audit' as CheckCategory,
 		title: domain,
 		severity: 'low',
 		detail: '',
@@ -40,7 +41,7 @@ function candidate(domain: string, source: string, failureReason?: string): Chec
 }
 
 function makeResult(findings: CheckResult['findings']): CheckResult {
-	return { category: 'brand_audit', score: 100, findings };
+	return { category: 'brand_audit' as CheckCategory, passed: true, score: 100, findings };
 }
 
 const baseMsg: BrandAuditQueueMessage = {
@@ -89,7 +90,7 @@ describe('decideRetryEnqueue', () => {
 		const result = makeResult([
 			summary('rdap'),
 			{
-				category: 'brand_audit',
+				category: 'brand_audit' as CheckCategory,
 				title: 'late.com',
 				severity: 'info',
 				detail: '',

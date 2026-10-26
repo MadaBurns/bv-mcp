@@ -3,6 +3,7 @@ import { TenantCycleAlertSchema, type TenantCycleAlert } from '../../schemas/ten
 import { SERVER_VERSION } from '../../lib/server-version';
 import { logError } from '../../lib/log';
 import { isBvWebIngestUrl } from '../../lib/alerting';
+import { disposeUnreadResponseBody } from '../../lib/response-body';
 
 /**
  * Fail-soft webhook delivery for the Phase 3 tenant cycle-diff alert.
@@ -63,7 +64,7 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /** Outcome of one POST attempt — distinguishes a real response from the two silent failure modes. */
-type PostOutcome = { kind: 'response'; response: Response } | { kind: 'timeout' } | { kind: 'network' };
+type PostOutcome = { kind: 'response'; status: number } | { kind: 'timeout' } | { kind: 'network' };
 
 async function postWithTimeout(
 	url: string,
@@ -73,9 +74,13 @@ async function postWithTimeout(
 	bvWeb: Fetcher | undefined,
 ): Promise<PostOutcome> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	const controller = new AbortController();
 	try {
 		const timeout = new Promise<PostOutcome>((resolve) => {
-			timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+			timer = setTimeout(() => {
+				resolve({ kind: 'timeout' });
+				controller.abort();
+			}, timeoutMs);
 		});
 		// Mirrors `sendAlert`'s dispatch rule exactly: the bv-web ingest route goes
 		// over the service binding (bypasses the zone's bot-challenge 403), any
@@ -89,7 +94,12 @@ async function postWithTimeout(
 			},
 			body,
 			redirect: 'manual',
-		}).then((response): PostOutcome => ({ kind: 'response', response }));
+			signal: controller.signal,
+		}).then((response): PostOutcome => {
+			// Also disposes late responses without letting slow cleanup change delivery status.
+			void disposeUnreadResponseBody(response);
+			return { kind: 'response', status: response.status };
+		});
 		return await Promise.race([request, timeout]);
 	} catch {
 		return { kind: 'network' };
@@ -154,10 +164,10 @@ export async function sendTenantAlert(
 		logNotDelivered(first.kind);
 		return { delivered: false };
 	}
-	if (first.response.status >= 200 && first.response.status < 300) {
-		return { delivered: true, status: first.response.status };
+	if (first.status >= 200 && first.status < 300) {
+		return { delivered: true, status: first.status };
 	}
-	if (first.response.status >= 500) {
+	if (first.status >= 500) {
 		// 5xx → single retry after backoff
 		await sleepFn(retryDelayMs);
 		const second = await postWithTimeout(env.ALERT_WEBHOOK_URL, body, fetchFn, timeoutMs, bvWeb);
@@ -165,13 +175,13 @@ export async function sendTenantAlert(
 			logNotDelivered(second.kind);
 			return { delivered: false };
 		}
-		if (second.response.status >= 200 && second.response.status < 300) {
-			return { delivered: true, status: second.response.status };
+		if (second.status >= 200 && second.status < 300) {
+			return { delivered: true, status: second.status };
 		}
-		logNotDelivered(second.response.status);
-		return { delivered: false, status: second.response.status };
+		logNotDelivered(second.status);
+		return { delivered: false, status: second.status };
 	}
 	// 3xx / 4xx → terminal fail, no retry
-	logNotDelivered(first.response.status);
-	return { delivered: false, status: first.response.status };
+	logNotDelivered(first.status);
+	return { delivered: false, status: first.status };
 }

@@ -58,7 +58,7 @@ function makeMockD1(rows: RowMap) {
 describe('brandAuditGetReport', () => {
 	it('returns per-target result_json when target is provided and status=completed', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
-		const fakeResult = { category: 'brand_discovery', score: 100, findings: [{ category: 'brand_discovery', title: 'apple.net', severity: 'info', detail: '', metadata: { bucket: 'consolidated' } }] };
+		const fakeResult = { category: 'brand_discovery', passed: true, score: 100, findings: [{ category: 'brand_discovery', title: 'apple.net', severity: 'info', detail: '', metadata: { bucket: 'consolidated' } }] };
 		const { db } = makeMockD1({
 			audit: { id: 'aud-1', owner_id: 'owner-abc', status: 'completed', format: 'json' },
 			target: { audit_id: 'aud-1', target: 'apple.com', status: 'completed', result_json: JSON.stringify(fakeResult), error: null, completed_at: 1 },
@@ -95,7 +95,7 @@ describe('brandAuditGetReport', () => {
 
 	it('coalesces completed parent plus target result_json into a readable completed target', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
-		const fakeResult = { category: 'brand_discovery', score: 100, findings: [] };
+		const fakeResult = { category: 'brand_discovery', passed: true, score: 100, findings: [] };
 		const { db } = makeMockD1({
 			audit: { id: 'aud-1', owner_id: 'owner-abc', status: 'completed', format: 'json' },
 			target: {

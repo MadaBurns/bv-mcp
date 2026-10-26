@@ -65,10 +65,7 @@ describe('sendTenantAlert', () => {
 	});
 
 	it('5xx then 5xx → retried once, then delivered:false', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(okResponse(503))
-			.mockResolvedValueOnce(okResponse(502));
+		const fetchFn = vi.fn().mockResolvedValueOnce(okResponse(503)).mockResolvedValueOnce(okResponse(502));
 		const sleepFn = vi.fn().mockResolvedValue(undefined);
 		const out = await sendTenantAlert(validPayload, env, { fetchFn, sleepFn, retryDelayMs: 5 });
 		expect(out).toEqual({ delivered: false, status: 502 });
@@ -77,10 +74,7 @@ describe('sendTenantAlert', () => {
 	});
 
 	it('5xx then 200 → retry succeeds, delivered:true', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(okResponse(500))
-			.mockResolvedValueOnce(okResponse(200));
+		const fetchFn = vi.fn().mockResolvedValueOnce(okResponse(500)).mockResolvedValueOnce(okResponse(200));
 		const sleepFn = vi.fn().mockResolvedValue(undefined);
 		const out = await sendTenantAlert(validPayload, env, { fetchFn, sleepFn, retryDelayMs: 5 });
 		expect(out).toEqual({ delivered: true, status: 200 });
@@ -89,9 +83,10 @@ describe('sendTenantAlert', () => {
 
 	it('timeout > timeoutMs → delivered:false (no throw)', async () => {
 		const fetchFn = vi.fn().mockImplementation(
-			() => new Promise<Response>(() => {
-				/* never resolves */
-			}),
+			() =>
+				new Promise<Response>(() => {
+					/* never resolves */
+				}),
 		);
 		const out = await sendTenantAlert(validPayload, env, { fetchFn, timeoutMs: 25 });
 		expect(out).toEqual({ delivered: false });
@@ -125,6 +120,49 @@ describe('sendTenantAlert', () => {
 		const bad = { ...validPayload, webhook_url_hash: 'not-hex' } as TenantCycleAlert;
 		await expect(sendTenantAlert(bad, env, { fetchFn })).rejects.toThrow();
 		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe('sendTenantAlert resource cleanup', () => {
+	it.each([200, 400, 503])('disposes response bodies on status %s, including retries', async (status) => {
+		const cancel = vi.fn();
+		const fetchFn = vi.fn(async () => new Response(new ReadableStream({ cancel }), { status }));
+		await sendTenantAlert(validPayload, env, { fetchFn, sleepFn: async () => {} });
+		expect(cancel).toHaveBeenCalledTimes(status >= 500 ? 2 : 1);
+	});
+
+	it('a slow body cancellation does not turn a received success into a timeout', async () => {
+		let finishCancel!: () => void;
+		const cancel = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishCancel = resolve;
+				}),
+		);
+		const fetchFn = vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 200 }));
+		try {
+			expect(await sendTenantAlert(validPayload, env, { fetchFn, timeoutMs: 5 })).toEqual({ delivered: true, status: 200 });
+			expect(cancel).toHaveBeenCalledOnce();
+		} finally {
+			finishCancel();
+		}
+	});
+
+	it('aborts timed-out transport and disposes a response arriving afterward', async () => {
+		let finish!: (response: Response) => void;
+		let signal: AbortSignal | null | undefined;
+		const fetchFn: typeof fetch = async (_input, init) => {
+			signal = init?.signal;
+			return new Promise<Response>((resolve) => {
+				finish = resolve;
+			});
+		};
+		const result = await sendTenantAlert(validPayload, env, { fetchFn, timeoutMs: 5 });
+		expect(result).toEqual({ delivered: false });
+		expect(signal?.aborted).toBe(true);
+		const cancel = vi.fn();
+		finish(new Response(new ReadableStream({ cancel })));
+		await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
 	});
 });
 
@@ -181,9 +219,10 @@ describe('sendTenantAlert non-delivery logging', () => {
 	it('timeout → delivered:false AND a warn log with reason "timeout"', async () => {
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const fetchFn = vi.fn().mockImplementation(
-			() => new Promise<Response>(() => {
-				/* never resolves */
-			}),
+			() =>
+				new Promise<Response>(() => {
+					/* never resolves */
+				}),
 		);
 
 		const out = await sendTenantAlert(validPayload, env, { fetchFn, timeoutMs: 10 });
@@ -212,10 +251,7 @@ describe('sendTenantAlert non-delivery logging', () => {
 
 	it('5xx twice → exactly one warn log (not one per attempt)', async () => {
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(okResponse(503))
-			.mockResolvedValueOnce(okResponse(502));
+		const fetchFn = vi.fn().mockResolvedValueOnce(okResponse(503)).mockResolvedValueOnce(okResponse(502));
 		const sleepFn = vi.fn().mockResolvedValue(undefined);
 
 		const out = await sendTenantAlert(validPayload, env, { fetchFn, sleepFn, retryDelayMs: 5 });

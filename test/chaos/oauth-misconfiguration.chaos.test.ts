@@ -18,7 +18,9 @@ import { clearKvPrefix } from '../helpers/kv';
 // issuable when the signing secret is unsuitable, even via /oauth/token directly.
 
 const TEST_API_KEY = 'testkey';
-type TestEnv = typeof env & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string; ENABLE_OAUTH?: string };
+// Deliberately widen the generated literal flag to exercise disabled/misconfigured environments.
+// The Worker boundary assertions below intentionally bypass deployment-only literal types.
+type TestEnv = Omit<typeof env, 'ENABLE_OAUTH'> & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string; ENABLE_OAUTH?: string };
 
 function probes() {
 	return [
@@ -85,7 +87,7 @@ describe('OAuth misconfiguration chaos (v2.10.9 hardened)', () => {
 		const brokenEnv = { ...env, BV_API_KEY: TEST_API_KEY, ENABLE_OAUTH: 'true', OAUTH_SIGNING_SECRET: undefined } as TestEnv;
 		for (const probe of probes()) {
 			const ctx = createExecutionContext();
-			const res = await worker.fetch(probe.req(), brokenEnv, ctx);
+			const res = await worker.fetch(probe.req(), brokenEnv as Parameters<typeof worker.fetch>[1], ctx);
 			await waitOnExecutionContext(ctx);
 			expect(res.status, `${probe.name} must 503 when signing secret is missing`).toBe(503);
 			const body = (await res.json()) as Record<string, unknown>;
@@ -105,7 +107,7 @@ describe('OAuth misconfiguration chaos (v2.10.9 hardened)', () => {
 		} as TestEnv;
 		for (const probe of probes()) {
 			const ctx = createExecutionContext();
-			const res = await worker.fetch(probe.req(), brokenEnv, ctx);
+			const res = await worker.fetch(probe.req(), brokenEnv as Parameters<typeof worker.fetch>[1], ctx);
 			await waitOnExecutionContext(ctx);
 			expect(res.status, `${probe.name} must 503 when signing secret is < 32 bytes`).toBe(503);
 		}
@@ -120,7 +122,7 @@ describe('OAuth misconfiguration chaos (v2.10.9 hardened)', () => {
 		const offEnv = { ...env, BV_API_KEY: TEST_API_KEY, ENABLE_OAUTH: 'false' } as TestEnv;
 		for (const probe of probes()) {
 			const ctx = createExecutionContext();
-			const res = await worker.fetch(probe.req(), offEnv, ctx);
+			const res = await worker.fetch(probe.req(), offEnv as Parameters<typeof worker.fetch>[1], ctx);
 			await waitOnExecutionContext(ctx);
 			expect(res.status, `${probe.name} must 404 when feature off`).toBe(404);
 		}

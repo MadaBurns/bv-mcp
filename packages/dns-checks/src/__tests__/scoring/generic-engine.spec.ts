@@ -630,6 +630,25 @@ describe('computeGenericScore', () => {
 	});
 
 	describe('absent category scores default to 100', () => {
+		it('reports an explicit undefined score as unmeasured just like an absent key', () => {
+			const options = { tierMap: { spf: 'core' as const }, weights: { spf: 10 } };
+			const absent = computeGenericScore(buildContext({ ...options, categoryScores: {} }));
+			const undefinedScore = computeGenericScore(buildContext({ ...options, categoryScores: { spf: undefined } }));
+			expect(undefinedScore).toEqual(absent);
+			expect(undefinedScore.unmeasuredCategories).toEqual(['spf']);
+		});
+
+		it('accepts sparse scores and never echoes an undefined extra category', () => {
+			const result = computeGenericScore(buildContext({
+				categoryScores: { spf: 100, extra: undefined },
+				tierMap: { spf: 'core', dmarc: 'core' },
+				weights: { spf: 10, dmarc: 16 },
+			}));
+			expect(result.categoryScores).toEqual({ spf: 100, dmarc: 100 });
+			expect(result.unmeasuredCategories).toEqual(['dmarc']);
+			expect(Object.values(result.categoryScores).every((score) => typeof score === 'number')).toBe(true);
+		});
+
 		it('treats missing core categories as 100%', () => {
 			// Only provide spf, rest of core is absent
 			const ctx = buildContext({

@@ -214,7 +214,41 @@ describe('Streaming SSE - Stream lifecycle', () => {
 	});
 });
 
+describe('Streaming SSE - Cancellation', () => {
+	it.each(['resolve', 'reject'] as const)('stops heartbeats and ignores an operation that %ss after cancellation', async (outcome) => {
+		vi.useFakeTimers();
+		let resolve!: (value: string) => void;
+		let reject!: (error: Error) => void;
+		const operation = new Promise<string>((onResolve, onReject) => {
+			resolve = onResolve;
+			reject = onReject;
+		});
+		const format = vi.fn((result: string) => sseEvent({ result }));
+		const response = createStreamingSseResponse(operation, format, {});
+		const reader = response.body!.getReader();
+		expect(vi.getTimerCount()).toBe(1);
+
+		await reader.cancel();
+		expect(vi.getTimerCount()).toBe(0);
+		if (outcome === 'resolve') resolve('finished');
+		else reject(new Error('late failure'));
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(format).not.toHaveBeenCalled();
+		expect((await reader.read()).done).toBe(true);
+	});
+});
+
 describe('Streaming SSE - Error recovery', () => {
+	it('emits a sanitized error and closes when formatting the result throws', async () => {
+		const response = createStreamingSseResponse(Promise.resolve('done'), () => {
+			throw new Error('private formatter failure');
+		}, {});
+		const full = await drainStream(response);
+		expect(full).toContain('"code":-32603');
+		expect(full).toContain('Internal error');
+		expect(full).not.toContain('private formatter failure');
+	});
+
 	it('emits JSON-RPC error event when operation rejects', async () => {
 		vi.useFakeTimers();
 		let reject: (e: Error) => void;
