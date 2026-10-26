@@ -30,9 +30,9 @@ export default defineConfig({
 			cpuMs: 300_000,
 		},
 		triggers: [
-			// Tailer every minute; compactor hourly at :17.
+			// Tailer every minute; compaction planner every 15 min (T0 -> T1 each tick, every tier at :17; src/indexer/plan.ts).
 			triggers.scheduled({ schedule: '* * * * *' }),
-			triggers.scheduled({ schedule: '17 * * * *' }),
+			triggers.scheduled({ schedule: '2,17,32,47 * * * *' }),
 			triggers.queue({ name: 'bv-ct-index-entries', maxBatchSize: 100, maxBatchTimeout: 30, maxRetries: 3 }),
 			triggers.queue({ name: 'bv-ct-index-compact', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 3 }),
 			// One tailer shard per invocation; never retried, as the next minute's tick re-plans the same logs.

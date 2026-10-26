@@ -167,9 +167,10 @@ describe('infra probe wrangler wiring', () => {
 			expect(cfFlags).toEqual(ctIndexConfig.compatibility_flags);
 		});
 
-		it('runs the tailer cron every minute and the compactor hourly, in both configs', () => {
+		it('runs the tailer cron every minute and the compaction planner every 15 min, in both configs', () => {
 			const cfCrons = [...src.matchAll(/\btriggers\.scheduled\(\{\s*schedule:\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
-			expect(ctIndexConfig.triggers?.crons).toEqual(['* * * * *', '17 * * * *']);
+			// SQ-402: T0 -> T1 every tick, every tier at :17 (packages/bv-ct-index/src/indexer/plan.ts COMPACTION_CRON).
+			expect(ctIndexConfig.triggers?.crons).toEqual(['* * * * *', '2,17,32,47 * * * *']);
 			expect(cfCrons).toEqual(ctIndexConfig.triggers?.crons);
 		});
 

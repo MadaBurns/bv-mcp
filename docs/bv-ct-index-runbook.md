@@ -97,20 +97,29 @@ checks; prefer deploying the sidecar.
 ## 5. Redeploy with the API
 
 The live version `f8b4a245` predates the query API. From a clean checkout at the tag or commit you intend to ship, with
-`BV_CT_INDEX_D1_ID` exported:
+`BV_CT_INDEX_D1_ID` exported. A clean checkout has no `packages/bv-ct-index/.wrangler.migrate.jsonc` (it is gitignored), so the
+first command regenerates it from the tracked test config, the same `sed` that `npm run provision:ct-index` prints in step 2.
+Regenerate it on every redeploy rather than reusing an old copy, so it carries the current triggers and bindings.
 
 ```bash
-npx wrangler d1 migrations apply bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc
-npm run deploy:ct-index
+sed "s/YOUR_BV_CT_INDEX_CURSORS_D1_DATABASE_ID/$BV_CT_INDEX_D1_ID/" packages/bv-ct-index/wrangler.jsonc > packages/bv-ct-index/.wrangler.migrate.jsonc
+npx wrangler d1 migrations apply bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc   # 1. migrations
+npm run deploy:ct-index                                                                                               # 2. then code
 npx wrangler deployments list --name bv-ct-index   # record the new version id
 ```
 
+The order is the guard: no CI or deploy-script check enforces it (SQ-404), so run the three commands in this order.
 Apply pending migrations before the deploy, never after. From migration 0005 (SQ-401) on, the Worker writes and reads the
 `runs.key_filter` and `runs.key_split` columns, so a version deployed before 0005 fails every T0 write and every read with
 `no such column`. Rows written before 0005 keep NULL in both columns and are always read, so nothing needs backfilling: they
 leave the catalog as compaction rewrites them. Rolling the code back after 0005 stays correct, because older code leaves
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
+
+From SQ-402 on, the deploy also moves the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`: T0 -> T1 is planned every
+15 minutes and everything else at :17 as before. Check it on the first :32 or :47 after the deploy: one `ct_compaction_plan` line
+whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
+then stay near 180 (about 32 min of ingest) instead of climbing past 400 after each :17.
 
 This redeploy is also required before `npm run deploy:prod` (step 8) will pass `check:sidecar-freshness`, because the live
 version predates the sidecar source. The secret persists across versions, so no `--secrets-file` is needed. Rollback of a bad sidecar deploy:
@@ -236,7 +245,7 @@ npx wrangler queues info bv-ct-index-compact
 npx wrangler tail bv-ct-index --format json | grep --line-buffered -E 'ct_compaction_plan|ct_compaction_job|bv-ct-index-compact|exceeded'
 ```
 
-Catch-up: no manual step. The first `:17` cron after the deploy plans every T0 run older than the last full hour. At about
+Catch-up: no manual step. The first `:17` cron after the deploy plans every T0 run stamped before the current hour. At about
 235 runs an hour, that is about 8 jobs of at most 32 runs per backlog hour. For example, 30 backlog hours become about 220 jobs,
 sent 100 per `sendBatch`. The consumer takes one job per invocation and scales out. Each job writes its own T1 runs, so tier 1 grows
 and tier 0 drains to the current hour within that hour. A job re-planned by a later cron while it still waits in the queue is
@@ -309,18 +318,29 @@ from that file:
 | Merge wall time                           | < 30 s   | 30 s         |
 | Merge memory (`peakBytesEstimate`)        | < 100 MB | 128 MB       |
 
-**7b. Latency of the real index.** Time `/enumerate` against the live index for at least five domains, including `govt.nz` (a
-public suffix, a pure range scan) and a very large apex (`amazonaws.com`), plus ordinary ones. The sidecar has no public URL, so use
-a remote dev session: it runs the same code on Cloudflare against the **real** R2 and D1 bindings, serves on localhost, and does not
-fire the crons or consume the queues.
+**7b. Latency of the real index.** Time `/enumerate` against the live index for these seven domains: `govt.nz` (a public suffix,
+a pure range scan), `amazonaws.com` and `microsoft.com` (apexes with rows in almost every run, so every live tier-0 run is opened),
+and the ordinary `blackveilsecurity.com`, `example.co.nz`, `spacex.com` and `x.com`. The sidecar has no public URL, so use a remote
+dev session: it runs the same code on Cloudflare against the **real** R2 and D1 bindings, serves on localhost, and does not fire the
+crons or consume the queues.
+
+**Run it at peak tier 0, between :30 and :45 past the hour**, and late in the UTC day if you can: that is when a read opens the most
+runs (every live tier-0 run, plus each range's live tier-1 runs: the last roll-up's output, and the runs stamped :02, :17 and :32 of
+this hour, which the roll-up leaves alone until the next :17). A run just after :17, or just after a drain,
+measures the easy case and does not count. Record the tier-0 count with the result:
+
+```bash
+npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc \
+  --command "SELECT tier, COUNT(*) AS runs FROM runs WHERE generation = COALESCE((SELECT CAST(v AS INTEGER) FROM meta WHERE k = 'current_generation'), 1) GROUP BY tier"
+```
 
 ```bash
 # Terminal 1 (leave running). .dev.vars is gitignored; delete it afterwards.
 printf 'CT_INDEX_ADMIN_KEY=%s\n' "$CT_INDEX_ADMIN_KEY" > packages/bv-ct-index/.dev.vars
 npx wrangler dev --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc
 
-# Terminal 2: 5 domains x 4 samples
-for d in govt.nz amazonaws.com microsoft.com blackveilsecurity.com example.co.nz; do
+# Terminal 2, between :30 and :45: 7 domains x 4 samples
+for d in govt.nz amazonaws.com microsoft.com blackveilsecurity.com example.co.nz spacex.com x.com; do
   for i in 1 2 3 4; do
     curl -sS -o /dev/null -w "%{time_total} %{http_code} $d\n" \
       -H "authorization: Bearer $CT_INDEX_ADMIN_KEY" "http://localhost:8787/enumerate?domain=$d"
@@ -330,8 +350,9 @@ sort -n latency.txt | awk '{ t[NR] = $1 } END { i = int(0.95 * NR); if (i < 0.95
 awk '$2 != 200' latency.txt    # must print nothing
 ```
 
-Pass: **p95 under 1.5 s and every status 200**. A `503` with `ct_index_timeout` means the API's own 1500 ms budget tripped, which
-is a failure of this gate. The laptop round trip is inside the number, so it is conservative. The in-Worker figure is the one the
+Pass: **p95 under 1.5 s and every status 200, `amazonaws.com` and `microsoft.com` included**. There is no exemption for big apexes
+(operator ruling, 2026-10-26). A `503` with `ct_index_timeout` means the API's own 1500 ms budget tripped, which is a failure of this
+gate. The laptop round trip is inside the number, so it is conservative. The in-Worker figure is the one the
 benchmark reports. Record the result with `story_log` on US-12.
 
 This remote-dev path was written without being run against the account (the documentation ticket had no account access). If `wrangler dev
@@ -372,6 +393,16 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   indexing.
 - **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
   never roll back to a version older than the one that added it. Older versions cannot read the stored details.
+  **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The planner cron stays
+  `2,17,32,47 * * * *`, and the old code's `case '17 * * * *'` matches none of those four firings, so all compaction stops.
+  After any rollback, watch `wrangler tail` across a :02, :17, :32 or :47 firing: the sign that compaction stopped is that NO
+  `ct_compaction_plan` line appears. Do not rely on a `ct_cron_unmatched` line: the current code logs one for any schedule it
+  has no case for, but a rolled-back version older than SQ-412 logs nothing at all. After a rollback past SQ-402, re-deploy
+  the triggers from that version's commit, or roll forward instead.
+- **Known cost, not a defect (SQ-402 N2):** the `:17` full tick re-plans T0 runs from earlier windows whose job is still queued or
+  unswapped, under new job ids. The swap guard makes this safe: the second job to reach a shared input returns `stale` and writes
+  no catalog rows. The cost is wasted merge work, an orphan output object the weekly GC removes, and, when the first job is slow,
+  an extra hour before that window's runs leave tier 0.
 - **Index contents** (a bad compaction, a bad snapshot): roll the catalog back to a retained generation. The previous generation is
   kept for a week after each weekly snapshot.
 

@@ -3,9 +3,13 @@
  * The read seam (types.ts IndexReader) over the sorted runs of `meta.current_generation`.
  *
  * A scan is ONE D1 query (`catalogQuery`) for the current generation's runs whose [key_lo, key_hi] overlaps the key
- * range and whose key filter admits it, with their block indexes; then only the blocks that can hold keys in the
- * range are fetched, with R2 range GETs, at most READ_CONCURRENCY at a time (the first block of every run is requested up front). The runs are
- * k-way merged across tiers with `mergeSortedRuns`, which folds rows sharing a key and drops expired rows.
+ * range and whose key filter admits it, with their block indexes. The runs are then k-way merged across tiers the way
+ * `mergeSortedRuns` merges them (rows sharing a key fold in input order, expired rows drop), but lazily (SQ-402): a
+ * block's first key bounds every key it holds, so a run's next block is read, with one R2 range GET, only once that
+ * bound is at or below the smallest row already read, and the merge stops at `limit` rows plus the one that says the
+ * page is truncated. A page therefore reads the runs that hold its rows, not every run the range overlaps (a big apex
+ * overlaps thousands of T1 runs). While a run must be read, the next runs in bound order are read alongside it, so up
+ * to READ_CONCURRENCY GETs are in flight and runs that hold the same first key are read together.
  *
  * Errors: any D1 or R2 fault throws, so the API answers 503 and never an empty page. One exception is retried:
  * a compaction job deletes its input objects right after swapping the catalog, so a scan that read the catalog
@@ -22,7 +26,7 @@ import {
 	decodeBlock,
 	keyFilterHashes,
 	keyFilterProbe,
-	mergeSortedRuns,
+	mergeObservations,
 	parseBlockIndex,
 	pathSplitKeys,
 	rangeFor,
@@ -30,7 +34,7 @@ import {
 } from '../codec';
 import type { Env } from '../index';
 import type { BlockIndexEntry, IndexReader, NameObservation, RunRow, SiblingObservation } from '../types';
-import { MissingRunObjectError, limiter, readRange } from './blocks';
+import { MissingRunObjectError, readRange } from './blocks';
 import { CURRENT_GENERATION_SQL, DEFAULT_GENERATION } from './catalog';
 
 export const READ_CONCURRENCY = 6;
@@ -88,31 +92,162 @@ function checkLimit(limit: number): void {
 	if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError(`limit must be a positive integer: ${limit}`);
 }
 
+/** One run in a scan's merge: the blocks it has left and, once its next block is read, that block's rows in range. */
+interface Source {
+	/** Position among the scan's runs: rows sharing a key fold in this order, as in `mergeSortedRuns`. */
+	readonly input: number;
+	readonly r2Key: string;
+	readonly blocks: readonly BlockIndexEntry[];
+	/** The next block to read; blocks.length once the run has nothing left in range. */
+	next: number;
+	/** No unread key of the run in range is below this: the scan start or the next block's first key, whichever is higher. */
+	bound: string;
+	/** The GET of block `next`, once started. */
+	read: Promise<Uint8Array> | null;
+	/** The rows of the block being merged that are in range, ascending; rows[at] is the run's current row. */
+	rows: RunRow[];
+	at: number;
+}
+
+const rowOf = (source: Source) => source.rows[source.at]!;
+
+/** Run order while waiting to be read: by bound, then input. */
+const beforeByBound = (a: Source, b: Source) => a.bound < b.bound || (a.bound === b.bound && a.input < b.input);
+
+/** Run order once read: by current key, then input, so ties pop in input order. */
+const beforeByRow = (a: Source, b: Source) => {
+	const x = rowOf(a).key;
+	const y = rowOf(b).key;
+	return x < y || (x === y && a.input < b.input);
+};
+
+/** Inserts `source` into `list`, kept sorted by `before`, after every entry that does not sort after it. */
+function insertSorted(list: Source[], source: Source, before: (a: Source, b: Source) => boolean): void {
+	let lo = 0;
+	let hi = list.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (before(source, list[mid]!)) hi = mid;
+		else lo = mid + 1;
+	}
+	list.splice(lo, 0, source);
+}
+
+/** The merge's order rests on the bound: a key below it, or out of order, would be emitted late, so it throws. */
+function assertAscending(source: Source, last: string | null, key: string): void {
+	const ordered = last === null ? key >= source.bound : key > last;
+	if (!ordered) {
+		throw new RangeError(`run ${source.r2Key} is not key-sorted: ${JSON.stringify(key)} after ${JSON.stringify(last ?? source.bound)}`);
+	}
+}
+
 /**
- * The rows of one run inside the query range, block by block. A plain function, not a generator, so the first
- * block is requested when the run is listed rather than when the merge first pulls from it.
+ * The lazy k-way merge of a scan (see the header): `pending` holds the runs whose next block is unread, in bound
+ * order; `ready` the runs with a current row, in row order. The smallest row is emitted only once every pending
+ * bound is above it, so no unread block can hold a smaller or equal key.
  */
-function runRows(
-	bucket: R2Bucket,
-	run: CatalogRun,
-	blocks: BlockIndexEntry[],
-	query: ScanQuery,
-	slot: <T>(task: () => Promise<T>) => Promise<T>,
-): AsyncGenerator<RunRow> {
-	const fetchBlock = (entry: BlockIndexEntry) => slot(() => readRange(bucket, run.r2_key, entry.offset, entry.length));
-	// Requested now, so the first blocks of every run download together; awaited in order below. The no-op catch
-	// only keeps a prefetch that the merge never reaches from surfacing as an unhandled rejection.
-	const first = fetchBlock(blocks[0]!);
-	first.catch(() => undefined);
-	return (async function* () {
-		for (const [i, entry] of blocks.entries()) {
-			for (const row of await decodeBlock(await (i === 0 ? first : fetchBlock(entry)))) {
-				if (query.after === null ? row.key < query.lo : row.key <= query.after) continue;
-				if (row.key > query.hi) return;
-				yield row;
-			}
+class LazyMerge {
+	private readonly pending: Source[] = [];
+	private readonly ready: Source[] = [];
+	private reading = 0;
+
+	constructor(
+		private readonly bucket: R2Bucket,
+		private readonly query: ScanQuery,
+		sources: readonly Source[],
+	) {
+		for (const source of sources) insertSorted(this.pending, source, beforeByBound);
+	}
+
+	/** The next merged row (expired rows included), or null once every run is done. */
+	async nextRow(): Promise<RunRow | null> {
+		while (this.mustRead()) await this.readFront();
+		return this.ready.length === 0 ? null : this.popMerged();
+	}
+
+	/** True when the front pending run could hold a key at or below the smallest row read so far. */
+	private mustRead(): boolean {
+		const front = this.pending[0];
+		const top = this.ready[0];
+		return front !== undefined && (top === undefined || front.bound <= rowOf(top).key);
+	}
+
+	/** Takes the smallest row, folded with every other run's row of the same key in input order. */
+	private popMerged(): RunRow {
+		const top = this.ready.shift()!;
+		let merged = rowOf(top);
+		this.advance(top);
+		for (let tie = this.ready[0]; tie !== undefined && rowOf(tie).key === merged.key; tie = this.ready[0]) {
+			merged = mergeObservations(merged, rowOf(tie));
+			this.advance(this.ready.shift()!);
 		}
-	})();
+		return merged;
+	}
+
+	/** Reads the front run's next block, with the next runs in bound order alongside it. */
+	private async readFront(): Promise<void> {
+		const front = this.pending[0]!;
+		this.startRead(front);
+		for (const source of this.pending) {
+			if (this.reading >= READ_CONCURRENCY) break;
+			this.startRead(source);
+		}
+		const bytes = await front.read!;
+		this.pending.shift();
+		this.reading--;
+		front.read = null;
+		front.next++;
+		front.rows = this.inRange(front, await decodeBlock(bytes));
+		front.at = 0;
+		this.place(front);
+	}
+
+	private startRead(source: Source): void {
+		if (source.read !== null) return;
+		const entry = source.blocks[source.next]!;
+		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length);
+		// A read the merge never reaches (it stopped at `limit`) must not surface as an unhandled rejection.
+		source.read.catch(() => undefined);
+		this.reading++;
+	}
+
+	/** The rows of a decoded block inside the scan range. Past `hi`, the run is done. */
+	private inRange(source: Source, rows: readonly RunRow[]): RunRow[] {
+		const kept: RunRow[] = [];
+		let last: string | null = null;
+		for (const row of rows) {
+			if (this.beforeStart(row.key)) continue;
+			if (row.key > this.query.hi) {
+				source.next = source.blocks.length;
+				break;
+			}
+			assertAscending(source, last, row.key);
+			kept.push(row);
+			last = row.key;
+		}
+		return kept;
+	}
+
+	private beforeStart(key: string): boolean {
+		return this.query.after === null ? key < this.query.lo : key <= this.query.after;
+	}
+
+	/** Moves a run on: to its next row, to pending with its next block, or out of the merge. */
+	private advance(source: Source): void {
+		source.at++;
+		this.place(source);
+	}
+
+	private place(source: Source): void {
+		if (source.at < source.rows.length) {
+			insertSorted(this.ready, source, beforeByRow);
+			return;
+		}
+		source.rows = [];
+		if (source.next >= source.blocks.length) return;
+		source.bound = source.blocks[source.next]!.firstKey;
+		insertSorted(this.pending, source, beforeByBound);
+	}
 }
 
 /** A BLOB whose byte i is i: `instr(BYTE_VALUES, substr(blob, p, 1)) - 1` is the byte at p, which SQLite has no function for. */
@@ -173,21 +308,38 @@ export function catalogQuery(query: ScanQuery): { sql: string; params: unknown[]
 }
 
 async function scanOnce(env: Env, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
-	const start = query.after ?? query.lo;
 	const catalogRuns = catalogQuery(query);
 	const { results } = await env.CURSORS.prepare(catalogRuns.sql)
 		.bind(...catalogRuns.params)
 		.all<CatalogRun>();
-	const slot = limiter(READ_CONCURRENCY);
-	const inputs: AsyncGenerator<RunRow>[] = [];
-	for (const run of results) {
-		// A run holds one kind only, and name ranges never reach into the sibling keyspace.
-		if (run.key_lo.startsWith(SIBLING_PREFIX) !== query.siblings) continue;
-		const blocks = blocksFor(parseBlockIndex(run.block_index), start, query.hi);
-		if (blocks.length > 0) inputs.push(runRows(env.INDEX, run, blocks, query, slot));
+	return readPage(new LazyMerge(env.INDEX, query, sourcesOf(results, query)), query);
+}
+
+/** The merge inputs of a scan: each catalog run of the scan's kind with a block that can hold keys in range. */
+function sourcesOf(runs: readonly CatalogRun[], query: ScanQuery): Source[] {
+	const sources: Source[] = [];
+	for (const run of runs) {
+		const source = sourceOf(run, query, sources.length);
+		if (source !== null) sources.push(source);
 	}
+	return sources;
+}
+
+function sourceOf(run: CatalogRun, query: ScanQuery, input: number): Source | null {
+	// A run holds one kind only, and name ranges never reach into the sibling keyspace.
+	if (run.key_lo.startsWith(SIBLING_PREFIX) !== query.siblings) return null;
+	const start = query.after ?? query.lo;
+	const blocks = blocksFor(parseBlockIndex(run.block_index), start, query.hi);
+	if (blocks.length === 0) return null;
+	const bound = blocks[0]!.firstKey > start ? blocks[0]!.firstKey : start;
+	return { input, r2Key: run.r2_key, blocks, next: 0, bound, read: null, rows: [], at: 0 };
+}
+
+/** Up to `limit` live rows, and whether another live row follows them. */
+async function readPage(merge: LazyMerge, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
 	const rows: RunRow[] = [];
-	for await (const row of mergeSortedRuns(inputs, query.now)) {
+	for (let row = await merge.nextRow(); row !== null; row = await merge.nextRow()) {
+		if (row.notAfter < query.now) continue;
 		if (rows.length === query.limit) return { rows, truncated: true };
 		rows.push(row);
 	}

@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * The `17 * * * *` cron: the weekly generation snapshot (generations.ts), then the compaction planner, which
- * reads the catalog of the current generation and enqueues jobs (compact.ts) to `COMPACT`:
+ * The `2,17,32,47 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
+ * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick plans T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
+ * first takes the weekly generation snapshot (generations.ts) and also plans the other tiers:
  *
- * - T0 -> T1: every T0 run created in an hour that ended at least ~10 min ago, in jobs of at most
- *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`).
+ * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
+ *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
+ *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
+ *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
+ *   next :17 tick, ~15 min after the :02 tick planned it, is planned again; the guard lets one swap through.
+ * - T1 roll-up (:17): per key range, the overlapping T1 runs created earlier today before this hour, merged into
+ *   one T1 run in the same bounded jobs (`planRollUp`).
  * - T1 -> T2: every T1 run created on a UTC day that has ended, per day and key range, in the same bounded jobs.
  * - T2 + T3 -> T3: per key range, the range's T3 shards with its oldest T2 runs, in one job per range of at most
  *   MAX_T3_JOB_ROWS rows; T2 runs past the budget wait for the next cron (SQ-363).
@@ -48,8 +54,12 @@ import { DAY_MS, HOUR_MS, currentGeneration, isKilled } from './catalog';
 import type { CompactionJob } from './compact';
 import { maybeSnapshot } from './generations';
 
-export const COMPACTION_CRON = '17 * * * *';
-/** A T0 run is compacted once its hour has been over for this long. */
+/** T0 -> T1 is planned at every tick; everything else only at FULL_PLAN_MINUTE (SQ-402). */
+export const COMPACTION_CRON = '2,17,32,47 * * * *';
+export const FULL_PLAN_MINUTE = 17;
+/** T0 runs are compacted in windows of this length... */
+export const T0_WINDOW_MS = 15 * 60_000;
+/** ...once the window has been over for this long. */
 export const T0_MIN_AGE_MS = 10 * 60_000;
 export const GROUP_SHARDS = 8;
 export const GROUP_MAX_SHARDS = 24;
@@ -225,43 +235,100 @@ async function makeJob(generation: number, tier: 1 | 2 | 3, runs: readonly PlanR
 	return { id, generation, tier, inputs, cuts, now };
 }
 
-/** Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. */
-export async function planCompactions(db: D1Database, nowMs: number, limits: PlanLimits = DEFAULT_PLAN_LIMITS): Promise<CompactionJob[]> {
+/** True when runs, sorted by key_lo, overlap: merging key-disjoint runs would only rewrite them. */
+function overlapping(runs: ReadonlyArray<{ key_lo: string; key_hi: string }>): boolean {
+	const sorted = [...runs].sort((a, b) => compareText(a.key_lo, b.key_lo));
+	for (let i = 1; i < sorted.length; i++) if (sorted[i]!.key_lo <= sorted[i - 1]!.key_hi) return true;
+	return false;
+}
+
+/** True when a run's created_at falls in [from, to). */
+const createdIn = (run: PlanRun, from: number, to: number) => {
+	const created = Date.parse(run.created_at);
+	return created >= from && created < to;
+};
+
+/**
+ * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
+ * not `full` plans only the T0 window that has just come due; a full tick also plans every older T0 run (one whose
+ * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs.
+ */
+export async function planCompactions(
+	db: D1Database,
+	nowMs: number,
+	limits: PlanLimits = DEFAULT_PLAN_LIMITS,
+	full = true,
+): Promise<CompactionJob[]> {
 	const generation = await currentGeneration(db);
 	const { results } = await db
 		.prepare('SELECT id, tier, key_lo, key_hi, rows, created_at FROM runs WHERE generation = ?1')
 		.bind(generation)
 		.all<PlanRun>();
-	const now = Math.floor(nowMs / 1000);
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
-	const cuts = cutsFor(tier(3), limits.maxT3Rows / 2);
-	const jobs: CompactionJob[] = [];
-
-	const hourEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / HOUR_MS) * HOUR_MS;
-	const dueT0 = tier(0).filter((run) => Date.parse(run.created_at) < hourEnd);
+	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
+	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
+	const windowStart = full ? -Infinity : windowEnd - T0_WINDOW_MS;
 	// T0 runs span the whole keyspace, so a T1 job takes every cut (a few hundred keys at full size).
-	for (const runs of groupBy(dueT0, (run) => run.created_at.slice(0, 13)).values()) {
-		for (const chunk of boundedChunks(runs, limits)) jobs.push(await makeJob(generation, 1, chunk, cuts, now));
+	for (const runs of groupBy(
+		tier(0).filter((run) => createdIn(run, windowStart, windowEnd)),
+		(run) => run.created_at.slice(0, 13),
+	).values()) {
+		await planChunks(plan, 1, runs, plan.cuts);
 	}
+	if (!full) return plan.jobs;
+	await planRollUp(plan, tier(1), nowMs);
+	await planT2(plan, tier(1), nowMs);
+	await planT3(plan, tier(2), tier(3));
+	return plan.jobs;
+}
 
+/** What the planner functions share: the jobs they plan and the inputs every job is made from. */
+interface Plan {
+	generation: number;
+	cuts: string[];
+	now: number;
+	limits: PlanLimits;
+	jobs: CompactionJob[];
+}
+
+/** One job of output `tier` per bounded chunk of `runs` that holds at least `minInputs` runs. */
+async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cuts: string[], minInputs = 1): Promise<void> {
+	for (const chunk of boundedChunks(runs, plan.limits)) {
+		if (chunk.length >= minInputs) plan.jobs.push(await makeJob(plan.generation, tier, chunk, cuts, plan.now));
+	}
+}
+
+/**
+ * The T1 roll-up (SQ-402): every T0 window adds one T1 run per cut range per job, about 14 an hour, and a read of a
+ * key opens each of them. So every hour, a range's overlapping T1 runs from earlier hours of the day (the last
+ * roll-up's output among them) merge into one T1 run, in the same bounded jobs as T1 -> T2. A range then holds
+ * about one T1 run per job since the last full hour, plus one; the day's T1 -> T2 job still takes them all.
+ */
+async function planRollUp(plan: Plan, t1: readonly PlanRun[], nowMs: number): Promise<void> {
+	const rollable = t1.filter((run) => createdIn(run, Math.floor(nowMs / DAY_MS) * DAY_MS, Math.floor(nowMs / HOUR_MS) * HOUR_MS));
+	for (const component of components(rollable, plan.cuts)) {
+		if (overlapping(component.runs)) await planChunks(plan, 1, component.runs, component.cuts, 2);
+	}
+}
+
+/** T1 -> T2: the T1 runs of every UTC day that has ended, per day and key range. */
+async function planT2(plan: Plan, t1: readonly PlanRun[], nowMs: number): Promise<void> {
 	const dayEnd = Math.floor(nowMs / DAY_MS) * DAY_MS;
-	const dueT1 = tier(1).filter((run) => Date.parse(run.created_at) < dayEnd);
-	for (const runs of groupBy(dueT1, (run) => run.created_at.slice(0, 10)).values()) {
-		for (const component of components(runs, cuts)) {
-			for (const chunk of boundedChunks(component.runs, limits)) jobs.push(await makeJob(generation, 2, chunk, component.cuts, now));
-		}
+	const due = t1.filter((run) => Date.parse(run.created_at) < dayEnd);
+	for (const runs of groupBy(due, (run) => run.created_at.slice(0, 10)).values()) {
+		for (const component of components(runs, plan.cuts)) await planChunks(plan, 2, component.runs, component.cuts);
 	}
+}
 
-	const straddling = tier(2).filter((run) => straddles(run, cuts));
-	for (const component of components(straddling, cuts)) {
-		for (const chunk of boundedChunks(component.runs, limits)) jobs.push(await makeJob(generation, 2, chunk, component.cuts, now));
+/** T2 runs that straddle a cut are re-cut T2 -> T2; the rest merge into their range's T3 shards. */
+async function planT3(plan: Plan, t2: readonly PlanRun[], t3: readonly PlanRun[]): Promise<void> {
+	const straddling = t2.filter((run) => straddles(run, plan.cuts));
+	for (const component of components(straddling, plan.cuts)) await planChunks(plan, 2, component.runs, component.cuts);
+	const settled = t2.filter((run) => !straddles(run, plan.cuts));
+	for (const component of components([...settled, ...t3], plan.cuts)) {
+		const inputs = t3JobInputs(component.runs, plan.limits);
+		if (inputs.length > 0) plan.jobs.push(await makeJob(plan.generation, 3, inputs, component.cuts, plan.now));
 	}
-	const settled = tier(2).filter((run) => !straddles(run, cuts));
-	for (const component of components([...settled, ...tier(3)], cuts)) {
-		const inputs = t3JobInputs(component.runs, limits);
-		if (inputs.length > 0) jobs.push(await makeJob(generation, 3, inputs, component.cuts, now));
-	}
-	return jobs;
 }
 
 /** Sends jobs in batches within the Queues per-call limits. */
@@ -288,11 +355,12 @@ export interface CronOutcome {
 	jobs: CompactionJob[];
 }
 
-/** The `17 * * * *` branch of `scheduled`. */
+/** The COMPACTION_CRON branch of `scheduled`; `nowMs` is the tick's scheduled time, whose minute says if it is full. */
 export async function runCompactionCron(env: Env, nowMs: number, limits: PlanLimits = DEFAULT_PLAN_LIMITS): Promise<CronOutcome> {
 	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
-	const snapshot = await maybeSnapshot(env, nowMs);
-	const jobs = await planCompactions(env.CURSORS, nowMs, limits);
+	const full = new Date(nowMs).getUTCMinutes() === FULL_PLAN_MINUTE;
+	const snapshot = full ? await maybeSnapshot(env, nowMs) : null;
+	const jobs = await planCompactions(env.CURSORS, nowMs, limits, full);
 	await sendJobs(env.COMPACT, jobs);
 	return { killed: false, snapshot, jobs };
 }
