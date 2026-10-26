@@ -64,8 +64,8 @@ On a PR that touches code AND a `.md` file, both workflows run. `ci-docs.yml` fi
 green (it dedups by name), `mergeStateStatus` read `UNSTABLE`, and `gh pr merge` SUCCEEDED.
 `main` went red on the very next CI run.
 <!-- The two ci.yml run IDs from this incident are omitted deliberately: as bare 10-11
-     digit numbers they trip the repo's phone-number secret scanner (see CLAUDE.md's
-     pre-commit gates note). Do not restore them without rewording, e.g. spacing the
+     digit numbers they trip the repo's phone-number secret scanner (see bv-mcp-operations'
+     pre-commit gates section). Do not restore them without rewording, e.g. spacing the
      digits, and do not widen .gitleaks.toml or use --no-verify to work around it. -->
 
 **Rule, not a footnote:**
