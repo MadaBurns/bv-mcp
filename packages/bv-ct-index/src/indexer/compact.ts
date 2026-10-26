@@ -92,13 +92,39 @@ interface OutputRun {
 	keySplit: string | null;
 }
 
+/**
+ * Output puts in flight at once (SQ-402): a T1 job closes one small run (~17 KB) per cut range, ~480 of them, and
+ * one put after another took most of its ~6 min (SQ-403). Six is the Workers limit on open connections.
+ */
+export const PUT_CONCURRENCY = 6;
+/**
+ * Bytes those puts may hold. Past it the job waits for every put before it writes on, so a run bigger than this
+ * (a T3 output is ~10 MB) is put on its own, as before, and a job never holds more than one such run.
+ */
+export const PUT_BUDGET_BYTES = 4 * 1024 * 1024;
+
+/** What a job did, for its `ct_compaction_job_done` log line. */
+export interface JobStats {
+	outputs: number;
+	/** Range GETs of input blocks. */
+	gets: number;
+	/** Summed duration of the output puts (they overlap, so this can exceed `ms`). */
+	putMs: number;
+	/** Job duration. */
+	ms: number;
+}
+
 /** Writes a merge's output as a sequence of runs, closing one at each cut, kind change or size target. */
 class OutputSink {
 	readonly outputs: OutputRun[] = [];
+	/** Summed duration of the puts. */
+	putMs = 0;
 	private writer: RunWriter | null = null;
 	private sibling = false;
 	private rawBytes = 0;
 	private nextCut = 0;
+	private readonly puts = new Set<Promise<void>>();
+	private putBytes = 0;
 
 	constructor(
 		private readonly bucket: R2Bucket,
@@ -124,8 +150,10 @@ class OutputSink {
 		this.rawBytes += rawSize(row);
 	}
 
+	/** Closes the last run and waits for every put: a failed put throws, so the job is retried. */
 	async finish(): Promise<OutputRun[]> {
 		if (this.writer) await this.close();
+		await Promise.all(this.puts);
 		return this.outputs;
 	}
 
@@ -133,7 +161,6 @@ class OutputSink {
 		const run = await this.writer!.finish();
 		this.writer = null;
 		const r2Key = `${this.prefix}/${String(this.outputs.length).padStart(5, '0')}.run`;
-		await this.bucket.put(r2Key, run.bytes);
 		this.outputs.push({
 			r2Key,
 			keyLo: run.keyLo,
@@ -144,6 +171,25 @@ class OutputSink {
 			keyFilter: run.keyFilter,
 			keySplit: run.keySplit,
 		});
+		this.startPut(r2Key, run.bytes);
+		while (this.puts.size >= PUT_CONCURRENCY || this.putBytes > PUT_BUDGET_BYTES) await Promise.race(this.puts);
+	}
+
+	private startPut(r2Key: string, bytes: Uint8Array): void {
+		const started = Date.now();
+		const put: Promise<void> = this.bucket
+			.put(r2Key, bytes)
+			.then(() => {
+				this.putMs += Date.now() - started;
+			})
+			.finally(() => {
+				this.puts.delete(put);
+				this.putBytes -= bytes.byteLength;
+			});
+		// `close` or `finish` surfaces a failure; this only keeps a put still running after one from going unhandled.
+		put.catch(() => undefined);
+		this.puts.add(put);
+		this.putBytes += bytes.byteLength;
 	}
 }
 
@@ -158,12 +204,15 @@ function chainDisjoint(runs: readonly RunDescriptor[]): RunDescriptor[][] {
 	return chains;
 }
 
+/** `stats` is filled in when the job merges; a job that stops early leaves it at zero. */
 export async function runCompactionJob(
 	env: Env,
 	job: CompactionJob,
 	limits: CompactionLimits = { targetRawBytes: TARGET_RAW_BYTES },
 	nowMs = Date.now(),
+	stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 },
 ): Promise<JobOutcome> {
+	const startedMs = Date.now();
 	const db = env.CURSORS;
 	if (await isKilled(db)) return 'killed';
 	const inputKeys = job.inputs.map(r2KeyOfRunId);
@@ -226,6 +275,7 @@ export async function runCompactionJob(
 	statements.push(ledgerStatement(db, nowMs, { r2ClassA: outputs.length, r2ClassB: gets, d1Rows: outputs.length + inputs.length + 1 }));
 	const results = await db.batch(statements);
 	const swapped = results[outputs.length]!.meta.changes === job.inputs.length;
+	Object.assign(stats, { outputs: outputs.length, gets, putMs: sink.putMs, ms: Date.now() - startedMs });
 
 	// Swapped: the inputs are garbage unless a retained generation still lists them. Not swapped: a concurrent run
 	// of the same job won (its outputs are ours, byte for byte) or another job consumed an input; this attempt's
@@ -248,7 +298,10 @@ export async function runCompactionBatch(batch: MessageBatch<unknown>, env: Env)
 		} else {
 			// Logged before the work, so an invocation that dies on a CPU or memory limit still names its job.
 			console.log(JSON.stringify({ event: 'ct_compaction_job', id: job.id, tier: job.tier, inputs: job.inputs.length }));
-			const outcome = await runCompactionJob(env, job);
+			const stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 };
+			const outcome = await runCompactionJob(env, job, undefined, undefined, stats);
+			// After the work: output count and put time say where a job's wall time goes (SQ-402).
+			console.log(JSON.stringify({ event: 'ct_compaction_job_done', id: job.id, tier: job.tier, outcome, ...stats }));
 			if (outcome !== 'applied') console.log(`bv-ct-index compaction: job ${job.id} (tier ${job.tier}) ${outcome}`);
 		}
 		message.ack();
