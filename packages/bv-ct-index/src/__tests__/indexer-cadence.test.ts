@@ -184,6 +184,30 @@ describe('compaction output puts', () => {
 		expect((await catalog()).filter((run) => run.tier === 1)).toHaveLength(9);
 	});
 
+	// SQ-412 rework: the last output is closed by finish(), and add() and close() have nothing left to run after it.
+	// Only the rethrow after finish()'s Promise.all can fail the job when that one put rejects, with no delay or a short one.
+	it.each([0, 5])('fails the job, before any swap, when only the LAST of 9 output puts rejects after %i ms', async (delayMs) => {
+		const env = testEnv();
+		const job = await plannedJob(env);
+		const before = await catalog();
+		const rowsBefore = await readAll(env, at(0, 2, 17));
+		let calls = 0;
+		const lastOnly = withFault(env.INDEX, 'put', (...args: unknown[]) => {
+			if (++calls !== 9) return env.INDEX.put(...(args as [string, Uint8Array]));
+			if (delayMs === 0) return Promise.reject(new Error('last put failure'));
+			return new Promise((_, reject) => setTimeout(() => reject(new Error('last put failure')), delayMs));
+		});
+		await expect(runCompactionJob(testEnv({ INDEX: lastOnly }), job, SMALL, at(0, 2, 17))).rejects.toThrow('last put failure');
+		// The job wrote all nine outputs, so the failing put really was the final one.
+		expect(calls).toBe(9);
+		expect(await catalog()).toEqual(before);
+		for (const run of before) expect(await env.INDEX.head(run.r2_key)).not.toBeNull();
+		expect(await readAll(env, at(0, 2, 17))).toEqual(rowsBefore);
+		// The retry applies and writes the same nine outputs.
+		expect(await runCompactionJob(env, job, SMALL, at(0, 2, 17))).toBe('applied');
+		expect((await catalog()).filter((run) => run.tier === 1)).toHaveLength(9);
+	});
+
 	it('throws the first put failure when several puts in flight reject', async () => {
 		const env = testEnv();
 		const job = await plannedJob(env);
