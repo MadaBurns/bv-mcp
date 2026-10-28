@@ -2,6 +2,7 @@
 import {
 	OAUTH_CLIENT_ID_METADATA_DOCUMENT_SUPPORTED,
 	OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED,
+	OAUTH_GRANT_PROFILES_SUPPORTED,
 	OAUTH_GRANT_TYPES_SUPPORTED,
 	OAUTH_RESPONSE_TYPES_SUPPORTED,
 	OAUTH_SCOPES_SUPPORTED,
@@ -49,6 +50,8 @@ export function buildAuthorizationServerMetadata(issuer: string): Record<string,
 		scopes_supported: [...OAUTH_SCOPES_SUPPORTED],
 		response_types_supported: [...OAUTH_RESPONSE_TYPES_SUPPORTED],
 		grant_types_supported: [...OAUTH_GRANT_TYPES_SUPPORTED],
+		// Enterprise Managed Auth: an IdP checks for this profile before it issues an ID-JAG for us.
+		authorization_grant_profiles_supported: [...OAUTH_GRANT_PROFILES_SUPPORTED],
 		token_endpoint_auth_methods_supported: [...OAUTH_TOKEN_AUTH_METHODS_SUPPORTED],
 		code_challenge_methods_supported: [...OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED],
 		authorization_response_iss_parameter_supported: true,

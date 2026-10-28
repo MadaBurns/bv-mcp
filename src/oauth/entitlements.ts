@@ -8,7 +8,7 @@ const OAUTH_ENTITLEMENT_MAX_BODY_BYTES = 64 * 1024;
 export const OAUTH_ENTITLEMENT_TIMEOUT_MS = 5_000;
 
 export const PaidOAuthEntitlementRequestSchema = z.object({
-	clientId: z.string().min(1).max(200),
+	clientId: z.string().min(1).max(512),
 	redirectUri: z.string().url().max(2048),
 	codeChallenge: z.string().min(43).max(128),
 	scope: z.string().min(1).max(200).optional(),
