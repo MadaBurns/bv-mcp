@@ -1173,7 +1173,11 @@ export function isValidOAuthSigningSecret(s: string | undefined): boolean {
 	return typeof s === 'string' && s.length >= OAUTH_SIGNING_SECRET_MIN_BYTES;
 }
 export const OAUTH_SCOPES_SUPPORTED = ['mcp'] as const;
-export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code'] as const;
+// RFC 7523 jwt-bearer carries an Enterprise Managed Auth identity assertion (ID-JAG) from the
+// customer's IdP; the grant profile tells the IdP which assertion profile we accept.
+export const OAUTH_JWT_BEARER_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
+export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code', OAUTH_JWT_BEARER_GRANT_TYPE] as const;
+export const OAUTH_GRANT_PROFILES_SUPPORTED = ['urn:ietf:params:oauth:grant-profile:id-jag'] as const;
 export const OAUTH_RESPONSE_TYPES_SUPPORTED = ['code'] as const;
 export const OAUTH_TOKEN_AUTH_METHODS_SUPPORTED = ['none'] as const;
 export const OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED = ['S256'] as const;

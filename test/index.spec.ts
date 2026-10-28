@@ -2190,6 +2190,8 @@ describe('DNS Security MCP Server', () => {
 			expect(body.authorization_endpoint).toMatch(/\/oauth\/authorize$/);
 			expect(body.token_endpoint).toMatch(/\/oauth\/token$/);
 			expect(body.code_challenge_methods_supported).toEqual(['S256']);
+			expect(body.grant_types_supported).toEqual(['authorization_code', 'urn:ietf:params:oauth:grant-type:jwt-bearer']);
+			expect(body.authorization_grant_profiles_supported).toEqual(['urn:ietf:params:oauth:grant-profile:id-jag']);
 		});
 
 		it('returns RFC 9728 metadata for /.well-known/oauth-protected-resource', async () => {

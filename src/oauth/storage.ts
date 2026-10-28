@@ -99,7 +99,7 @@ async function safeKvDelete(kv: KVNamespace, key: string, operation: string): Pr
 }
 
 async function coordinationKey(
-	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation',
+	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation' | 'assertion-jti',
 	value: string,
 ): Promise<string> {
 	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
@@ -203,6 +203,28 @@ export async function consumeCode(
 	if (!claim.claimed) return null;
 	await safeKvDelete(kv, codeKey(code), 'authorization-code consumption');
 	return record;
+}
+
+/**
+ * One-time use of an identity assertion (RFC 7523 §3 `jti`): claims `issuer|jti` in the
+ * strongly consistent coordinator until `expiresAtMs`. Returns false when the pair was already
+ * claimed. A missing binding or a coordinator fault throws StrongStateUnavailableError, so a
+ * replay can never be admitted because the claim state was unreadable.
+ */
+export async function claimAssertionJti(
+	issuer: string,
+	jti: string,
+	expiresAtMs: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<boolean> {
+	let claim;
+	try {
+		claim = await claimOnceWithCoordinator(await coordinationKey('assertion-jti', `${issuer}|${jti}`), expiresAtMs, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('assertion replay claim');
+	}
+	if (!isClaimOnceResult(claim)) throw new StrongStateUnavailableError('assertion replay claim');
+	return claim.claimed;
 }
 
 /** Add a JWT id to the revocation denylist. TTL is clamped to >= 60s (KV minimum). */

@@ -83,6 +83,22 @@ export const TokenRequestSchema = z
 	.passthrough();
 export type TokenRequest = z.infer<typeof TokenRequestSchema>;
 
+/**
+ * RFC 7523 §2.1 jwt-bearer token request carrying an Identity Assertion JWT Authorization
+ * Grant (ID-JAG) for Enterprise Managed Auth. `scope` and `resource` are optional on the wire;
+ * the grant handler binds `resource` to this server's MCP URL and always grants `mcp`.
+ */
+export const JwtBearerTokenRequestSchema = z
+	.object({
+		grant_type: z.literal('urn:ietf:params:oauth:grant-type:jwt-bearer'),
+		assertion: z.string().min(1).max(8192),
+		client_id: z.string().min(1).max(512),
+		scope: z.string().max(256).optional(),
+		resource: z.string().max(512).optional(),
+	})
+	.passthrough();
+export type JwtBearerTokenRequest = z.infer<typeof JwtBearerTokenRequestSchema>;
+
 export const ClientRecordSchema = z.object({
 	client_id: z.string(),
 	client_id_issued_at: z.number(),

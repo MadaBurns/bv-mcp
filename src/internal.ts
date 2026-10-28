@@ -65,12 +65,12 @@ import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from
 import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
+import { redirectUriMatches, resolveClient } from './oauth/cimd';
 import { resolveIssuer } from './oauth/discovery';
 import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 import { readBoundedText } from './lib/request-body';
 import {
 	createAuthorizationCode,
-	getClient,
 	putCode,
 	bumpTokenVersion,
 	bumpTokenVersionIdempotently,
@@ -898,11 +898,14 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	}
 
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
-	const client = await getClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
+	// A registered (DCR) client or a Client ID Metadata Document client, with the same redirect
+	// matching /oauth/authorize applies (exact, loopback port ignored), so bv-web can complete
+	// paid consent for the Claude CIMD clients too.
+	const client = await resolveClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
 	if (!client) {
 		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
 	}
-	if (!client.redirect_uris.includes(body.redirectUri)) {
+	if (!redirectUriMatches(body.redirectUri, client.redirect_uris)) {
 		return c.json({ error: 'redirect_uri_not_registered' }, 400, { 'Cache-Control': 'no-store' });
 	}
 	// Service-binding requests use a synthetic `https://internal` URL, so the
