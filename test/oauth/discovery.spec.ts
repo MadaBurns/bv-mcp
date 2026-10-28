@@ -15,6 +15,9 @@ describe('oauth discovery endpoints', () => {
 		expect(meta.response_types_supported).toContain('code');
 		expect(meta.grant_types_supported).toContain('authorization_code');
 		expect(meta.authorization_response_iss_parameter_supported).toBe(true);
+		// Claude uses Client ID Metadata Documents only when BOTH are advertised.
+		expect(meta.client_id_metadata_document_supported).toBe(true);
+		expect(meta.token_endpoint_auth_methods_supported).toContain('none');
 	});
 
 	it('GET /.well-known/oauth-protected-resource returns RFC 9728 metadata', async () => {

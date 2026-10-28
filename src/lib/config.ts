@@ -1177,6 +1177,10 @@ export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code'] as const;
 export const OAUTH_RESPONSE_TYPES_SUPPORTED = ['code'] as const;
 export const OAUTH_TOKEN_AUTH_METHODS_SUPPORTED = ['none'] as const;
 export const OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED = ['S256'] as const;
+// Client ID Metadata Documents (src/oauth/cimd.ts): an https client_id URL resolves to the
+// client's published metadata. Claude only uses CIMD when this is advertised alongside
+// "none" in OAUTH_TOKEN_AUTH_METHODS_SUPPORTED.
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_SUPPORTED = true;
 /**
  * Parse and validate an OAuth redirect URI by URL components, never by matching
  * the raw string. A raw-text hostname regex can be confused by query/fragment
