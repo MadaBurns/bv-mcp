@@ -371,15 +371,28 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
 
 - `jwks_uri` is optional. When omitted it is resolved from
   `{issuer}/.well-known/openid-configuration`, whose own `issuer` must equal the
-  configured one; otherwise the call fails `400 issuer_discovery_failed`.
-- `issuer` is stored normalized (https, lowercase host, one trailing slash stripped).
+  configured one; otherwise the call fails `400 issuer_discovery_failed`. Either way
+  (supplied or discovered) it must be a public `https` URL: userinfo, `localhost`,
+  IP literals and internal hostnames are rejected (`400`) and nothing is stored.
+- `issuer` is stored normalized (https, lowercase host, all trailing slashes stripped,
+  so `https://IDP.example.com/x//` and `https://idp.example.com/x/` are the same issuer).
   One issuer belongs to one tenant: a second tenant claiming it gets `409 issuer_conflict`.
+  An index entry whose owning record is missing or unreadable (for example after a
+  `KV_ENVELOPE_KEY` rotation) is treated as free, so the issuer can be re-claimed.
 - `allowed_client_ids` defaults to the Claude web CIMD client; `tier` is `developer`
   or `enterprise` (never `owner`); `entitlement_expires_at` is epoch seconds.
-- Re-PUT the same `tenant_id` to update (`created_at` is preserved). Set
-  `"enabled": false` to suspend a tenant without deleting it.
+- Re-PUT the same `tenant_id` to update (`created_at` is preserved). A PUT replaces
+  the whole record and does not merge: to suspend a tenant, PUT the full record with
+  `"enabled": false` **and the stored `jwks_uri` resent**. Discovery is not re-run
+  for a suspend, so omitting `jwks_uri` makes the PUT depend on the IdP's discovery
+  endpoint being reachable right now, and a failure leaves the tenant enabled. When
+  in doubt, or when the IdP is down, `DELETE` is the kill switch (it needs no discovery).
 - `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
-  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204).
+  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
+  also releases the issuer even when the record can no longer be read.
+- When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
+  key is treated as absent (the grant fails closed for that issuer). After a key
+  rotation, re-PUT each tenant to reseal it.
 
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 

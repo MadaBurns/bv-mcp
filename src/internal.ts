@@ -54,7 +54,7 @@ import {
 import { declaredToolArgKeys, normalizeToolName } from './handlers/tool-args';
 import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
 import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
-import { validateDomain, sanitizeDomain } from './lib/sanitize';
+import { validateDomain, sanitizeDomain, validateOutboundUrl } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import { EMA_TENANT_ID_PATTERN, EmaTenantUpsertRequestSchema, type EmaTenantRecord, type EmaTenantUpsertRequest } from './schemas/ema';
@@ -1460,14 +1460,14 @@ async function fetchEmaDiscoveryDocument(normalizedIssuer: string): Promise<unkn
 
 /**
  * The `jwks_uri` of a discovery document, only when the document names the SAME issuer
- * (normalized comparison) and the jwks_uri is https. Null otherwise.
+ * (normalized comparison) and the jwks_uri passes the outbound-URL gate. Null otherwise.
  */
 function jwksUriFromDiscovery(doc: unknown, normalizedIssuer: string): string | null {
 	const parsed = EmaDiscoveryDocumentSchema.safeParse(doc);
 	if (!parsed.success) return null;
 	try {
 		if (normalizeIssuer(parsed.data.issuer) !== normalizedIssuer) return null;
-		return new URL(parsed.data.jwks_uri).protocol === 'https:' ? parsed.data.jwks_uri : null;
+		return validateOutboundUrl(parsed.data.jwks_uri).valid ? parsed.data.jwks_uri : null;
 	} catch {
 		return null;
 	}
@@ -1525,6 +1525,11 @@ internalRoutes.put('/oauth/ema-tenants', async (c) => {
 	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
 
 	const { body } = parsed;
+	// An operator-supplied jwks_uri is gated here; a discovered one is gated inside jwksUriFromDiscovery.
+	// Static error string: the rejected value (which may carry userinfo) is never echoed.
+	if (body.jwks_uri && !validateOutboundUrl(body.jwks_uri).valid) {
+		return c.json({ error: 'Invalid jwks_uri: must be a public https URL' }, 400, EMA_NO_STORE);
+	}
 	const jwksUri = body.jwks_uri ?? jwksUriFromDiscovery(await fetchEmaDiscoveryDocument(body.issuer), body.issuer);
 	if (!jwksUri) return c.json({ error: 'issuer_discovery_failed' }, 400, EMA_NO_STORE);
 

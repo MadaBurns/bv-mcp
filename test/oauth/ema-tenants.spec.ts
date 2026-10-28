@@ -53,8 +53,14 @@ describe('normalizeIssuer', () => {
 		expect(normalizeIssuer(input)).toBe(expected);
 	});
 
-	it('strips only ONE trailing slash', () => {
-		expect(normalizeIssuer('https://idp.example.com/a//')).toBe('https://idp.example.com/a/');
+	it('collapses repeated trailing slashes and is idempotent', () => {
+		expect(normalizeIssuer('https://a.com/x//')).toBe('https://a.com/x');
+		expect(normalizeIssuer('https://A.com/x/')).toBe('https://a.com/x');
+		expect(normalizeIssuer('https://a.com//')).toBe('https://a.com');
+		for (const input of ['https://a.com/x//', 'https://A.com/x/', 'https://a.com//', 'https://a.com:443/a///', 'https://a.com/a/b']) {
+			const once = normalizeIssuer(input);
+			expect(normalizeIssuer(once)).toBe(once);
+		}
 	});
 
 	it.each([
@@ -178,6 +184,87 @@ describe('EMA tenant store', () => {
 		// Simulate a half-applied update: record moved to a new issuer but the old index entry survived.
 		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`, JSON.stringify(tenant({ issuer: 'https://idp2.example.com' })));
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
+	});
+
+	describe('fail-closed sealing (envelope key set)', () => {
+		const tenantRecordKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
+		const issuerIndexKey = async (issuer: string) => {
+			const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(issuer)));
+			return `${OAUTH_KV_PREFIX}ema-issuer:${Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+		};
+
+		it('treats a planted plaintext record as absent from get, getByIssuer and list', async () => {
+			const planted = tenant({ jwks_uri: 'https://evil.example.net/keys' });
+			await env.SESSION_STORE.put(tenantRecordKey, JSON.stringify(planted));
+			await env.SESSION_STORE.put(await issuerIndexKey(planted.issuer), planted.tenant_id);
+			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
+			expect(await getEmaTenantByIssuer(env.SESSION_STORE, planted.issuer, ENVELOPE_KEY)).toBeNull();
+			expect(await listEmaTenants(env.SESSION_STORE, ENVELOPE_KEY)).toEqual([]);
+			// Without a key configured the same record is the operator's own plaintext store and stays readable.
+			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toEqual(planted);
+		});
+
+		it('treats a sealed record whose tenant_id differs from the key it was read from as absent', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp2.example.com' }), ENVELOPE_KEY);
+			const sealed = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}ema-tenant:other-corp`);
+			// Copy other-corp's valid sealed blob under acme-corp's key, and point acme-corp's issuer index at it.
+			await env.SESSION_STORE.put(tenantRecordKey, sealed!);
+			await env.SESSION_STORE.put(await issuerIndexKey('https://idp2.example.com'), 'acme-corp');
+			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
+			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp2.example.com', ENVELOPE_KEY)).toBeNull();
+			expect((await listEmaTenants(env.SESSION_STORE, ENVELOPE_KEY)).map((t) => t.tenant_id)).toEqual(['other-corp']);
+		});
+
+		it('rejects a tenant_id mismatch without an envelope key too', async () => {
+			await env.SESSION_STORE.put(tenantRecordKey, JSON.stringify(tenant({ tenant_id: 'other-corp' })));
+			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toBeNull();
+		});
+	});
+
+	describe('orphaned issuer index', () => {
+		const recordKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
+		const indexCount = async () => (await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` })).keys.length;
+
+		it('treats an index entry whose record is missing as free: another tenant can claim the issuer', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			await env.SESSION_STORE.delete(recordKey('acme-corp'));
+			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }))).resolves.toMatchObject({
+				tenant_id: 'other-corp',
+			});
+			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com'))?.tenant_id).toBe('other-corp');
+		});
+
+		it('treats an index entry whose record is unreadable as free', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
+			await env.SESSION_STORE.put(recordKey('acme-corp'), 'garbage-not-json');
+			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }), ENVELOPE_KEY)).resolves.toMatchObject({
+				tenant_id: 'other-corp',
+			});
+		});
+
+		it('does not free an index entry whose owner record is readable and still lists the issuer', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }))).rejects.toBeInstanceOf(EmaTenantConflictError);
+		});
+
+		it('delete releases the index even when the record is missing, leaving other tenants alone', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }));
+			await env.SESSION_STORE.delete(recordKey('acme-corp'));
+			await deleteEmaTenant(env.SESSION_STORE, 'acme-corp');
+			expect(await indexCount()).toBe(1);
+			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp3.example.com'))?.tenant_id).toBe('other-corp');
+		});
+
+		it('delete releases the index even when the record cannot be read', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
+			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }), ENVELOPE_KEY);
+			await env.SESSION_STORE.put(recordKey('acme-corp'), 'garbage-not-json');
+			await deleteEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY);
+			expect(await env.SESSION_STORE.get(recordKey('acme-corp'))).toBeNull();
+			expect(await indexCount()).toBe(1);
+			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp3.example.com', ENVELOPE_KEY))?.tenant_id).toBe('other-corp');
+		});
 	});
 
 	it('list skips schema-invalid records', async () => {
