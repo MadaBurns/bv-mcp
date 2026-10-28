@@ -38,6 +38,13 @@ describe('EmaTenantRecordSchema token_epoch', () => {
 	});
 });
 
+describe('EmaTenantUpsertRequestSchema allowed_client_ids default', () => {
+	it('defaults to the Claude web CIMD client id exported by oauth/cimd (the one source of that constant)', async () => {
+		const { CLAUDE_WEB_CIMD_CLIENT_ID } = await import('../../src/oauth/cimd');
+		expect(EmaTenantUpsertRequestSchema.parse(upsertBody).allowed_client_ids).toEqual([CLAUDE_WEB_CIMD_CLIENT_ID]);
+	});
+});
+
 describe('EmaTenantUpsertRequestSchema token_epoch', () => {
 	it('rejects a request body that sets token_epoch (strict, server-managed)', () => {
 		expect(EmaTenantUpsertRequestSchema.safeParse(upsertBody).success).toBe(true);

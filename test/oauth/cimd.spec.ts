@@ -2,11 +2,13 @@ import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearKvPrefix } from '../helpers/kv';
 
-// Shapes copied from the live documents served at these URLs (fetched 2026-10-29).
+// Minimal synthetic fixtures using the field names a client metadata document carries; values are not the live documents.
 const WEB_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const CODE_ID = 'https://claude.ai/oauth/claude-code-client-metadata';
 const CACHE_PREFIX = 'oauth:cimd:';
 const FAILURE_PREFIX = 'oauth:cimd-neg:';
+// Independently computed (shasum -a 256 of WEB_ID); pins the cache key bytes across the shared-sha256Hex refactor.
+const WEB_ID_SHA256 = '87035c02ba6c24b7be2f8a278caf73912716d385265e64396b96469b1d52575e';
 
 function webDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
@@ -182,10 +184,6 @@ describe('resolveClient', () => {
 		['malformed JSON', () => new Response('{"client_id":', { status: 200 })],
 		['a JSON array', () => jsonResponse([webDoc()])],
 		['a non-Anthropic redirect_uri', () => jsonResponse(webDoc({ redirect_uris: ['https://attacker.example.net/cb'] }))],
-		[
-			'one bad redirect_uri among good ones',
-			() => jsonResponse(webDoc({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback', 'https://attacker.example.net/cb'] })),
-		],
 		['empty redirect_uris', () => jsonResponse(webDoc({ redirect_uris: [] }))],
 		['missing redirect_uris', () => jsonResponse(webDoc({ redirect_uris: undefined }))],
 		['missing client_name', () => jsonResponse(webDoc({ client_name: undefined }))],
@@ -208,6 +206,44 @@ describe('resolveClient', () => {
 		const { resolveClient } = await import('../../src/oauth/cimd');
 		stubFetch(() => jsonResponse(webDoc({ token_endpoint_auth_method: undefined })));
 		expect((await resolveClient(kv(), WEB_ID))?.client_id).toBe(WEB_ID);
+	});
+
+	it('keeps only the allowlisted redirect URIs of a document that also lists foreign ones, logging just their count', async () => {
+		const { resolveClient, redirectUriMatches } = await import('../../src/oauth/cimd');
+		const allowed = 'https://claude.ai/api/mcp/auth_callback';
+		const foreign = 'https://attacker.example.net/cb';
+		const fetchMock = stubFetch(() => jsonResponse(webDoc({ redirect_uris: [foreign, allowed, 'https://claude.ai:8443/cb'] })));
+		const logSpy = vi.spyOn(console, 'log');
+		try {
+			const record = await resolveClient(kv(), WEB_ID);
+			expect(record?.redirect_uris).toEqual([allowed]);
+			expect(redirectUriMatches(foreign, record?.redirect_uris ?? [])).toBe(false);
+			const cached = await resolveClient(kv(), WEB_ID);
+			expect(cached?.redirect_uris).toEqual([allowed]);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+
+			const lines = logSpy.mock.calls.map((call) => String(call[0]));
+			const filtered = lines.filter((line) => line.includes('cimd_redirect_uris_filtered'));
+			expect(filtered).toHaveLength(1);
+			expect(JSON.parse(filtered[0]).details).toEqual({ dropped: 2 });
+			expect(lines.join('\n')).not.toContain('attacker.example.net');
+			expect(lines.join('\n')).not.toContain(':8443');
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it('rejects and negatively caches a document whose every redirect URI is foreign', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch(() =>
+			jsonResponse(webDoc({ redirect_uris: ['https://attacker.example.net/cb', 'https://claude.ai:8443/cb'] })),
+		);
+		expect(await resolveClient(kv(), WEB_ID)).toBeNull();
+		expect(await resolveClient(kv(), WEB_ID)).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(await cachedKeys()).toHaveLength(0);
+		const failures = (await env.SESSION_STORE.list({ prefix: FAILURE_PREFIX })).keys.map((key) => key.name);
+		expect(failures).toEqual([`${FAILURE_PREFIX}${WEB_ID_SHA256}`]);
 	});
 
 	it('returns null when the fetch rejects (network error or timeout)', async () => {
@@ -358,6 +394,13 @@ describe('resolveClient per-IP limit on cache-miss fetches', () => {
 });
 
 describe('CIMD key hygiene', () => {
+	it('keys the cache by the lowercase sha256 hex of the client_id (fixed input, byte-identical across the refactor)', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		stubFetch(() => jsonResponse(webDoc()));
+		await resolveClient(kv(), WEB_ID);
+		expect((await cachedKeys()).map((key) => key.name)).toEqual([`${CACHE_PREFIX}${WEB_ID_SHA256}`]);
+	});
+
 	it('resolves or denies a 512-char CIMD-shaped id cleanly (no oversized KV key, no throw)', async () => {
 		const { resolveClient, isCimdClientId } = await import('../../src/oauth/cimd');
 		const longId = `https://claude.ai/oauth/${'a'.repeat(512 - 'https://claude.ai/oauth/'.length)}`;

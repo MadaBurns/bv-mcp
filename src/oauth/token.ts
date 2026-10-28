@@ -5,7 +5,7 @@ import { JwtBearerTokenRequestSchema, TokenRequestSchema, type JwtBearerTokenReq
 import type { EmaTenantRecord } from '../schemas/ema';
 import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailableError } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
-import { AssertionVerifyError, getJwksCached, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
+import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
 import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, normalizeIssuer, tenantEpoch } from './ema-tenants';
 import {
@@ -33,11 +33,12 @@ const TOKEN_RATE_WINDOW_SECONDS = 60;
 
 // jwt-bearer (EMA) exchanges leave the shared per-IP bucket above: every claude.ai exchange for
 // every tenant arrives from Anthropic's small egress range, so 30/min per IP would throttle
-// unrelated tenants against each other. They are limited per (client IP, claimed issuer) instead,
-// with a per-IP ceiling as the abuse backstop (many issuers cannot multiply one IP's allowance).
+// unrelated tenants against each other. They are limited per (client IP, claimed issuer) instead.
 const JWT_BEARER_ISSUER_RATE_LIMIT = 120;
-const JWT_BEARER_IP_RATE_LIMIT = 600;
-const JWT_BEARER_RATE_WINDOW_SECONDS = 60;
+// Per-IP ceiling on EVERY token request from a known client IP, consumed before the body is read
+// (the grant type is not known yet), so a flood of max-size bodies is cut by the cheapest gate. It
+// is also jwt-bearer's abuse backstop: many issuers cannot multiply one IP's allowance.
+const TOKEN_IP_CEILING = 600;
 /** Issuer-bucket label for an assertion with no usable `iss`: all such requests share one bucket per IP. */
 const UNUSABLE_ISSUER_BUCKET = 'invalid';
 
@@ -62,9 +63,9 @@ const TENANT_NOT_ACCEPTED = 'Assertion not accepted';
 /** A token-endpoint rejection: an RFC 6749 §5.2 error code and a STATIC description (never caller input). */
 class TokenEndpointError extends Error {
 	readonly code: string;
-	readonly status: 400 | 500;
+	readonly status: 400 | 500 | 503;
 
-	constructor(code: string, description: string, status: 400 | 500 = 400) {
+	constructor(code: string, description: string, status: 400 | 500 | 503 = 400) {
 		super(description);
 		this.name = 'TokenEndpointError';
 		this.code = code;
@@ -72,25 +73,12 @@ class TokenEndpointError extends Error {
 	}
 }
 
-/** Atomically consume one token-endpoint request when the coordinator is bound. */
-async function tokenRateLimit(
-	kv: KVNamespace,
-	ip: string,
-	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
-): Promise<OAuthRateLimitResult> {
-	return consumeOAuthRateLimit({
-		kv,
-		quotaCoordinator,
-		coordinationScope: 'token',
-		kvKey: `${OAUTH_KV_PREFIX}token-rl:${ip}`,
-		principal: ip,
-		limit: TOKEN_RATE_LIMIT,
-		windowSeconds: TOKEN_RATE_WINDOW_SECONDS,
-	});
-}
-
-/** Consume one jwt-bearer request from `principal`'s bucket (`label` namespaces the KV key and coordinator scope). */
-function jwtBearerRateLimit(env: AppEnv['Bindings'], label: string, principal: string, limit: number): Promise<OAuthRateLimitResult> {
+/**
+ * Atomically consume one token-endpoint request from `principal`'s per-minute bucket. `label`
+ * namespaces the KV key and coordinator scope: `token` is the shared per-IP bucket, `token-ceiling`
+ * the per-IP ceiling, `jwtb-iss` the jwt-bearer (IP, issuer) bucket.
+ */
+function tokenRateLimit(env: AppEnv['Bindings'], label: string, principal: string, limit: number): Promise<OAuthRateLimitResult> {
 	return consumeOAuthRateLimit({
 		kv: env.SESSION_STORE!,
 		quotaCoordinator: env.QUOTA_COORDINATOR,
@@ -98,7 +86,7 @@ function jwtBearerRateLimit(env: AppEnv['Bindings'], label: string, principal: s
 		kvKey: `${OAUTH_KV_PREFIX}${label}-rl:${principal}`,
 		principal,
 		limit,
-		windowSeconds: JWT_BEARER_RATE_WINDOW_SECONDS,
+		windowSeconds: TOKEN_RATE_WINDOW_SECONDS,
 	});
 }
 
@@ -262,6 +250,29 @@ async function readTokenForm(request: Request): Promise<TokenForm> {
 	}
 }
 
+/** A jwt-bearer exchange from a known IP is limited per (IP, issuer) in handleJwtBearerGrant, never by the shared bucket. */
+function hasOwnBucket(form: TokenForm, ip: string): boolean {
+	return 'body' in form && form.body.grant_type === OAUTH_JWT_BEARER_GRANT_TYPE && ip !== 'unknown';
+}
+
+/**
+ * Read the token form behind the endpoint's limiters, cheapest gate first. A known client IP's
+ * per-IP ceiling (every grant) runs BEFORE the body read, so a flood of max-size bodies is cut
+ * without reading them. The grant type is only known after the bounded read; then every request
+ * except a jwt-bearer exchange from a known IP takes the shared 30/min bucket before any response,
+ * including the 415/413/400 body failures. An unknown IP (no cf-connecting-ip) has no ceiling and
+ * keeps the shared bucket for every grant. Returns the form, or the 429/503 response.
+ */
+async function readRateLimitedTokenForm(c: Context<AppEnv>, ip: string): Promise<TokenForm | Response> {
+	if (ip !== 'unknown') {
+		const ceiling = rateLimitResponse(c, await tokenRateLimit(c.env, 'token-ceiling', ip, TOKEN_IP_CEILING));
+		if (ceiling) return ceiling;
+	}
+	const form = await readTokenForm(c.req.raw);
+	if (hasOwnBucket(form, ip)) return form;
+	return rateLimitResponse(c, await tokenRateLimit(c.env, 'token', ip, TOKEN_RATE_LIMIT)) ?? form;
+}
+
 /**
  * RFC 6749 §4.1.3 + RFC 7636 token endpoint, plus the RFC 7523 jwt-bearer grant for
  * Enterprise Managed Auth (see handleJwtBearerGrant). The authorization_code flow:
@@ -285,18 +296,10 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	const kv = env.SESSION_STORE!;
 	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
-	// Every request except a jwt-bearer exchange from a known IP is gated by the shared per-IP
-	// bucket BEFORE any response (including the 415/413/400 body failures), so a flood of invalid
-	// payloads still hits the cheap quota gate. Only the bounded body read precedes it, because the
-	// grant type has to be known to choose the bucket; jwt-bearer is limited per (IP, issuer) in
-	// handleJwtBearerGrant. An unknown IP (no cf-connecting-ip) keeps the shared bucket for every grant.
+	// Rate limits run before any other response, the per-IP ceiling before the body is even read.
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
-	const form = await readTokenForm(c.req.raw);
-	const ownBucket = 'body' in form && form.body.grant_type === OAUTH_JWT_BEARER_GRANT_TYPE && ip !== 'unknown';
-	if (!ownBucket) {
-		const limited = rateLimitResponse(c, await tokenRateLimit(kv, ip, env.QUOTA_COORDINATOR));
-		if (limited) return limited;
-	}
+	const form = await readRateLimitedTokenForm(c, ip);
+	if (form instanceof Response) return form;
 	if ('failure' in form) return c.json({ error: 'invalid_request', error_description: form.failure.description }, form.failure.status);
 	const body = form.body;
 
@@ -388,8 +391,11 @@ function parseJwtBearerRequest(body: Record<string, string>): JwtBearerTokenRequ
 
 /**
  * The claims of a compact JWS whose header declares `typ: oauth-id-jag+jwt`, decoded WITHOUT
- * verifying the signature. Only routing (which tenant, which client) may read these claims;
- * every claim the grant relies on is re-read from the verified payload.
+ * verifying the signature. Exactly two of them are read unverified, for routing only: `iss`
+ * picks the tenant (and so the JWKS and client allowlist), and `client_id` rejects a mismatched
+ * request before any JWKS fetch. validateIdJagClaims asserts both again on the verified payload;
+ * no other claim is read from here. (claimedIssuerBucket separately reads `iss` unverified, only to
+ * choose a rate-limit bucket.)
  */
 function decodeIdJagUnverified(assertion: string): Record<string, unknown> {
 	const parts = assertion.split('.');
@@ -444,11 +450,31 @@ async function verifyWithJwksRefresh(kv: KVNamespace, jwksUri: string, assertion
 	return (await verifyIdJag(assertion, await getJwksCached(kv, jwksUri, { forceRefresh: true }))).claims;
 }
 
-/** Verified claims; every signature, key or JWKS-fetch failure (all AssertionVerifyError) is invalid_grant. */
-async function verifyIdJagSignature(kv: KVNamespace, jwksUri: string, assertion: string): Promise<Record<string, unknown>> {
+/** Log a tenant JWKS that could not be fetched (tenant and failure class, never the URL or body) and build its retryable 503. */
+function jwksUnavailable(tenantId: string, error: JwksFetchError): TokenEndpointError {
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'oauth',
+		result: 'ema_jwks_unavailable',
+		error: error.message,
+		details: { emaTenant: tenantId },
+	});
+	return new TokenEndpointError('temporarily_unavailable', 'Issuer signing keys are unavailable', 503);
+}
+
+/**
+ * Verified claims. A JWKS that cannot be fetched (IdP outage, a jwks_uri blocked by policy, an
+ * unusable body) is an outage, not a forged assertion: 503 temporarily_unavailable plus one log
+ * line. A failed forced refetch serves the cached set, so it only lands here when nothing is
+ * cached. Every other signature or key failure, including a kid that is still absent after a
+ * successful fetch and refetch, is invalid_grant.
+ */
+async function verifyIdJagSignature(kv: KVNamespace, tenant: EmaTenantRecord, assertion: string): Promise<Record<string, unknown>> {
 	try {
-		return await verifyWithJwksRefresh(kv, jwksUri, assertion);
+		return await verifyWithJwksRefresh(kv, tenant.jwks_uri, assertion);
 	} catch (error) {
+		if (error instanceof JwksFetchError) throw jwksUnavailable(tenant.tenant_id, error);
 		if (error instanceof AssertionVerifyError) throw new TokenEndpointError('invalid_grant', 'Assertion signature is not valid');
 		throw error;
 	}
@@ -472,10 +498,44 @@ function isTimeWindowValid(exp: unknown, iat: unknown, now: number): exp is numb
 	return fresh && expiresAt - issuedAt <= ID_JAG_MAX_LIFETIME_SECONDS;
 }
 
-/** Claim checks on the VERIFIED payload: audience is our issuer, the time window, and sub/jti shape. */
-function validateIdJagClaims(claims: Record<string, unknown>, issuer: string, now: number): { sub: string; jti: string; exp: number } {
+/** The normalized form of an `iss` claim, or null when it is not a usable issuer URL. */
+function normalizedIssuerOrNull(iss: unknown): string | null {
+	try {
+		return typeof iss === 'string' ? normalizeIssuer(iss) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** What a verified ID-JAG must match. */
+export interface IdJagExpectation {
+	/** This server's issuer identifier: the required `aud`. */
+	audience: string;
+	/** The normalized issuer of the tenant the request was routed to. */
+	tenantIssuer: string;
+	/** The token request's `client_id`. */
+	clientId: string;
+}
+
+/** The verified `iss` and `client_id` must be the ones the request was routed by (decodeIdJagUnverified). */
+function assertRoutedBy(claims: Record<string, unknown>, expected: IdJagExpectation): void {
+	const routed = normalizedIssuerOrNull(claims.iss) === expected.tenantIssuer && claims.client_id === expected.clientId;
+	if (!routed) throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
+}
+
+/**
+ * Claim checks on the VERIFIED payload: iss and client_id match the routing, audience is our
+ * issuer, the time window, and sub/jti shape. Exported for unit testing: a signed payload
+ * cannot differ from its own unverified decode, so the routing re-check is unreachable over HTTP.
+ */
+export function validateIdJagClaims(
+	claims: Record<string, unknown>,
+	expected: IdJagExpectation,
+	now: number,
+): { sub: string; jti: string; exp: number } {
+	assertRoutedBy(claims, expected);
 	const { aud, exp, iat, sub, jti } = claims;
-	if (!singleValueEquals(aud, issuer)) throw new TokenEndpointError('invalid_grant', 'Assertion audience is not this server');
+	if (!singleValueEquals(aud, expected.audience)) throw new TokenEndpointError('invalid_grant', 'Assertion audience is not this server');
 	if (!isTimeWindowValid(exp, iat, now)) throw new TokenEndpointError('invalid_grant', 'Assertion is expired or not yet valid');
 	if (!isBoundedString(sub) || !isBoundedString(jti)) throw new TokenEndpointError('invalid_grant', 'Assertion sub or jti is invalid');
 	return { sub, jti, exp };
@@ -497,7 +557,8 @@ async function claimAssertionOnce(issuer: string, jti: string, exp: number, quot
 /**
  * Validate an ID-JAG token request in the contract order (each step's failure is final):
  * shape + `typ` → trusted issuer → allowlisted, resolvable client → `client_id` claim →
- * signature → aud / time window / sub / jti → resource → one-time jti.
+ * signature (a JWKS outage is a 503) → verified iss / client_id / aud / time window / sub / jti →
+ * resource → one-time jti.
  */
 async function acceptIdJag(
 	c: Context<AppEnv>,
@@ -513,8 +574,9 @@ async function acceptIdJag(
 	const tenant = await resolveTrustedTenant(kv, unverified.iss, now, kvEnvelopeKey);
 	await assertClientAllowed(kv, tenant, request.client_id, kvEnvelopeKey);
 	if (unverified.client_id !== request.client_id) throw new TokenEndpointError('invalid_grant', 'Assertion client_id does not match');
-	const claims = await verifyIdJagSignature(kv, tenant.jwks_uri, request.assertion);
-	const { sub, jti, exp } = validateIdJagClaims(claims, issuer, now);
+	const claims = await verifyIdJagSignature(kv, tenant, request.assertion);
+	const expected: IdJagExpectation = { audience: issuer, tenantIssuer: tenant.issuer, clientId: request.client_id };
+	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
 	assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
 	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
 	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub) };
@@ -523,24 +585,17 @@ async function acceptIdJag(
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
 function claimedIssuerBucket(assertion: string | undefined): string {
 	const payload = assertion?.split('.')[1];
-	const iss = payload ? decodeJsonSegment(payload)?.iss : undefined;
-	try {
-		return typeof iss === 'string' ? normalizeIssuer(iss) : UNUSABLE_ISSUER_BUCKET;
-	} catch {
-		return UNUSABLE_ISSUER_BUCKET;
-	}
+	return normalizedIssuerOrNull(payload ? decodeJsonSegment(payload)?.iss : undefined) ?? UNUSABLE_ISSUER_BUCKET;
 }
 
 /**
- * jwt-bearer rate limits for a KNOWN client IP: the per-IP ceiling first, then the (IP, claimed
- * issuer) bucket. The bucket key is a digest so an attacker-chosen `iss` cannot shape a KV key.
- * Returns the 429/503 response, or null to proceed.
+ * The (IP, claimed issuer) bucket of a jwt-bearer exchange from a KNOWN client IP; the per-IP
+ * ceiling already ran before the body read (readRateLimitedTokenForm). The bucket key is a digest
+ * so an attacker-chosen `iss` cannot shape a KV key. Returns the 429/503 response, or null to proceed.
  */
-async function consumeJwtBearerLimits(c: Context<AppEnv>, assertion: string | undefined, ip: string): Promise<Response | null> {
-	const ceiling = rateLimitResponse(c, await jwtBearerRateLimit(c.env, 'jwtb', ip, JWT_BEARER_IP_RATE_LIMIT));
-	if (ceiling) return ceiling;
+async function consumeJwtBearerIssuerLimit(c: Context<AppEnv>, assertion: string | undefined, ip: string): Promise<Response | null> {
 	const bucket = await sha256Hex(`${ip}|${claimedIssuerBucket(assertion)}`);
-	return rateLimitResponse(c, await jwtBearerRateLimit(c.env, 'jwtb-iss', bucket, JWT_BEARER_ISSUER_RATE_LIMIT));
+	return rateLimitResponse(c, await tokenRateLimit(c.env, 'jwtb-iss', bucket, JWT_BEARER_ISSUER_RATE_LIMIT));
 }
 
 /** Host of a URL-shaped (CIMD) client_id for logs; an opaque DCR id is not logged. */
@@ -568,7 +623,7 @@ async function handleJwtBearerGrant(
 	ip: string,
 ): Promise<Response> {
 	if (ip !== 'unknown') {
-		const limited = await consumeJwtBearerLimits(c, body.assertion, ip);
+		const limited = await consumeJwtBearerIssuerLimit(c, body.assertion, ip);
 		if (limited) return limited;
 	}
 	let grant: AcceptedIdJag;

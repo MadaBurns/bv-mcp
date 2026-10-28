@@ -14,6 +14,7 @@
 import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaTenantRecord } from '../schemas/ema';
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
+import { sha256Hex } from './jwks';
 import { StrongStateUnavailableError } from './storage';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
@@ -29,11 +30,6 @@ export class EmaTenantConflictError extends Error {
 		super('Issuer is already registered to a different tenant');
 		this.name = 'EmaTenantConflictError';
 	}
-}
-
-async function sha256Hex(value: string): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function isPlainHttpsUrl(url: URL): boolean {
@@ -78,22 +74,40 @@ async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uin
  * Upsert a tenant. The stored issuer is the normalized form. Throws
  * EmaTenantConflictError when another tenant already owns the issuer; moving a
  * tenant to a new issuer releases its old index entry.
+ *
+ * `existing` is the caller's already-read snapshot of this tenant (null = none): the old-issuer
+ * release then works off that same snapshot, so an upsert reads the tenant key exactly once.
+ * Omit it and the record is read here.
  */
-export async function putEmaTenant(kv: KVNamespace, rec: EmaTenantRecord, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
+export async function putEmaTenant(
+	kv: KVNamespace,
+	rec: EmaTenantRecord,
+	kvEnvelopeKey?: Uint8Array,
+	existing?: EmaTenantRecord | null,
+): Promise<EmaTenantRecord> {
 	const stored: EmaTenantRecord = { ...rec, issuer: normalizeIssuer(rec.issuer) };
 	const newIndexKey = await issuerKey(stored.issuer);
-	const owner = await kv.get(newIndexKey);
-	if (owner && owner !== stored.tenant_id) {
-		if (await ownsIssuer(kv, owner, stored.issuer, kvEnvelopeKey)) throw new EmaTenantConflictError();
-	}
+	await assertIssuerAvailable(kv, newIndexKey, stored, kvEnvelopeKey);
 
-	const previous = await readRecord(kv, stored.tenant_id, kvEnvelopeKey);
+	const previous = existing === undefined ? await readRecord(kv, stored.tenant_id, kvEnvelopeKey) : existing;
 	const plaintext = JSON.stringify(stored);
 	await kv.put(tenantKey(stored.tenant_id), kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext);
 	await kv.put(newIndexKey, stored.tenant_id);
 
 	if (previous && previous.issuer !== stored.issuer) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
 	return stored;
+}
+
+/** Throws EmaTenantConflictError when a different tenant genuinely holds the issuer behind `indexKey`. */
+async function assertIssuerAvailable(
+	kv: KVNamespace,
+	indexKey: string,
+	stored: EmaTenantRecord,
+	kvEnvelopeKey?: Uint8Array,
+): Promise<void> {
+	const owner = await kv.get(indexKey);
+	if (owner && owner !== stored.tenant_id && (await ownsIssuer(kv, owner, stored.issuer, kvEnvelopeKey)))
+		throw new EmaTenantConflictError();
 }
 
 /**

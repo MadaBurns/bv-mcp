@@ -193,6 +193,8 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
 	KV_ENVELOPE_KEY?: string;
+	/** OAuth route gate ('true' = on). Read by the EMA tenant upsert to require KV_ENVELOPE_KEY. */
+	ENABLE_OAUTH?: string;
 	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
 	INTELLIGENCE_DB?: D1Database;
 	/** Base64-encoded 32-byte AES-256-GCM key used to decrypt `mcp_access_log.ip_ciphertext` in the forensics endpoint. */
@@ -1539,6 +1541,7 @@ async function upsertEmaTenant(
 			token_epoch: nextTokenEpoch(existing, body.enabled),
 		},
 		kvEnvelopeKey,
+		existing,
 	);
 }
 
@@ -1551,10 +1554,21 @@ function emaStoreError(c: import('hono').Context<InternalAppEnv>, err: unknown):
 }
 
 /**
+ * Fail closed on a write that cannot be read back: with no (parseable) envelope key a tenant
+ * would be stored in plaintext, and the moment the key is set every plaintext record reads as
+ * absent (readRecord), stranding the tenant and orphaning its issuer index. Only while OAuth is
+ * on: with it off the grant is unreachable and nothing can strand.
+ */
+const requireEmaEnvelopeKey: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
+	if (c.env.ENABLE_OAUTH === 'true' && !emaEnvelopeKey(c.env)) return c.json({ error: 'envelope_key_required' }, 409, EMA_NO_STORE);
+	return next();
+};
+
+/**
  * PUT /internal/oauth/ema-tenants — upsert a tenant. `jwks_uri` is resolved from the
  * issuer's OIDC discovery document when omitted.
  */
-internalRoutes.put('/oauth/ema-tenants', async (c) => {
+internalRoutes.put('/oauth/ema-tenants', requireEmaEnvelopeKey, async (c) => {
 	const kv = c.env.SESSION_STORE;
 	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
 

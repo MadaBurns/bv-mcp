@@ -3,6 +3,7 @@ import type { ClientRecord, CodeRecord, CodeRecordInput } from '../schemas/oauth
 import { ClientRecordSchema, CodeRecordSchema } from '../schemas/oauth';
 import { OAUTH_CLIENT_TTL_SECONDS, OAUTH_CODE_TTL_SECONDS, OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
+import { sha256Hex } from './jwks';
 import {
 	bumpVersionIdempotentlyWithCoordinator,
 	bumpVersionWithCoordinator,
@@ -107,11 +108,7 @@ async function coordinationKey(
 	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation' | 'assertion-jti',
 	value: string,
 ): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
-	const hex = Array.from(digest)
-		.map((byte) => byte.toString(16).padStart(2, '0'))
-		.join('');
-	return `oauth:${kind}:${hex}`;
+	return `oauth:${kind}:${await sha256Hex(value)}`;
 }
 
 /** Generate a URL-safe opaque authorization code (~32 bytes of entropy, base64url). */

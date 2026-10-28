@@ -2,13 +2,27 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
-import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
+import { MAX_REQUEST_BODY_BYTES, OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 import { putEmaTenant } from '../../src/oauth/ema-tenants';
 import { sha256Hex } from '../../src/oauth/jwks';
 import { verifyJwt } from '../../src/oauth/jwt';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 import { pinRateLimitWindow } from '../helpers/rate-limit-window';
+
+// Counts calls to the bounded body reader (the real reader still runs), so a test can show a
+// request was rejected before its body was read.
+const bodyReads = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../../src/lib/request-body', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../src/lib/request-body')>();
+	return {
+		...actual,
+		readBoundedText: (...args: Parameters<typeof actual.readBoundedText>) => {
+			bodyReads.count++;
+			return actual.readBoundedText(...args);
+		},
+	};
+});
 
 // RFC 7523 jwt-bearer grant carrying an ID-JAG (US-14 Enterprise Managed Auth). Every case
 // drives the real /oauth/token route; only the IdP JWKS and Claude's Client ID Metadata
@@ -125,7 +139,7 @@ function webCimdDocument(): Record<string, unknown> {
 }
 
 /** What the stubbed network serves; tests mutate it before the request under test. */
-let served: { jwksKeys: JsonWebKey[]; otherKeys: JsonWebKey[]; cimdStatus: number };
+let served: { jwksKeys: JsonWebKey[]; jwksStatus: number; otherKeys: JsonWebKey[]; cimdStatus: number };
 let jwksFetches: number;
 
 function urlOf(input: RequestInfo | URL): string {
@@ -140,7 +154,7 @@ function stubNetwork(): void {
 			const url = urlOf(input);
 			if (url === JWKS_URI) {
 				jwksFetches++;
-				return jsonResponse({ keys: served.jwksKeys });
+				return jsonResponse({ keys: served.jwksKeys }, served.jwksStatus);
 			}
 			if (url === OTHER_JWKS_URI) return jsonResponse({ keys: served.otherKeys });
 			if (url === WEB_CLIENT_ID) return served.cimdStatus === 200 ? jsonResponse(webCimdDocument()) : new Response('nope', { status: 404 });
@@ -191,7 +205,7 @@ beforeAll(async () => {
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
-	served = { jwksKeys: [signer.publicJwk], otherKeys: [], cimdStatus: 200 };
+	served = { jwksKeys: [signer.publicJwk], jwksStatus: 200, otherKeys: [], cimdStatus: 200 };
 	jwksFetches = 0;
 	stubNetwork();
 	await putEmaTenant(env.SESSION_STORE, tenant());
@@ -372,9 +386,35 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		await expectError(await postToken(grantParams(await signIdJag(rogue))), 400, 'invalid_grant');
 	});
 
-	it('rejects when the JWKS cannot be fetched', async () => {
-		served.jwksKeys = [];
-		await expectError(await postToken(grantParams(await signIdJag(signer))), 400, 'invalid_grant');
+	it('answers 503 temporarily_unavailable and logs the tenant once when the JWKS cannot be fetched', async () => {
+		const failures: Array<[string, () => void]> = [
+			['HTTP 500', () => (served.jwksStatus = 500)],
+			['an unusable key set', () => (served.jwksKeys = [])],
+		];
+		for (const [failure, arrange] of failures) {
+			served = { ...served, jwksKeys: [signer.publicJwk], jwksStatus: 200 };
+			arrange();
+			const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+			const response = await postToken(grantParams(await signIdJag(signer)));
+			const lines = log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('ema_jwks_unavailable'));
+			log.mockRestore();
+
+			const body = await expectError(response, 503, 'temporarily_unavailable');
+			expect(body.error_description, failure).toBe('Issuer signing keys are unavailable');
+			expect(lines, failure).toHaveLength(1);
+			const event = JSON.parse(lines[0]) as { severity: string; error: string; details: Record<string, unknown> };
+			expect(event.severity).toBe('warn');
+			expect(event.details).toEqual({ emaTenant: 'acme-corp' });
+			expect(event.error).toMatch(/^JWKS fetch failed: /);
+			expect(lines[0]).not.toContain(JWKS_URI);
+		}
+	});
+
+	it('stays invalid_grant when the kid is absent from a successfully fetched set, even after the forced refetch', async () => {
+		const unknownKid = await makeSigner('k9');
+		const body = await expectError(await postToken(grantParams(await signIdJag(unknownKid))), 400, 'invalid_grant');
+		expect(body.error_description).toBe('Assertion signature is not valid');
+		expect(jwksFetches).toBe(2);
 	});
 
 	it('rejects an aud array with more than one element', async () => {
@@ -553,5 +593,85 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(response.status).toBe(503);
 		expect(response.headers.get('retry-after')).toMatch(/^\d+$/);
 		expect(((await response.json()) as Record<string, unknown>).error).toBe('temporarily_unavailable');
+	});
+});
+
+/** A junk authorization_code request padded to exactly the body cap: the most a flood can make us read. */
+function maxSizeCodeExchange(): Record<string, string> {
+	const params = { grant_type: 'authorization_code', code: 'bogus', client_id: 'bogus', redirect_uri: 'https://x.example/cb', pad: '' };
+	params.pad = 'a'.repeat(MAX_REQUEST_BODY_BYTES - new URLSearchParams(params).toString().length);
+	return params;
+}
+
+describe('POST /oauth/token per-IP limits for every grant', () => {
+	it('429s a known IP from the 31st request after the body read, and from the 601st before it', async () => {
+		pinRateLimitWindow();
+		const ip = uniqueIp();
+		const params = maxSizeCodeExchange();
+		expect(new URLSearchParams(params).toString()).toHaveLength(MAX_REQUEST_BODY_BYTES);
+		for (let i = 0; i < 30; i++) {
+			expect((await postToken(params, grantEnv, ip)).status).toBe(400);
+		}
+
+		// The shared 30/min bucket needs the grant type, so the 31st is limited after its body is read.
+		bodyReads.count = 0;
+		expect((await postToken(params, grantEnv, ip)).status).toBe(429);
+		expect(bodyReads.count).toBe(1);
+		for (let i = 31; i < 600; i++) {
+			expect((await postToken(params, grantEnv, ip)).status).toBe(429);
+		}
+
+		// The per-IP ceiling runs before the read: the 601st body is never read.
+		bodyReads.count = 0;
+		const ceiling = await postToken(params, grantEnv, ip);
+		expect(ceiling.status).toBe(429);
+		expect(await ceiling.json()).toEqual({ error: 'invalid_request', error_description: 'Too many token requests' });
+		expect(bodyReads.count).toBe(0);
+	});
+
+	it('never charges a jwt-bearer exchange from a known IP to the shared 30/min bucket', async () => {
+		pinRateLimitWindow();
+		const ip = uniqueIp();
+		for (let i = 0; i < 31; i++) {
+			expect((await postToken({ grant_type: GRANT_TYPE, client_id: WEB_CLIENT_ID }, grantEnv, ip)).status).toBe(400);
+		}
+		// The same IP's shared bucket is still empty, so a code exchange is not limited.
+		expect((await postToken(maxSizeCodeExchange(), grantEnv, ip)).status).toBe(400);
+	});
+});
+
+// A signed payload cannot differ from its own unverified decode, so the verified iss/client_id
+// re-check is driven directly: routing picked tenant IDP_ISSUER for WEB_CLIENT_ID.
+describe('validateIdJagClaims (verified payload re-checks the routing claims)', () => {
+	const expected = { audience: ISSUER, tenantIssuer: IDP_ISSUER, clientId: WEB_CLIENT_ID };
+
+	function thrownBy(run: () => unknown): unknown {
+		try {
+			run();
+		} catch (error) {
+			return error;
+		}
+		return undefined;
+	}
+
+	it('accepts verified claims whose iss normalizes to the routed tenant issuer', async () => {
+		const { validateIdJagClaims } = await import('../../src/oauth/token');
+		const claims = idJagClaims({ iss: 'https://ACME.okta.com/' });
+		expect(validateIdJagClaims(claims, expected, nowSeconds())).toEqual({ sub: claims.sub, jti: claims.jti, exp: claims.exp });
+	});
+
+	it('rejects a verified iss or client_id that differs from the routing, with the uniform tenant wording', async () => {
+		const { validateIdJagClaims } = await import('../../src/oauth/token');
+		const mismatches: Array<Record<string, unknown>> = [
+			{ iss: OTHER_IDP_ISSUER },
+			{ iss: undefined },
+			{ iss: 'not a url' },
+			{ client_id: CODE_CLIENT_ID },
+			{ client_id: undefined },
+		];
+		for (const overrides of mismatches) {
+			const error = thrownBy(() => validateIdJagClaims(idJagClaims(overrides), expected, nowSeconds()));
+			expect(error, JSON.stringify(overrides)).toMatchObject({ code: 'invalid_grant', message: TENANT_NOT_ACCEPTED });
+		}
 	});
 });

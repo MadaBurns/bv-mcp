@@ -358,6 +358,18 @@ from the wrong IdP buys nothing. Tenants are seeded
 over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
 which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
 
+> **Prerequisite: set `KV_ENVELOPE_KEY` (and redeploy) BEFORE seeding the first tenant.**
+> Tenant records are sealed with that key, and a record stored without it is plaintext.
+> There is no plaintext fallback by design: once the key is set, a plaintext record reads
+> as absent. So a tenant seeded while the key is unset would vanish the moment the key
+> is added: its issuer index would be orphaned, every token issued for it would answer
+> 401 within about a minute, and a later re-PUT would quietly work and hide the cause.
+> To prevent that, while `ENABLE_OAUTH` is `true` and `KV_ENVELOPE_KEY` is unset (or does
+> not parse), the PUT answers `409 envelope_key_required` and writes nothing.
+> If the key is ever set or rotated after tenants exist, every tenant reads as absent:
+> re-PUT each one to reseal it, and confirm with `GET /internal/oauth/ema-tenants`
+> that they all list (see "Verify live", step 1).
+
     PUT /internal/oauth/ema-tenants
     Authorization: Bearer <BV_MCP_OAUTH_MINT_KEY>
     Content-Type: application/json
@@ -405,12 +417,17 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   key is treated as absent (the grant fails closed for that issuer, and the tenant's
   issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
   the re-PUT counts as a create, so it starts a new token epoch.
+- A tenant whose exchanges answer `503 temporarily_unavailable` ("Issuer signing keys are
+  unavailable") has a stored `jwks_uri` that cannot be fetched right now: the IdP is down, the
+  URL is blocked by the outbound fetch policy, or the response is not a usable key set. Each
+  occurrence logs one `ema_jwks_unavailable` line carrying the tenant id and the failure class
+  (never the URL or the response body). An unknown `kid` after a good fetch stays `invalid_grant`.
 
 #### Verify live
 
 Run after the Worker deploy, and again once a tenant is seeded:
 
-1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed.
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After ANY `KV_ENVELOPE_KEY` change (first set, rotation, removal), also run `GET /internal/oauth/ema-tenants` and confirm every seeded tenant is listed; a missing one is unreadable under the current key and needs a re-PUT.
 2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
 3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
 4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).

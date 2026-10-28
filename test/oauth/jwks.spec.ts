@@ -5,6 +5,8 @@ import { clearKvPrefix } from '../helpers/kv';
 const TYP = 'oauth-id-jag+jwt';
 const NOW = 1_700_000_000;
 const JWKS_URI = 'https://acme.okta.com/oauth2/v1/keys';
+// Independently computed (shasum -a 256 of JWKS_URI); pins the cache key bytes across the shared-sha256Hex refactor.
+const JWKS_URI_SHA256 = '801b87adc41d2a4fdd156475838b1250fad2a1f47176c3685be81284e3cdb6df';
 // An already-expired, wrong-audience claim set: verifyJwsWithJwks must return it untouched.
 const CLAIMS = { iss: 'https://acme.okta.com', sub: 'user-1', aud: 'https://elsewhere', exp: 1, iat: 0, jti: 'j1' };
 
@@ -137,8 +139,28 @@ describe('oauth/jwks — verifyJwsWithJwks', () => {
 		await expectCode(verify(await signJws(rsa, CLAIMS, { kid: 'rotated-away' }), [rsa.publicJwk, rsaRotated.publicJwk]), 'no_key');
 	});
 
-	it('kid-less header with two compatible keys → no_key', async () => {
-		await expectCode(verify(await signJws(rsa, CLAIMS, { kid: undefined }), [rsa.publicJwk, rsaRotated.publicJwk]), 'no_key');
+	it('kid-less header with several compatible keys (rotation): tries each in order and accepts the one that signed', async () => {
+		const keys = [rsa.publicJwk, rsaRotated.publicJwk];
+		expect((await verify(await signJws(rsaRotated, CLAIMS, { kid: undefined }), keys)).claims).toEqual(CLAIMS);
+		expect((await verify(await signJws(rsa, CLAIMS, { kid: undefined }), keys)).claims).toEqual(CLAIMS);
+	});
+
+	it('kid-less header: no candidate verifies → bad_signature', async () => {
+		await expectCode(verify(await signJws(rsaWeak, CLAIMS, { kid: undefined }), [rsa.publicJwk, rsaRotated.publicJwk]), 'bad_signature');
+	});
+
+	it('kid-less header: more than five compatible candidates → no_key, even when the first would verify', async () => {
+		const extra = await Promise.all([1, 2, 3, 4, 5].map((n) => makeSigner('ES256', `ec-extra-${n}`)));
+		const token = await signJws(ec, CLAIMS, { kid: undefined });
+		const five = [ec.publicJwk, ...extra.slice(0, 4).map((signer) => signer.publicJwk)];
+		expect((await verify(token, five)).claims).toEqual(CLAIMS);
+		await expectCode(verify(token, [...five, extra[4].publicJwk]), 'no_key');
+	});
+
+	it('kid-less header: a private or weak key among the candidates refuses the set', async () => {
+		const token = await signJws(rsa, CLAIMS, { kid: undefined });
+		await expectCode(verify(token, [rsa.publicJwk, { ...rsaRotated.privateJwk, key_ops: undefined }]), 'no_key');
+		await expectCode(verify(token, [rsa.publicJwk, rsaWeak.publicJwk]), 'no_key');
 	});
 
 	it('key with use=enc, a mismatched alg, or the wrong curve → no_key', async () => {
@@ -246,6 +268,21 @@ describe('oauth/jwks — verifyJwsWithJwks', () => {
 	});
 });
 
+describe('oauth/jwks — exported segment helpers', () => {
+	it('decodeJsonSegment returns a base64url JSON-object segment, else null without throwing', async () => {
+		const { decodeJsonSegment } = await import('../../src/oauth/jwks');
+		expect(decodeJsonSegment(b64urlJson({ typ: TYP }))).toEqual({ typ: TYP });
+		const invalid = ['', 'A', 'not base64url!', b64urlJson([1]), b64urlJson('text'), b64url(new Uint8Array([0xff, 0xfe]))];
+		expect(invalid.map(decodeJsonSegment)).toEqual(invalid.map(() => null));
+	});
+
+	it('isPlainObject accepts only non-null, non-array objects', async () => {
+		const { isPlainObject } = await import('../../src/oauth/jwks');
+		expect([{}, { a: 1 }].map(isPlainObject)).toEqual([true, true]);
+		expect([null, [], 'x', 1, undefined].map(isPlainObject)).toEqual([false, false, false, false, false]);
+	});
+});
+
 describe('oauth/jwks — getJwksCached', () => {
 	let served: () => Response;
 	let fetchMock: ReturnType<typeof vi.fn>;
@@ -276,6 +313,14 @@ describe('oauth/jwks — getJwksCached', () => {
 	it('sha256Hex is lowercase hex SHA-256', async () => {
 		const { sha256Hex } = await import('../../src/oauth/jwks');
 		expect(await sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+	});
+
+	it('caches under oauth:ema-jwks:<lowercase sha256 hex of the URI> (fixed input, byte-identical across the refactor)', async () => {
+		const { getJwksCached } = await import('../../src/oauth/jwks');
+		stubFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+		await getJwksCached(kv(), JWKS_URI, { now: NOW });
+		const names = (await env.SESSION_STORE.list({ prefix: 'oauth:ema-jwks:' })).keys.map((key) => key.name);
+		expect(names).toEqual([`oauth:ema-jwks:${JWKS_URI_SHA256}`]);
 	});
 
 	it('fetches GET with manual redirects, a JSON accept header and a timeout signal, then caches for 600s', async () => {
