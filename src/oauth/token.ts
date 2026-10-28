@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { getEmaTenantByIssuer } from './ema-tenants';
+import { getEmaTenantByIssuer, normalizeIssuer } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -31,8 +31,21 @@ import type { QuotaCoordinator } from '../lib/quota-coordinator';
 const TOKEN_RATE_LIMIT = 30;
 const TOKEN_RATE_WINDOW_SECONDS = 60;
 
+// jwt-bearer (EMA) exchanges leave the shared per-IP bucket above: every claude.ai exchange for
+// every tenant arrives from Anthropic's small egress range, so 30/min per IP would throttle
+// unrelated tenants against each other. They are limited per (client IP, claimed issuer) instead,
+// with a per-IP ceiling as the abuse backstop (many issuers cannot multiply one IP's allowance).
+const JWT_BEARER_ISSUER_RATE_LIMIT = 120;
+const JWT_BEARER_IP_RATE_LIMIT = 600;
+const JWT_BEARER_RATE_WINDOW_SECONDS = 60;
+/** Issuer-bucket label for an assertion with no usable `iss`: all such requests share one bucket per IP. */
+const UNUSABLE_ISSUER_BUCKET = 'invalid';
+
 /** SQ-199/SQ-234: shared retryable body for a strong-state (KV/DO) outage on a bearer/token path. */
-export const AUTH_STATE_UNAVAILABLE_BODY = { error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' } as const;
+export const AUTH_STATE_UNAVAILABLE_BODY = {
+	error: 'temporarily_unavailable',
+	error_description: 'Authorization state is unavailable',
+} as const;
 
 const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' };
 
@@ -43,6 +56,8 @@ const ID_JAG_MAX_LIFETIME_SECONDS = 3600;
 const ID_JAG_MAX_CLAIM_LENGTH = 256;
 /** Single resource scope: every jwt-bearer grant gets exactly this, whatever else was requested. */
 const ID_JAG_GRANTED_SCOPE = 'mcp';
+/** The one description for EVERY tenant-state rejection, so error text cannot enumerate trusted or lapsed issuers. */
+const TENANT_NOT_ACCEPTED = 'Assertion not accepted';
 
 /** A token-endpoint rejection: an RFC 6749 §5.2 error code and a STATIC description (never caller input). */
 class TokenEndpointError extends Error {
@@ -72,6 +87,31 @@ async function tokenRateLimit(
 		limit: TOKEN_RATE_LIMIT,
 		windowSeconds: TOKEN_RATE_WINDOW_SECONDS,
 	});
+}
+
+/** Consume one jwt-bearer request from `principal`'s bucket (`label` namespaces the KV key and coordinator scope). */
+function jwtBearerRateLimit(env: AppEnv['Bindings'], label: string, principal: string, limit: number): Promise<OAuthRateLimitResult> {
+	return consumeOAuthRateLimit({
+		kv: env.SESSION_STORE!,
+		quotaCoordinator: env.QUOTA_COORDINATOR,
+		coordinationScope: label,
+		kvKey: `${OAUTH_KV_PREFIX}${label}-rl:${principal}`,
+		principal,
+		limit,
+		windowSeconds: JWT_BEARER_RATE_WINDOW_SECONDS,
+	});
+}
+
+/** The 503 (state unavailable) / 429 (exceeded) response for a rate-limit verdict, or null to proceed. */
+function rateLimitResponse(c: Context<AppEnv>, verdict: OAuthRateLimitResult): Response | null {
+	if (verdict.unavailable) {
+		return c.json({ error: 'temporarily_unavailable', error_description: 'Token rate-limit state is unavailable' }, 503, {
+			'Cache-Control': 'no-store',
+			'Retry-After': String(verdict.retryAfterSeconds),
+		});
+	}
+	if (verdict.exceeded) return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
+	return null;
 }
 
 /** Decode a base64url string. Returns null on any non-base64url input rather than throwing. */
@@ -198,6 +238,27 @@ export async function mintAccessToken(
 	}
 }
 
+type TokenForm = { body: Record<string, string> } | { failure: { status: 400 | 413 | 415; description: string } };
+
+/** Enforce `application/x-www-form-urlencoded` and the body cap, then decode the form into a flat record. */
+async function readTokenForm(request: Request): Promise<TokenForm> {
+	const ct = request.headers.get('content-type') ?? '';
+	if (!ct.toLowerCase().includes('application/x-www-form-urlencoded')) {
+		return { failure: { status: 415, description: 'Content-Type must be application/x-www-form-urlencoded' } };
+	}
+	const bodyRead = await readBoundedText(request, MAX_REQUEST_BODY_BYTES);
+	if (!bodyRead.ok) return { failure: { status: 413, description: 'Request body exceeds the configured limit' } };
+	try {
+		const body: Record<string, string> = {};
+		new URLSearchParams(bodyRead.text).forEach((value, key) => {
+			body[key] = value;
+		});
+		return { body };
+	} catch {
+		return { failure: { status: 400, description: 'Request body failed validation' } };
+	}
+}
+
 /**
  * RFC 6749 §4.1.3 + RFC 7636 token endpoint, plus the RFC 7523 jwt-bearer grant for
  * Enterprise Managed Auth (see handleJwtBearerGrant). The authorization_code flow:
@@ -221,43 +282,25 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	const kv = env.SESSION_STORE!;
 	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
-	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
-	// flooding the endpoint with invalid payloads still hits the cheap quota gate.
+	// Every request except a jwt-bearer exchange from a known IP is gated by the shared per-IP
+	// bucket BEFORE any response (including the 415/413/400 body failures), so a flood of invalid
+	// payloads still hits the cheap quota gate. Only the bounded body read precedes it, because the
+	// grant type has to be known to choose the bucket; jwt-bearer is limited per (IP, issuer) in
+	// handleJwtBearerGrant. An unknown IP (no cf-connecting-ip) keeps the shared bucket for every grant.
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
-	const tokenRate = await tokenRateLimit(kv, ip, env.QUOTA_COORDINATOR);
-	if (tokenRate.unavailable) {
-		return c.json({ error: 'temporarily_unavailable', error_description: 'Token rate-limit state is unavailable' }, 503, {
-			'Cache-Control': 'no-store',
-			'Retry-After': String(tokenRate.retryAfterSeconds),
-		});
+	const form = await readTokenForm(c.req.raw);
+	const ownBucket = 'body' in form && form.body.grant_type === OAUTH_JWT_BEARER_GRANT_TYPE && ip !== 'unknown';
+	if (!ownBucket) {
+		const limited = rateLimitResponse(c, await tokenRateLimit(kv, ip, env.QUOTA_COORDINATOR));
+		if (limited) return limited;
 	}
-	if (tokenRate.exceeded) {
-		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
-	}
-
-	const ct = c.req.header('content-type') ?? '';
-	if (!ct.toLowerCase().includes('application/x-www-form-urlencoded')) {
-		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/x-www-form-urlencoded' }, 415);
-	}
-	const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
-	if (!bodyRead.ok) {
-		return c.json({ error: 'invalid_request', error_description: 'Request body exceeds the configured limit' }, 413);
-	}
-	let params: URLSearchParams;
-	try {
-		params = new URLSearchParams(bodyRead.text);
-	} catch {
-		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
-	}
-	const body: Record<string, string> = {};
-	params.forEach((value, key) => {
-		body[key] = value;
-	});
+	if ('failure' in form) return c.json({ error: 'invalid_request', error_description: form.failure.description }, form.failure.status);
+	const body = form.body;
 
 	// grant_type dispatch runs BEFORE Zod so a wrong value surfaces the spec-correct
 	// `unsupported_grant_type` error code rather than the generic `invalid_request`.
 	if (body.grant_type === OAUTH_JWT_BEARER_GRANT_TYPE) {
-		return handleJwtBearerGrant(c, body, kv, kvEnvelopeKey);
+		return handleJwtBearerGrant(c, body, kv, kvEnvelopeKey, ip);
 	}
 	if (body.grant_type !== 'authorization_code') {
 		return c.json({ error: 'unsupported_grant_type', error_description: 'Unsupported grant_type' }, 400);
@@ -366,8 +409,10 @@ async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: 
 /** The enabled, in-entitlement tenant that allowlists `iss`. An unknown issuer is rejected even with a valid signature. */
 async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
 	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
-	if (!tenant?.enabled) throw new TokenEndpointError('invalid_grant', 'Untrusted issuer');
-	if ((tenant.entitlement_expires_at ?? Infinity) <= now) throw new TokenEndpointError('invalid_grant', 'Entitlement expired');
+	// Unknown, disabled and lapsed tenants are indistinguishable to the caller (same code, same text).
+	if (!tenant?.enabled || (tenant.entitlement_expires_at ?? Infinity) <= now) {
+		throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
+	}
 	return tenant;
 }
 
@@ -472,6 +517,29 @@ async function acceptIdJag(
 	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub) };
 }
 
+/** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
+function claimedIssuerBucket(assertion: string | undefined): string {
+	const payload = assertion?.split('.')[1];
+	const iss = payload ? decodeJsonSegment(payload)?.iss : undefined;
+	try {
+		return typeof iss === 'string' ? normalizeIssuer(iss) : UNUSABLE_ISSUER_BUCKET;
+	} catch {
+		return UNUSABLE_ISSUER_BUCKET;
+	}
+}
+
+/**
+ * jwt-bearer rate limits for a KNOWN client IP: the per-IP ceiling first, then the (IP, claimed
+ * issuer) bucket. The bucket key is a digest so an attacker-chosen `iss` cannot shape a KV key.
+ * Returns the 429/503 response, or null to proceed.
+ */
+async function consumeJwtBearerLimits(c: Context<AppEnv>, assertion: string | undefined, ip: string): Promise<Response | null> {
+	const ceiling = rateLimitResponse(c, await jwtBearerRateLimit(c.env, 'jwtb', ip, JWT_BEARER_IP_RATE_LIMIT));
+	if (ceiling) return ceiling;
+	const bucket = await sha256Hex(`${ip}|${claimedIssuerBucket(assertion)}`);
+	return rateLimitResponse(c, await jwtBearerRateLimit(c.env, 'jwtb-iss', bucket, JWT_BEARER_ISSUER_RATE_LIMIT));
+}
+
 /** Host of a URL-shaped (CIMD) client_id for logs; an opaque DCR id is not logged. */
 function clientIdHost(clientId: string): string {
 	try {
@@ -493,8 +561,13 @@ async function handleJwtBearerGrant(
 	c: Context<AppEnv>,
 	body: Record<string, string>,
 	kv: KVNamespace,
-	kvEnvelopeKey?: Uint8Array,
+	kvEnvelopeKey: Uint8Array | undefined,
+	ip: string,
 ): Promise<Response> {
+	if (ip !== 'unknown') {
+		const limited = await consumeJwtBearerLimits(c, body.assertion, ip);
+		if (limited) return limited;
+	}
 	let grant: AcceptedIdJag;
 	try {
 		grant = await acceptIdJag(c, body, kv, kvEnvelopeKey);

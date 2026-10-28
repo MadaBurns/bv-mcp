@@ -10,10 +10,14 @@ import { clearKvPrefix } from '../helpers/kv';
 //   → the minted bearer calls a paid-only tool on /mcp at the TENANT's tier
 //   → /internal/oauth/revoke-subject on the ema subject kills that bearer.
 // Only the IdP (discovery + JWKS) and Claude's CIMD document are stubbed, at global fetch.
+// Further cases: an ES256 IdP, the enterprise tier, per-tenant replay scoping, and the effect of
+// disabling a tenant after a token was minted.
 
 const ISSUER = 'https://example.com';
 const IDP_ISSUER = 'https://acme.okta.com';
 const JWKS_URI = 'https://acme.okta.com/oauth2/v1/keys';
+const OTHER_IDP_ISSUER = 'https://globex.okta.com';
+const OTHER_JWKS_URI = 'https://globex.okta.com/oauth2/v1/keys';
 const WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const MINT_KEY = 'mint-capability-test-key-32-bytes-minimum';
 const REVOKE_KEY = 'revoke-capability-test-key-32-bytes-minimum';
@@ -81,23 +85,39 @@ const batchStatusCall = {
 	params: { name: 'batch_scan_status', arguments: { job_id: `bs_${'0'.repeat(40)}` } },
 };
 
-let privateKey: CryptoKey;
+interface IdpKey {
+	alg: 'RS256' | 'ES256';
+	kid: string;
+	privateKey: CryptoKey;
+	publicJwk: JsonWebKey & { kid: string };
+}
+
+async function makeIdpKey(alg: 'RS256' | 'ES256', kid: string): Promise<IdpKey> {
+	const algorithm =
+		alg === 'RS256'
+			? { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }
+			: { name: 'ECDSA', namedCurve: 'P-256' };
+	const pair = (await crypto.subtle.generateKey(algorithm, true, ['sign', 'verify'])) as CryptoKeyPair;
+	const pub = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
+	return { alg, kid, privateKey: pair.privateKey, publicJwk: { ...pub, kid, use: 'sig', alg } };
+}
+
+/** What the stubbed network serves: the IdPs' discovery documents and JWKS, and Claude's CIMD document. */
+let documents: Record<string, unknown>;
+let idp: IdpKey;
+let otherIdp: IdpKey;
+
+function serveIdp(issuer: string, jwksUri: string, key: IdpKey): void {
+	documents[`${issuer}/.well-known/openid-configuration`] = { issuer, jwks_uri: jwksUri };
+	documents[jwksUri] = { keys: [key.publicJwk] };
+}
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
-	const pair = (await crypto.subtle.generateKey(
-		{ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
-		true,
-		['sign', 'verify'],
-	)) as CryptoKeyPair;
-	privateKey = pair.privateKey;
-	const pub = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
-	const jwks = { keys: [{ kty: 'RSA', n: pub.n, e: pub.e, kid: 'okta-1', use: 'sig', alg: 'RS256' }] };
-	// The IdP (discovery + JWKS) and Claude's CIMD document; every other URL is a 404.
-	const documents: Record<string, unknown> = {
-		[`${IDP_ISSUER}/.well-known/openid-configuration`]: { issuer: IDP_ISSUER, jwks_uri: JWKS_URI },
-		[JWKS_URI]: jwks,
+	idp = await makeIdpKey('RS256', 'okta-1');
+	otherIdp = await makeIdpKey('RS256', 'okta-2');
+	documents = {
 		[WEB_CLIENT_ID]: {
 			client_id: WEB_CLIENT_ID,
 			client_name: 'Claude',
@@ -105,6 +125,8 @@ beforeEach(async () => {
 			token_endpoint_auth_method: 'none',
 		},
 	};
+	serveIdp(IDP_ISSUER, JWKS_URI, idp);
+	serveIdp(OTHER_IDP_ISSUER, OTHER_JWKS_URI, otherIdp);
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (input: RequestInfo | URL) => {
@@ -120,10 +142,10 @@ afterEach(async () => {
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
-async function signIdJag(): Promise<string> {
+async function signIdJag(key: IdpKey = idp, overrides: Record<string, unknown> = {}): Promise<string> {
 	const now = Math.floor(Date.now() / 1000);
 	const claims = {
-		iss: IDP_ISSUER,
+		iss: key === otherIdp ? OTHER_IDP_ISSUER : IDP_ISSUER,
 		sub: '00u-okta-user-42',
 		aud: ISSUER,
 		client_id: WEB_CLIENT_ID,
@@ -132,43 +154,69 @@ async function signIdJag(): Promise<string> {
 		exp: now + 300,
 		resource: `${ISSUER}/mcp`,
 		scope: 'mcp',
+		...overrides,
 	};
-	const signingInput = `${b64urlJson({ alg: 'RS256', typ: 'oauth-id-jag+jwt', kid: 'okta-1' })}.${b64urlJson(claims)}`;
-	const signature = await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, privateKey, encoder.encode(signingInput));
+	const signingInput = `${b64urlJson({ alg: key.alg, typ: 'oauth-id-jag+jwt', kid: key.kid })}.${b64urlJson(claims)}`;
+	// WebCrypto ECDSA emits the raw r||s form JWS ES256 requires (not DER).
+	const algorithm = key.alg === 'RS256' ? { name: 'RSASSA-PKCS1-v1_5' } : { name: 'ECDSA', hash: 'SHA-256' };
+	const signature = await crypto.subtle.sign(algorithm, key.privateKey, encoder.encode(signingInput));
 	return `${signingInput}.${b64url(signature)}`;
+}
+
+/** Operator upsert of an EMA tenant over the internal route; the jwks_uri comes from the IdP's discovery document. */
+async function seedTenant(overrides: Record<string, unknown> = {}): Promise<Response> {
+	return send(
+		internalRequest('PUT', '/oauth/ema-tenants', MINT_KEY, {
+			tenant_id: 'acme-corp',
+			name: 'Acme Corp',
+			issuer: IDP_ISSUER,
+			tier: 'developer',
+			enabled: true,
+			...overrides,
+		}),
+	);
+}
+
+/** The jwt-bearer token request Claude sends (public client, no IP header: the service-binding-free test door). */
+function exchange(assertion: string): Promise<Response> {
+	return send(
+		new Request<unknown, IncomingRequestCfProperties>(`${ISSUER}/oauth/token`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+				assertion,
+				client_id: WEB_CLIENT_ID,
+				resource: `${ISSUER}/mcp`,
+				scope: 'mcp',
+			}).toString(),
+		}),
+	);
+}
+
+async function mintToken(assertion: string): Promise<string> {
+	const response = await exchange(assertion);
+	expect(response.status).toBe(200);
+	return ((await response.json()) as { access_token: string }).access_token;
+}
+
+/** Open an MCP session with the bearer and call a paid-only tool. */
+async function callPaidTool(token: string): Promise<{ status: number; tier: string | null; sessionId: string | undefined }> {
+	const init = await send(mcpRequest(token, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }));
+	const sessionId = init.headers.get('mcp-session-id') ?? undefined;
+	const call = await send(mcpRequest(token, batchStatusCall, sessionId));
+	return { status: call.status, tier: call.headers.get('x-quota-tier'), sessionId };
 }
 
 describe('Enterprise Managed Auth end to end', () => {
 	it('seeds a tenant, exchanges an ID-JAG, calls a paid tool at the tenant tier, and revokes the subject', async () => {
 		// 1. Operator seeds the tenant; jwks_uri is resolved from the IdP's discovery document.
-		const seeded = await send(
-			internalRequest('PUT', '/oauth/ema-tenants', MINT_KEY, {
-				tenant_id: 'acme-corp',
-				name: 'Acme Corp',
-				issuer: IDP_ISSUER,
-				tier: 'developer',
-				enabled: true,
-			}),
-		);
+		const seeded = await seedTenant();
 		expect(seeded.status).toBe(200);
 		expect(((await seeded.json()) as Record<string, unknown>).jwks_uri).toBe(JWKS_URI);
 
 		// 2. Claude exchanges the IdP-issued ID-JAG at the token endpoint.
-		const tokenResponse = await send(
-			new Request<unknown, IncomingRequestCfProperties>(`${ISSUER}/oauth/token`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-				body: new URLSearchParams({
-					grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-					assertion: await signIdJag(),
-					client_id: WEB_CLIENT_ID,
-					resource: `${ISSUER}/mcp`,
-					scope: 'mcp',
-				}).toString(),
-			}),
-		);
-		expect(tokenResponse.status).toBe(200);
-		const { access_token: accessToken } = (await tokenResponse.json()) as { access_token: string };
+		const accessToken = await mintToken(await signIdJag());
 		const subject = (JSON.parse(atob(accessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as { sub: string }).sub;
 		expect(subject).toMatch(/^ema:acme-corp:[0-9a-f]{32}$/);
 
@@ -202,5 +250,63 @@ describe('Enterprise Managed Auth end to end', () => {
 		expect(revoked.status).toBe(200);
 		const afterRevoke = await send(mcpRequest(accessToken, batchStatusCall, sessionId));
 		expect(afterRevoke.status).toBe(401);
+	});
+
+	it('accepts an ES256-signed assertion from an EC-keyed IdP', async () => {
+		const ecKey = await makeIdpKey('ES256', 'okta-ec');
+		serveIdp(IDP_ISSUER, JWKS_URI, ecKey);
+		expect((await seedTenant()).status).toBe(200);
+
+		const token = await mintToken(await signIdJag(ecKey));
+
+		const call = await callPaidTool(token);
+		expect(call.status).toBe(200);
+		expect(call.tier).toBe('developer');
+	});
+
+	it('resolves an enterprise tenant to the enterprise quota tier on /mcp', async () => {
+		expect((await seedTenant({ tier: 'enterprise' })).status).toBe(200);
+
+		const token = await mintToken(await signIdJag());
+
+		const call = await callPaidTool(token);
+		expect(call.status).toBe(200);
+		expect(call.tier).toBe('enterprise');
+	});
+
+	it('scopes replay protection per tenant: one jti is accepted once under EACH tenant, never twice under the same one', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		expect((await seedTenant({ tenant_id: 'globex', name: 'Globex', issuer: OTHER_IDP_ISSUER })).status).toBe(200);
+		const jti = crypto.randomUUID();
+		const acme = await signIdJag(idp, { jti });
+		const globex = await signIdJag(otherIdp, { jti });
+
+		expect((await exchange(acme)).status).toBe(200);
+		// The same jti under a different tenant (its own issuer and JWKS) is a different assertion, not a replay.
+		expect((await exchange(globex)).status).toBe(200);
+
+		const replayAcme = await exchange(acme);
+		expect(replayAcme.status).toBe(400);
+		expect(await replayAcme.json()).toEqual({ error: 'invalid_grant', error_description: 'Assertion has already been used' });
+		expect((await exchange(globex)).status).toBe(400);
+	});
+
+	it('stops minting once a tenant is disabled, while an already-minted token resolves until its own expiry', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		expect((await seedTenant({ enabled: false })).status).toBe(200);
+
+		const rejected = await exchange(await signIdJag());
+		expect(rejected.status).toBe(400);
+		expect(await rejected.json()).toEqual({ error: 'invalid_grant', error_description: 'Assertion not accepted' });
+		// Documented gap, not a guarantee: disabling a tenant stops FUTURE exchanges only. The minted bearer
+		// keeps resolving until its TTL (or a per-subject /internal/oauth/revoke-subject). SQ-434 tracks a
+		// tenant-wide revoke; when it lands this assertion flips to 401 and this test must be updated.
+		const after = await callPaidTool(token);
+		expect(after.status).toBe(200);
+		expect(after.tier).toBe('developer');
 	});
 });
