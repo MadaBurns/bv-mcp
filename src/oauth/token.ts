@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { getEmaTenantByIssuer, normalizeIssuer } from './ema-tenants';
+import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, normalizeIssuer, tenantEpoch } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -195,6 +195,8 @@ export interface MintAccessTokenOptions {
 	entitlementGeneration: number;
 	/** Epoch SECONDS. The minted token never outlives it. */
 	entitlementExpiresAt?: number;
+	/** EMA only: the tenant epoch, minted as the `tep` claim. Absent for every other grant (no claim). */
+	tenantEpoch?: number;
 	scope: string;
 }
 
@@ -226,6 +228,7 @@ export async function mintAccessToken(
 				client_id: opts.clientId,
 				ver,
 				entitlementGeneration: opts.entitlementGeneration,
+				tep: opts.tenantEpoch,
 			},
 			{ secret, ttlSeconds, issuer, audience: `${issuer}/mcp` },
 		);
@@ -579,11 +582,12 @@ async function handleJwtBearerGrant(
 		c,
 		c.env,
 		{
-			subject: `ema:${tenant.tenant_id}:${subjectHash.slice(0, 32)}`,
+			subject: `${EMA_SUBJECT_PREFIX}${tenant.tenant_id}:${subjectHash.slice(0, 32)}`,
 			tier: tenant.tier,
 			clientId,
 			entitlementGeneration: 1,
 			entitlementExpiresAt: tenant.entitlement_expires_at,
+			tenantEpoch: tenantEpoch(tenant),
 			scope: ID_JAG_GRANTED_SCOPE,
 		},
 		NO_STORE,

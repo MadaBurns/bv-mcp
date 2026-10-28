@@ -387,12 +387,21 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   for a suspend, so omitting `jwks_uri` makes the PUT depend on the IdP's discovery
   endpoint being reachable right now, and a failure leaves the tenant enabled. When
   in doubt, or when the IdP is down, `DELETE` is the kill switch (it needs no discovery).
+- Suspending (an `enabled` true→false PUT) or deleting a tenant also invalidates every
+  access token already issued for it, within about 60s (KV propagation): each `/mcp`
+  request with an EMA bearer re-reads the tenant record, and a token whose tenant is
+  missing, unreadable, disabled, past `entitlement_expires_at`, on another `tier`, or on
+  an older token epoch gets the normal 401 challenge. Re-enabling does NOT restore them,
+  because the record's `token_epoch` (server-managed epoch ms, set on create and on each
+  suspend, never accepted in the PUT body) has moved; a re-created tenant starts a new
+  epoch too. Claude recovers by exchanging a fresh assertion.
 - `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
   reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
   also releases the issuer even when the record can no longer be read.
 - When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
-  key is treated as absent (the grant fails closed for that issuer). After a key
-  rotation, re-PUT each tenant to reseal it.
+  key is treated as absent (the grant fails closed for that issuer, and the tenant's
+  issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
+  the re-PUT counts as a create, so it starts a new token epoch.
 
 #### Verify live
 

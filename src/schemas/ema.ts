@@ -41,6 +41,12 @@ export const EmaTenantRecordSchema = z
 		jwks_uri: HttpsUrlSchema,
 		created_at: z.number().int(),
 		updated_at: z.number().int(),
+		/**
+		 * Epoch MILLISECONDS, server-managed: set by the upsert route, never accepted in a PUT body.
+		 * Every EMA access token carries the tenant's epoch as `tep`, so moving it revokes every token
+		 * minted before. Absent on records written before it existed (the epoch is then `created_at`).
+		 */
+		token_epoch: z.number().int().positive().optional(),
 	})
 	.strict();
 export type EmaTenantRecord = z.infer<typeof EmaTenantRecordSchema>;

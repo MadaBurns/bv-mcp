@@ -45,6 +45,8 @@ export interface JwtClaims {
 	ver?: number;
 	/** Billing entitlement generation authorized by bv-web; absent legacy tokens are generation 1. */
 	entitlementGeneration?: number;
+	/** EMA tenant epoch (`tenantEpoch`) at mint. Only EMA access tokens carry it; it must still match on use. */
+	tep?: number;
 	[k: string]: unknown;
 }
 

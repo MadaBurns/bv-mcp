@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { signJwt } from '../../src/oauth/jwt';
 import { clearKvPrefix } from '../helpers/kv';
 
 // US-14 Enterprise Managed Auth, end to end through the real Worker:
@@ -10,8 +11,8 @@ import { clearKvPrefix } from '../helpers/kv';
 //   → the minted bearer calls a paid-only tool on /mcp at the TENANT's tier
 //   → /internal/oauth/revoke-subject on the ema subject kills that bearer.
 // Only the IdP (discovery + JWKS) and Claude's CIMD document are stubbed, at global fetch.
-// Further cases: an ES256 IdP, the enterprise tier, per-tenant replay scoping, and the effect of
-// disabling a tenant after a token was minted.
+// Further cases: an ES256 IdP, the enterprise tier, per-tenant replay scoping, tenant-wide
+// revocation of already-minted tokens (SQ-435), and the upsert route's token epoch.
 
 const ISSUER = 'https://example.com';
 const IDP_ISSUER = 'https://acme.okta.com';
@@ -194,6 +195,11 @@ function exchange(assertion: string): Promise<Response> {
 	);
 }
 
+/** An access token's payload, decoded without verification. */
+function decodeClaims(token: string): Record<string, unknown> {
+	return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as Record<string, unknown>;
+}
+
 async function mintToken(assertion: string): Promise<string> {
 	const response = await exchange(assertion);
 	expect(response.status).toBe(200);
@@ -290,10 +296,28 @@ describe('Enterprise Managed Auth end to end', () => {
 		expect(await replayAcme.json()).toEqual({ error: 'invalid_grant', error_description: 'Assertion has already been used' });
 		expect((await exchange(globex)).status).toBe(400);
 	});
+});
 
-	it('stops minting once a tenant is disabled, while an already-minted token resolves until its own expiry', async () => {
-		expect((await seedTenant()).status).toBe(200);
+// SQ-435 tenant-wide revocation: every /mcp request with an `ema:` bearer re-reads the tenant, so
+// suspending, deleting, re-creating, lapsing or re-tiering a tenant cuts off tokens it already issued.
+describe('Enterprise Managed Auth tenant-wide revocation', () => {
+	/** A tools/call with the bearer on an open session; returns the response so the 401 challenge can be read. */
+	function paidCall(token: string, sessionId: string | undefined): Promise<Response> {
+		return send(mcpRequest(token, batchStatusCall, sessionId));
+	}
+
+	async function expectCutOff(token: string, sessionId: string | undefined): Promise<void> {
+		const response = await paidCall(token, sessionId);
+		expect(response.status).toBe(401);
+		// The ordinary bad-bearer challenge, so Claude silently re-exchanges a fresh assertion.
+		expect(response.headers.get('www-authenticate')).toContain('Bearer');
+	}
+
+	it('mints the tenant epoch as tep, stops minting AND cuts off issued tokens on disable, and re-enabling does not revive them', async () => {
+		const seeded = (await (await seedTenant()).json()) as { token_epoch: number };
+		expect(Number.isInteger(seeded.token_epoch)).toBe(true);
 		const token = await mintToken(await signIdJag());
+		expect(decodeClaims(token).tep).toBe(seeded.token_epoch);
 		const before = await callPaidTool(token);
 		expect(before.status).toBe(200);
 
@@ -302,11 +326,121 @@ describe('Enterprise Managed Auth end to end', () => {
 		const rejected = await exchange(await signIdJag());
 		expect(rejected.status).toBe(400);
 		expect(await rejected.json()).toEqual({ error: 'invalid_grant', error_description: 'Assertion not accepted' });
-		// Documented gap, not a guarantee: disabling a tenant stops FUTURE exchanges only. The minted bearer
-		// keeps resolving until its TTL (or a per-subject /internal/oauth/revoke-subject). SQ-434 tracks a
-		// tenant-wide revoke; when it lands this assertion flips to 401 and this test must be updated.
-		const after = await callPaidTool(token);
-		expect(after.status).toBe(200);
-		expect(after.tier).toBe('developer');
+		// Previously the minted bearer kept resolving until its TTL; now the suspension reaches it.
+		await expectCutOff(token, before.sessionId);
+
+		expect((await seedTenant({ enabled: true })).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+		// A fresh exchange after the re-enable works: only tokens minted before the suspension are dead.
+		const fresh = await callPaidTool(await mintToken(await signIdJag()));
+		expect(fresh.status).toBe(200);
+		expect(fresh.tier).toBe('developer');
+	});
+
+	it('cuts off issued tokens when the tenant is deleted, and a re-created tenant does not revive them', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		expect((await send(internalRequest('DELETE', '/oauth/ema-tenants/acme-corp', MINT_KEY, undefined))).status).toBe(204);
+		await expectCutOff(token, before.sessionId);
+
+		expect((await seedTenant()).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+		const fresh = await callPaidTool(await mintToken(await signIdJag()));
+		expect(fresh.status).toBe(200);
+	});
+
+	it('cuts off issued tokens once the tenant entitlement has passed', async () => {
+		const now = Math.floor(Date.now() / 1000);
+		expect((await seedTenant({ entitlement_expires_at: now + 600 })).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		// Still enabled, so the epoch does not move: the entitlement check alone rejects.
+		expect((await seedTenant({ entitlement_expires_at: now - 10 })).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+	});
+
+	it('cuts off issued tokens when the tenant tier changes', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.tier).toBe('developer');
+
+		expect((await seedTenant({ tier: 'enterprise' })).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+		const fresh = await callPaidTool(await mintToken(await signIdJag()));
+		expect(fresh.status).toBe(200);
+		expect(fresh.tier).toBe('enterprise');
+	});
+
+	it('rejects an ema: bearer whose tep does not match the tenant epoch, and one with no tep at all', async () => {
+		const seeded = (await (await seedTenant()).json()) as { token_epoch: number };
+		const token = await mintToken(await signIdJag());
+		const sub = decodeClaims(token).sub as string;
+		const forge = (claims: Record<string, unknown>) =>
+			signJwt(
+				{ sub, jti: crypto.randomUUID(), tier: 'developer', client_id: WEB_CLIENT_ID, entitlementGeneration: 1, ...claims },
+				{ secret: e2eEnv.OAUTH_SIGNING_SECRET!, ttlSeconds: 600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+			);
+		// Control: a correctly signed token on the current epoch resolves.
+		expect((await callPaidTool(await forge({ tep: seeded.token_epoch }))).status).toBe(200);
+		await expectCutOff(await forge({ tep: seeded.token_epoch - 1 }), undefined);
+		await expectCutOff(await forge({}), undefined);
+	});
+});
+
+describe('EMA tenant token epoch on the upsert route', () => {
+	const tenantKey = 'oauth:ema-tenant:acme-corp';
+
+	async function storedEpoch(): Promise<number | undefined> {
+		return (JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as { token_epoch?: number }).token_epoch;
+	}
+
+	/** Backdate the stored epoch so a later move is distinguishable from the create within one millisecond. */
+	async function setStoredEpoch(epoch: number): Promise<void> {
+		const record = JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as Record<string, unknown>;
+		await env.SESSION_STORE.put(tenantKey, JSON.stringify({ ...record, token_epoch: epoch }));
+	}
+
+	it('sets the epoch on create, keeps it on an enabled update and on a re-enable, and moves it on enabled true -> false', async () => {
+		const before = Date.now();
+		expect((await seedTenant()).status).toBe(200);
+		expect(await storedEpoch()).toBeGreaterThanOrEqual(before);
+
+		await setStoredEpoch(1);
+		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);
+		expect(await storedEpoch()).toBe(1);
+
+		expect((await seedTenant({ enabled: false })).status).toBe(200);
+		const suspended = await storedEpoch();
+		expect(suspended).toBeGreaterThanOrEqual(before);
+
+		await setStoredEpoch(2);
+		expect((await seedTenant({ enabled: false, name: 'Still suspended' })).status).toBe(200);
+		expect(await storedEpoch()).toBe(2);
+		expect((await seedTenant({ enabled: true })).status).toBe(200);
+		expect(await storedEpoch()).toBe(2);
+	});
+
+	it('keeps a legacy record (no token_epoch) on created_at across an enabled update', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const record = JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as Record<string, unknown>;
+		delete record.token_epoch;
+		await env.SESSION_STORE.put(tenantKey, JSON.stringify(record));
+
+		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);
+		expect(await storedEpoch()).toBeUndefined();
+		const token = await mintToken(await signIdJag());
+		expect(decodeClaims(token).tep).toBe(record.created_at);
+		expect((await callPaidTool(token)).status).toBe(200);
+	});
+
+	it('rejects a PUT body that tries to set token_epoch (server-managed)', async () => {
+		expect((await seedTenant({ token_epoch: 1 })).status).toBe(400);
+		expect(await env.SESSION_STORE.get(tenantKey)).toBeNull();
 	});
 });

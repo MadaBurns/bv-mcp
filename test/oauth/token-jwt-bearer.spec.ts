@@ -224,6 +224,15 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(JSON.stringify(claims)).not.toContain('alice@acme.example');
 	});
 
+	it('mints the tenant epoch as tep: token_epoch when set, created_at for a record written before it existed', async () => {
+		const legacy = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
+		expect(decodePayload(legacy.access_token).tep).toBe(1_700_000_000);
+
+		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }));
+		const current = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
+		expect(decodePayload(current.access_token).tep).toBe(1_800_000_000_123);
+	});
+
 	it('logs one structured issuance line without the raw subject or email', async () => {
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 		expect((await postToken(grantParams(await signIdJag(signer)))).status).toBe(200);

@@ -11,9 +11,10 @@
  * One issuer maps to exactly one tenant.
  */
 
-import { EmaTenantRecordSchema, type EmaTenantRecord } from '../schemas/ema';
+import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaTenantRecord } from '../schemas/ema';
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
+import { StrongStateUnavailableError } from './storage';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
 const TENANT_PREFIX = `${OAUTH_KV_PREFIX}ema-tenant:`;
@@ -151,6 +152,61 @@ export async function deleteEmaTenant(kv: KVNamespace, tenantId: string, kvEnvel
 	if (record) await releaseIssuerIndex(kv, record.issuer, tenantId);
 	else await releaseIssuerIndexesOwnedBy(kv, tenantId);
 	await kv.delete(tenantKey(tenantId));
+}
+
+/** Every EMA access token's subject is `ema:<tenant_id>:<32 hex of sha256(IdP sub)>`. */
+export const EMA_SUBJECT_PREFIX = 'ema:';
+
+/**
+ * The epoch an EMA access token must carry as `tep`. A record written before `token_epoch`
+ * existed falls back to `created_at`; the two never collide (ms vs s) and only equality matters.
+ */
+export function tenantEpoch(rec: EmaTenantRecord): number {
+	return rec.token_epoch ?? rec.created_at;
+}
+
+/** The tenant_id of a well-formed `ema:<tenant_id>:<hash>` subject, else null. */
+function emaSubjectTenantId(sub: string): string | null {
+	const tenantId = sub.slice(EMA_SUBJECT_PREFIX.length, sub.lastIndexOf(':'));
+	return sub.startsWith(EMA_SUBJECT_PREFIX) && EMA_TENANT_ID_PATTERN.test(tenantId) ? tenantId : null;
+}
+
+/** The claims of an EMA access token that tenant liveness is judged on. */
+export interface EmaTokenClaims {
+	sub: string;
+	tier?: unknown;
+	tep?: unknown;
+}
+
+function tenantBacksToken(rec: EmaTenantRecord, claims: EmaTokenClaims, nowSeconds: number): boolean {
+	return (
+		rec.enabled && (rec.entitlement_expires_at ?? Infinity) > nowSeconds && claims.tier === rec.tier && claims.tep === tenantEpoch(rec)
+	);
+}
+
+/**
+ * Tenant-wide revocation for an already-minted EMA access token, checked on every request: the
+ * token stands only while its tenant record exists and is readable, enabled, inside its
+ * entitlement, on the token's tier, and on the token's epoch (`tep`; a token without one fails).
+ * Disabling, deleting, re-creating or lapsing a tenant therefore cuts its tokens off within KV
+ * propagation (about a minute) instead of at their expiry. A store that cannot be read throws
+ * StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
+ */
+export async function isEmaTokenLive(
+	kv: KVNamespace,
+	claims: EmaTokenClaims,
+	nowSeconds: number,
+	kvEnvelopeKey?: Uint8Array,
+): Promise<boolean> {
+	const tenantId = emaSubjectTenantId(claims.sub);
+	if (!tenantId) return false;
+	let rec: EmaTenantRecord | null;
+	try {
+		rec = await readRecord(kv, tenantId, kvEnvelopeKey);
+	} catch {
+		throw new StrongStateUnavailableError('ema tenant liveness');
+	}
+	return rec !== null && tenantBacksToken(rec, claims, nowSeconds);
 }
 
 /** List up to 100 tenants, skipping unreadable records. */
