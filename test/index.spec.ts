@@ -2251,4 +2251,87 @@ describe('DNS Security MCP Server', () => {
 			expect(gradeBadge('F')).toContain('F');
 		});
 	});
+
+	describe('OAuth challenge on unauthenticated paid-tool calls (lazy auth)', () => {
+		const PRM = 'https://oauth.example.test/.well-known/oauth-protected-resource';
+		const oauthEnv = {
+			...env,
+			ENABLE_OAUTH: 'true',
+			OAUTH_SIGNING_SECRET: 'a'.repeat(32),
+			OAUTH_ISSUER: 'https://oauth.example.test',
+		} as Env;
+
+		async function callPaidTool(targetEnv: Env, bearer?: string): Promise<Response> {
+			const sessionId = await initSession({ targetEnv });
+			const request = new Request('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+					...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 7,
+					method: 'tools/call',
+					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, targetEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			return response;
+		}
+
+		it('returns 401 + WWW-Authenticate (resource_metadata, scope) for a bearer-less paid-only tools/call when OAuth is ready', async () => {
+			const response = await callPaidTool(oauthEnv);
+			expect(response.status).toBe(401);
+			expect(response.headers.get('www-authenticate')).toBe(`Bearer resource_metadata="${PRM}", scope="mcp"`);
+			// Body is unchanged so existing clients keep parsing the upgrade affordance.
+			const body = (await response.json()) as { error: { code: number; data?: { upgrade?: { tool: string } } } };
+			expect(body.error.code).toBe(-32003);
+			expect(body.error.data?.upgrade?.tool).toBe('discover_subdomains');
+		});
+
+		it('keeps the legacy 403 with no challenge when OAuth is not enabled (self-host: the PRM URL would 404)', async () => {
+			const response = await callPaidTool({ ...env, ENABLE_OAUTH: undefined } as unknown as Env);
+			expect(response.status).toBe(403);
+			expect(response.headers.get('www-authenticate')).toBeNull();
+			const body = (await response.json()) as { error: { code: number } };
+			expect(body.error.code).toBe(-32003);
+		});
+
+		it('adds error="invalid_token" to the challenge when a presented bearer is rejected', async () => {
+			const request = new Request('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-a-valid-token' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...oauthEnv, BV_API_KEY: TEST_API_KEY } as Env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(401);
+			expect(response.headers.get('www-authenticate')).toBe(
+				`Bearer error="invalid_token", error_description="The access token is missing, expired or invalid", resource_metadata="${PRM}", scope="mcp"`,
+			);
+		});
+
+		it('exposes WWW-Authenticate to browser clients via CORS', async () => {
+			const sessionId = await initSession({ targetEnv: oauthEnv });
+			const request = new Request('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Origin: 'http://example.com', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 8,
+					method: 'tools/call',
+					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, oauthEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.headers.get('access-control-expose-headers')).toContain('WWW-Authenticate');
+		});
+	});
 });
