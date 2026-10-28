@@ -379,8 +379,9 @@ describe('oauth/jwks — getJwksCached', () => {
 		const { getJwksCached } = await import('../../src/oauth/jwks');
 		stubFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
 		await getJwksCached(kv(), JWKS_URI);
-		const stored = (await env.SESSION_STORE.get(await cacheKeyFor(JWKS_URI), 'json')) as { fetchedAt: number };
-		expect(Math.abs(stored.fetchedAt - Date.now() / 1000)).toBeLessThan(5);
+		const stored = (await env.SESSION_STORE.get(await cacheKeyFor(JWKS_URI), 'json')) as { fetchedAt: number } | null;
+		expect(stored).toEqual({ fetchedAt: expect.any(Number), keys: [rsa.publicJwk] });
+		expect(Math.abs((stored?.fetchedAt ?? 0) - Date.now() / 1000)).toBeLessThan(5);
 		await getJwksCached(kv(), JWKS_URI);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
