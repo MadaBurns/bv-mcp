@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearKvPrefix } from '../helpers/kv';
 
-// Shapes copied from the live documents served at these URLs (fetched 2026-10-29).
+// Minimal synthetic fixtures using the field names a client metadata document carries; values are not the live documents.
 const WEB_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const CODE_ID = 'https://claude.ai/oauth/claude-code-client-metadata';
 const CACHE_PREFIX = 'oauth:cimd:';
