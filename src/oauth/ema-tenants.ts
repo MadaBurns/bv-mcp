@@ -14,6 +14,7 @@
 import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaTenantRecord } from '../schemas/ema';
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
+import { sha256Hex } from './jwks';
 import { StrongStateUnavailableError } from './storage';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
@@ -29,11 +30,6 @@ export class EmaTenantConflictError extends Error {
 		super('Issuer is already registered to a different tenant');
 		this.name = 'EmaTenantConflictError';
 	}
-}
-
-async function sha256Hex(value: string): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function isPlainHttpsUrl(url: URL): boolean {

@@ -266,6 +266,26 @@ describe('GET /oauth/authorize — Client ID Metadata Document clients', () => {
 		expect(res.headers.get('location')).toBeNull();
 	});
 
+	it('resolves a CIMD client whose document also lists a foreign redirect_uri, and refuses that foreign URI', async () => {
+		stubCimdDocument({
+			client_id: CLAUDE_WEB_CIMD,
+			client_name: 'Claude',
+			redirect_uris: ['https://attacker.example.net/cb', 'https://claude.ai/api/mcp/auth_callback'],
+			token_endpoint_auth_method: 'none',
+		});
+		const allowedCtx = createExecutionContext();
+		const allowed = await worker.fetch(cimdAuthorizeRequest(CLAUDE_WEB_CIMD, 'https://claude.ai/api/mcp/auth_callback'), env, allowedCtx);
+		await waitOnExecutionContext(allowedCtx);
+		expect(allowed.status).toBe(200);
+
+		const foreignCtx = createExecutionContext();
+		const foreign = await worker.fetch(cimdAuthorizeRequest(CLAUDE_WEB_CIMD, 'https://attacker.example.net/cb'), env, foreignCtx);
+		await waitOnExecutionContext(foreignCtx);
+		expect(foreign.status).toBe(400);
+		expect(await foreign.text()).toBe('redirect_uri not registered to this client');
+		expect(foreign.headers.get('location')).toBeNull();
+	});
+
 	async function authorizeFrom(ip: string, clientId: string): Promise<Response> {
 		const base = cimdAuthorizeRequest(clientId, 'https://claude.ai/api/mcp/auth_callback');
 		const ctx = createExecutionContext();

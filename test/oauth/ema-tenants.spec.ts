@@ -113,6 +113,13 @@ describe('EMA tenant store', () => {
 		expect(await listEmaTenants(env.SESSION_STORE)).toEqual([tenant()]);
 	});
 
+	it('indexes the issuer under oauth:ema-issuer:<lowercase sha256 hex> (fixed input, byte-identical across the refactor)', async () => {
+		// Independently computed: shasum -a 256 of 'https://idp.example.com'.
+		const indexKey = `${OAUTH_KV_PREFIX}ema-issuer:6e2977ae82314db30124ba2850e1a8d59388eb8f98aff11dfa82935b17b4657f`;
+		await putEmaTenant(env.SESSION_STORE, tenant());
+		expect(await env.SESSION_STORE.get(indexKey)).toBe('acme-corp');
+	});
+
 	it('looks the issuer up in normalized form (trailing slash, host case)', async () => {
 		await putEmaTenant(env.SESSION_STORE, tenant({ issuer: 'https://IDP.example.com/oauth2/default/' }));
 		const stored = await getEmaTenant(env.SESSION_STORE, 'acme-corp');

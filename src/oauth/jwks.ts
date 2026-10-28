@@ -7,8 +7,8 @@
  * Built for the Enterprise Managed Auth jwt-bearer grant (US-14): a customer
  * IdP signs an ID-JAG assertion with its own key and the token endpoint checks
  * it against that tenant's registered `jwks_uri`. This module only proves
- * "this JWS was signed by exactly one key in this set". It never validates
- * claims: iss / aud / exp / client_id belong to the grant handler.
+ * "this JWS was signed by a key in this set". It never validates claims:
+ * iss / aud / exp / client_id belong to the grant handler.
  *
  * Deliberately separate from `./jwt.ts`, which pins HS256 for our own
  * self-issued access tokens. Keys come ONLY from the caller-supplied set: the
@@ -95,13 +95,15 @@ const JWKS_CACHE_TTL_SECONDS = 600;
 const JWKS_REFRESH_THROTTLE_SECONDS = 60;
 const JWKS_FETCH_TIMEOUT_MS = 5000;
 const JWKS_MAX_BYTES = 64 * 1024;
+/** Most keys a kid-less JWS is tried against, so a large set cannot multiply signature checks. */
+const MAX_KIDLESS_CANDIDATES = 5;
 
 const jwksCacheKey = (uriHash: string) => `${OAUTH_KV_PREFIX}ema-jwks:${uriHash}`;
 const jwksRefreshKey = (uriHash: string) => `${OAUTH_KV_PREFIX}ema-jwks-refresh:${uriHash}`;
 
 const textEncoder = new TextEncoder();
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -134,14 +136,20 @@ function decodePart(part: string): Uint8Array<ArrayBuffer> {
 	}
 }
 
-function decodeJsonObject(part: string): Record<string, unknown> {
-	let value: unknown;
+/** One base64url segment of a compact JWS decoded as a JSON object, or null for anything else (never throws). */
+export function decodeJsonSegment(segment: string): Record<string, unknown> | null {
+	if (!BASE64URL_PART.test(segment)) return null;
 	try {
-		value = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(decodePart(part)));
+		const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(base64UrlDecode(segment)));
+		return isPlainObject(value) ? value : null;
 	} catch {
-		throw new AssertionVerifyError('malformed');
+		return null;
 	}
-	if (!isPlainObject(value)) throw new AssertionVerifyError('malformed');
+}
+
+function decodeJsonObject(part: string): Record<string, unknown> {
+	const value = decodeJsonSegment(part);
+	if (!value) throw new AssertionVerifyError('malformed');
 	return value;
 }
 
@@ -206,19 +214,31 @@ function dedupeIdenticalKeys(keys: Record<string, unknown>[], profile: AlgProfil
 	return [...unique.values()];
 }
 
-/**
- * Exactly one compatible key: matched by `kid` when the header names one,
- * otherwise the only key whose kty/crv/use/key_ops/alg fit (identical
- * duplicates count once). A JWK carrying private material (`d`) is refused
- * rather than used — a published private key means anyone can sign, so its
- * signatures prove nothing.
- */
-function selectKey(jwks: JsonWebKeySet, alg: SupportedAlg, kid: string | undefined): Record<string, unknown> {
+function hasPrivateMaterial(key: Record<string, unknown>): boolean {
+	return key.d !== undefined;
+}
+
+/** Every key matching the header's kid (if any) whose kty/crv/use/key_ops/alg fit, identical duplicates counted once. */
+function fittingKeys(jwks: JsonWebKeySet, alg: SupportedAlg, kid: string | undefined): Record<string, unknown>[] {
 	const keys: unknown[] = Array.isArray(jwks?.keys) ? jwks.keys : [];
 	const matching = keys.filter(isPlainObject).filter((key) => matchesKid(key, kid) && isSigningKeyFor(key, alg));
-	const candidates = dedupeIdenticalKeys(matching, ALG_PROFILES[alg]);
-	if (candidates.length !== 1 || candidates[0].d !== undefined) throw new AssertionVerifyError('no_key');
-	return candidates[0];
+	return dedupeIdenticalKeys(matching, ALG_PROFILES[alg]);
+}
+
+/**
+ * The keys to try, in set order. When the header names a `kid`, exactly one
+ * fitting key must carry it, so two different keys under one kid stay
+ * ambiguous. Without a `kid` (an IdP rotating keys may publish several),
+ * every fitting key is a candidate, at most MAX_KIDLESS_CANDIDATES. A
+ * candidate carrying private material (`d`) refuses the selection rather than
+ * being used: a published private key means anyone can sign, so its
+ * signatures prove nothing.
+ */
+function selectKeys(jwks: JsonWebKeySet, alg: SupportedAlg, kid: string | undefined): Record<string, unknown>[] {
+	const candidates = fittingKeys(jwks, alg, kid);
+	const limit = kid === undefined ? MAX_KIDLESS_CANDIDATES : 1;
+	if (candidates.length === 0 || candidates.length > limit || candidates.some(hasPrivateMaterial)) throw new AssertionVerifyError('no_key');
+	return candidates;
 }
 
 /** Public members only, so private material, `key_ops`, `ext` and `alg` never reach importKey. */
@@ -243,15 +263,27 @@ async function importVerifyKey(key: Record<string, unknown>, profile: AlgProfile
 	return cryptoKey;
 }
 
+/** True when any key verifies the signature; keys are tried in order and the first success stops the loop. */
+async function anyKeyVerifies(
+	keys: readonly CryptoKey[],
+	profile: AlgProfile,
+	signature: Uint8Array<ArrayBuffer>,
+	data: BufferSource,
+): Promise<boolean> {
+	for (const key of keys) {
+		if (await crypto.subtle.verify(profile.verifyParams, key, signature, data).catch(() => false)) return true;
+	}
+	return false;
+}
+
 async function verifySignature(
-	key: CryptoKey,
+	keys: readonly CryptoKey[],
 	profile: AlgProfile,
 	signature: Uint8Array<ArrayBuffer>,
 	signingInput: string,
 ): Promise<void> {
 	const lengthOk = profile.signatureBytes === null || signature.byteLength === profile.signatureBytes;
-	const valid =
-		lengthOk && (await crypto.subtle.verify(profile.verifyParams, key, signature, textEncoder.encode(signingInput)).catch(() => false));
+	const valid = lengthOk && (await anyKeyVerifies(keys, profile, signature, textEncoder.encode(signingInput)));
 	if (!valid) throw new AssertionVerifyError('bad_signature');
 }
 
@@ -259,8 +291,10 @@ async function verifySignature(
  * Verify a compact JWS against `opts.jwks` and return its decoded header and
  * claims. Throws AssertionVerifyError: `malformed` (shape, encoding, JSON,
  * `crit`), `bad_typ` (`typ` !== expectedTyp), `bad_alg` (anything outside
- * allowedAlgs, so `none` and HS* always), `no_key` (zero or several matching
- * keys, private or weak key) or `bad_signature`. Claims are NOT validated.
+ * allowedAlgs, so `none` and HS* always), `no_key` (no fitting key, several
+ * keys under the header's kid, more than five kid-less candidates, or any
+ * private, weak or unimportable candidate) or `bad_signature` (no candidate
+ * verifies; kid-less candidates are tried in order). Claims are NOT validated.
  */
 export async function verifyJwsWithJwks(
 	compact: string,
@@ -271,8 +305,8 @@ export async function verifyJwsWithJwks(
 	if (header.typ !== opts.expectedTyp) throw new AssertionVerifyError('bad_typ');
 	const alg = headerAlg(header, opts.allowedAlgs);
 	const profile = ALG_PROFILES[alg];
-	const key = await importVerifyKey(selectKey(opts.jwks, alg, headerKid(header)), profile);
-	await verifySignature(key, profile, decodePart(s), `${h}.${p}`);
+	const keys = await Promise.all(selectKeys(opts.jwks, alg, headerKid(header)).map((key) => importVerifyKey(key, profile)));
+	await verifySignature(keys, profile, decodePart(s), `${h}.${p}`);
 	return { header, claims: decodeJsonObject(p) };
 }
 
