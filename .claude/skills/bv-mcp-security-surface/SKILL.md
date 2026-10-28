@@ -59,7 +59,7 @@ The distinction is where the hostname came from, not how the URL is spelled.
 
 **Paid-only tools**: offensive / recon / multi-domain tools listed in
 `GATED_PAID_ONLY_TOOLS` (`lib/config.ts`) are developer+ only —
-free/unauth/agent get HTTP **403** `UPGRADE_REQUIRED` (`-32003`). OSINT and
+unauthenticated callers get HTTP **401** + a `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource", scope="mcp"` challenge (Claude starts OAuth only on a 401; `unauthChallenge` option, supplied by `index.ts` iff `oauthAvailability` is `ready`, else the legacy 403), signed-in free/agent get HTTP **403** `UPGRADE_REQUIRED` (`-32003`, no header; re-authenticating cannot help). The body is identical. OSINT and
 bucket pollers stay free. ⚠️ The four brand pollers (`brand_audit_status`,
 `brand_audit_get_report`, `discover_brand_domains_*`) are NOT in that set but
 are `0` in `FREE_TOOL_DAILY_LIMITS`, so anonymous calls get **429**, not 403. The SSOT is audited by

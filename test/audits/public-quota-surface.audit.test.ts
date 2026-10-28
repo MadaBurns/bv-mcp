@@ -52,7 +52,7 @@ describe('public quota surface audit', () => {
 	});
 
 	it('never advertises an unauthenticated daily allowance for a paid-only tool', () => {
-		// Paid-only tools answer anonymous callers with a 403, not a quota; docs/client-setup.md once promised 3-5/day for three of them.
+		// Paid-only tools answer anonymous callers with a 401 (OAuth challenge) or 403, not a quota; docs/client-setup.md once promised 3-5/day for three of them.
 		for (const tool of GATED_PAID_ONLY_TOOLS) {
 			expect(FREE_TOOL_DAILY_LIMITS[tool as keyof typeof FREE_TOOL_DAILY_LIMITS] ?? 0).toBe(0);
 			for (const doc of [readme, clientSetup, troubleshooting]) expect(doc).not.toMatch(new RegExp(`\x60${tool}\x60 (?:to|at) \\d+\\/day`));

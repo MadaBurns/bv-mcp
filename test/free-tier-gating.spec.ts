@@ -6,6 +6,9 @@ import { resetSessions } from '../src/lib/session';
 import type { ExecuteMcpRequestOptions } from '../src/mcp/execute';
 import type { JsonRpcRequest } from '../src/lib/json-rpc';
 
+/** The `WWW-Authenticate` value index.ts supplies as `unauthChallenge` when OAuth is ready. */
+const CHALLENGE = 'Bearer resource_metadata="https://dns-mcp.example.test/.well-known/oauth-protected-resource", scope="mcp"';
+
 /** Build a minimal valid ExecuteMcpRequestOptions for testing */
 function baseOptions(overrides: Partial<ExecuteMcpRequestOptions> = {}): ExecuteMcpRequestOptions {
 	return {
@@ -42,11 +45,11 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Paid-gated tool enforcement (HTTP 403)
+// Paid-gated tool enforcement (HTTP 401 + challenge when unauthenticated, 403 when signed in)
 // ---------------------------------------------------------------------------
 
 describe('executeMcpRequest — paid-gated tool enforcement', () => {
-	it('returns HTTP 403 with UPGRADE_REQUIRED code for unauthenticated caller hitting discover_subdomains', async () => {
+	it('returns HTTP 401 + WWW-Authenticate challenge with UPGRADE_REQUIRED body for unauthenticated caller hitting discover_subdomains', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -57,14 +60,21 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
 				} as JsonRpcRequest,
 				isAuthenticated: false,
+				unauthChallenge: CHALLENGE,
 			}),
 		);
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(403);
+		// 401 + challenge is what makes Claude start OAuth; the body is unchanged so existing clients keep parsing it.
+		expect(result.httpStatus).toBe(401);
+		expect(result.headers['www-authenticate']).toBe(CHALLENGE);
 		const payload = result.payload as {
-			error: { code: number; message: string; data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string; cta: string } } };
+			error: {
+				code: number;
+				message: string;
+				data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string; cta: string } };
+			};
 		};
 		expect(payload.error.code).toBe(-32003);
 		expect(payload.error.message).toMatch(/upgrade required/i);
@@ -83,7 +93,7 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		expect(result.useErrorEnvelope).toBe(true);
 	});
 
-	it('carries a self-serve enriched data.upgrade CTA for a free caller hitting batch_scan', async () => {
+	it('carries a self-serve enriched data.upgrade CTA (HTTP 401 + challenge) for an unauthenticated caller hitting batch_scan', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -94,12 +104,14 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 					params: { name: 'batch_scan', arguments: { domains: ['example.com'] } },
 				} as JsonRpcRequest,
 				isAuthenticated: false,
+				unauthChallenge: CHALLENGE,
 			}),
 		);
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(403);
+		expect(result.httpStatus).toBe(401);
+		expect(result.headers['www-authenticate']).toBe(CHALLENGE);
 		const payload = result.payload as {
 			error: {
 				code: number;
@@ -124,6 +136,27 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		expect(cta).toContain('developer');
 	});
 
+	it('keeps HTTP 403 with no WWW-Authenticate for an unauthenticated paid-tool call when no challenge is supplied (OAuth unavailable)', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: {
+					jsonrpc: '2.0',
+					id: 111,
+					method: 'tools/call',
+					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
+				isAuthenticated: false,
+			}),
+		);
+
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(403);
+		expect(result.headers['www-authenticate']).toBeUndefined();
+		expect((result.payload as { error: { code: number } }).error.code).toBe(-32003);
+	});
+
 	it('returns HTTP 403 for authenticated free-tier caller hitting simulate_attack_paths', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
@@ -137,12 +170,15 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 				isAuthenticated: true,
 				tierAuthResult: { authenticated: true, tier: 'free', keyHash: 'k_test' },
 				authTier: 'free',
+				// Supplied on purpose: a signed-in caller re-authenticating cannot help, so it must stay a plain 403.
+				unauthChallenge: CHALLENGE,
 			}),
 		);
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(403);
+		expect(result.headers['www-authenticate']).toBeUndefined();
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32003);
 	});
@@ -160,12 +196,14 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 				isAuthenticated: true,
 				tierAuthResult: { authenticated: true, tier: 'agent', keyHash: 'k_agent' },
 				authTier: 'agent',
+				unauthChallenge: CHALLENGE,
 			}),
 		);
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(403);
+		expect(result.headers['www-authenticate']).toBeUndefined();
 	});
 
 	it('does NOT return HTTP 403 for authenticated developer-tier caller hitting discover_subdomains', async () => {
