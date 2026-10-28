@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { OAUTH_KV_PREFIX } from '../lib/config';
 import {
 	reserveBudgetWithCoordinator,
 	type BudgetReservationResult,
 	type QuotaCoordinator,
 } from '../lib/quota-coordinator';
+
+/** CIMD metadata fetches (cache misses only) allowed per client IP per window; each one is an outbound request to a caller-named host. */
+export const CIMD_FETCH_RATE_LIMIT = 10;
+export const CIMD_FETCH_RATE_WINDOW_SECONDS = 60;
 
 export interface OAuthRateLimitResult {
 	exceeded: boolean;
@@ -113,6 +118,23 @@ export async function consumeOAuthRateLimit(options: OAuthRateLimitOptions): Pro
 		return consumeViaCoordinator(options, options.quotaCoordinator, nowMs, windowMs);
 	}
 	return consumeViaKvWindow(options, nowMs, windowMs);
+}
+
+/** Consume one CIMD cache-miss fetch from the client IP's window (bucket `cimd-fetch`, KV mirror `oauth:cimd-rl:<ip>`). */
+export function consumeCimdFetchRateLimit(
+	kv: KVNamespace,
+	ip: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<OAuthRateLimitResult> {
+	return consumeOAuthRateLimit({
+		kv,
+		quotaCoordinator,
+		coordinationScope: 'cimd-fetch',
+		kvKey: `${OAUTH_KV_PREFIX}cimd-rl:${ip}`,
+		principal: ip,
+		limit: CIMD_FETCH_RATE_LIMIT,
+		windowSeconds: CIMD_FETCH_RATE_WINDOW_SECONDS,
+	});
 }
 
 /**

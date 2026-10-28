@@ -265,4 +265,62 @@ describe('GET /oauth/authorize — Client ID Metadata Document clients', () => {
 		expect(res.status).toBe(400);
 		expect(res.headers.get('location')).toBeNull();
 	});
+
+	async function authorizeFrom(ip: string, clientId: string): Promise<Response> {
+		const base = cimdAuthorizeRequest(clientId, 'https://claude.ai/api/mcp/auth_callback');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(new Request(base.url, { headers: { 'cf-connecting-ip': ip }, redirect: 'manual' }), env, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	it('answers "Unknown client_id" without fetching once an IP exceeds 10 CIMD cache-miss fetches per minute', async () => {
+		const realFetch = globalThis.fetch;
+		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (!url.startsWith('https://hostile.example.org/')) return realFetch(input, init);
+			return new Response('not found', { status: 404 });
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		const hostile = (n: number) => `https://hostile.example.org/meta-${n}`;
+		const hostileCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).startsWith('https://hostile.example.org/')).length;
+
+		for (let n = 1; n <= 10; n++) expect((await authorizeFrom('203.0.113.50', hostile(n))).status).toBe(400);
+		expect(hostileCalls()).toBe(10);
+
+		const eleventh = await authorizeFrom('203.0.113.50', hostile(11));
+		expect(eleventh.status).toBe(400);
+		expect(await eleventh.text()).toBe('Unknown client_id');
+		expect(hostileCalls()).toBe(10);
+
+		// Another IP is unaffected.
+		expect((await authorizeFrom('203.0.113.51', hostile(11))).status).toBe(400);
+		expect(hostileCalls()).toBe(11);
+	});
+
+	it('denies a 512-character CIMD-shaped client_id with 400, never a KV-key 503', async () => {
+		const longId = `https://claude.ai/oauth/${'a'.repeat(512 - 'https://claude.ai/oauth/'.length)}`;
+		stubCimdDocument({ client_id: longId, client_name: 'x', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
+		const res = await authorizeFrom('203.0.113.60', longId);
+		expect(res.status).toBe(200);
+		const blockedHostPrefix = 'https://metadata.internal/';
+		const miss = await authorizeFrom('203.0.113.61', `${blockedHostPrefix}${'b'.repeat(512 - blockedHostPrefix.length)}`);
+		expect(miss.status).toBe(400);
+		expect(await miss.text()).toBe('Unknown client_id');
+	});
+
+	it('rejects a client_id naming the cached CIMD record key (cimd:<hash>) as an unknown client', async () => {
+		stubCimdDocument({
+			client_id: CLAUDE_WEB_CIMD,
+			client_name: 'Claude',
+			redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+			token_endpoint_auth_method: 'none',
+		});
+		expect((await authorizeFrom('203.0.113.70', CLAUDE_WEB_CIMD)).status).toBe(200);
+		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(CLAUDE_WEB_CIMD)));
+		const hex = Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+		const res = await authorizeFrom('203.0.113.70', `cimd:${hex}`);
+		expect(res.status).toBe(400);
+		expect(await res.text()).toBe('Unknown client_id');
+	});
 });
