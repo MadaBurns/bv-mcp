@@ -1,5 +1,3 @@
-<!-- reconcile: SQ-418 -->
-
 # Enterprise Managed Auth for BlackVeil DNS Security
 
 Setup guide for identity and IT administrators at a Claude Team or Enterprise
@@ -37,7 +35,8 @@ Send BlackVeil two things, through the [contact form](https://blackveilsecurity.
 | Your plan or tier   | Claude Team, Claude Enterprise, or the BlackVeil tier you have agreed with us                                       |
 
 The issuer URL must be the exact `issuer` value from your IdP's
-`<issuer>/.well-known/openid-configuration` document. It must use `https`.
+`<issuer>/.well-known/openid-configuration` document. It must use `https`. BlackVeil compares it after normalizing the host to lower
+case and dropping one trailing slash, so those two differences do not matter.
 
 BlackVeil registers your issuer as a trusted tenant and replies to confirm that
 the tenant is enabled. Do not continue to the next sections until you have that
@@ -98,7 +97,11 @@ managed authorization can still sign in the usual way.
 - **There is no refresh token.** When a token expires, Claude silently asks your
   IdP for a fresh assertion and exchanges it again. The user sees nothing.
 - **Each assertion is single-use.** BlackVeil rejects an assertion it has
-  already accepted.
+  already accepted, one that has expired (30 seconds of clock skew is
+  tolerated), and one that was issued more than an hour before it expires.
+  Okta's default assertion lifetime of a few minutes is well inside that.
+- **The scope is always `mcp`.** Any other scope in the request is ignored, and
+  the response reports `mcp`.
 - **Disabling a user in your IdP** stops new tokens for that user. A token that
   was already issued works until it expires, at most one hour.
 - **BlackVeil can revoke a whole tenant immediately** on request. Disabling the
@@ -109,17 +112,33 @@ managed authorization can still sign in the usual way.
 ## 6. Troubleshooting
 
 Errors come back from `https://dns-mcp.blackveilsecurity.com/oauth/token` as
-standard OAuth JSON (`error`, `error_description`). Claude and Okta usually
-surface the `error` value.
+standard OAuth JSON (`error`, `error_description`) with `Cache-Control: no-store`.
+The description is a fixed sentence and never repeats anything from your
+request. Claude and Okta usually surface the `error` value.
 
-| Error                            | Likely cause                                                                                                                                                                                                                                                                                                  | What to do                                                                                                               |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `unsupported_grant_type`         | The request did not use the JWT bearer grant, or the assertion was missing.                                                                                                                                                                                                                                   | Check that Managed authorization is selected in Claude and that Okta is returning an identity assertion.                 |
-| `invalid_grant`                  | The assertion was rejected. Typical reasons: the issuer is not trusted by BlackVeil or the tenant is disabled or expired; the assertion is expired or dated in the future (check IdP clock); the audience does not match; the assertion was already used; the client ID inside it does not match the request. | Confirm your issuer URL with BlackVeil, check the Audience value (section 3), and retry. Do not replay an old assertion. |
-| `invalid_client`                 | Claude's client ID is not allowed for your tenant, or it could not be resolved.                                                                                                                                                                                                                               | Ask BlackVeil to confirm the allowed client ID is `https://claude.ai/oauth/mcp-oauth-client-metadata`.                   |
-| `invalid_target`                 | The resource in the request does not match the MCP server.                                                                                                                                                                                                                                                    | Set Resource to `https://dns-mcp.blackveilsecurity.com/mcp` in Okta.                                                     |
-| HTTP 429                         | Too many token requests from one address in a short time.                                                                                                                                                                                                                                                     | Wait a minute and retry. Contact us if it persists.                                                                      |
-| **Run test fails but SSO works** | Almost always an Audience mismatch.                                                                                                                                                                                                                                                                           | Check that Audience is `https://dns-mcp.blackveilsecurity.com` with **no trailing slash**.                               |
+BlackVeil checks each exchange in this order and stops at the first failure:
+
+1. The request is well formed (grant type, assertion, client ID).
+2. The assertion header says `typ: oauth-id-jag+jwt`.
+3. The assertion's issuer is an enabled, unexpired BlackVeil tenant.
+4. Claude's client ID is allowed for that tenant and can be fetched.
+5. The client ID inside the assertion matches the request.
+6. The signature verifies against your IdP's published signing keys.
+7. The audience is BlackVeil's issuer, the times are valid, and `sub` and `jti`
+   are present.
+8. Any `resource` is `https://dns-mcp.blackveilsecurity.com/mcp`.
+9. The assertion has not been used before.
+
+| Error | Likely cause | What to do |
+| --- | --- | --- |
+| `unsupported_grant_type` | The request's `grant_type` is missing or is not the JWT bearer grant. | Check that Managed authorization is selected in Claude. |
+| `invalid_request` (HTTP 400) | The request was malformed: `assertion` or `client_id` missing, an assertion over 8192 characters, or a body that is not form-encoded. | Check the request your caller sends. In Claude this points at a client or proxy fault, so contact us. |
+| `invalid_grant` | The assertion was rejected. Typical reasons: the header `typ` is not `oauth-id-jag+jwt`; your issuer is not a trusted, enabled tenant, or its entitlement has ended; the signature could not be verified against your IdP's keys; the assertion is expired or dated in the future (check the IdP clock); the audience does not match; the assertion was already used; the client ID inside it does not match the request. | Confirm your issuer URL with BlackVeil, check the Audience value (section 3), and retry. Do not replay an old assertion. |
+| `invalid_client` | Claude's client ID is not allowed for your tenant, or its published details could not be fetched or validated. | Ask BlackVeil to confirm the allowed client ID is `https://claude.ai/oauth/mcp-oauth-client-metadata`. |
+| `invalid_target` | The `resource` in the request or in the assertion is not the MCP server. | Set Resource to `https://dns-mcp.blackveilsecurity.com/mcp` in Okta. |
+| HTTP 429 | More than 30 token requests from one address in a minute. | Wait a minute and retry. Contact us if it persists. |
+| HTTP 503, `temporarily_unavailable` | BlackVeil could not read its authorization state. Nothing about your setup is wrong. | Retry shortly. Contact us if it persists. |
+| **Run test fails but SSO works** | Almost always an Audience mismatch. | Check that Audience is `https://dns-mcp.blackveilsecurity.com` with **no trailing slash**. |
 
 ## 7. Testing without a Claude organization
 

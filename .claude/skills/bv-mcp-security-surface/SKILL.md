@@ -115,6 +115,17 @@ Beyond that guard the capabilities are **distinct keys, not one shared secret**:
   tenant capabilities; the fleet web key is rejected for them.
 - Mutating calls support durable `Idempotency-Key` replay protection.
 
+## Enterprise Managed Auth (jwt-bearer / ID-JAG)
+
+`POST /oauth/token` `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` (`handleJwtBearerGrant` → `acceptIdJag`, `src/oauth/token.ts`; the per-IP token rate limit runs first). Customer guide `docs/enterprise-managed-auth.md`; seeding `docs/operator-runbook.md` §8a.
+
+- **Tenant allowlist** (`src/oauth/ema-tenants.ts`, SESSION_STORE, no TTL): `oauth:ema-tenant:<tenant_id>` (sealed under `KV_ENVELOPE_KEY`) plus `oauth:ema-issuer:<sha256hex(normalized issuer)>` → tenant_id. Written only via `/internal/oauth/ema-tenants` under `BV_MCP_OAUTH_MINT_KEY`. An unlisted `iss` is rejected even with a valid signature.
+- **Validation order** (first failure is final; static descriptions; `Cache-Control: no-store`): body shape (`invalid_request`) → issuer pinned to Host → header `typ` = `oauth-id-jag+jwt` → enabled, unexpired tenant (`invalid_grant`) → client in `allowed_client_ids` and `resolveClient` (`invalid_client`) → claim `client_id` = request (`invalid_grant`) → signature via `getJwksCached` + `verifyJwsWithJwks`, ONE forced refetch on `no_key` (every JWKS failure is `invalid_grant`) → `aud` = our issuer, exp/iat window (30s skew, lifetime ≤ 1h), `sub`/`jti` → `resource` = `${issuer}/mcp` (`invalid_target`) → one-time `jti`.
+- **One-time jti**: `claimAssertionJti(tenant.issuer, jti)` on `QUOTA_COORDINATOR` until exp+30s. A state outage is 503 `temporarily_unavailable`, never an admitted replay.
+- **Minted token**: subject `ema:<tenant_id>:<first 32 hex of sha256(sub)>`, tier = the tenant tier (`developer`/`enterprise`, **never `owner`**), TTL = min(1h, tenant entitlement), scope always `mcp`, NO `refresh_token`. Disabling a tenant stops new exchanges only; issued tokens live ≤ 1h.
+- **CIMD** (`src/oauth/cimd.ts`): fetched client documents are cached at `oauth:client:cimd:<sha256hex(url)>` (TTL 1h, failures never cached) and read back as client id `cimd:<hex>`; JWKS at `oauth:ema-jwks:<sha256hex(uri)>` (TTL 600s, forced refetch throttled to 1/60s).
+- **Metadata flags Claude looks for** (`discovery.ts`): `authorization_grant_profiles_supported: ["urn:ietf:params:oauth:grant-profile:id-jag"]` and `client_id_metadata_document_supported: true` (plus jwt-bearer in `grant_types_supported`). Live check: `npm run check:ema`.
+
 ## Client-visible error wording is an ALLOWLIST
 
 `sanitizeErrorMessage()` (`lib/json-rpc.ts`) passes a message through only if it
