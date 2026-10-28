@@ -17,6 +17,7 @@
  */
 
 import { OAUTH_KV_PREFIX } from '../lib/config';
+import { logEvent } from '../lib/log';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 import { safeFetch } from '../lib/safe-fetch';
 
@@ -171,10 +172,19 @@ function hasKeyMaterial(key: Record<string, unknown>, profile: AlgProfile): bool
 	return key.kty === profile.kty && key.crv === profile.crv && profile.members.every((member) => typeof key[member] === 'string');
 }
 
+/** RFC 7517 §4.3: when `key_ops` is present it must permit `verify`. */
+function allowsVerify(key: Record<string, unknown>): boolean {
+	return key.key_ops === undefined || (Array.isArray(key.key_ops) && key.key_ops.includes('verify'));
+}
+
+/** `use` (if any) is `sig` and `key_ops` (if any) includes `verify`. */
+function intendedForVerification(key: Record<string, unknown>): boolean {
+	return (key.use === undefined || key.use === 'sig') && allowsVerify(key);
+}
+
 function isSigningKeyFor(key: Record<string, unknown>, alg: SupportedAlg): boolean {
-	const useOk = key.use === undefined || key.use === 'sig';
 	const algOk = key.alg === undefined || key.alg === alg;
-	return useOk && algOk && hasKeyMaterial(key, ALG_PROFILES[alg]);
+	return algOk && intendedForVerification(key) && hasKeyMaterial(key, ALG_PROFILES[alg]);
 }
 
 function matchesKid(key: Record<string, unknown>, kid: string | undefined): boolean {
@@ -182,14 +192,31 @@ function matchesKid(key: Record<string, unknown>, kid: string | undefined): bool
 }
 
 /**
+ * Collapses entries that are the same key listed twice (same kid, kty, public
+ * members and private-material presence). Entries that merely share a `kid`
+ * but differ in material stay separate, so they are still ambiguous.
+ */
+function dedupeIdenticalKeys(keys: Record<string, unknown>[], profile: AlgProfile): Record<string, unknown>[] {
+	const unique = new Map<string, Record<string, unknown>>();
+	for (const key of keys) {
+		const privatePart = key.d === undefined ? undefined : ['d', key.d];
+		const fingerprint = JSON.stringify([key.kid, key.kty, ...profile.members.map((member) => key[member]), privatePart]);
+		if (!unique.has(fingerprint)) unique.set(fingerprint, key);
+	}
+	return [...unique.values()];
+}
+
+/**
  * Exactly one compatible key: matched by `kid` when the header names one,
- * otherwise the only key whose kty/crv/use/alg fit. A JWK carrying private
- * material (`d`) is refused rather than used — a published private key means
- * anyone can sign, so its signatures prove nothing.
+ * otherwise the only key whose kty/crv/use/key_ops/alg fit (identical
+ * duplicates count once). A JWK carrying private material (`d`) is refused
+ * rather than used — a published private key means anyone can sign, so its
+ * signatures prove nothing.
  */
 function selectKey(jwks: JsonWebKeySet, alg: SupportedAlg, kid: string | undefined): Record<string, unknown> {
 	const keys: unknown[] = Array.isArray(jwks?.keys) ? jwks.keys : [];
-	const candidates = keys.filter(isPlainObject).filter((key) => matchesKid(key, kid) && isSigningKeyFor(key, alg));
+	const matching = keys.filter(isPlainObject).filter((key) => matchesKid(key, kid) && isSigningKeyFor(key, alg));
+	const candidates = dedupeIdenticalKeys(matching, ALG_PROFILES[alg]);
 	if (candidates.length !== 1 || candidates[0].d !== undefined) throw new AssertionVerifyError('no_key');
 	return candidates[0];
 }
@@ -282,11 +309,20 @@ function parseJsonQuietly(raw: string): unknown {
 	}
 }
 
-/** The `keys` array with non-object entries dropped; null unless at least one object entry remains. */
+/** A public RS256 or ES256 key: the least a set must hold to be worth caching. */
+function isPlausibleSigningKey(key: Record<string, unknown>): boolean {
+	return key.d === undefined && (hasKeyMaterial(key, ALG_PROFILES.RS256) || hasKeyMaterial(key, ALG_PROFILES.ES256));
+}
+
+/**
+ * The `keys` array with non-object entries dropped; null unless at least one
+ * remaining entry is a plausible signing key. An empty or error-shaped 200
+ * body (`{"keys":[{}]}`) is therefore a failed fetch, never a cached set.
+ */
 function extractKeys(document: unknown): JsonWebKeyWithId[] | null {
 	if (!isPlainObject(document) || !Array.isArray(document.keys)) return null;
 	const keys = document.keys.filter(isJwkObject);
-	return keys.length > 0 ? keys : null;
+	return keys.some((key) => isPlausibleSigningKey(key as Record<string, unknown>)) ? keys : null;
 }
 
 function isFresh(fetchedAt: unknown, now: number): boolean {
@@ -336,6 +372,11 @@ async function fetchAndCache(kv: KVNamespace, uriHash: string, jwksUri: string, 
  * True when this caller may bypass the cache. Records the attempt first, so
  * every other forced refresh of the same URI in the next 60s falls back to the
  * cached set: an attacker cycling unknown `kid`s cannot make us hammer the IdP.
+ *
+ * This KV marker is only the cross-isolate, best-effort layer: the read and the
+ * write are not atomic and KV is eventually consistent across colos, so
+ * simultaneous callers can all pass it. Concurrency inside one isolate is
+ * bounded by `singleFlight` below.
  */
 async function claimForcedRefresh(kv: KVNamespace, uriHash: string, now: number): Promise<boolean> {
 	const last = await kvGetQuietly(kv, jwksRefreshKey(uriHash));
@@ -345,21 +386,65 @@ async function claimForcedRefresh(kv: KVNamespace, uriHash: string, now: number)
 }
 
 /**
+ * In-isolate single flight: callers that arrive while an identical operation is
+ * running share its promise (and so its one outbound fetch). The entry is
+ * removed on settle, success or failure, so a failure is never replayed.
+ */
+const inflight = new Map<string, Promise<JsonWebKeySet>>();
+
+function singleFlight(key: string, run: () => Promise<JsonWebKeySet>): Promise<JsonWebKeySet> {
+	const existing = inflight.get(key);
+	if (existing) return existing;
+	const flight: Promise<JsonWebKeySet> = run().finally(() => {
+		if (inflight.get(key) === flight) inflight.delete(key);
+	});
+	inflight.set(key, flight);
+	return flight;
+}
+
+/**
+ * A failed forced refresh must not lock out tokens the cached set can still
+ * verify: serve the cache, or rethrow when there is none.
+ */
+async function refreshOrServeCache(kv: KVNamespace, uriHash: string, jwksUri: string, now: number): Promise<JsonWebKeySet> {
+	try {
+		return await fetchAndCache(kv, uriHash, jwksUri, now);
+	} catch (error) {
+		const cached = await readCachedJwks(kv, uriHash, now);
+		if (!cached) throw error;
+		logEvent({
+			timestamp: new Date().toISOString(),
+			severity: 'info',
+			category: 'oauth',
+			result: 'ema_jwks_refresh_failed_serving_cache',
+			error: error instanceof Error ? error.message : 'unknown',
+		});
+		return cached;
+	}
+}
+
+async function resolveJwks(kv: KVNamespace, jwksUri: string, forceRefresh: boolean, now: number): Promise<JsonWebKeySet> {
+	const uriHash = await sha256Hex(jwksUri);
+	if (forceRefresh && (await claimForcedRefresh(kv, uriHash, now))) return refreshOrServeCache(kv, uriHash, jwksUri, now);
+	return (await readCachedJwks(kv, uriHash, now)) ?? fetchAndCache(kv, uriHash, jwksUri, now);
+}
+
+/**
  * The JWKS at `jwksUri`, served from SESSION_STORE for 600s after a good
  * fetch. Fetches over safeFetch (https, SSRF-validated) with no redirects, a
  * 5s timeout and a 64KB body cap; only an HTTP 200 JSON body whose `keys`
- * holds at least one object is accepted and cached. Anything else throws
- * JwksFetchError and caches nothing. `forceRefresh` (for an unknown `kid`
- * after key rotation) refetches at most once per 60s per URI.
- * `now` is epoch seconds.
+ * holds at least one plausible public RS256/ES256 key is accepted and cached.
+ * Anything else throws JwksFetchError and caches nothing. `forceRefresh` (for
+ * an unknown `kid` after key rotation) refetches at most once per 60s per URI,
+ * and a forced refresh that fails serves the still-valid cached set instead.
+ * Concurrent calls in one isolate share a single fetch. `now` is epoch seconds.
  */
-export async function getJwksCached(
+export function getJwksCached(
 	kv: KVNamespace,
 	jwksUri: string,
 	opts: { forceRefresh?: boolean; now?: number } = {},
 ): Promise<JsonWebKeySet> {
 	const now = opts.now ?? Math.floor(Date.now() / 1000);
-	const uriHash = await sha256Hex(jwksUri);
-	if (opts.forceRefresh && (await claimForcedRefresh(kv, uriHash, now))) return fetchAndCache(kv, uriHash, jwksUri, now);
-	return (await readCachedJwks(kv, uriHash, now)) ?? fetchAndCache(kv, uriHash, jwksUri, now);
+	const forceRefresh = opts.forceRefresh === true;
+	return singleFlight(`${forceRefresh ? 'refresh' : 'read'}:${jwksUri}`, () => resolveJwks(kv, jwksUri, forceRefresh, now));
 }

@@ -221,6 +221,25 @@ describe('oauth/jwks — verifyJwsWithJwks', () => {
 		await expectCode(verify(await signJws(rsa, CLAIMS, { crit: ['exp'], exp: 1 }), [rsa.publicJwk]), 'malformed');
 	});
 
+	it('key_ops without verify → no_key; key_ops containing verify is accepted', async () => {
+		const token = await signJws(rsa);
+		await expectCode(verify(token, [{ ...rsa.publicJwk, key_ops: ['encrypt'] }]), 'no_key');
+		await expectCode(verify(token, [{ ...rsa.publicJwk, key_ops: 'verify' }]), 'no_key');
+		await expectCode(verify(token, [{ ...rsa.publicJwk, key_ops: [] }]), 'no_key');
+		expect((await verify(token, [{ ...rsa.publicJwk, key_ops: ['verify'] }])).claims).toEqual(CLAIMS);
+		expect((await verify(await signJws(ec), [{ ...ec.publicJwk, key_ops: ['sign', 'verify'] }])).claims).toEqual(CLAIMS);
+	});
+
+	it('the same JWK listed twice is one candidate; two different keys under one kid stay ambiguous', async () => {
+		expect((await verify(await signJws(rsa), [rsa.publicJwk, { ...rsa.publicJwk }])).claims).toEqual(CLAIMS);
+		expect((await verify(await signJws(ec), [ec.publicJwk, { ...ec.publicJwk }])).claims).toEqual(CLAIMS);
+		const kidless = await signJws(rsa, CLAIMS, { kid: undefined });
+		expect((await verify(kidless, [rsa.publicJwk, { ...rsa.publicJwk }])).claims).toEqual(CLAIMS);
+		const impostor = { ...rsaRotated.publicJwk, kid: 'rsa-1' };
+		await expectCode(verify(await signJws(rsa), [rsa.publicJwk, impostor]), 'no_key');
+		await expectCode(verify(await signJws(rsa), [rsa.publicJwk, { ...rsa.privateJwk, key_ops: undefined }]), 'no_key');
+	});
+
 	it('ignores a key embedded in the header (jwk) and verifies only against the set', async () => {
 		const token = await signJws(rsaRotated, CLAIMS, { kid: 'rsa-1', jwk: rsaRotated.publicJwk });
 		await expectCode(verify(token, [rsa.publicJwk]), 'bad_signature');
@@ -400,6 +419,103 @@ describe('oauth/jwks — getJwksCached', () => {
 		expect(await getJwksCached(failingKv, JWKS_URI, { now: NOW })).toEqual({ keys: [rsa.publicJwk] });
 		expect(await getJwksCached(failingKv, JWKS_URI, { now: NOW, forceRefresh: true })).toEqual({ keys: [rsa.publicJwk] });
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('a 200 body with no plausible signing key is rejected and never cached', async () => {
+		await expectFetchFailureNotCached(() => jsonResponse({ keys: [{}] }));
+		await expectFetchFailureNotCached(() => jsonResponse({ keys: [{ kty: 'RSA' }, { kty: 'EC', crv: 'P-384', x: 'a', y: 'b' }] }));
+		await expectFetchFailureNotCached(() => jsonResponse({ keys: [rsa.privateJwk] }));
+		expect(await env.SESSION_STORE.list({ prefix: 'oauth:ema-jwks:' })).toMatchObject({ keys: [] });
+	});
+
+	it('a previously cached set with no plausible signing key is a miss', async () => {
+		const { getJwksCached } = await import('../../src/oauth/jwks');
+		stubFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+		await env.SESSION_STORE.put(await cacheKeyFor(JWKS_URI), JSON.stringify({ fetchedAt: NOW, keys: [{}] }));
+		expect(await getJwksCached(kv(), JWKS_URI, { now: NOW })).toEqual({ keys: [rsa.publicJwk] });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	describe('single flight', () => {
+		const CONCURRENCY = 25;
+
+		function stubSlowFetch(response: () => Response) {
+			fetchMock = vi.fn(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				return response();
+			});
+			vi.stubGlobal('fetch', fetchMock);
+		}
+
+		it('25 concurrent forceRefresh calls share one outbound fetch', async () => {
+			const { getJwksCached } = await import('../../src/oauth/jwks');
+			stubFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+			await getJwksCached(kv(), JWKS_URI, { now: NOW });
+			stubSlowFetch(() => jsonResponse({ keys: [rsa.publicJwk, rsaRotated.publicJwk] }));
+
+			const results = await Promise.all(
+				Array.from({ length: CONCURRENCY }, () => getJwksCached(kv(), JWKS_URI, { now: NOW + 1, forceRefresh: true })),
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			for (const jwks of results) expect(jwks.keys).toHaveLength(2);
+		});
+
+		it('25 concurrent cold-cache reads share one outbound fetch', async () => {
+			const { getJwksCached } = await import('../../src/oauth/jwks');
+			stubSlowFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+			const results = await Promise.all(Array.from({ length: CONCURRENCY }, () => getJwksCached(kv(), JWKS_URI, { now: NOW })));
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			for (const jwks of results) expect(jwks).toEqual({ keys: [rsa.publicJwk] });
+		});
+
+		it('different URIs do not share a flight, and a settled failure is not replayed', async () => {
+			const { getJwksCached } = await import('../../src/oauth/jwks');
+			stubSlowFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+			await Promise.all([
+				getJwksCached(kv(), JWKS_URI, { now: NOW }),
+				getJwksCached(kv(), 'https://other.okta.com/oauth2/v1/keys', { now: NOW }),
+			]);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+
+			const uri = 'https://flaky.okta.com/oauth2/v1/keys';
+			stubSlowFetch(() => jsonResponse({}, { status: 503 }));
+			const failures = await Promise.allSettled(Array.from({ length: 5 }, () => getJwksCached(kv(), uri, { now: NOW })));
+			expect(failures.every((outcome) => outcome.status === 'rejected')).toBe(true);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+
+			stubSlowFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+			expect(await getJwksCached(kv(), uri, { now: NOW })).toEqual({ keys: [rsa.publicJwk] });
+		});
+	});
+
+	it('a failed forced refresh serves the still-valid cached set', async () => {
+		const { getJwksCached } = await import('../../src/oauth/jwks');
+		stubFetch(() => jsonResponse({ keys: [rsa.publicJwk] }));
+		const cached = await getJwksCached(kv(), JWKS_URI, { now: NOW });
+
+		for (const [index, failure] of [
+			() => jsonResponse({ keys: [rsa.publicJwk] }, { status: 503 }),
+			() => jsonResponse({ keys: [{}] }),
+			() => new Response('<html>login</html>', { status: 200 }),
+			() => {
+				throw new TypeError('network down');
+			},
+		].entries()) {
+			served = failure;
+			// A 61s step clears the refresh throttle each round while the 600s cache stays fresh.
+			expect(await getJwksCached(kv(), JWKS_URI, { now: NOW + 61 * (index + 1), forceRefresh: true })).toEqual(cached);
+		}
+		expect(fetchMock).toHaveBeenCalledTimes(5);
+		expect(await env.SESSION_STORE.get(await cacheKeyFor(JWKS_URI), 'json')).toEqual({ fetchedAt: NOW, keys: [rsa.publicJwk] });
+	});
+
+	it('a failed forced refresh with no cached set still throws', async () => {
+		const { getJwksCached, JwksFetchError } = await import('../../src/oauth/jwks');
+		stubFetch(() => jsonResponse({}, { status: 503 }));
+		await expect(getJwksCached(kv(), JWKS_URI, { now: NOW, forceRefresh: true })).rejects.toBeInstanceOf(JwksFetchError);
+		// An expired cached set is not "valid": it is gone, so the failure surfaces.
+		await env.SESSION_STORE.put(await cacheKeyFor(JWKS_URI), JSON.stringify({ fetchedAt: NOW - 601, keys: [rsa.publicJwk] }));
+		await expect(getJwksCached(kv(), JWKS_URI, { now: NOW + 100, forceRefresh: true })).rejects.toBeInstanceOf(JwksFetchError);
 	});
 
 	it('a fetched set verifies a token end to end', async () => {
