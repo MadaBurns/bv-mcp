@@ -34,15 +34,17 @@ async function sha256Hex(value: string): Promise<string> {
 	return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function isPlainHttpsUrl(url: URL): boolean {
+	return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+}
+
 /**
  * Canonical form of an issuer identifier: https only, no userinfo/query/fragment,
  * lowercase host, and ONE trailing slash stripped. Throws on anything else.
  */
 export function normalizeIssuer(iss: string): string {
 	const url = new URL(iss);
-	if (url.protocol !== 'https:') throw new Error('Issuer must use https');
-	if (url.username || url.password) throw new Error('Issuer must not contain userinfo');
-	if (url.search || url.hash) throw new Error('Issuer must not contain a query or fragment');
+	if (!isPlainHttpsUrl(url)) throw new Error('Issuer must be an https URL without userinfo, query or fragment');
 	const pathname = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
 	return url.origin + pathname;
 }
@@ -76,11 +78,14 @@ export async function putEmaTenant(kv: KVNamespace, rec: EmaTenantRecord, kvEnve
 	await kv.put(tenantKey(stored.tenant_id), kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext);
 	await kv.put(newIndexKey, stored.tenant_id);
 
-	if (previous && previous.issuer !== stored.issuer) {
-		const oldIndexKey = await issuerKey(previous.issuer);
-		if ((await kv.get(oldIndexKey)) === stored.tenant_id) await kv.delete(oldIndexKey);
-	}
+	if (previous && previous.issuer !== stored.issuer) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
 	return stored;
+}
+
+/** Delete an issuer's index entry, but only while it still points at `tenantId`. */
+async function releaseIssuerIndex(kv: KVNamespace, issuer: string, tenantId: string): Promise<void> {
+	const indexKey = await issuerKey(issuer);
+	if ((await kv.get(indexKey)) === tenantId) await kv.delete(indexKey);
 }
 
 export async function getEmaTenant(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
@@ -104,10 +109,7 @@ export async function getEmaTenantByIssuer(kv: KVNamespace, issuer: string, kvEn
 
 export async function deleteEmaTenant(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<void> {
 	const record = await readRecord(kv, tenantId, kvEnvelopeKey);
-	if (record) {
-		const indexKey = await issuerKey(record.issuer);
-		if ((await kv.get(indexKey)) === tenantId) await kv.delete(indexKey);
-	}
+	if (record) await releaseIssuerIndex(kv, record.issuer, tenantId);
 	await kv.delete(tenantKey(tenantId));
 }
 

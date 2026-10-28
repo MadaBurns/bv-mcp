@@ -30,7 +30,7 @@
  */
 
 import { Hono } from 'hono';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { logError } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall, INTERNAL_BATCH_SAFE_TOOLS } from './handlers/tools';
@@ -57,7 +57,7 @@ import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
-import { EMA_TENANT_ID_PATTERN, EmaTenantUpsertRequestSchema } from './schemas/ema';
+import { EMA_TENANT_ID_PATTERN, EmaTenantUpsertRequestSchema, type EmaTenantRecord, type EmaTenantUpsertRequest } from './schemas/ema';
 import { EmaTenantConflictError, deleteEmaTenant, getEmaTenant, listEmaTenants, normalizeIssuer, putEmaTenant } from './oauth/ema-tenants';
 import { safeFetch } from './lib/safe-fetch';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './lib/response-body';
@@ -1434,17 +1434,14 @@ internalRoutes.get('/trial-keys', async (c) => {
 const EMA_DISCOVERY_TIMEOUT_MS = 5000;
 const EMA_DISCOVERY_MAX_BYTES = 16 * 1024;
 const EMA_NO_STORE = { 'Cache-Control': 'no-store' } as const;
+const EmaDiscoveryDocumentSchema = z.object({ issuer: z.string(), jwks_uri: z.string() });
 
 // Same capability as /trial-keys and /oauth/grants: these routes decide which IdPs may mint access tokens.
 internalRoutes.use('/oauth/ema-tenants', trialKeysAuthGate);
 internalRoutes.use('/oauth/ema-tenants/*', trialKeysAuthGate);
 
-/**
- * Resolve `{issuer}/.well-known/openid-configuration` and return its `jwks_uri`.
- * Null on any failure: network error, non-200, redirect, oversize/malformed body,
- * a document whose own `issuer` differs from the configured one, or a non-https jwks_uri.
- */
-async function discoverJwksUri(normalizedIssuer: string): Promise<string | null> {
+/** Fetch `{issuer}/.well-known/openid-configuration`: 200 only, no redirects, ≤ 16KB. Null on any failure. */
+async function fetchEmaDiscoveryDocument(normalizedIssuer: string): Promise<unknown> {
 	try {
 		const response = await safeFetch(`${normalizedIssuer}/.well-known/openid-configuration`, {
 			redirect: 'manual',
@@ -1455,10 +1452,22 @@ async function discoverJwksUri(normalizedIssuer: string): Promise<string | null>
 			await disposeUnreadResponseBody(response);
 			return null;
 		}
-		const doc = await readJsonResponseCapped<{ issuer?: unknown; jwks_uri?: unknown }>(response, EMA_DISCOVERY_MAX_BYTES);
-		if (!doc || typeof doc.issuer !== 'string' || typeof doc.jwks_uri !== 'string') return null;
-		if (normalizeIssuer(doc.issuer) !== normalizedIssuer) return null;
-		return new URL(doc.jwks_uri).protocol === 'https:' ? doc.jwks_uri : null;
+		return await readJsonResponseCapped<unknown>(response, EMA_DISCOVERY_MAX_BYTES);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The `jwks_uri` of a discovery document, only when the document names the SAME issuer
+ * (normalized comparison) and the jwks_uri is https. Null otherwise.
+ */
+function jwksUriFromDiscovery(doc: unknown, normalizedIssuer: string): string | null {
+	const parsed = EmaDiscoveryDocumentSchema.safeParse(doc);
+	if (!parsed.success) return null;
+	try {
+		if (normalizeIssuer(parsed.data.issuer) !== normalizedIssuer) return null;
+		return new URL(parsed.data.jwks_uri).protocol === 'https:' ? parsed.data.jwks_uri : null;
 	} catch {
 		return null;
 	}
@@ -1470,6 +1479,33 @@ function emaValidationError(err: ZodError): string {
 	if (issue.code === 'unrecognized_keys') return 'Invalid request body: unrecognized field';
 	return `Invalid ${issue.path.join('.') || 'request body'}: ${issue.message}`;
 }
+
+/** Parse + normalize a PUT body. Errors are static strings; caller input is never echoed. */
+async function readEmaUpsertBody(request: Request): Promise<{ body: EmaTenantUpsertRequest } | { error: string; status: 400 | 413 }> {
+	try {
+		const bodyRead = await readBoundedText(request, MAX_REQUEST_BODY_BYTES);
+		if (!bodyRead.ok) return { error: 'request_too_large', status: 413 };
+		const body = EmaTenantUpsertRequestSchema.parse(JSON.parse(bodyRead.text));
+		return { body: { ...body, issuer: normalizeIssuer(body.issuer) } };
+	} catch (err) {
+		if (err instanceof ZodError) return { error: emaValidationError(err), status: 400 };
+		return { error: 'Invalid request body', status: 400 };
+	}
+}
+
+/** Create-or-update, preserving `created_at` across updates. */
+async function upsertEmaTenant(
+	kv: KVNamespace,
+	body: EmaTenantUpsertRequest,
+	jwksUri: string,
+	kvEnvelopeKey: Uint8Array | undefined,
+): Promise<EmaTenantRecord> {
+	const existing = await getEmaTenant(kv, body.tenant_id, kvEnvelopeKey);
+	const now = Math.floor(Date.now() / 1000);
+	return putEmaTenant(kv, { ...body, jwks_uri: jwksUri, created_at: existing?.created_at ?? now, updated_at: now }, kvEnvelopeKey);
+}
+
+const emaEnvelopeKey = (env: InternalEnv): Uint8Array | undefined => parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
 /** Map store failures to static responses: issuer conflict → 409, anything else (KV outage) → 503. */
 function emaStoreError(c: import('hono').Context<InternalAppEnv>, err: unknown): Response {
@@ -1485,36 +1521,15 @@ internalRoutes.put('/oauth/ema-tenants', async (c) => {
 	const kv = c.env.SESSION_STORE;
 	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
 
-	let body;
-	try {
-		const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
-		if (!bodyRead.ok) return c.json({ error: 'request_too_large' }, 413, EMA_NO_STORE);
-		body = EmaTenantUpsertRequestSchema.parse(JSON.parse(bodyRead.text));
-	} catch (err) {
-		if (err instanceof ZodError) return c.json({ error: emaValidationError(err) }, 400, EMA_NO_STORE);
-		return c.json({ error: 'Invalid request body' }, 400, EMA_NO_STORE);
-	}
+	const parsed = await readEmaUpsertBody(c.req.raw);
+	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
 
-	let issuer: string;
-	try {
-		issuer = normalizeIssuer(body.issuer);
-	} catch {
-		return c.json({ error: 'Invalid issuer: must be an https URL without userinfo, query or fragment' }, 400, EMA_NO_STORE);
-	}
-
-	const jwksUri = body.jwks_uri ?? (await discoverJwksUri(issuer));
+	const { body } = parsed;
+	const jwksUri = body.jwks_uri ?? jwksUriFromDiscovery(await fetchEmaDiscoveryDocument(body.issuer), body.issuer);
 	if (!jwksUri) return c.json({ error: 'issuer_discovery_failed' }, 400, EMA_NO_STORE);
 
-	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	try {
-		const existing = await getEmaTenant(kv, body.tenant_id, kvEnvelopeKey);
-		const now = Math.floor(Date.now() / 1000);
-		const stored = await putEmaTenant(
-			kv,
-			{ ...body, issuer, jwks_uri: jwksUri, created_at: existing?.created_at ?? now, updated_at: now },
-			kvEnvelopeKey,
-		);
-		return c.json(stored, 200, EMA_NO_STORE);
+		return c.json(await upsertEmaTenant(kv, body, jwksUri, emaEnvelopeKey(c.env)), 200, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
 	}
@@ -1525,7 +1540,7 @@ internalRoutes.get('/oauth/ema-tenants', async (c) => {
 	const kv = c.env.SESSION_STORE;
 	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
 	try {
-		const tenants = await listEmaTenants(kv, parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined);
+		const tenants = await listEmaTenants(kv, emaEnvelopeKey(c.env));
 		return c.json({ tenants, total: tenants.length }, 200, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
@@ -1539,9 +1554,8 @@ internalRoutes.get('/oauth/ema-tenants/:tenant_id', async (c) => {
 	const tenantId = c.req.param('tenant_id');
 	if (!EMA_TENANT_ID_PATTERN.test(tenantId)) return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
 	try {
-		const tenant = await getEmaTenant(kv, tenantId, parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined);
-		if (!tenant) return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
-		return c.json(tenant, 200, EMA_NO_STORE);
+		const tenant = await getEmaTenant(kv, tenantId, emaEnvelopeKey(c.env));
+		return tenant ? c.json(tenant, 200, EMA_NO_STORE) : c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
 	}
@@ -1554,7 +1568,7 @@ internalRoutes.delete('/oauth/ema-tenants/:tenant_id', async (c) => {
 	const tenantId = c.req.param('tenant_id');
 	if (!EMA_TENANT_ID_PATTERN.test(tenantId)) return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
 	try {
-		await deleteEmaTenant(kv, tenantId, parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined);
+		await deleteEmaTenant(kv, tenantId, emaEnvelopeKey(c.env));
 		return c.body(null, 204, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
