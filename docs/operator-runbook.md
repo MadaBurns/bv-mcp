@@ -394,6 +394,16 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   key is treated as absent (the grant fails closed for that issuer). After a key
   rotation, re-PUT each tenant to reseal it.
 
+#### Verify live
+
+Run after the Worker deploy, and again once a tenant is seeded:
+
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed.
+2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
+3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
+4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).
+5. Set the listing's authentication to "Required when the server asks" (OAuth sign-in, with CIMD client identity).
+
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 
 ### What it is

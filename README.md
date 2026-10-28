@@ -281,6 +281,7 @@ The free tier requires no authentication. Authenticated requests bypass per-IP r
 - **Header**: `Authorization: Bearer <KEY>`
 - **Header (alternative)**: `X-API-Key: <KEY>` — for clients that cannot set `Authorization`. If both are sent, `Authorization: Bearer` wins.
 - **OAuth 2.1**: optional authorization-code flow with PKCE, enabled only when operators set `ENABLE_OAUTH=true`; owner-key consent is separately gated by `ENABLE_OWNER_OAUTH=true`.
+- **Enterprise Managed Auth**: when OAuth is enabled, Claude Team and Enterprise organizations can connect through their identity provider with no per-user sign-in, using the RFC 7523 `jwt-bearer` grant (an ID-JAG assertion) and Claude's client-ID-metadata-document (CIMD) identity. Each customer issuer is an explicit allowlisted tenant; tokens never carry the `owner` tier. Admin setup: [**docs/enterprise-managed-auth.md**](docs/enterprise-managed-auth.md). The silent exchange starts from the HTTP 401 challenge described under paid-only tools below.
 
 The `?api_key=<KEY>` fallback is legacy/self-host compatibility only. BlackVeil hosted production sets `REJECT_QUERY_API_KEY=true`; clients that cannot send headers should use OAuth or an `mcp-remote` header bridge.
 
