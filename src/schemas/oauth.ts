@@ -34,7 +34,7 @@ export type PaidOAuthEntitlementResponse = z.infer<typeof PaidOAuthEntitlementRe
 
 export const InternalOAuthGrantRequestSchema = z
 	.object({
-		clientId: z.string().min(1).max(200),
+		clientId: z.string().min(1).max(512),
 		redirectUri: RedirectUriSchema,
 		state: z.string().min(1).max(1024),
 		scope: z.string().min(1).max(200).optional(),
@@ -61,7 +61,7 @@ export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
 
 export const AuthorizeQuerySchema = z
 	.object({
-		client_id: z.string().min(1).max(200),
+		client_id: z.string().min(1).max(512),
 		redirect_uri: RedirectUriSchema,
 		response_type: z.literal('code'),
 		state: z.string().min(1).max(1024),
@@ -77,7 +77,7 @@ export const TokenRequestSchema = z
 		grant_type: z.literal('authorization_code'),
 		code: z.string().min(1).max(512),
 		redirect_uri: RedirectUriSchema,
-		client_id: z.string().min(1).max(200),
+		client_id: z.string().min(1).max(512),
 		code_verifier: z.string().min(43).max(128),
 	})
 	.passthrough();
