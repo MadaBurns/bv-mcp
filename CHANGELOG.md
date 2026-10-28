@@ -8,6 +8,26 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.104.1] - 2026-10-28
+
+Hardening from the post-merge security review of the Enterprise Managed Auth release (#1318). No new secret; `KV_ENVELOPE_KEY` is now required before a tenant can be seeded.
+
+### Changed
+
+- OAuth `jwt-bearer` (Enterprise Managed Auth): when the tenant's JWKS cannot be fetched (the IdP is unreachable, the stored `jwks_uri` is blocked by the outbound fetch policy, or the response is not a usable key set) the exchange now answers HTTP 503 `temporarily_unavailable` ("Issuer signing keys are unavailable", `Cache-Control: no-store`) and logs one `ema_jwks_unavailable` line with the tenant id and the failure class, instead of a 400 `invalid_grant` that read like a forged assertion. A `kid` still absent after a successful fetch and the one forced refetch stays `invalid_grant`.
+- `/oauth/token` rate limiting is cheapest-gate-first again: a known client IP's 600/min per-IP ceiling now covers every grant type and runs before the request body is read, so a flood of max-size bodies is cut without reading them from the 601st request in a minute. After the bounded read, `authorization_code` and every other non-jwt-bearer request still takes the shared 30/min per-IP bucket (429 from the 31st), and a jwt-bearer exchange takes only its (IP, issuer) 120/min bucket and never the shared one. Cost per request from a known IP: `authorization_code` and other non-jwt-bearer grants now consume two limiter operations (ceiling + shared bucket) instead of one; jwt-bearer stays at two (ceiling + issuer bucket). An unknown IP (no `cf-connecting-ip`) is unchanged: no ceiling, the shared bucket for every grant. The ceiling's counters move to a new key (`oauth:token-ceiling-rl:`), so they restart once at deploy.
+- Internal: one shared `sha256Hex` (`src/oauth/jwks.ts`) backs the CIMD cache, the EMA issuer index and the OAuth coordination keys, and every key hashes byte-identically (pinned by fixed-input tests). The EMA tenant schema's default `allowed_client_ids` reuses `CLAUDE_WEB_CIMD_CLIENT_ID`. `isPlainObject` and `decodeJsonSegment` are exported from `jwks.ts` for the token endpoint to reuse.
+- Enterprise Managed Auth operator route: `PUT /internal/oauth/ema-tenants` now answers `409 envelope_key_required` and writes nothing while `ENABLE_OAUTH` is `true` and `KV_ENVELOPE_KEY` is unset or unparseable. Tenant records are read fail-closed (a plaintext record reads as absent once the key is set), so a tenant seeded without the key would have vanished, with its tokens answering 401, the moment the key was added. Set `KV_ENVELOPE_KEY` and redeploy before seeding the first tenant (runbook section 8a). An upsert also now reads the tenant record once instead of up to three times, so the token-epoch decision and the old-issuer release come from the same snapshot; epoch rules, `issuer_conflict` and orphaned-index release are unchanged. No migration, no new secret.
+
+### Security
+
+- OAuth `jwt-bearer`: the assertion's `iss` and `client_id` are now also checked on the signature-verified payload (the normalized `iss` must equal the routed tenant's issuer and `client_id` the request's), rejecting a mismatch with `invalid_grant` "Assertion not accepted". Before, only the unverified decode that picks the tenant read them; the signature covers the same bytes, so this is defence in depth rather than a reachable bypass.
+
+### Fixed
+
+- OAuth (CIMD): a client metadata document that lists a redirect URI outside the allowlist no longer fails as a whole. The cached client record keeps only the allowlisted redirect URIs, so a non-allowlisted redirect still never matches; a document left with no allowlisted redirect URI is still rejected and negatively cached for 60 s. Before, one unexpected entry in Claude's published document would have answered "Unknown client_id" to every Claude user. Only the number of dropped entries is logged.
+- EMA (JWKS): an ID-JAG whose JWS header has no `kid` now verifies against a key set that publishes several compatible keys, as during key rotation. Up to five candidates are tried in set order and the first that verifies is accepted; more than five, or any candidate with private material or a weak or unimportable key, is refused as `no_key`. A header `kid` still selects exactly one key.
+
 ## [3.104.0] - 2026-10-28
 
 ### Added
