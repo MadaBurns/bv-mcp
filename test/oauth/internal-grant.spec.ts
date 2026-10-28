@@ -1,7 +1,8 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { verifyJwt } from '../../src/oauth/jwt';
+import { putClient } from '../../src/oauth/storage';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -85,8 +86,22 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.unstubAllGlobals();
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
 });
+
+/** Serve one Client ID Metadata Document at its own URL; every other fetch is a 404. */
+function stubCimdDocument(clientId: string, redirectUris: string[]): void {
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : (input as Request).url;
+			if (url !== clientId) return new Response('not found', { status: 404 });
+			const doc = { client_id: clientId, client_name: 'Claude', redirect_uris: redirectUris, token_endpoint_auth_method: 'none' };
+			return new Response(JSON.stringify(doc), { status: 200, headers: { 'content-type': 'application/json' } });
+		}),
+	);
+}
 
 describe('POST /internal/oauth/grants', () => {
 	it('creates a one-time developer authorization code and redirects through token exchange', async () => {
@@ -140,6 +155,71 @@ describe('POST /internal/oauth/grants', () => {
 		expect(claims?.tier).toBe('developer');
 	});
 
+	it('mints a paid grant for a Client ID Metadata Document client (no DCR registration)', async () => {
+		const clientId = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+		const redirectUri = 'https://claude.ai/api/mcp/auth_callback';
+		stubCimdDocument(clientId, [redirectUri]);
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
+			OAUTH_ISSUER: 'https://example.com',
+		} as TestEnv;
+		const { verifier, challenge } = await pkcePair();
+
+		const grantResponse = await postGrant(makeGrantBody(clientId, challenge, { redirectUri }), customEnv);
+		expect(grantResponse.status).toBe(200);
+		const code = new URL(((await grantResponse.json()) as { redirectTo: string }).redirectTo).searchParams.get('code') ?? '';
+
+		const tokenCtx = createExecutionContext();
+		const tokenResponse = await worker.fetch(
+			new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/token', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({
+					grant_type: 'authorization_code',
+					code,
+					client_id: clientId,
+					redirect_uri: redirectUri,
+					code_verifier: verifier,
+				}).toString(),
+			}),
+			customEnv,
+			tokenCtx,
+		);
+		await waitOnExecutionContext(tokenCtx);
+		expect(tokenResponse.status).toBe(200);
+		const token = (await tokenResponse.json()) as { access_token: string };
+		const claims = await verifyJwt(token.access_token, {
+			secret: TEST_SIGNING_SECRET,
+			issuer: 'https://example.com',
+			audience: 'https://example.com/mcp',
+		});
+		expect(claims?.client_id).toBe(clientId);
+		expect(claims?.tier).toBe('developer');
+	});
+
+	it('matches a CIMD loopback redirect with the port ignored, as /oauth/authorize does', async () => {
+		const clientId = 'https://claude.ai/oauth/claude-code-client-metadata';
+		stubCimdDocument(clientId, ['http://localhost/callback', 'http://127.0.0.1/callback']);
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, OAUTH_ISSUER: 'https://example.com' } as TestEnv;
+		const { challenge } = await pkcePair();
+
+		const response = await postGrant(makeGrantBody(clientId, challenge, { redirectUri: 'http://localhost:53682/callback' }), customEnv);
+
+		expect(response.status).toBe(200);
+		expect(((await response.json()) as { redirectTo: string }).redirectTo).toMatch(/^http:\/\/localhost:53682\/callback\?/);
+	});
+
+	it('rejects an unresolvable CIMD client as unknown_client', async () => {
+		stubCimdDocument('https://claude.ai/oauth/some-other-document', []);
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, OAUTH_ISSUER: 'https://example.com' } as TestEnv;
+		const { challenge } = await pkcePair();
+		const response = await postGrant(makeGrantBody('https://claude.ai/oauth/mcp-oauth-client-metadata', challenge), customEnv);
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { error: string }).error).toBe('unknown_client');
+	});
+
 	it('fails closed before minting a paid grant when the canonical issuer is absent', async () => {
 		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const { challenge } = await pkcePair();
@@ -183,6 +263,27 @@ describe('POST /internal/oauth/grants', () => {
 		const body = (await response.json()) as { error: string };
 		expect(body.error).toBe('redirect_uri_not_registered');
 	});
+
+	it.each([
+		['a non-allowlisted host', 'https://evil.example/cb'],
+		['a plain-http non-loopback host', 'http://claude.ai/cb'],
+	])(
+		'rejects a registered redirect URI the redirect policy forbids (%s) as invalid_redirect_uri, minting no code',
+		async (_label, redirectUri) => {
+			const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, OAUTH_ISSUER: 'https://example.com' } as TestEnv;
+			// A legacy registration (or permissive metadata document) that predates the redirect policy.
+			const clientId = 'legacy-client-1';
+			await putClient(env.SESSION_STORE, { client_id: clientId, client_id_issued_at: 1_700_000_000, redirect_uris: [redirectUri] });
+			const { challenge } = await pkcePair();
+
+			const response = await postGrant(makeGrantBody(clientId, challenge, { redirectUri }), customEnv);
+
+			expect(response.status).toBe(400);
+			expect(response.headers.get('cache-control')).toContain('no-store');
+			expect(await response.json()).toEqual({ error: 'invalid_redirect_uri' });
+			expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}code:` })).keys).toHaveLength(0);
+		},
+	);
 
 	it('rejects owner-tier entitlement escalation', async () => {
 		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;

@@ -347,6 +347,73 @@ reaches the inner `npm run` without a `--` and is not forwarded to the deploy. D
    confirms the secret is live — this is what proves the migration is
    complete, not the overridden deploy in step 2.
 
+### 8a. Seeding an Enterprise Managed Auth tenant
+
+An Enterprise Managed Auth (EMA) tenant is the explicit allowlist entry that
+makes one customer IdP issuer trusted. The grant refuses a token request from an
+unregistered issuer before it looks at the signature, so a well-signed assertion
+from the wrong IdP buys nothing. Tenants are seeded
+over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
+which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
+
+    PUT /internal/oauth/ema-tenants
+    Authorization: Bearer <BV_MCP_OAUTH_MINT_KEY>
+    Content-Type: application/json
+
+    {
+      "tenant_id": "example-tenant",
+      "name": "Example Tenant",
+      "issuer": "https://idp.example.com/oauth2/default",
+      "allowed_client_ids": ["https://claude.ai/oauth/mcp-oauth-client-metadata"],
+      "tier": "enterprise",
+      "enabled": true,
+      "entitlement_expires_at": 1798761600
+    }
+
+- `jwks_uri` is optional. When omitted it is resolved from
+  `{issuer}/.well-known/openid-configuration`, whose own `issuer` must equal the
+  configured one; otherwise the call fails `400 issuer_discovery_failed`. Either way
+  (supplied or discovered) it must be a public `https` URL: userinfo, `localhost`,
+  IP literals and internal hostnames are rejected (`400`) and nothing is stored.
+- `issuer` is stored normalized (https, lowercase host, all trailing slashes stripped,
+  so `https://IDP.example.com/x//` and `https://idp.example.com/x/` are the same issuer).
+  One issuer belongs to one tenant: a second tenant claiming it gets `409 issuer_conflict`.
+  An index entry whose owning record is missing or unreadable (for example after a
+  `KV_ENVELOPE_KEY` rotation) is treated as free, so the issuer can be re-claimed.
+- `allowed_client_ids` defaults to the Claude web CIMD client; `tier` is `developer`
+  or `enterprise` (never `owner`); `entitlement_expires_at` is epoch seconds.
+- Re-PUT the same `tenant_id` to update (`created_at` is preserved). A PUT replaces
+  the whole record and does not merge: to suspend a tenant, PUT the full record with
+  `"enabled": false` **and the stored `jwks_uri` resent**. Discovery is not re-run
+  for a suspend, so omitting `jwks_uri` makes the PUT depend on the IdP's discovery
+  endpoint being reachable right now, and a failure leaves the tenant enabled. When
+  in doubt, or when the IdP is down, `DELETE` is the kill switch (it needs no discovery).
+- Suspending (an `enabled` true→false PUT) or deleting a tenant also invalidates every
+  access token already issued for it, within about 60s (KV propagation): each `/mcp`
+  request with an EMA bearer re-reads the tenant record, and a token whose tenant is
+  missing, unreadable, disabled, past `entitlement_expires_at`, on another `tier`, or on
+  an older token epoch gets the normal 401 challenge. Re-enabling does NOT restore them,
+  because the record's `token_epoch` (server-managed epoch ms, set on create and on each
+  suspend, never accepted in the PUT body) has moved; a re-created tenant starts a new
+  epoch too. Claude recovers by exchanging a fresh assertion.
+- `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
+  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
+  also releases the issuer even when the record can no longer be read.
+- When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
+  key is treated as absent (the grant fails closed for that issuer, and the tenant's
+  issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
+  the re-PUT counts as a create, so it starts a new token epoch.
+
+#### Verify live
+
+Run after the Worker deploy, and again once a tenant is seeded:
+
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed.
+2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
+3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
+4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).
+5. Set the listing's authentication to "Required when the server asks" (OAuth sign-in, with CIMD client identity).
+
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 
 ### What it is

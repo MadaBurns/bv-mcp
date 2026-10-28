@@ -39,14 +39,26 @@ export async function isAuthorizedRequest(authHeader: string | undefined, expect
 	return mismatch === 0;
 }
 
-/** Build a 401 JSON response with a JSON-RPC unauthorized error */
-export function unauthorizedResponse() {
+/**
+ * Build a 401 JSON response with a JSON-RPC unauthorized error. When `challenge` (the
+ * `resource_metadata` + `scope` auth-params, see `unauthChallengeParams` in index.ts) is supplied, also
+ * emit an RFC 6750 `WWW-Authenticate: Bearer error="invalid_token"` header so an OAuth-capable
+ * client can discover how to re-authenticate.
+ */
+export function unauthorizedResponse(challenge?: string) {
 	return Response.json(
 		jsonRpcError(
 			null,
 			JSON_RPC_ERRORS.UNAUTHORIZED,
 			'Unauthorized: missing or invalid bearer token. Remove the token to use the free tier, or verify your API key is current.',
 		),
-		{ status: 401 },
+		{
+			status: 401,
+			headers: challenge
+				? {
+						'WWW-Authenticate': `Bearer error="invalid_token", error_description="The access token is missing, expired or invalid", ${challenge}`,
+					}
+				: undefined,
+		},
 	);
 }

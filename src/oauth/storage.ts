@@ -15,6 +15,11 @@ import {
 } from '../lib/quota-coordinator';
 
 const clientKey = (id: string) => `${OAUTH_KV_PREFIX}client:${id}`;
+// CIMD cache records live OUTSIDE the `client:` keyspace so no caller-supplied client_id can address them through getClient.
+const cimdClientKey = (urlHash: string) => `${OAUTH_KV_PREFIX}cimd:${urlHash}`;
+const cimdFailureKey = (urlHash: string) => `${OAUTH_KV_PREFIX}cimd-neg:${urlHash}`;
+/** Longest client_id spliced into a KV key (512-byte limit); DCR-generated ids are far shorter. */
+const CLIENT_ID_KV_MAX_LENGTH = 200;
 const codeKey = (code: string) => `${OAUTH_KV_PREFIX}code:${code}`;
 const revokedKey = (jti: string) => `${OAUTH_KV_PREFIX}revoked:${jti}`;
 
@@ -99,7 +104,7 @@ async function safeKvDelete(kv: KVNamespace, key: string, operation: string): Pr
 }
 
 async function coordinationKey(
-	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation',
+	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation' | 'assertion-jti',
 	value: string,
 ): Promise<string> {
 	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
@@ -125,9 +130,9 @@ export async function putClient(kv: KVNamespace, rec: ClientRecord, kvEnvelopeKe
 	await safeKvPut(kv, clientKey(rec.client_id), value, { expirationTtl: OAUTH_CLIENT_TTL_SECONDS }, 'client registration write');
 }
 
-/** Look up a client by id. Returns null if not found or if stored record fails schema validation. */
-export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
-	const raw = await safeKvGet(kv, clientKey(id), 'client lookup');
+/** Look up a CLIENT RECORD at `key`. Returns null on a miss, a corrupt value or a failed decrypt. */
+async function readClientRecord(kv: KVNamespace, key: string, operation: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
+	const raw = await safeKvGet(kv, key, operation);
 	if (!raw) return null;
 	try {
 		// Migration read-fallback: try decrypt if key present and value looks sealed;
@@ -146,6 +151,52 @@ export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uin
 		return ClientRecordSchema.parse(JSON.parse(jsonStr));
 	} catch {
 		return null;
+	}
+}
+
+/**
+ * Look up a registered client by id. Returns null if not found or if stored record fails schema validation.
+ * An id longer than 200 characters is never a DCR registration (those are short generated ids) and would risk
+ * an over-long KV key (512-byte limit), so it resolves to null without touching KV.
+ */
+export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
+	if (id.length > CLIENT_ID_KV_MAX_LENGTH) return null;
+	return readClientRecord(kv, clientKey(id), 'client lookup', kvEnvelopeKey);
+}
+
+/** Read a cached CIMD client record by the sha256 hex of its metadata URL. */
+export function getCachedCimdClient(kv: KVNamespace, urlHash: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
+	return readClientRecord(kv, cimdClientKey(urlHash), 'CIMD client cache lookup', kvEnvelopeKey);
+}
+
+/** Best-effort CIMD cache write: a failed write only costs a refetch on the next request. */
+export async function putCachedCimdClient(
+	kv: KVNamespace,
+	urlHash: string,
+	rec: ClientRecord,
+	ttlSeconds: number,
+	kvEnvelopeKey?: Uint8Array,
+): Promise<void> {
+	const plaintext = JSON.stringify(rec);
+	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
+	try {
+		await kv.put(cimdClientKey(urlHash), value, { expirationTtl: ttlSeconds });
+	} catch {
+		// Cache only.
+	}
+}
+
+/** True while a recent CIMD fetch failure for this metadata URL is negatively cached. */
+export async function hasCimdFetchFailure(kv: KVNamespace, urlHash: string): Promise<boolean> {
+	return (await safeKvGet(kv, cimdFailureKey(urlHash), 'CIMD failure cache lookup')) !== null;
+}
+
+/** Best-effort negative-cache write for a failed CIMD fetch (KV's minimum TTL is 60s). */
+export async function putCimdFetchFailure(kv: KVNamespace, urlHash: string, ttlSeconds: number): Promise<void> {
+	try {
+		await kv.put(cimdFailureKey(urlHash), '1', { expirationTtl: ttlSeconds });
+	} catch {
+		// Cache only.
 	}
 }
 
@@ -203,6 +254,28 @@ export async function consumeCode(
 	if (!claim.claimed) return null;
 	await safeKvDelete(kv, codeKey(code), 'authorization-code consumption');
 	return record;
+}
+
+/**
+ * One-time use of an identity assertion (RFC 7523 §3 `jti`): claims `issuer|jti` in the
+ * strongly consistent coordinator until `expiresAtMs`. Returns false when the pair was already
+ * claimed. A missing binding or a coordinator fault throws StrongStateUnavailableError, so a
+ * replay can never be admitted because the claim state was unreadable.
+ */
+export async function claimAssertionJti(
+	issuer: string,
+	jti: string,
+	expiresAtMs: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<boolean> {
+	let claim;
+	try {
+		claim = await claimOnceWithCoordinator(await coordinationKey('assertion-jti', `${issuer}|${jti}`), expiresAtMs, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('assertion replay claim');
+	}
+	if (!isClaimOnceResult(claim)) throw new StrongStateUnavailableError('assertion replay claim');
+	return claim.claimed;
 }
 
 /** Add a JWT id to the revocation denylist. TTL is clamped to >= 60s (KV minimum). */

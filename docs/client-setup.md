@@ -436,7 +436,7 @@ Static API keys via `Authorization: Bearer` authenticate as a specific tier:
 | developer | 500 scans/day, 10 concurrent | OAuth + Developer plan | Subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + Enterprise plan | Sales-led subscription (bv-web) |
 
-Free hosted usage keeps core DNS and email checks open for trial traffic, while private-probe tools have per-tool unauthenticated limits: `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` at 25/day. `check_fast_flux`, `check_lookalikes` and `check_shadow_domains` are paid-only (developer tier or higher): free, unauthenticated and agent-tier callers get an HTTP 403 upgrade-required response. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier; their status and report pollers (`brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`) have no unauthenticated allowance and return HTTP 429 without a key.
+Free hosted usage keeps core DNS and email checks open for trial traffic, while private-probe tools have per-tool unauthenticated limits: `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` at 25/day. `check_fast_flux`, `check_lookalikes` and `check_shadow_domains` are paid-only (developer tier or higher): an unauthenticated call gets HTTP 401 with a `WWW-Authenticate` challenge pointing at the OAuth protected-resource metadata (Claude shows its Connect card), while a signed-in free or agent-tier caller gets an HTTP 403 upgrade-required response (`-32003`). Self-hosts without OAuth enabled keep the 403 for unauthenticated callers. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier; their status and report pollers (`brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`) have no unauthenticated allowance and return HTTP 429 without a key.
 
 **Agent tier** is intended for:
 - **CI/CD pipelines**: Commit-on-push DNS scans as part of security checks
@@ -501,6 +501,8 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 2. `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `state` → customer OAuth delegates to bv-web for account/Stripe entitlement checks; owner-key consent is only rendered when `ENABLE_OWNER_OAUTH=true`.
 3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
 4. Call `/mcp` with `Authorization: Bearer <access_token>`.
+
+**Claude Team and Enterprise admins**: your organization can connect this server through your identity provider (Enterprise Managed Auth, `jwt-bearer` grant) so members never see a sign-in window. Setup, values to enter in Okta, and troubleshooting: [enterprise-managed-auth.md](enterprise-managed-auth.md).
 
 #### Recovering legacy Brand Audit ownership after OAuth rotation
 

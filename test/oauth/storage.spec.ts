@@ -31,6 +31,31 @@ describe('oauth/storage — client registration', () => {
 		expect(got).toBeNull();
 	});
 
+	it('getClient skips KV entirely for an id too long to splice into a key, even when a get would reject', async () => {
+		const { getClient } = await import('../../src/oauth/storage');
+		const throwingKv = {
+			get: async () => {
+				throw new Error('KV key too long');
+			},
+		} as unknown as KVNamespace;
+		await expect(getClient(throwingKv, 'x'.repeat(512))).resolves.toBeNull();
+		await expect(getClient(throwingKv, 'x'.repeat(201))).resolves.toBeNull();
+		// 200 chars is still a real lookup (so the rejecting get surfaces).
+		await expect(getClient(throwingKv, 'x'.repeat(200))).rejects.toThrow();
+	});
+
+	it('CIMD cache records are unreachable through getClient with a cimd:<hash> id', async () => {
+		const { getClient, getCachedCimdClient, putCachedCimdClient } = await import('../../src/oauth/storage');
+		const kv = env.SESSION_STORE as unknown as KVNamespace;
+		const hash = 'a'.repeat(64);
+		const rec = { client_id: 'https://claude.ai/oauth/x', client_id_issued_at: 1, redirect_uris: ['https://claude.ai/cb'] };
+		await putCachedCimdClient(kv, hash, rec, 3600);
+		expect((await getCachedCimdClient(kv, hash))?.client_id).toBe(rec.client_id);
+		expect(await getClient(kv, `cimd:${hash}`)).toBeNull();
+		expect(await env.SESSION_STORE.get(`oauth:cimd:${hash}`)).not.toBeNull();
+		expect(await env.SESSION_STORE.get(`oauth:client:cimd:${hash}`)).toBeNull();
+	});
+
 	it('getClient returns null when stored value fails schema validation', async () => {
 		const { getClient } = await import('../../src/oauth/storage');
 		await env.SESSION_STORE.put('oauth:client:bad-shape', JSON.stringify({ foo: 'bar' }));

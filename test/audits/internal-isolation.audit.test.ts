@@ -58,6 +58,21 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 		expect(res.status).toBe(404);
 	});
 
+	it.each([
+		['GET', '/internal/oauth/ema-tenants'],
+		['PUT', '/internal/oauth/ema-tenants'],
+		['GET', '/internal/oauth/ema-tenants/acme-corp'],
+		['DELETE', '/internal/oauth/ema-tenants/acme-corp'],
+	])('returns 404 for %s %s when cf-connecting-ip is present', async (method, path) => {
+		// EMA tenant seeding decides which IdPs may mint access tokens — same isolation as trial-keys.
+		const req = new Request(`http://example.com${path}`, {
+			method,
+			headers: { 'cf-connecting-ip': '203.0.113.7', Authorization: 'Bearer anything' },
+		});
+		const res = await send(req, env as TestEnv);
+		expect(res.status).toBe(404);
+	});
+
 	it('returns 404 for POST /internal/oauth/grants when cf-connecting-ip is present', async () => {
 		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
@@ -217,6 +232,44 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 		});
 		const res = await send(req, customEnv);
 		expect(res.status).toBe(503);
+	});
+
+	it.each([
+		['PUT', '/internal/oauth/ema-tenants'],
+		['GET', '/internal/oauth/ema-tenants'],
+		['GET', '/internal/oauth/ema-tenants/acme-corp'],
+		['DELETE', '/internal/oauth/ema-tenants/acme-corp'],
+	])('returns 503 for %s %s with no BV_MCP_OAUTH_MINT_KEY (fail closed)', async (method, path) => {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
+		const req = new Request(`http://example.com${path}`, {
+			method,
+			headers: { 'Content-Type': 'application/json' },
+			body: method === 'PUT' ? JSON.stringify({ tenant_id: 'acme-corp' }) : undefined,
+		});
+		const res = await send(req, customEnv);
+		expect(res.status).toBe(503);
+	});
+
+	it('does not let the revoke or brand-webhook capability authorize EMA tenant seeding', async () => {
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: 'mint-capability-isolation-test-key-32-bytes',
+			BV_MCP_OAUTH_REVOKE_KEY: 'revoke-capability-isolation-test-key-32-by',
+			BV_MCP_BRAND_WEBHOOK_KEY: 'brand-webhook-capability-isolation-test-key',
+		} as TestEnv;
+		for (const key of ['revoke-capability-isolation-test-key-32-by', 'brand-webhook-capability-isolation-test-key']) {
+			const req = new Request('http://example.com/internal/oauth/ema-tenants', { headers: { Authorization: `Bearer ${key}` } });
+			expect((await send(req, customEnv)).status).toBe(401);
+		}
+	});
+
+	it('does not alias the EMA tenant routes onto a looser path', async () => {
+		// A trailing-slash or case variant must never fall through the gate to a handler without it.
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: 'mint-capability-isolation-test-key-32-bytes' } as TestEnv;
+		for (const path of ['/internal/oauth/ema-tenants/', '/internal/oauth/EMA-tenants', '/internal//oauth/ema-tenants']) {
+			const res = await send(new Request(`http://example.com${path}`), customEnv);
+			expect([401, 404]).toContain(res.status);
+		}
 	});
 });
 

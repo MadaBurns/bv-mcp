@@ -34,7 +34,7 @@ export type PaidOAuthEntitlementResponse = z.infer<typeof PaidOAuthEntitlementRe
 
 export const InternalOAuthGrantRequestSchema = z
 	.object({
-		clientId: z.string().min(1).max(200),
+		clientId: z.string().min(1).max(512),
 		redirectUri: RedirectUriSchema,
 		state: z.string().min(1).max(1024),
 		scope: z.string().min(1).max(200).optional(),
@@ -61,7 +61,7 @@ export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
 
 export const AuthorizeQuerySchema = z
 	.object({
-		client_id: z.string().min(1).max(200),
+		client_id: z.string().min(1).max(512),
 		redirect_uri: RedirectUriSchema,
 		response_type: z.literal('code'),
 		state: z.string().min(1).max(1024),
@@ -77,11 +77,27 @@ export const TokenRequestSchema = z
 		grant_type: z.literal('authorization_code'),
 		code: z.string().min(1).max(512),
 		redirect_uri: RedirectUriSchema,
-		client_id: z.string().min(1).max(200),
+		client_id: z.string().min(1).max(512),
 		code_verifier: z.string().min(43).max(128),
 	})
 	.passthrough();
 export type TokenRequest = z.infer<typeof TokenRequestSchema>;
+
+/**
+ * RFC 7523 §2.1 jwt-bearer token request carrying an Identity Assertion JWT Authorization
+ * Grant (ID-JAG) for Enterprise Managed Auth. `scope` and `resource` are optional on the wire;
+ * the grant handler binds `resource` to this server's MCP URL and always grants `mcp`.
+ */
+export const JwtBearerTokenRequestSchema = z
+	.object({
+		grant_type: z.literal('urn:ietf:params:oauth:grant-type:jwt-bearer'),
+		assertion: z.string().min(1).max(8192),
+		client_id: z.string().min(1).max(512),
+		scope: z.string().max(256).optional(),
+		resource: z.string().max(512).optional(),
+	})
+	.passthrough();
+export type JwtBearerTokenRequest = z.infer<typeof JwtBearerTokenRequestSchema>;
 
 export const ClientRecordSchema = z.object({
 	client_id: z.string(),
