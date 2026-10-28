@@ -350,8 +350,9 @@ reaches the inner `npm run` without a `--` and is not forwarded to the deploy. D
 ### 8a. Seeding an Enterprise Managed Auth tenant
 
 An Enterprise Managed Auth (EMA) tenant is the explicit allowlist entry that
-makes one customer IdP issuer trusted: an identity assertion whose `iss` is not
-registered here is rejected even when its signature is valid. Tenants are seeded
+makes one customer IdP issuer trusted. The grant refuses a token request from an
+unregistered issuer before it looks at the signature, so a well-signed assertion
+from the wrong IdP buys nothing. Tenants are seeded
 over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
 which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
 
