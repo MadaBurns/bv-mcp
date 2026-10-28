@@ -176,6 +176,7 @@ directory per step) and delete them when the cut-over is done.
    and `startedAt`. Run the printed `apply` loop. It uses `--file` imports, which
    block the target while they run; that is safe because nothing reads the
    target yet.
+
 4. **Raise the target's id floor.** Run the summary's `next.idFloor` command. It
    inserts and deletes a sentinel row at H + 100000, so the Worker's own rows
    land above every id the delta will copy. Confirm with `next.checkFloor`:
@@ -281,20 +282,20 @@ unset. Set up an external heartbeat:
 
 ## 8. Secret rotation quick reference
 
-| Secret                             | Rotate with                                                          | Coordinate                                                                                                                        |
-| ---------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `BV_WEB_INTERNAL_KEY`              | `npx wrangler secret put BV_WEB_INTERNAL_KEY`                        | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected                                          |
-| `BV_MCP_OAUTH_MINT_KEY`            | `npx wrangler secret put BV_MCP_OAUTH_MINT_KEY`                      | Same strong value on bv-mcp + bv-web-prod only; grants/trial issuance; never provision to ops                                     |
-| `BV_MCP_OAUTH_REVOKE_KEY`          | `npx wrangler secret put BV_MCP_OAUTH_REVOKE_KEY`                    | Same distinct strong value on bv-mcp + bv2-ops only; revocation cannot mint                                                       |
-| `BV_MCP_TENANT_KEY`                | `npx wrangler secret put BV_MCP_TENANT_KEY`                          | Strong distinct 32+ byte key set only on the all-tenant orchestrator; prefer a fail-closed `TENANT_KEY_SCOPE` mapping. Without one, the key is intentionally global and every call must assert a narrowed `X-Tenant-Scope` |
-| `BV_MCP_TOOL_DELEGATION_KEY`       | `npx wrangler secret put BV_MCP_TOOL_DELEGATION_KEY`                 | Same distinct strong value on bv-mcp + bv-web-prod only; Brand Watch register/list/delete with tenant context                     |
-| `BV_MCP_WATCH_CLEANUP_KEY`         | `npx wrangler secret put BV_MCP_WATCH_CLEANUP_KEY`                   | Separate value on bv-mcp + bv2-ops only; Brand Watch list/delete cleanup, never registration                                      |
-| `BV_MCP_M365_KEY`                  | `npx wrangler secret put BV_MCP_M365_KEY`                            | Set the same dedicated value only on bv-mcp and bv-web-prod; never reuse the fleet-wide `BV_WEB_INTERNAL_KEY`                     |
-| `BV_MCP_BRAND_WEBHOOK_KEY`         | `npx wrangler secret put BV_MCP_BRAND_WEBHOOK_KEY`                   | Same distinct strong value on bv-mcp + bv-web-prod only; carried only over `BV_WEB` to the exact first-party Brand Drift receiver |
-| `BV_API_KEY`                       | `npx wrangler secret put BV_API_KEY`                                 | Update Claude Desktop MCPB extension/connector configs                                                                            |
-| `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                       | Invalidates ALL outstanding OAuth JWTs — customers re-consent                                                                     |
-| `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION` | Old ciphertexts need the old key retained in the vault for forensics                                                              |
-| `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                               |
+| Secret                             | Rotate with                                                                                          | Coordinate                                                                                                                                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BV_WEB_INTERNAL_KEY`              | `npx wrangler secret put BV_WEB_INTERNAL_KEY`                                                        | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected                                                                                                                                      |
+| `BV_MCP_OAUTH_MINT_KEY`            | `npx wrangler secret put BV_MCP_OAUTH_MINT_KEY`                                                      | Same strong value on bv-mcp + bv-web-prod only; grants/trial issuance; never provision to ops                                                                                                                                 |
+| `BV_MCP_OAUTH_REVOKE_KEY`          | `npx wrangler secret put BV_MCP_OAUTH_REVOKE_KEY`                                                    | Same distinct strong value on bv-mcp + bv2-ops only; revocation cannot mint                                                                                                                                                   |
+| `BV_MCP_TENANT_KEY`                | `npx wrangler secret put BV_MCP_TENANT_KEY`                                                          | Strong distinct 32+ byte key set only on the all-tenant orchestrator; prefer a fail-closed `TENANT_KEY_SCOPE` mapping. Without one, the key is intentionally global and every call must assert a narrowed `X-Tenant-Scope`    |
+| `BV_MCP_TOOL_DELEGATION_KEY`       | `npx wrangler secret put BV_MCP_TOOL_DELEGATION_KEY`                                                 | Same distinct strong value on bv-mcp + bv-web-prod only; Brand Watch register/list/delete with tenant context                                                                                                                 |
+| `BV_MCP_WATCH_CLEANUP_KEY`         | `npx wrangler secret put BV_MCP_WATCH_CLEANUP_KEY`                                                   | Separate value on bv-mcp + bv2-ops only; Brand Watch list/delete cleanup, never registration                                                                                                                                  |
+| `BV_MCP_M365_KEY`                  | `npx wrangler secret put BV_MCP_M365_KEY`                                                            | Set the same dedicated value only on bv-mcp and bv-web-prod; never reuse the fleet-wide `BV_WEB_INTERNAL_KEY`                                                                                                                 |
+| `BV_MCP_BRAND_WEBHOOK_KEY`         | `npx wrangler secret put BV_MCP_BRAND_WEBHOOK_KEY`                                                   | Same distinct strong value on bv-mcp + bv-web-prod only; carried only over `BV_WEB` to the exact first-party Brand Drift receiver                                                                                             |
+| `BV_API_KEY`                       | `npx wrangler secret put BV_API_KEY`                                                                 | Update Claude Desktop MCPB extension/connector configs                                                                                                                                                                        |
+| `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                                                       | Invalidates ALL outstanding OAuth JWTs — customers re-consent                                                                                                                                                                 |
+| `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION`                                 | Old ciphertexts need the old key retained in the vault for forensics                                                                                                                                                          |
+| `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                                                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                                                                                                                           |
 | `ALERT_WEBHOOK_URL`                | `printf %s "<url>" \| npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc` | Static fallback only — `resolveAlertWebhookUrl` tries the dynamic bv-web-prod lookup first (§ "Two exceptions" in the bv-mcp-operations skill). Pipe the value; never pass it as an argv, which would leak into shell history |
 
 Trial-key revocation requires `QUOTA_COORDINATOR`: the revoke route writes an
@@ -339,6 +340,7 @@ reaches the inner `npm run` without a `--` and is not forwarded to the deploy. D
    This logs a loud warning that alerting fallback is UNVERIFIED for this one
    deploy. It does not touch `resolveAlertWebhookUrl`'s dynamic bv-web-prod
    lookup, which is tried first regardless and is unaffected either way.
+
 3. Provision the secret, piped on stdin (never as an argv):
 
        printf %s "https://your-alert-webhook" | npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc
