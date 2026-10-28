@@ -7,9 +7,7 @@
  */
 
 import { z } from 'zod';
-
-/** Claude web/Desktop/mobile CIMD client_id — the default allowed client for a tenant. */
-const DEFAULT_EMA_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+import { CLAUDE_WEB_CIMD_CLIENT_ID } from '../oauth/cimd';
 
 const HttpsUrlSchema = z
 	.string()
@@ -28,7 +26,8 @@ const EmaTenantFieldsSchema = {
 	tenant_id: z.string().regex(EMA_TENANT_ID_PATTERN),
 	name: z.string().min(1).max(120),
 	issuer: HttpsUrlSchema,
-	allowed_client_ids: z.array(z.string().min(1).max(512)).min(1).max(8).default([DEFAULT_EMA_CLIENT_ID]),
+	/** Defaults to the Claude web/Desktop/mobile CIMD client. */
+	allowed_client_ids: z.array(z.string().min(1).max(512)).min(1).max(8).default([CLAUDE_WEB_CIMD_CLIENT_ID]),
 	tier: z.enum(['developer', 'enterprise']),
 	enabled: z.boolean(),
 	/** Epoch SECONDS. Absent = no expiry. */

@@ -8,16 +8,19 @@
  * Managed Auth needs a client_id an IdP admin can configure ahead of time.
  *
  * The document is fetched through `safeFetch` (SSRF gate), never follows a
- * redirect, is size- and time-bounded, and must describe a public client whose
- * redirect URIs pass the same allowlist as a DCR registration. Only a document
- * that passes every check is cached; any failure resolves to `null`.
+ * redirect, is size- and time-bounded, and must describe a public client with
+ * at least one redirect URI that passes the same allowlist as a DCR
+ * registration; the record keeps only that allowlisted subset. A document is
+ * cached only when it passes every check; any failure resolves to `null`.
  */
 import { z } from 'zod';
 import { isAllowedOAuthRedirectUri } from '../lib/config';
+import { logEvent } from '../lib/log';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 import { safeFetch } from '../lib/safe-fetch';
 import type { ClientRecord } from '../schemas/oauth';
+import { sha256Hex } from './jwks';
 import { consumeCimdFetchRateLimit } from './rate-limit';
 import { getCachedCimdClient, getClient, hasCimdFetchFailure, putCachedCimdClient, putCimdFetchFailure } from './storage';
 
@@ -40,7 +43,7 @@ const CimdDocumentSchema = z
 	.object({
 		client_id: z.string(),
 		client_name: z.string().min(1).max(200),
-		redirect_uris: z.array(z.string().refine(isAllowedOAuthRedirectUri)).min(1),
+		redirect_uris: z.array(z.string()),
 		token_endpoint_auth_method: z.literal('none').optional(),
 	})
 	.passthrough()
@@ -65,14 +68,36 @@ export function isCimdClientId(id: string): boolean {
 	return url?.protocol === 'https:' && url.pathname !== '/' && `${url.port}${url.username}${url.password}${url.search}${url.hash}` === '';
 }
 
-/** Validate a fetched document against the requested client_id and map it to a ClientRecord. */
+/** The allowlisted redirect URIs, in document order. Only the number of dropped entries is logged, never the URIs. */
+function allowlistedRedirectUris(uris: readonly string[]): string[] {
+	const allowed = uris.filter(isAllowedOAuthRedirectUri);
+	if (allowed.length < uris.length) {
+		logEvent({
+			timestamp: new Date().toISOString(),
+			severity: 'info',
+			category: 'oauth',
+			result: 'cimd_redirect_uris_filtered',
+			details: { dropped: uris.length - allowed.length },
+		});
+	}
+	return allowed;
+}
+
+/**
+ * Validate a fetched document against the requested client_id and map it to a ClientRecord.
+ * A redirect URI outside the allowlist is dropped rather than failing the document (one
+ * unexpected entry must not lock every user of the client out), and never reaches the record,
+ * so no redirect can match it. A document left with no allowlisted redirect URI is rejected.
+ */
 function toClientRecord(doc: unknown, clientId: string): ClientRecord | null {
 	const parsed = CimdDocumentSchema.safeParse(doc);
 	if (!parsed.success || parsed.data.client_id !== clientId) return null;
+	const redirectUris = allowlistedRedirectUris(parsed.data.redirect_uris);
+	if (redirectUris.length === 0) return null;
 	return {
 		client_id: clientId,
 		client_id_issued_at: Math.floor(Date.now() / 1000),
-		redirect_uris: parsed.data.redirect_uris,
+		redirect_uris: redirectUris,
 		client_name: parsed.data.client_name,
 	};
 }
@@ -94,11 +119,6 @@ async function fetchCimdClient(clientId: string): Promise<ClientRecord | null> {
 		// safeFetch throws on a blocked host; fetch rejects on a network failure or the timeout.
 		return null;
 	}
-}
-
-async function sha256Hex(value: string): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /** Optional per-request context for `resolveClient`; omitting it keeps the original (unthrottled) behavior. */
