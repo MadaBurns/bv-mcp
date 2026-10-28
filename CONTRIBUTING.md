@@ -13,7 +13,6 @@ npx wrangler dev   # Local Worker dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```
 
-
 ## Development
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web APIs only)
