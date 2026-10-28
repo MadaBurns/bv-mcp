@@ -322,7 +322,7 @@ function isPlausibleSigningKey(key: Record<string, unknown>): boolean {
 function extractKeys(document: unknown): JsonWebKeyWithId[] | null {
 	if (!isPlainObject(document) || !Array.isArray(document.keys)) return null;
 	const keys = document.keys.filter(isJwkObject);
-	return keys.some((key) => isPlausibleSigningKey(key as Record<string, unknown>)) ? keys : null;
+	return keys.some((key) => isPlausibleSigningKey(key as unknown as Record<string, unknown>)) ? keys : null;
 }
 
 function isFresh(fetchedAt: unknown, now: number): boolean {
