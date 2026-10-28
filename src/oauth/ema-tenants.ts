@@ -78,22 +78,40 @@ async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uin
  * Upsert a tenant. The stored issuer is the normalized form. Throws
  * EmaTenantConflictError when another tenant already owns the issuer; moving a
  * tenant to a new issuer releases its old index entry.
+ *
+ * `existing` is the caller's already-read snapshot of this tenant (null = none): the old-issuer
+ * release then works off that same snapshot, so an upsert reads the tenant key exactly once.
+ * Omit it and the record is read here.
  */
-export async function putEmaTenant(kv: KVNamespace, rec: EmaTenantRecord, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
+export async function putEmaTenant(
+	kv: KVNamespace,
+	rec: EmaTenantRecord,
+	kvEnvelopeKey?: Uint8Array,
+	existing?: EmaTenantRecord | null,
+): Promise<EmaTenantRecord> {
 	const stored: EmaTenantRecord = { ...rec, issuer: normalizeIssuer(rec.issuer) };
 	const newIndexKey = await issuerKey(stored.issuer);
-	const owner = await kv.get(newIndexKey);
-	if (owner && owner !== stored.tenant_id) {
-		if (await ownsIssuer(kv, owner, stored.issuer, kvEnvelopeKey)) throw new EmaTenantConflictError();
-	}
+	await assertIssuerAvailable(kv, newIndexKey, stored, kvEnvelopeKey);
 
-	const previous = await readRecord(kv, stored.tenant_id, kvEnvelopeKey);
+	const previous = existing === undefined ? await readRecord(kv, stored.tenant_id, kvEnvelopeKey) : existing;
 	const plaintext = JSON.stringify(stored);
 	await kv.put(tenantKey(stored.tenant_id), kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext);
 	await kv.put(newIndexKey, stored.tenant_id);
 
 	if (previous && previous.issuer !== stored.issuer) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
 	return stored;
+}
+
+/** Throws EmaTenantConflictError when a different tenant genuinely holds the issuer behind `indexKey`. */
+async function assertIssuerAvailable(
+	kv: KVNamespace,
+	indexKey: string,
+	stored: EmaTenantRecord,
+	kvEnvelopeKey?: Uint8Array,
+): Promise<void> {
+	const owner = await kv.get(indexKey);
+	if (owner && owner !== stored.tenant_id && (await ownsIssuer(kv, owner, stored.issuer, kvEnvelopeKey)))
+		throw new EmaTenantConflictError();
 }
 
 /**

@@ -174,6 +174,52 @@ describe('EMA tenant store', () => {
 		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com'))?.tenant_id).toBe('other-corp');
 	});
 
+	describe('caller-supplied `existing` snapshot', () => {
+		const tenantKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
+		const moved = () => tenant({ issuer: 'https://idp2.example.com', jwks_uri: 'https://idp2.example.com/keys' });
+
+		function countingKv(counts: { reads: number }): KVNamespace {
+			const kv = env.SESSION_STORE;
+			return {
+				get: (key: string, ...rest: unknown[]) => {
+					if (key === tenantKey) counts.reads++;
+					return (kv.get as (...args: unknown[]) => Promise<unknown>)(key, ...rest);
+				},
+				put: kv.put.bind(kv),
+				delete: kv.delete.bind(kv),
+				list: kv.list.bind(kv),
+			} as unknown as KVNamespace;
+		}
+
+		it('does not re-read the tenant key, and releases the old issuer from the supplied snapshot', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			const snapshot = await getEmaTenant(env.SESSION_STORE, 'acme-corp');
+			const counts = { reads: 0 };
+			await putEmaTenant(countingKv(counts), moved(), undefined, snapshot);
+			expect(counts.reads).toBe(0);
+			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
+			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp2.example.com'))?.tenant_id).toBe('acme-corp');
+		});
+
+		it('omitting it reads the tenant key once (the pre-existing behaviour for other callers)', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			const counts = { reads: 0 };
+			await putEmaTenant(countingKv(counts), moved());
+			expect(counts.reads).toBe(1);
+			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
+		});
+
+		it('trusts the snapshot: `null` means no previous record, so no old issuer is released', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant());
+			const counts = { reads: 0 };
+			await putEmaTenant(countingKv(counts), moved(), undefined, null);
+			expect(counts.reads).toBe(0);
+			// The old index entry is untouched (two issuer keys remain), but the record no longer lists it, so it cannot vouch.
+			expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` })).keys).toHaveLength(2);
+			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
+		});
+	});
+
 	it('delete removes the record and its issuer index, and leaves other tenants alone', async () => {
 		await putEmaTenant(env.SESSION_STORE, tenant());
 		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }));
