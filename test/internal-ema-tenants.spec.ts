@@ -7,16 +7,23 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
-import { getEmaTenantByIssuer } from '../src/oauth/ema-tenants';
+import { getEmaTenant, getEmaTenantByIssuer, putEmaTenant } from '../src/oauth/ema-tenants';
+import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import { clearKvPrefix } from './helpers/kv';
 
 const TEST_INTERNAL_KEY = 'ema-mint-capability-test-key-32-bytes-min';
 const BASE = 'http://example.com/internal/oauth/ema-tenants';
 const CLAUDE_WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+// 32 zero bytes, base64 — a valid KV_ENVELOPE_KEY. The upsert route refuses to run without one while OAuth is on.
+const ENVELOPE_B64 = btoa(String.fromCharCode(...new Uint8Array(32)));
+const ENVELOPE_KEY = parseEnvelopeKey(ENVELOPE_B64)!;
 
-type TestEnv = typeof env & { BV_MCP_OAUTH_MINT_KEY?: string };
+type TestEnv = typeof env & { BV_MCP_OAUTH_MINT_KEY?: string; KV_ENVELOPE_KEY?: string };
 
-async function send(req: Request, customEnv: TestEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv): Promise<Response> {
+async function send(
+	req: Request,
+	customEnv: TestEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64 } as TestEnv,
+): Promise<Response> {
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, customEnv, ctx);
 	await waitOnExecutionContext(ctx);
@@ -114,7 +121,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 		// Explicit jwks_uri means no discovery fetch at all.
 		expect(fetchSpy).not.toHaveBeenCalled();
 		// The allowlist lookup the token grant will use now resolves the issuer.
-		const resolved = await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default/');
+		const resolved = await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default/', ENVELOPE_KEY);
 		expect(resolved?.tenant_id).toBe('acme-corp');
 	});
 
@@ -159,7 +166,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 		const res = await send(call('PUT', '', upsertBody({ jwks_uri: undefined })));
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
 	});
 
 	it('discovery network failure -> 400 issuer_discovery_failed', async () => {
@@ -174,10 +181,9 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 	it('preserves created_at on update and bumps updated_at', async () => {
 		await send(call('PUT', '', upsertBody()));
 		const kv = env.SESSION_STORE!;
-		const key = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
-		const first = JSON.parse((await kv.get(key))!) as { created_at: number };
+		const first = (await getEmaTenant(kv, 'acme-corp', ENVELOPE_KEY))!;
 		// Backdate so the update is distinguishable from the create within the same second.
-		await kv.put(key, JSON.stringify({ ...first, created_at: 1_000, updated_at: 1_000 }));
+		await putEmaTenant(kv, { ...first, created_at: 1_000, updated_at: 1_000 }, ENVELOPE_KEY);
 		const res = await send(call('PUT', '', upsertBody({ name: 'Acme Renamed', enabled: false })));
 		expect(res.status).toBe(200);
 		const updated = (await res.json()) as { created_at: number; updated_at: number; name: string; enabled: boolean };
@@ -234,6 +240,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 		const res = await send(call('PUT', '', upsertBody()), {
 			...env,
 			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			KV_ENVELOPE_KEY: ENVELOPE_B64,
 			SESSION_STORE: undefined,
 		} as unknown as TestEnv);
 		expect(res.status).toBe(500);
@@ -267,8 +274,8 @@ describe('GET / DELETE /internal/oauth/ema-tenants', () => {
 		expect(del.status).toBe(204);
 		expect(del.headers.get('cache-control')).toBe('no-store');
 		expect((await send(call('GET', '/acme-corp'))).status).toBe(404);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp-b.example.com'))?.tenant_id).toBe('beta-corp');
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp-b.example.com', ENVELOPE_KEY))?.tenant_id).toBe('beta-corp');
 	});
 
 	it('404 not_found for an unknown or malformed tenant_id', async () => {
@@ -298,7 +305,7 @@ describe('PUT jwks_uri outbound validation', () => {
 		const json = JSON.stringify(await res.json());
 		expect(json.startsWith('{"error":"Invalid jwks_uri')).toBe(true);
 		expect(json).not.toContain('pw@');
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
 	});
 
 	it.each([
@@ -310,7 +317,7 @@ describe('PUT jwks_uri outbound validation', () => {
 		const res = await send(call('PUT', '', upsertBody({ jwks_uri: undefined })));
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
 	});
 });
 
@@ -325,7 +332,7 @@ describe('PUT non-canonical issuer forms', () => {
 		expect(res.status).toBe(200);
 		expect(((await res.json()) as { issuer: string }).issuer).toBe('https://idp.example.com/x');
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/x'))?.tenant_id).toBe('acme-corp');
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/x', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
 	});
 
 	it('single-slash and double-slash spellings are the SAME issuer: re-PUT by the owner succeeds, another tenant gets 409', async () => {
@@ -337,13 +344,87 @@ describe('PUT non-canonical issuer forms', () => {
 	});
 });
 
+describe('PUT requires KV_ENVELOPE_KEY while OAuth is on', () => {
+	const withoutKey = (overrides: Record<string, unknown> = {}) =>
+		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: undefined, ...overrides }) as unknown as TestEnv;
+	const storedKeys = async () => (await env.SESSION_STORE!.list({ prefix: `${OAUTH_KV_PREFIX}ema-` })).keys;
+
+	it('409 envelope_key_required and nothing written when the key is unset', async () => {
+		const res = await send(call('PUT', '', upsertBody()), withoutKey());
+		expect(res.status).toBe(409);
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		expect(await res.json()).toEqual({ error: 'envelope_key_required' });
+		expect(await storedKeys()).toEqual([]);
+	});
+
+	it('409s the same for an unparseable key (it would be ignored, so the record would be stored in plaintext)', async () => {
+		const res = await send(call('PUT', '', upsertBody()), withoutKey({ KV_ENVELOPE_KEY: 'not-a-valid-key' }));
+		expect(res.status).toBe(409);
+		expect(await storedKeys()).toEqual([]);
+	});
+
+	it('does not apply when OAuth is off (the grant is unreachable, nothing can strand)', async () => {
+		const res = await send(call('PUT', '', upsertBody()), withoutKey({ ENABLE_OAUTH: 'false' }));
+		expect(res.status).toBe(200);
+	});
+
+	it('reads (GET list) are not gated by the key', async () => {
+		expect((await send(call('GET'), withoutKey())).status).toBe(200);
+	});
+});
+
+describe('PUT reads the tenant key once', () => {
+	const tenantKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
+
+	/** SESSION_STORE wrapper that counts gets of one key; every other operation passes straight through. */
+	function countingEnv(counts: { reads: number }): TestEnv {
+		const kv = env.SESSION_STORE!;
+		const spy = {
+			get: (key: string, ...rest: unknown[]) => {
+				if (key === tenantKey) counts.reads++;
+				return (kv.get as (...args: unknown[]) => Promise<unknown>)(key, ...rest);
+			},
+			put: kv.put.bind(kv),
+			delete: kv.delete.bind(kv),
+			list: kv.list.bind(kv),
+		} as unknown as KVNamespace;
+		return { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: spy } as unknown as TestEnv;
+	}
+
+	it('an update PUT performs exactly one read of the tenant key', async () => {
+		expect((await send(call('PUT', '', upsertBody()))).status).toBe(200);
+		const counts = { reads: 0 };
+		const res = await send(call('PUT', '', upsertBody({ name: 'Acme Renamed' })), countingEnv(counts));
+		expect(res.status).toBe(200);
+		expect(counts.reads).toBe(1);
+	});
+
+	it('a create PUT performs exactly one read of the tenant key', async () => {
+		const counts = { reads: 0 };
+		expect((await send(call('PUT', '', upsertBody()), countingEnv(counts))).status).toBe(200);
+		expect(counts.reads).toBe(1);
+	});
+
+	it('an issuer move still releases the old index entry from that single read', async () => {
+		expect((await send(call('PUT', '', upsertBody()))).status).toBe(200);
+		const counts = { reads: 0 };
+		const moved = upsertBody({ issuer: 'https://idp-new.example.com', jwks_uri: 'https://idp-new.example.com/keys' });
+		expect((await send(call('PUT', '', moved), countingEnv(counts))).status).toBe(200);
+		expect(counts.reads).toBe(1);
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp-new.example.com', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
+	});
+});
+
 describe('PUT over an orphaned issuer index', () => {
 	it('lets another tenant claim an issuer whose index points at a missing record', async () => {
 		await send(call('PUT', '', upsertBody()));
 		await env.SESSION_STORE!.delete(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`);
 		const res = await send(call('PUT', '', upsertBody({ tenant_id: 'other-corp' })));
 		expect(res.status).toBe(200);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe('other-corp');
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY))?.tenant_id).toBe(
+			'other-corp',
+		);
 	});
 });
 
@@ -354,7 +435,8 @@ describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
 		};
 		return { get: boom, put: boom, delete: boom, list: boom } as unknown as KVNamespace;
 	};
-	const failingEnv = () => ({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, SESSION_STORE: failing() }) as unknown as TestEnv;
+	const failingEnv = () =>
+		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: failing() }) as unknown as TestEnv;
 
 	it.each([
 		['PUT', '', upsertBody()],

@@ -2,6 +2,8 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { parseEnvelopeKey } from '../../src/lib/kv-envelope';
+import { getEmaTenant, putEmaTenant } from '../../src/oauth/ema-tenants';
 import { signJwt } from '../../src/oauth/jwt';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -23,11 +25,17 @@ const WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const MINT_KEY = 'mint-capability-test-key-32-bytes-minimum';
 const REVOKE_KEY = 'revoke-capability-test-key-32-bytes-minimum';
 
+// 32 zero bytes, base64. The tenant upsert route refuses to run without KV_ENVELOPE_KEY while OAuth is on,
+// so tenant records are sealed here and the raw-KV helpers below go through the store (which opens/seals).
+const ENVELOPE_B64 = btoa(String.fromCharCode(...new Uint8Array(32)));
+const ENVELOPE_KEY = parseEnvelopeKey(ENVELOPE_B64)!;
+
 type TestEnv = typeof env & {
 	OAUTH_SIGNING_SECRET?: string;
 	OAUTH_ISSUER?: string;
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	KV_ENVELOPE_KEY?: string;
 };
 const e2eEnv = {
 	...env,
@@ -35,6 +43,7 @@ const e2eEnv = {
 	OAUTH_ISSUER: ISSUER,
 	BV_MCP_OAUTH_MINT_KEY: MINT_KEY,
 	BV_MCP_OAUTH_REVOKE_KEY: REVOKE_KEY,
+	KV_ENVELOPE_KEY: ENVELOPE_B64,
 } as TestEnv;
 
 const encoder = new TextEncoder();
@@ -396,14 +405,17 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 describe('EMA tenant token epoch on the upsert route', () => {
 	const tenantKey = 'oauth:ema-tenant:acme-corp';
 
+	async function storedRecord() {
+		return (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
+	}
+
 	async function storedEpoch(): Promise<number | undefined> {
-		return (JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as { token_epoch?: number }).token_epoch;
+		return (await storedRecord()).token_epoch;
 	}
 
 	/** Backdate the stored epoch so a later move is distinguishable from the create within one millisecond. */
 	async function setStoredEpoch(epoch: number): Promise<void> {
-		const record = JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as Record<string, unknown>;
-		await env.SESSION_STORE.put(tenantKey, JSON.stringify({ ...record, token_epoch: epoch }));
+		await putEmaTenant(env.SESSION_STORE, { ...(await storedRecord()), token_epoch: epoch }, ENVELOPE_KEY);
 	}
 
 	it('sets the epoch on create, keeps it on an enabled update and on a re-enable, and moves it on enabled true -> false', async () => {
@@ -430,9 +442,8 @@ describe('EMA tenant token epoch on the upsert route', () => {
 
 	it('keeps a legacy record (no token_epoch) on created_at across an enabled update', async () => {
 		expect((await seedTenant()).status).toBe(200);
-		const record = JSON.parse((await env.SESSION_STORE.get(tenantKey))!) as Record<string, unknown>;
-		delete record.token_epoch;
-		await env.SESSION_STORE.put(tenantKey, JSON.stringify(record));
+		const { token_epoch: _dropped, ...record } = await storedRecord();
+		await putEmaTenant(env.SESSION_STORE, record, ENVELOPE_KEY);
 
 		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);
 		expect(await storedEpoch()).toBeUndefined();
