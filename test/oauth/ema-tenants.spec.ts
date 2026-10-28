@@ -142,9 +142,9 @@ describe('EMA tenant store', () => {
 
 	it('round-trips a sealed token_epoch, and tenantEpoch falls back to created_at without one', async () => {
 		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }), ENVELOPE_KEY);
-		const stored = (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
-		expect(stored.token_epoch).toBe(1_800_000_000_123);
-		expect(tenantEpoch(stored)).toBe(1_800_000_000_123);
+		const stored = await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY);
+		expect(stored?.token_epoch).toBe(1_800_000_000_123);
+		expect(tenantEpoch(stored!)).toBe(1_800_000_000_123);
 		expect(tenantEpoch(tenant())).toBe(1_700_000_000);
 	});
 

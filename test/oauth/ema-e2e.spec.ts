@@ -409,7 +409,9 @@ describe('EMA tenant token epoch on the upsert route', () => {
 	it('sets the epoch on create, keeps it on an enabled update and on a re-enable, and moves it on enabled true -> false', async () => {
 		const before = Date.now();
 		expect((await seedTenant()).status).toBe(200);
-		expect(await storedEpoch()).toBeGreaterThanOrEqual(before);
+		const created = await storedEpoch();
+		expect(created).toBeTypeOf('number');
+		expect(created).toBeGreaterThanOrEqual(before);
 
 		await setStoredEpoch(1);
 		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);

@@ -25,8 +25,12 @@ const upsertBody = {
 
 describe('EmaTenantRecordSchema token_epoch', () => {
 	it('accepts a positive integer epoch and a record without one (written before the field existed)', () => {
-		expect(EmaTenantRecordSchema.parse({ ...record, token_epoch: 1_800_000_000_123 }).token_epoch).toBe(1_800_000_000_123);
-		expect(EmaTenantRecordSchema.parse(record).token_epoch).toBeUndefined();
+		const withEpoch = EmaTenantRecordSchema.safeParse({ ...record, token_epoch: 1_800_000_000_123 });
+		expect(withEpoch.success).toBe(true);
+		expect(withEpoch.data?.token_epoch).toBe(1_800_000_000_123);
+		const legacy = EmaTenantRecordSchema.safeParse(record);
+		expect(legacy.success).toBe(true);
+		expect(legacy.data?.token_epoch).toBeUndefined();
 	});
 
 	it.each([0, -1, 1.5, '1800000000123', null])('rejects token_epoch %j', (tokenEpoch) => {
