@@ -347,6 +347,40 @@ reaches the inner `npm run` without a `--` and is not forwarded to the deploy. D
    confirms the secret is live — this is what proves the migration is
    complete, not the overridden deploy in step 2.
 
+### 8a. Seeding an Enterprise Managed Auth tenant
+
+An Enterprise Managed Auth (EMA) tenant is the explicit allowlist entry that
+makes one customer IdP issuer trusted: an identity assertion whose `iss` is not
+registered here is rejected even when its signature is valid. Tenants are seeded
+over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
+which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
+
+    PUT /internal/oauth/ema-tenants
+    Authorization: Bearer <BV_MCP_OAUTH_MINT_KEY>
+    Content-Type: application/json
+
+    {
+      "tenant_id": "example-tenant",
+      "name": "Example Tenant",
+      "issuer": "https://idp.example.com/oauth2/default",
+      "allowed_client_ids": ["https://claude.ai/oauth/mcp-oauth-client-metadata"],
+      "tier": "enterprise",
+      "enabled": true,
+      "entitlement_expires_at": 1798761600
+    }
+
+- `jwks_uri` is optional. When omitted it is resolved from
+  `{issuer}/.well-known/openid-configuration`, whose own `issuer` must equal the
+  configured one; otherwise the call fails `400 issuer_discovery_failed`.
+- `issuer` is stored normalized (https, lowercase host, one trailing slash stripped).
+  One issuer belongs to one tenant: a second tenant claiming it gets `409 issuer_conflict`.
+- `allowed_client_ids` defaults to the Claude web CIMD client; `tier` is `developer`
+  or `enterprise` (never `owner`); `entitlement_expires_at` is epoch seconds.
+- Re-PUT the same `tenant_id` to update (`created_at` is preserved). Set
+  `"enabled": false` to suspend a tenant without deleting it.
+- `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
+  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204).
+
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 
 ### What it is
