@@ -4,6 +4,7 @@ import worker from '../../src/index';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 import { putEmaTenant } from '../../src/oauth/ema-tenants';
+import { sha256Hex } from '../../src/oauth/jwks';
 import { verifyJwt } from '../../src/oauth/jwt';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
@@ -22,6 +23,9 @@ const JWKS_URI = 'https://acme.okta.com/oauth2/v1/keys';
 const WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const CODE_CLIENT_ID = 'https://claude.ai/oauth/claude-code-client-metadata';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
+const TENANT_NOT_ACCEPTED = 'Assertion not accepted';
+const OTHER_IDP_ISSUER = 'https://globex.okta.com';
+const OTHER_JWKS_URI = 'https://globex.okta.com/oauth2/v1/keys';
 
 type TestEnv = typeof env & { OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string };
 const grantEnv = { ...env, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET, OAUTH_ISSUER: ISSUER } as TestEnv;
@@ -86,6 +90,11 @@ async function signIdJag(
 	return `${signingInput}.${b64url(signature)}`;
 }
 
+/** A well-formed compact JWS with a junk signature: enough to be routed and counted, cheap to mint in bulk. */
+function unsignedIdJag(claims: Record<string, unknown>): string {
+	return `${b64urlJson({ alg: 'RS256', typ: TYP, kid: 'junk' })}.${b64urlJson(claims)}.${b64url(encoder.encode('junk'))}`;
+}
+
 function tenant(overrides: Partial<EmaTenantRecord> = {}): EmaTenantRecord {
 	return {
 		tenant_id: 'acme-corp',
@@ -116,7 +125,7 @@ function webCimdDocument(): Record<string, unknown> {
 }
 
 /** What the stubbed network serves; tests mutate it before the request under test. */
-let served: { jwksKeys: JsonWebKey[]; cimdStatus: number };
+let served: { jwksKeys: JsonWebKey[]; otherKeys: JsonWebKey[]; cimdStatus: number };
 let jwksFetches: number;
 
 function urlOf(input: RequestInfo | URL): string {
@@ -133,6 +142,7 @@ function stubNetwork(): void {
 				jwksFetches++;
 				return jsonResponse({ keys: served.jwksKeys });
 			}
+			if (url === OTHER_JWKS_URI) return jsonResponse({ keys: served.otherKeys });
 			if (url === WEB_CLIENT_ID) return served.cimdStatus === 200 ? jsonResponse(webCimdDocument()) : new Response('nope', { status: 404 });
 			return new Response('not found', { status: 404 });
 		}),
@@ -145,10 +155,10 @@ function uniqueIp(): string {
 	return `2001:db8:0:0:${Array.from(words, (word) => word.toString(16)).join(':')}`;
 }
 
-async function postToken(params: Record<string, string>, customEnv: TestEnv = grantEnv, ip = uniqueIp()): Promise<Response> {
+async function postToken(params: Record<string, string>, customEnv: TestEnv = grantEnv, ip: string | null = uniqueIp()): Promise<Response> {
 	const request = new Request<unknown, IncomingRequestCfProperties>(`${ISSUER}/oauth/token`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip },
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(ip === null ? {} : { 'cf-connecting-ip': ip }) },
 		body: new URLSearchParams(params).toString(),
 	});
 	const ctx = createExecutionContext();
@@ -181,7 +191,7 @@ beforeAll(async () => {
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
-	served = { jwksKeys: [signer.publicJwk], cimdStatus: 200 };
+	served = { jwksKeys: [signer.publicJwk], otherKeys: [], cimdStatus: 200 };
 	jwksFetches = 0;
 	stubNetwork();
 	await putEmaTenant(env.SESSION_STORE, tenant());
@@ -304,20 +314,33 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 			400,
 			'invalid_grant',
 		);
-		expect(body.error_description).toBe('Untrusted issuer');
+		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
 		expect(jwksFetches).toBe(0);
 	});
 
 	it('rejects an assertion from a disabled tenant', async () => {
 		await putEmaTenant(env.SESSION_STORE, tenant({ enabled: false }));
 		const body = await expectError(await postToken(grantParams(await signIdJag(signer))), 400, 'invalid_grant');
-		expect(body.error_description).toBe('Untrusted issuer');
+		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
 	});
 
 	it('rejects an assertion once the tenant entitlement has expired', async () => {
 		await putEmaTenant(env.SESSION_STORE, tenant({ entitlement_expires_at: nowSeconds() - 10 }));
 		const body = await expectError(await postToken(grantParams(await signIdJag(signer))), 400, 'invalid_grant');
-		expect(body.error_description).toBe('Entitlement expired');
+		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
+	});
+
+	it('rejects an issuer whose index entry points at a record that no longer lists it, with the same wording', async () => {
+		// A stale index entry (issuer re-pointed at another tenant record) must not vouch for the issuer.
+		const stale = 'https://stale.okta.com';
+		await env.SESSION_STORE.put(`oauth:ema-issuer:${await sha256Hex(stale)}`, 'acme-corp');
+		const body = await expectError(
+			await postToken(grantParams(await signIdJag(signer, idJagClaims({ iss: stale })))),
+			400,
+			'invalid_grant',
+		);
+		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
+		expect(jwksFetches).toBe(0);
 	});
 
 	it('rejects a client the tenant does not allowlist with invalid_client', async () => {
@@ -449,14 +472,77 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(jwksFetches).toBe(0);
 	});
 
-	it('still applies the per-IP token rate limit (429) before grant validation', async () => {
+	it('does not gate jwt-bearer on the shared 30/min per-IP bucket (a known IP is limited per issuer instead)', async () => {
 		pinRateLimitWindow();
 		const ip = uniqueIp();
-		for (let i = 0; i < 30; i++) {
+		for (let i = 0; i < 31; i++) {
 			expect((await postToken({ grant_type: GRANT_TYPE, client_id: WEB_CLIENT_ID }, grantEnv, ip)).status).toBe(400);
 		}
-		const limited = await postToken(grantParams(await signIdJag(signer)), grantEnv, ip);
+		expect((await postToken(grantParams(await signIdJag(signer)), grantEnv, ip)).status).toBe(200);
+	});
+
+	it('keeps the shared per-IP bucket for jwt-bearer when the client IP is unknown (never rejected outright)', async () => {
+		pinRateLimitWindow();
+		for (let i = 0; i < 30; i++) {
+			expect((await postToken({ grant_type: GRANT_TYPE, client_id: WEB_CLIENT_ID }, grantEnv, null)).status).toBe(400);
+		}
+		const limited = await postToken(grantParams(await signIdJag(signer)), grantEnv, null);
 		expect(limited.status).toBe(429);
 		expect(((await limited.json()) as Record<string, unknown>).error).toBe('invalid_request');
+	});
+
+	it('limits jwt-bearer per (IP, issuer): the 121st exchange for one issuer is 429 while another issuer on that IP succeeds', async () => {
+		pinRateLimitWindow();
+		const ip = uniqueIp();
+		// Exchanges from one claimed issuer, rejected cheaply (untrusted issuer: no JWKS or CIMD fetch) but each counted.
+		const flood = unsignedIdJag(idJagClaims({ iss: 'https://flood.okta.com' }));
+		for (let i = 0; i < 120; i++) {
+			expect((await postToken(grantParams(flood), grantEnv, ip)).status).toBe(400);
+		}
+		const limited = await postToken(grantParams(flood), grantEnv, ip);
+		expect(limited.status).toBe(429);
+		expect(await limited.json()).toEqual({ error: 'invalid_request', error_description: 'Too many token requests' });
+
+		// A second issuer from the SAME IP is unaffected.
+		const other = await makeSigner('g1');
+		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'globex', issuer: OTHER_IDP_ISSUER, jwks_uri: OTHER_JWKS_URI }));
+		served.otherKeys = [other.publicJwk];
+		const accepted = await postToken(grantParams(await signIdJag(other, idJagClaims({ iss: OTHER_IDP_ISSUER }))), grantEnv, ip);
+		expect(accepted.status).toBe(200);
+		// The same IP's bucket for the first issuer stays closed.
+		expect((await postToken(grantParams(flood), grantEnv, ip)).status).toBe(429);
+	});
+
+	it('keys the issuer bucket on the NORMALIZED issuer (trailing slash and host case cannot mint a fresh bucket)', async () => {
+		pinRateLimitWindow();
+		const ip = uniqueIp();
+		const variants = ['https://flood.okta.com', 'https://flood.okta.com/', 'https://FLOOD.okta.com'];
+		for (let i = 0; i < 120; i++) {
+			const iss = variants[i % variants.length];
+			expect((await postToken(grantParams(unsignedIdJag(idJagClaims({ iss }))), grantEnv, ip)).status).toBe(400);
+		}
+		expect((await postToken(grantParams(unsignedIdJag(idJagClaims({ iss: 'https://flood.okta.com/' }))), grantEnv, ip)).status).toBe(429);
+	});
+
+	it('caps one IP across issuers at 600/min (the per-IP abuse backstop)', async () => {
+		pinRateLimitWindow();
+		const ip = uniqueIp();
+		const assertionFor = (n: number) => unsignedIdJag(idJagClaims({ iss: `https://tenant-${n}.okta.com` }));
+		for (let i = 0; i < 600; i++) {
+			expect((await postToken(grantParams(assertionFor(i)), grantEnv, ip)).status).toBe(400);
+		}
+		expect((await postToken(grantParams(assertionFor(600)), grantEnv, ip)).status).toBe(429);
+	});
+
+	it('answers 503 with Retry-After when the jwt-bearer limiter state is unavailable', async () => {
+		pinRateLimitWindow();
+		const brokenCoordinator = { idFromName: () => ({}), get: () => ({ fetch: () => Promise.reject(new Error('do down')) }) };
+		const response = await postToken(grantParams(await signIdJag(signer)), {
+			...grantEnv,
+			QUOTA_COORDINATOR: brokenCoordinator,
+		} as unknown as TestEnv);
+		expect(response.status).toBe(503);
+		expect(response.headers.get('retry-after')).toMatch(/^\d+$/);
+		expect(((await response.json()) as Record<string, unknown>).error).toBe('temporarily_unavailable');
 	});
 });

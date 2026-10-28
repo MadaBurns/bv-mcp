@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { verifyJwt } from '../../src/oauth/jwt';
+import { putClient } from '../../src/oauth/storage';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -262,6 +263,27 @@ describe('POST /internal/oauth/grants', () => {
 		const body = (await response.json()) as { error: string };
 		expect(body.error).toBe('redirect_uri_not_registered');
 	});
+
+	it.each([
+		['a non-allowlisted host', 'https://evil.example/cb'],
+		['a plain-http non-loopback host', 'http://claude.ai/cb'],
+	])(
+		'rejects a registered redirect URI the redirect policy forbids (%s) as invalid_redirect_uri, minting no code',
+		async (_label, redirectUri) => {
+			const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, OAUTH_ISSUER: 'https://example.com' } as TestEnv;
+			// A legacy registration (or permissive metadata document) that predates the redirect policy.
+			const clientId = 'legacy-client-1';
+			await putClient(env.SESSION_STORE, { client_id: clientId, client_id_issued_at: 1_700_000_000, redirect_uris: [redirectUri] });
+			const { challenge } = await pkcePair();
+
+			const response = await postGrant(makeGrantBody(clientId, challenge, { redirectUri }), customEnv);
+
+			expect(response.status).toBe(400);
+			expect(response.headers.get('cache-control')).toContain('no-store');
+			expect(await response.json()).toEqual({ error: 'invalid_redirect_uri' });
+			expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}code:` })).keys).toHaveLength(0);
+		},
+	);
 
 	it('rejects owner-tier entitlement escalation', async () => {
 		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;

@@ -43,6 +43,7 @@ import {
 	evaluateToolPolicy,
 	isAgentAllowedTool,
 	isAgentCaller,
+	isAllowedOAuthRedirectUri,
 	isContractFlagGateEnabled,
 	MAX_REQUEST_BODY_BYTES,
 	OAUTH_CODE_TTL_SECONDS,
@@ -868,6 +869,19 @@ internalRoutes.post('/tools/call', async (c) => {
 });
 
 /**
+ * Why a grant's redirect_uri is refused, or null. Unregistered first; then the redirect policy, as in
+ * /oauth/authorize: a registered URI is not enough, because a legacy client or a permissive CIMD
+ * document can list a callback the policy forbids, and a grant here mints a real authorization code.
+ */
+function grantRedirectError(
+	redirectUri: string,
+	registered: readonly string[],
+): 'redirect_uri_not_registered' | 'invalid_redirect_uri' | null {
+	if (!redirectUriMatches(redirectUri, registered)) return 'redirect_uri_not_registered';
+	return isAllowedOAuthRedirectUri(redirectUri) ? null : 'invalid_redirect_uri';
+}
+
+/**
  * POST /internal/oauth/grants
  *
  * Internal bv-web handoff endpoint for paid customer OAuth consent. bv-web
@@ -905,8 +919,9 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	if (!client) {
 		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
 	}
-	if (!redirectUriMatches(body.redirectUri, client.redirect_uris)) {
-		return c.json({ error: 'redirect_uri_not_registered' }, 400, { 'Cache-Control': 'no-store' });
+	const redirectError = grantRedirectError(body.redirectUri, client.redirect_uris);
+	if (redirectError) {
+		return c.json({ error: redirectError }, 400, { 'Cache-Control': 'no-store' });
 	}
 	// Service-binding requests use a synthetic `https://internal` URL, so the
 	// public issuer cannot safely be derived from the request Host. Require the
