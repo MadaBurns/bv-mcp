@@ -1651,7 +1651,7 @@ function unauthChallengeParams(c: Context<AppEnv>): string | undefined {
  */
 function buildUnauthChallenge(c: Context<AppEnv>): string | undefined {
 	const params = unauthChallengeParams(c);
-	return params ? `Bearer ${params}` : undefined;
+	return params ? `Bearer error="invalid_token", error_description="Authentication required for this tool", ${params}` : undefined;
 }
 
 // OAuth 2.1 discovery endpoints (RFC 8414 + RFC 9728).
