@@ -140,8 +140,9 @@ BlackVeil checks each exchange in this order and stops at the first failure:
 | `invalid_grant` | The assertion was rejected. Typical reasons: the header `typ` is not `oauth-id-jag+jwt`; your issuer is not a trusted, enabled tenant, or its entitlement has ended; the signature could not be verified against your IdP's keys; the assertion is expired or dated in the future (check the IdP clock); the audience does not match; the assertion was already used; the client ID inside it does not match the request. | Confirm your issuer URL with BlackVeil, check the Audience value (section 3), and retry. Do not replay an old assertion. |
 | `invalid_client` | Claude's client ID is not allowed for your tenant, or its published details could not be fetched or validated. | Ask BlackVeil to confirm the allowed client ID is `https://claude.ai/oauth/mcp-oauth-client-metadata`. |
 | `invalid_target` | The `resource` in the request or in the assertion is not the MCP server. | Set Resource to `https://dns-mcp.blackveilsecurity.com/mcp` in Okta. |
-| HTTP 429 | More than 30 token requests from one address in a minute. | Wait a minute and retry. Contact us if it persists. |
-| HTTP 503, `temporarily_unavailable` | BlackVeil could not read its authorization state. Nothing about your setup is wrong. | Retry shortly. Contact us if it persists. |
+| HTTP 429 | Too many token requests from one address in a minute: more than 120 exchanges for your issuer, or more than 600 token requests of any kind. | Wait a minute and retry. Contact us if it persists. |
+| HTTP 503, `temporarily_unavailable`, description `Issuer signing keys are unavailable` | BlackVeil could not fetch your IdP's published signing keys: the IdP did not answer, or its keys URL returned an error or something that is not a usable key set. | Check that your IdP is up and its keys URL is publicly reachable, then retry. Contact us if it persists. |
+| HTTP 503, `temporarily_unavailable`, any other description | BlackVeil could not read its authorization state. Nothing about your setup is wrong. | Retry shortly. Contact us if it persists. |
 | **Run test fails but SSO works** | Almost always an Audience mismatch. | Check that Audience is `https://dns-mcp.blackveilsecurity.com` with **no trailing slash**. |
 
 ## 7. Testing without a Claude organization

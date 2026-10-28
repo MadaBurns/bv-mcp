@@ -403,6 +403,11 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   key is treated as absent (the grant fails closed for that issuer, and the tenant's
   issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
   the re-PUT counts as a create, so it starts a new token epoch.
+- A tenant whose exchanges answer `503 temporarily_unavailable` ("Issuer signing keys are
+  unavailable") has a stored `jwks_uri` that cannot be fetched right now: the IdP is down, the
+  URL is blocked by the outbound fetch policy, or the response is not a usable key set. Each
+  occurrence logs one `ema_jwks_unavailable` line carrying the tenant id and the failure class
+  (never the URL or the response body). An unknown `kid` after a good fetch stays `invalid_grant`.
 
 #### Verify live
 
