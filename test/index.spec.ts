@@ -2263,6 +2263,8 @@ describe('DNS Security MCP Server', () => {
 			OAUTH_ISSUER: 'https://oauth.example.test',
 		} as Env;
 
+		const CLAUDE_CHALLENGE = `Bearer error="invalid_token", error_description="Authentication required for this tool", resource_metadata="${PRM}", scope="mcp"`;
+
 		async function callPaidTool(targetEnv: Env, bearer?: string): Promise<Response> {
 			const sessionId = await initSession({ targetEnv });
 			const request = new Request('http://example.com/mcp', {
@@ -2288,11 +2290,39 @@ describe('DNS Security MCP Server', () => {
 		it('returns 401 + WWW-Authenticate (resource_metadata, scope) for a bearer-less paid-only tools/call when OAuth is ready', async () => {
 			const response = await callPaidTool(oauthEnv);
 			expect(response.status).toBe(401);
-			expect(response.headers.get('www-authenticate')).toBe(`Bearer resource_metadata="${PRM}", scope="mcp"`);
+			expect(response.headers.get('www-authenticate')).toBe(CLAUDE_CHALLENGE);
 			// Body is unchanged so existing clients keep parsing the upgrade affordance.
 			const body = (await response.json()) as { error: { code: number; data?: { upgrade?: { tool: string } } } };
 			expect(body.error.code).toBe(-32003);
 			expect(body.error.data?.upgrade?.tool).toBe('discover_subdomains');
+		});
+
+		it("returns the documented 401 challenge for Claude's real request shape (Accept json+SSE)", async () => {
+			const sessionId = await initSession({ targetEnv: oauthEnv });
+			const request = new Request('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					Accept: 'application/json, text/event-stream',
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 9,
+					method: 'tools/call',
+					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, oauthEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(401);
+			expect(response.headers.get('www-authenticate')).toBe(CLAUDE_CHALLENGE);
+			const text = await response.text();
+			const payload = text.trimStart().startsWith('{') ? text : (text.split('\n').find((l) => l.startsWith('data:')) ?? '').slice(5);
+			const body = JSON.parse(payload) as { error: { code: number; data?: { upgrade?: unknown } } };
+			expect(body.error.code).toBe(-32003);
+			expect(body.error.data?.upgrade).toBeDefined();
 		});
 
 		it('keeps the legacy 403 with no challenge when OAuth is not enabled (self-host: the PRM URL would 404)', async () => {

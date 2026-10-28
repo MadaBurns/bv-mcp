@@ -7,7 +7,7 @@ import type { ExecuteMcpRequestOptions } from '../src/mcp/execute';
 import type { JsonRpcRequest } from '../src/lib/json-rpc';
 
 /** The `WWW-Authenticate` value index.ts supplies as `unauthChallenge` when OAuth is ready. */
-const CHALLENGE = 'Bearer resource_metadata="https://dns-mcp.example.test/.well-known/oauth-protected-resource", scope="mcp"';
+const CHALLENGE = 'Bearer error="invalid_token", error_description="Authentication required for this tool", resource_metadata="https://dns-mcp.example.test/.well-known/oauth-protected-resource", scope="mcp"';
 
 /** Build a minimal valid ExecuteMcpRequestOptions for testing */
 function baseOptions(overrides: Partial<ExecuteMcpRequestOptions> = {}): ExecuteMcpRequestOptions {
