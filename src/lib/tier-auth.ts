@@ -15,7 +15,8 @@ import { OAUTH_JWT_CLOCK_SKEW_SECONDS, OAUTH_JWT_TTL_SECONDS, parseOwnerAllowIps
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
 import { parseEnvelopeKey } from './kv-envelope';
-import { verifyJwt } from '../oauth/jwt';
+import { verifyJwt, type JwtClaims } from '../oauth/jwt';
+import { EMA_SUBJECT_PREFIX, isEmaTokenLive } from '../oauth/ema-tenants';
 import { resolveIssuerStrict } from '../oauth/discovery';
 import { getMinimumEntitlementGeneration, isRevoked, getTokenVersion, StrongStateUnavailableError } from '../oauth/storage';
 import { z } from 'zod';
@@ -148,6 +149,29 @@ function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined
 }
 
 /**
+ * Token-version check (FIND-13): a token whose `ver` claim is below the current per-subject
+ * counter is stale; an absent `ver` is 1 (JWTs minted before the feature). For an `ema:`
+ * subject the tenant-wide revocation check (isEmaTokenLive) runs concurrently with that read, so
+ * an EMA bearer adds one parallel KV read and every other bearer adds no I/O. Throws
+ * StrongStateUnavailableError when either store cannot be read.
+ */
+async function tokenVersionAndTenantCurrent(
+	kv: KVNamespace,
+	claims: JwtClaims,
+	coordinator: DurableObjectNamespace<QuotaCoordinator> | undefined,
+	kvEnvelopeKeyBase64: string | undefined,
+): Promise<boolean> {
+	const [storedVer, tenantLive] = await Promise.all([
+		getTokenVersion(kv, claims.sub, coordinator),
+		claims.sub.startsWith(EMA_SUBJECT_PREFIX)
+			? isEmaTokenLive(kv, claims, Math.floor(Date.now() / 1000), parseEnvelopeKey(kvEnvelopeKeyBase64) ?? undefined)
+			: true,
+	]);
+	const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
+	return tokenVer >= storedVer && tenantLive;
+}
+
+/**
  * Resolve a bearer token to its API key tier.
  *
  * Resolution order:
@@ -214,12 +238,8 @@ export async function resolveTier(
 				if (await isRevoked(env.SESSION_STORE, claims.jti, env.QUOTA_COORDINATOR)) {
 					return { authenticated: false };
 				}
-				// Token-version check (FIND-13): reject tokens whose `ver` claim is
-				// less than the current per-subject counter. Absent `ver` defaults to
-				// 1 (backward compat for JWTs minted before this feature was deployed).
-				const storedVer = await getTokenVersion(env.SESSION_STORE, claims.sub, env.QUOTA_COORDINATOR);
-				const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
-				if (tokenVer < storedVer) {
+				// Token version (FIND-13) and, for an EMA subject, tenant-wide revocation.
+				if (!(await tokenVersionAndTenantCurrent(env.SESSION_STORE, claims, env.QUOTA_COORDINATOR, env.KV_ENVELOPE_KEY))) {
 					return { authenticated: false };
 				}
 				// A monotonic entitlement generation makes delayed revocation delivery safe:

@@ -1511,7 +1511,16 @@ async function readEmaUpsertBody(request: Request): Promise<{ body: EmaTenantUps
 	}
 }
 
-/** Create-or-update, preserving `created_at` across updates. */
+/**
+ * The tenant's token epoch after an upsert: a fresh one (epoch ms) when the tenant is created or
+ * an enabled tenant is disabled, which revokes every access token minted before; otherwise
+ * unchanged, so re-enabling a tenant does NOT revive the tokens its suspension killed.
+ */
+function nextTokenEpoch(existing: EmaTenantRecord | null, enabled: boolean): number | undefined {
+	return !existing || (existing.enabled && !enabled) ? Date.now() : existing.token_epoch;
+}
+
+/** Create-or-update, preserving `created_at` across updates. `token_epoch` is server-managed (nextTokenEpoch). */
 async function upsertEmaTenant(
 	kv: KVNamespace,
 	body: EmaTenantUpsertRequest,
@@ -1520,7 +1529,17 @@ async function upsertEmaTenant(
 ): Promise<EmaTenantRecord> {
 	const existing = await getEmaTenant(kv, body.tenant_id, kvEnvelopeKey);
 	const now = Math.floor(Date.now() / 1000);
-	return putEmaTenant(kv, { ...body, jwks_uri: jwksUri, created_at: existing?.created_at ?? now, updated_at: now }, kvEnvelopeKey);
+	return putEmaTenant(
+		kv,
+		{
+			...body,
+			jwks_uri: jwksUri,
+			created_at: existing?.created_at ?? now,
+			updated_at: now,
+			token_epoch: nextTokenEpoch(existing, body.enabled),
+		},
+		kvEnvelopeKey,
+	);
 }
 
 const emaEnvelopeKey = (env: InternalEnv): Uint8Array | undefined => parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;

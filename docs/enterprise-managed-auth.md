@@ -105,8 +105,11 @@ managed authorization can still sign in the usual way.
 - **Disabling a user in your IdP** stops new tokens for that user. A token that
   was already issued works until it expires, at most one hour.
 - **BlackVeil can suspend a whole tenant** on request. Disabling the tenant
-  makes every new exchange fail with `invalid_grant`. Tokens already issued
-  keep working until they expire, at most one hour.
+  makes every new exchange fail with `invalid_grant`, and tokens already issued
+  stop working within about a minute. The same happens when the tenant is
+  removed or its entitlement with BlackVeil ends. Re-enabling the tenant does
+  not bring the old tokens back: Claude silently exchanges a fresh assertion
+  instead.
 - **Access level.** Tokens carry the tier agreed for your tenant. They are never
   owner tier.
 

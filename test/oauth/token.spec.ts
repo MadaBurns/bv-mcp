@@ -191,6 +191,8 @@ describe('POST /oauth/token', () => {
 		expect(claims.client_id).toBe(cid);
 		expect(claims.stripeCustomerId).toBeUndefined();
 		expect(claims.stripeSubscriptionId).toBeUndefined();
+		// Only EMA (jwt-bearer) tokens carry the tenant epoch.
+		expect(claims).not.toHaveProperty('tep');
 	});
 
 	it('clamps the JWT TTL to entitlementExpiresAt when it is sooner than the short default', async () => {

@@ -8,6 +8,7 @@ import {
 	listEmaTenants,
 	normalizeIssuer,
 	putEmaTenant,
+	tenantEpoch,
 } from '../../src/oauth/ema-tenants';
 import { EmaTenantRecordSchema, EmaTenantUpsertRequestSchema, type EmaTenantRecord } from '../../src/schemas/ema';
 import { parseEnvelopeKey } from '../../src/lib/kv-envelope';
@@ -137,6 +138,14 @@ describe('EMA tenant store', () => {
 		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
 		// Without the key a sealed record is unreadable, never mistaken for a tenant.
 		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toBeNull();
+	});
+
+	it('round-trips a sealed token_epoch, and tenantEpoch falls back to created_at without one', async () => {
+		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }), ENVELOPE_KEY);
+		const stored = await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY);
+		expect(stored?.token_epoch).toBe(1_800_000_000_123);
+		expect(tenantEpoch(stored!)).toBe(1_800_000_000_123);
+		expect(tenantEpoch(tenant())).toBe(1_700_000_000);
 	});
 
 	it('stores the record in plaintext when no envelope key is configured', async () => {
