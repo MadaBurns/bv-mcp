@@ -5,7 +5,8 @@ import { clearKvPrefix } from '../helpers/kv';
 // Shapes copied from the live documents served at these URLs (fetched 2026-10-29).
 const WEB_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const CODE_ID = 'https://claude.ai/oauth/claude-code-client-metadata';
-const CACHE_PREFIX = 'oauth:client:cimd:';
+const CACHE_PREFIX = 'oauth:cimd:';
+const FAILURE_PREFIX = 'oauth:cimd-neg:';
 
 function webDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
@@ -52,7 +53,7 @@ afterEach(async () => {
 });
 
 describe('isCimdClientId', () => {
-	it.each([WEB_ID, CODE_ID, 'https://app.vendor.example.org/oauth/client.json', 'https://app.vendor.example.org:8443/meta'])(
+	it.each([WEB_ID, CODE_ID, 'https://app.vendor.example.org/oauth/client.json', 'https://app.vendor.example.org:443/meta'])(
 		'accepts %s',
 		async (id) => {
 			const { isCimdClientId } = await import('../../src/oauth/cimd');
@@ -69,6 +70,8 @@ describe('isCimdClientId', () => {
 		['username + password', 'https://user:pass@claude.ai/oauth/client'],
 		['query string', 'https://claude.ai/oauth/client?x=1'],
 		['fragment', 'https://claude.ai/oauth/client#frag'],
+		['an explicit non-default port', 'https://claude.ai:8443/oauth/x'],
+		['a low-numbered probe port', 'https://app.vendor.example.org:22/meta'],
 		['over 512 chars', `https://claude.ai/${'a'.repeat(600)}`],
 		['not a URL', 'not a url'],
 		['empty', ''],
@@ -108,7 +111,7 @@ describe('resolveClient', () => {
 
 		const keys = await cachedKeys();
 		expect(keys).toHaveLength(1);
-		expect(keys[0].name).toMatch(/^oauth:client:cimd:[0-9a-f]{64}$/);
+		expect(keys[0].name).toMatch(/^oauth:cimd:[0-9a-f]{64}$/);
 		expect(keys[0].expiration).toBeGreaterThanOrEqual(before + 3600 - 5);
 		expect(keys[0].expiration).toBeLessThanOrEqual(before + 3600 + 5);
 
@@ -249,7 +252,23 @@ describe('resolveClient', () => {
 		expect((await resolveClient(failingPut, WEB_ID))?.client_id).toBe(WEB_ID);
 	});
 
-	it('does not cache failures: a failed fetch is retried on the next call', async () => {
+	it('negatively caches a failed fetch for 60s: the second call makes no fetch and no record is cached', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch(() => new Response('unavailable', { status: 503 }));
+		const before = Math.floor(Date.now() / 1000);
+		expect(await resolveClient(kv(), WEB_ID)).toBeNull();
+		expect(await cachedKeys()).toHaveLength(0);
+		const failures = (await env.SESSION_STORE.list({ prefix: FAILURE_PREFIX })).keys;
+		expect(failures).toHaveLength(1);
+		expect(failures[0].name).toMatch(/^oauth:cimd-neg:[0-9a-f]{64}$/);
+		expect(failures[0].expiration).toBeGreaterThanOrEqual(before + 60 - 5);
+		expect(failures[0].expiration).toBeLessThanOrEqual(before + 60 + 5);
+
+		expect(await resolveClient(kv(), WEB_ID)).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('refetches once the failure entry is gone and a later success caches the record', async () => {
 		const { resolveClient } = await import('../../src/oauth/cimd');
 		let calls = 0;
 		const fetchMock = stubFetch(() => {
@@ -257,9 +276,114 @@ describe('resolveClient', () => {
 			return calls === 1 ? new Response('unavailable', { status: 503 }) : jsonResponse(webDoc());
 		});
 		expect(await resolveClient(kv(), WEB_ID)).toBeNull();
-		expect(await cachedKeys()).toHaveLength(0);
+		await clearKvPrefix(env.SESSION_STORE, FAILURE_PREFIX);
 		expect((await resolveClient(kv(), WEB_ID))?.client_id).toBe(WEB_ID);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(await cachedKeys()).toHaveLength(1);
+	});
+
+	it('still fetches when the failure-cache write is rejected', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch(() => new Response('unavailable', { status: 503 }));
+		const failingPut = {
+			get: async () => null,
+			put: async () => {
+				throw new Error('KV write unavailable');
+			},
+		} as unknown as KVNamespace;
+		expect(await resolveClient(failingPut, WEB_ID)).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('resolveClient per-IP limit on cache-miss fetches', () => {
+	const ID = (n: number) => `https://app.vendor.example.org/oauth/client-${n}.json`;
+	const idDoc = (n: number) => webDoc({ client_id: ID(n), redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
+
+	it('allows 10 distinct cache-miss fetches per IP per window and denies the 11th without fetching', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch((url) => jsonResponse(idDoc(Number(/client-(\d+)\.json$/.exec(url)?.[1]))));
+		for (let n = 1; n <= 10; n++) {
+			expect((await resolveClient(kv(), ID(n), undefined, { ip: '203.0.113.7' }))?.client_id).toBe(ID(n));
+		}
+		expect(fetchMock).toHaveBeenCalledTimes(10);
+
+		expect(await resolveClient(kv(), ID(11), undefined, { ip: '203.0.113.7' })).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(10);
+		// A denied request leaves no cache or failure entry behind.
+		expect(await cachedKeys()).toHaveLength(10);
+		expect((await env.SESSION_STORE.list({ prefix: FAILURE_PREFIX })).keys).toHaveLength(0);
+	});
+
+	it('does not charge cache hits, and another IP has its own window', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch((url) => jsonResponse(idDoc(Number(/client-(\d+)\.json$/.exec(url)?.[1]))));
+		for (let n = 1; n <= 10; n++) await resolveClient(kv(), ID(n), undefined, { ip: '203.0.113.7' });
+		expect(fetchMock).toHaveBeenCalledTimes(10);
+
+		// IP is now exhausted, but hits on cached records are served and never throttled.
+		for (let n = 1; n <= 10; n++) {
+			expect((await resolveClient(kv(), ID(n), undefined, { ip: '203.0.113.7' }))?.client_id).toBe(ID(n));
+		}
+		expect(fetchMock).toHaveBeenCalledTimes(10);
+
+		expect((await resolveClient(kv(), ID(11), undefined, { ip: '198.51.100.9' }))?.client_id).toBe(ID(11));
+		expect(fetchMock).toHaveBeenCalledTimes(11);
+	});
+
+	it('does not charge the limit for a negatively cached failure', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch(() => new Response('nope', { status: 404 }));
+		for (let n = 0; n < 15; n++) expect(await resolveClient(kv(), ID(1), undefined, { ip: '203.0.113.7' })).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		// Only the single real fetch consumed budget: nine more distinct misses still go out.
+		for (let n = 2; n <= 10; n++) await resolveClient(kv(), ID(n), undefined, { ip: '203.0.113.7' });
+		expect(fetchMock).toHaveBeenCalledTimes(10);
+	});
+
+	it('fails closed without fetching when the limiter itself is unavailable', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const fetchMock = stubFetch(() => jsonResponse(webDoc()));
+		const brokenCoordinator = {
+			idFromName: () => ({}),
+			get: () => ({
+				fetch: async () => {
+					throw new Error('coordinator down');
+				},
+			}),
+		} as unknown as DurableObjectNamespace<import('../../src/lib/quota-coordinator').QuotaCoordinator>;
+		expect(await resolveClient(kv(), WEB_ID, undefined, { ip: '203.0.113.7', quotaCoordinator: brokenCoordinator })).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('CIMD key hygiene', () => {
+	it('resolves or denies a 512-char CIMD-shaped id cleanly (no oversized KV key, no throw)', async () => {
+		const { resolveClient, isCimdClientId } = await import('../../src/oauth/cimd');
+		const longId = `https://claude.ai/oauth/${'a'.repeat(512 - 'https://claude.ai/oauth/'.length)}`;
+		expect(longId).toHaveLength(512);
+		expect(isCimdClientId(longId)).toBe(true);
+
+		const fetchMock = stubFetch(() => new Response('nope', { status: 404 }));
+		await expect(resolveClient(kv(), longId)).resolves.toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		stubFetch(() => jsonResponse(webDoc({ client_id: longId })));
+		await clearKvPrefix(env.SESSION_STORE, FAILURE_PREFIX);
+		expect((await resolveClient(kv(), longId))?.client_id).toBe(longId);
+	});
+
+	it('does not let a caller-supplied client_id address the CIMD cache through the DCR lookup', async () => {
+		const { resolveClient } = await import('../../src/oauth/cimd');
+		const { getClient } = await import('../../src/oauth/storage');
+		const fetchMock = stubFetch(() => jsonResponse(webDoc()));
+		expect((await resolveClient(kv(), WEB_ID))?.client_id).toBe(WEB_ID);
+		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(WEB_ID)));
+		const hex = Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+
+		expect(await getClient(kv(), `cimd:${hex}`)).toBeNull();
+		expect(await resolveClient(kv(), `cimd:${hex}`)).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
 

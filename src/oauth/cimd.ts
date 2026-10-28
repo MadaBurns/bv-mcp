@@ -13,18 +13,20 @@
  * that passes every check is cached; any failure resolves to `null`.
  */
 import { z } from 'zod';
-import { isAllowedOAuthRedirectUri, OAUTH_KV_PREFIX } from '../lib/config';
-import { sealKv } from '../lib/kv-envelope';
+import { isAllowedOAuthRedirectUri } from '../lib/config';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 import { safeFetch } from '../lib/safe-fetch';
 import type { ClientRecord } from '../schemas/oauth';
-import { getClient } from './storage';
+import { consumeCimdFetchRateLimit } from './rate-limit';
+import { getCachedCimdClient, getClient, hasCimdFetchFailure, putCachedCimdClient, putCimdFetchFailure } from './storage';
 
 export const CLAUDE_WEB_CIMD_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 export const CLAUDE_CODE_CIMD_CLIENT_ID = 'https://claude.ai/oauth/claude-code-client-metadata';
 
 const CIMD_CLIENT_ID_MAX_LENGTH = 512;
 const CIMD_CACHE_TTL_SECONDS = 60 * 60;
+const CIMD_FAILURE_TTL_SECONDS = 60; // KV's minimum expirationTtl
 const CIMD_MAX_BODY_BYTES = 5 * 1024;
 const CIMD_FETCH_TIMEOUT_MS = 3_000;
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1']);
@@ -54,12 +56,13 @@ function parseUrl(raw: string): URL | null {
 
 /**
  * True when `id` has the shape of a CIMD client_id: an https URL with a
- * non-root path and no userinfo, query or fragment, at most 512 characters.
- * (An https URL always parses with a non-empty host, so no separate check.)
+ * non-root path, no explicit port (a custom port turns the fetch into a port
+ * oracle against public hosts) and no userinfo, query or fragment, at most 512
+ * characters. (An https URL always parses with a non-empty host, so no separate check.)
  */
 export function isCimdClientId(id: string): boolean {
 	const url = id.length <= CIMD_CLIENT_ID_MAX_LENGTH ? parseUrl(id) : null;
-	return url?.protocol === 'https:' && url.pathname !== '/' && `${url.username}${url.password}${url.search}${url.hash}` === '';
+	return url?.protocol === 'https:' && url.pathname !== '/' && `${url.port}${url.username}${url.password}${url.search}${url.hash}` === '';
 }
 
 /** Validate a fetched document against the requested client_id and map it to a ClientRecord. */
@@ -98,23 +101,42 @@ async function sha256Hex(value: string): Promise<string> {
 	return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Best-effort cache write under the client keyspace (`oauth:client:<cacheId>`, the key getClient reads). */
-async function cacheCimdClient(kv: KVNamespace, cacheId: string, record: ClientRecord, kvEnvelopeKey?: Uint8Array): Promise<void> {
-	const plaintext = JSON.stringify(record);
-	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
-	try {
-		await kv.put(`${OAUTH_KV_PREFIX}client:${cacheId}`, value, { expirationTtl: CIMD_CACHE_TTL_SECONDS });
-	} catch {
-		// A failed cache write only costs a refetch on the next request.
-	}
+/** Optional per-request context for `resolveClient`; omitting it keeps the original (unthrottled) behavior. */
+export interface ResolveClientOptions {
+	/** Client IP, the principal for the cache-miss fetch limit. Without it no per-IP limit applies. */
+	ip?: string;
+	/** Strongly consistent counter backing the limit; without it the KV window fallback is used. */
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
 }
 
-async function resolveCimdClient(kv: KVNamespace, clientId: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
-	const cacheId = `cimd:${await sha256Hex(clientId)}`;
-	const cached = await getClient(kv, cacheId, kvEnvelopeKey);
+/**
+ * True when a cache miss must NOT fetch: a recent failure is negatively cached, or the IP is over its fetch limit.
+ * A cache miss costs an outbound request to a caller-named host, hence the per-IP limit; a limiter fault denies too.
+ */
+async function fetchBlocked(kv: KVNamespace, urlHash: string, options: ResolveClientOptions): Promise<boolean> {
+	if (await hasCimdFetchFailure(kv, urlHash)) return true;
+	if (options.ip === undefined) return false;
+	return (await consumeCimdFetchRateLimit(kv, options.ip, options.quotaCoordinator)).exceeded;
+}
+
+/**
+ * Cached record, else (unless a recent failure is cached or the IP is over its fetch limit) a fresh fetch.
+ * A fetch failure is negatively cached for 60s so a hostile client_id cannot drive a fetch per request;
+ * a throttled or limiter-denied request fetches nothing and caches nothing.
+ */
+async function resolveCimdClient(
+	kv: KVNamespace,
+	clientId: string,
+	kvEnvelopeKey: Uint8Array | undefined,
+	options: ResolveClientOptions,
+): Promise<ClientRecord | null> {
+	const urlHash = await sha256Hex(clientId);
+	const cached = await getCachedCimdClient(kv, urlHash, kvEnvelopeKey);
 	if (cached?.client_id === clientId) return cached;
+	if (await fetchBlocked(kv, urlHash, options)) return null;
 	const fetched = await fetchCimdClient(clientId);
-	if (fetched) await cacheCimdClient(kv, cacheId, fetched, kvEnvelopeKey);
+	if (fetched) await putCachedCimdClient(kv, urlHash, fetched, CIMD_CACHE_TTL_SECONDS, kvEnvelopeKey);
+	else await putCimdFetchFailure(kv, urlHash, CIMD_FAILURE_TTL_SECONDS);
 	return fetched;
 }
 
@@ -124,10 +146,15 @@ async function resolveCimdClient(kv: KVNamespace, clientId: string, kvEnvelopeKe
  * fetched metadata document. Returns `null` when neither yields a valid client.
  * KV outages on the registration lookup still throw StrongStateUnavailableError.
  */
-export async function resolveClient(kv: KVNamespace, clientId: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
+export async function resolveClient(
+	kv: KVNamespace,
+	clientId: string,
+	kvEnvelopeKey?: Uint8Array,
+	options: ResolveClientOptions = {},
+): Promise<ClientRecord | null> {
 	const registered = await getClient(kv, clientId, kvEnvelopeKey);
 	if (registered || !isCimdClientId(clientId)) return registered;
-	return resolveCimdClient(kv, clientId, kvEnvelopeKey);
+	return resolveCimdClient(kv, clientId, kvEnvelopeKey, options);
 }
 
 /** The URL with its port removed when the host is a loopback literal, else null. */

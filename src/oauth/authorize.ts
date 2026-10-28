@@ -139,7 +139,10 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	let client;
 	try {
-		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey);
+		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, {
+			ip: resolveClientIpFromRequestHeaders(c.req.raw.headers),
+			quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		});
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
 			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
@@ -245,7 +248,7 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 
 	let client;
 	try {
-		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey);
+		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, { ip, quotaCoordinator: c.env.QUOTA_COORDINATOR });
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
 			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
