@@ -409,7 +409,7 @@ async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: 
 	}
 }
 
-/** The enabled, in-entitlement tenant that allowlists `iss`. An unknown issuer is rejected even with a valid signature. */
+/** The enabled, in-entitlement tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
 async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
 	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
 	// Unknown, disabled and lapsed tenants are indistinguishable to the caller (same code, same text).
