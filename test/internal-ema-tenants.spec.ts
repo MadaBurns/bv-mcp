@@ -283,3 +283,89 @@ describe('GET / DELETE /internal/oauth/ema-tenants', () => {
 		expect((await send(call('DELETE', '/missing-tenant'))).status).toBe(204);
 	});
 });
+
+describe('PUT jwks_uri outbound validation', () => {
+	it.each([
+		['userinfo', 'https://user:pw@idp.example.com/keys'],
+		['localhost', 'https://localhost/keys'],
+		['IPv4 literal', 'https://203.0.113.9/keys'],
+		['IPv6 literal', 'https://[2001:db8::1]/keys'],
+		['internal TLD', 'https://keys.internal/keys'],
+	])('explicit %s jwks_uri -> 400, nothing stored, input not echoed', async (_label, jwksUri) => {
+		const res = await send(call('PUT', '', upsertBody({ jwks_uri: jwksUri })));
+		expect(res.status).toBe(400);
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		const json = JSON.stringify(await res.json());
+		expect(json.startsWith('{"error":"Invalid jwks_uri')).toBe(true);
+		expect(json).not.toContain('pw@');
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
+	});
+
+	it.each([
+		['userinfo', 'https://user:pw@idp.example.com/keys'],
+		['localhost', 'https://localhost/keys'],
+		['IPv4 literal', 'https://203.0.113.9/keys'],
+	])('discovered %s jwks_uri -> 400 issuer_discovery_failed and nothing stored', async (_label, jwksUri) => {
+		vi.stubGlobal('fetch', async () => discoveryResponse({ issuer: 'https://idp.example.com/oauth2/default', jwks_uri: jwksUri }));
+		const res = await send(call('PUT', '', upsertBody({ jwks_uri: undefined })));
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default')).toBeNull();
+	});
+});
+
+describe('PUT non-canonical issuer forms', () => {
+	it('normalizes repeated trailing slashes once and fetches discovery from the stored issuer URL', async () => {
+		const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+			expect(String(input)).toBe('https://idp.example.com/x/.well-known/openid-configuration');
+			return discoveryResponse({ issuer: 'https://idp.example.com/x', jwks_uri: 'https://idp.example.com/x/keys' });
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		const res = await send(call('PUT', '', upsertBody({ issuer: 'https://IDP.example.com/x//', jwks_uri: undefined })));
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { issuer: string }).issuer).toBe('https://idp.example.com/x');
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/x'))?.tenant_id).toBe('acme-corp');
+	});
+
+	it('single-slash and double-slash spellings are the SAME issuer: re-PUT by the owner succeeds, another tenant gets 409', async () => {
+		expect((await send(call('PUT', '', upsertBody({ issuer: 'https://idp.example.com/x//' })))).status).toBe(200);
+		expect((await send(call('PUT', '', upsertBody({ issuer: 'https://idp.example.com/x/', name: 'Renamed' })))).status).toBe(200);
+		const conflict = await send(call('PUT', '', upsertBody({ tenant_id: 'other-corp', issuer: 'https://IDP.example.com/x' })));
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toEqual({ error: 'issuer_conflict' });
+	});
+});
+
+describe('PUT over an orphaned issuer index', () => {
+	it('lets another tenant claim an issuer whose index points at a missing record', async () => {
+		await send(call('PUT', '', upsertBody()));
+		await env.SESSION_STORE!.delete(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`);
+		const res = await send(call('PUT', '', upsertBody({ tenant_id: 'other-corp' })));
+		expect(res.status).toBe(200);
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe('other-corp');
+	});
+});
+
+describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
+	const failing = () => {
+		const boom = async () => {
+			throw new Error('KV unavailable');
+		};
+		return { get: boom, put: boom, delete: boom, list: boom } as unknown as KVNamespace;
+	};
+	const failingEnv = () => ({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, SESSION_STORE: failing() }) as unknown as TestEnv;
+
+	it.each([
+		['PUT', '', upsertBody()],
+		['GET', '', undefined],
+		['GET', '/acme-corp', undefined],
+		['DELETE', '/acme-corp', undefined],
+	])('%s %s', async (method, path, body) => {
+		const res = await send(call(method, path, body), failingEnv());
+		expect(res.status).toBe(503);
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		expect(res.headers.get('retry-after')).toBe('30');
+		expect(await res.json()).toEqual({ error: 'ema_store_unavailable' });
+	});
+});

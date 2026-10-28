@@ -17,7 +17,8 @@ import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
 const TENANT_PREFIX = `${OAUTH_KV_PREFIX}ema-tenant:`;
-const issuerKey = async (normalizedIssuer: string) => `${OAUTH_KV_PREFIX}ema-issuer:${await sha256Hex(normalizedIssuer)}`;
+const ISSUER_PREFIX = `${OAUTH_KV_PREFIX}ema-issuer:`;
+const issuerKey = async (normalizedIssuer: string) => `${ISSUER_PREFIX}${await sha256Hex(normalizedIssuer)}`;
 
 /** Hard cap on list size — the operator surface, not a pagination API. */
 const EMA_TENANT_LIST_LIMIT = 100;
@@ -40,22 +41,32 @@ function isPlainHttpsUrl(url: URL): boolean {
 
 /**
  * Canonical form of an issuer identifier: https only, no userinfo/query/fragment,
- * lowercase host, and ONE trailing slash stripped. Throws on anything else.
+ * lowercase host, and every trailing slash stripped, so the result is a fixed point
+ * (normalizing it again changes nothing). Throws on anything else.
  */
 export function normalizeIssuer(iss: string): string {
 	const url = new URL(iss);
 	if (!isPlainHttpsUrl(url)) throw new Error('Issuer must be an https URL without userinfo, query or fragment');
-	const pathname = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
-	return url.origin + pathname;
+	return url.origin + url.pathname.replace(/\/+$/, '');
 }
 
+/**
+ * Read one tenant record, fail-closed. With an envelope key configured an unsealed
+ * (plaintext) record is treated as absent: the keyspace is sealed from birth, so a
+ * plaintext value can only have been planted. The decoded `tenant_id` must equal the
+ * key it was read from, so a valid blob copied under another key is not honoured.
+ */
 async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
 	const raw = await kv.get(tenantKey(tenantId));
 	if (!raw) return null;
 	try {
 		let json = raw;
-		if (kvEnvelopeKey && isSealed(raw)) json = await openKv(raw, kvEnvelopeKey);
-		return EmaTenantRecordSchema.parse(JSON.parse(json));
+		if (kvEnvelopeKey) {
+			if (!isSealed(raw)) return null;
+			json = await openKv(raw, kvEnvelopeKey);
+		}
+		const record = EmaTenantRecordSchema.parse(JSON.parse(json));
+		return record.tenant_id === tenantId ? record : null;
 	} catch {
 		// Corrupted, wrong-key or schema-invalid: an unreadable tenant is not a trusted tenant.
 		return null;
@@ -71,7 +82,9 @@ export async function putEmaTenant(kv: KVNamespace, rec: EmaTenantRecord, kvEnve
 	const stored: EmaTenantRecord = { ...rec, issuer: normalizeIssuer(rec.issuer) };
 	const newIndexKey = await issuerKey(stored.issuer);
 	const owner = await kv.get(newIndexKey);
-	if (owner && owner !== stored.tenant_id) throw new EmaTenantConflictError();
+	if (owner && owner !== stored.tenant_id) {
+		if (await ownsIssuer(kv, owner, stored.issuer, kvEnvelopeKey)) throw new EmaTenantConflictError();
+	}
 
 	const previous = await readRecord(kv, stored.tenant_id, kvEnvelopeKey);
 	const plaintext = JSON.stringify(stored);
@@ -80,6 +93,17 @@ export async function putEmaTenant(kv: KVNamespace, rec: EmaTenantRecord, kvEnve
 
 	if (previous && previous.issuer !== stored.issuer) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
 	return stored;
+}
+
+/**
+ * Does `tenantId` really hold `issuer`? An index entry whose owner record is missing,
+ * unreadable (key rotation, corruption) or lists a different issuer is an orphan: it
+ * cannot vouch for the issuer (getEmaTenantByIssuer re-checks the record) and must not
+ * block another tenant from claiming it either.
+ */
+async function ownsIssuer(kv: KVNamespace, tenantId: string, issuer: string, kvEnvelopeKey?: Uint8Array): Promise<boolean> {
+	const record = await readRecord(kv, tenantId, kvEnvelopeKey);
+	return record !== null && record.issuer === issuer;
 }
 
 /** Delete an issuer's index entry, but only while it still points at `tenantId`. */
@@ -107,9 +131,25 @@ export async function getEmaTenantByIssuer(kv: KVNamespace, issuer: string, kvEn
 	return record && record.issuer === normalized ? record : null;
 }
 
+/**
+ * Delete every issuer index entry that points at `tenantId`. Used when the record is
+ * missing or unreadable, so its issuer (and therefore the index key) cannot be derived.
+ */
+async function releaseIssuerIndexesOwnedBy(kv: KVNamespace, tenantId: string): Promise<void> {
+	let cursor: string | undefined;
+	do {
+		const page = await kv.list({ prefix: ISSUER_PREFIX, cursor });
+		const owners = await Promise.all(page.keys.map(async (key) => [key.name, await kv.get(key.name)] as const));
+		await Promise.all(owners.filter(([, owner]) => owner === tenantId).map(([name]) => kv.delete(name)));
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor);
+}
+
+/** Idempotent. Releases the issuer index even when the record is missing or cannot be read. */
 export async function deleteEmaTenant(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<void> {
 	const record = await readRecord(kv, tenantId, kvEnvelopeKey);
 	if (record) await releaseIssuerIndex(kv, record.issuer, tenantId);
+	else await releaseIssuerIndexesOwnedBy(kv, tenantId);
 	await kv.delete(tenantKey(tenantId));
 }
 
