@@ -1,36 +1,34 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: the registry rules, its transaction storage and the Worker client share private types; splitting them is a follow-up outside SQ-468.
 
 /**
  * Enterprise Managed Auth (EMA) tenant registry: the per-tenant trusted-issuer allowlist.
  *
- * The authority (contract A11) is ONE QuotaCoordinator strong-state shard, addressed by the fixed
- * coordination key EMA_REGISTRY_KEY. It holds every tenant record, the approved-issuer index and each
- * tenant's epoch floor. Every read and write is one `ema-*` request that runs inside that shard's storage
- * transaction, so a write is computed from the FRESH record (approval, token epoch, rejected-issuer ban and
- * tombstone included) and a mint or a liveness check reads one record atomically. Its keys sit outside the
- * `quota:` prefix the cleanup alarm sweeps, so nothing ever expires them:
- *   strong:ema:tenant:<tenant_id>                → EmaTenantRecord (plaintext: Durable Object storage is
- *                                                  encrypted at rest and reachable only through this Worker)
- *   strong:ema:issuer:<normalized issuer>        → tenant_id of the ONE approved tenant that owns the issuer
- *   strong:version:ema-tenant-epoch:<tenant_id>  → { value }: the highest token epoch the id ever had, so a
- *                                                  re-created tenant starts above it. Its presence also marks
- *                                                  the id as known to the registry.
- *
- * Records written before the registry (SESSION_STORE `oauth:ema-tenant:<id>`, sealed by KV_ENVELOPE_KEY, and
- * the `oauth:ema-issuer:<sha256>` index) are imported lazily: a registry miss on an id the registry has never
- * known reads KV once, imports the record inside a transaction, then deletes the KV copy. KV is never written.
+ * The authority (contract A11) is ONE dedicated QuotaCoordinator instance (EMA_REGISTRY_INSTANCE_NAME). Every
+ * read and write is one `ema-*` request (EmaRegistryRequestSchema) run inside its storage transaction, so a
+ * write is computed from the FRESH record and a mint or liveness check reads one record atomically. Keys sit
+ * under `ema:`, outside the `quota:` prefix the cleanup alarm sweeps (runbook §8a has the operator view):
+ *   ema:tenant:<tenant_id> → EmaTenantRecord (plaintext);  ema:issuer:<issuer> → the ONE approved owner's id;
+ *   ema:floor:<tenant_id>  → { value, rev }: at or above every epoch and rev the id has had (survives a delete);
+ *   ema:migrated           → set once the legacy import ran.
+ * Legacy SESSION_STORE records (sealed by KV_ENVELOPE_KEY) are imported EAGERLY: until the marker exists every
+ * other kind answers `ema_not_migrated`, and the Worker sends every legacy record in ONE `ema-migrate`
+ * transaction, then asks again. KV is never written and, after the marker, never read.
  */
 
 import {
+	EMA_LIST_PAGE_LIMIT,
+	EMA_MIGRATE_LIMIT,
 	EMA_REJECTED_ISSUER_LIMIT,
 	EMA_TENANT_ID_PATTERN,
-	EmaApprovalSchema,
+	EmaRegistryRequestSchema,
 	EmaTenantRecordSchema,
 	type EmaApproval,
 	type EmaApproveRequest,
+	type EmaRegistryRequest,
 	type EmaSelfServeUpsertRequest,
 	type EmaTenantRecord,
-	type EmaTenantUpsertRequest,
+	type EmaWrite,
 } from '../schemas/ema';
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { openKv, isSealed } from '../lib/kv-envelope';
@@ -38,6 +36,9 @@ import { emaRegistryRequest, type QuotaCoordinator } from '../lib/quota-coordina
 import { CLAUDE_WEB_CIMD_CLIENT_ID } from './cimd';
 import { sha256Hex } from './jwks';
 import { StrongStateUnavailableError } from './storage';
+
+export { EMA_LIST_PAGE_LIMIT };
+export type { EmaOperatorUpsert, EmaRegistryRequest, EmaWrite } from '../schemas/ema';
 
 function isPlainHttpsUrl(url: URL): boolean {
 	return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
@@ -52,6 +53,15 @@ export function normalizeIssuer(iss: string): string {
 	const url = new URL(iss);
 	if (!isPlainHttpsUrl(url)) throw new Error('Issuer must be an https URL without userinfo, query or fragment');
 	return url.origin + url.pathname.replace(/\/+$/, '');
+}
+
+/** normalizeIssuer, or null for an issuer it refuses. */
+function normalizedOrNull(iss: string): string | null {
+	try {
+		return normalizeIssuer(iss);
+	} catch {
+		return null;
+	}
 }
 
 /*
@@ -147,7 +157,7 @@ function vouchesFor(record: EmaTenantRecord | null, issuer: string): record is E
 	return record !== null && record.issuer === issuer && isApproved(record);
 }
 
-/** A stored tenant record exists but cannot be honoured (wrong envelope key, corruption, a sealed record with no key). */
+/** A stored tenant record (or floor) exists but cannot be honoured: corruption, or a legacy record sealed with a key we lack. */
 export class EmaTenantUnreadableError extends Error {
 	constructor() {
 		super('Tenant record is unreadable');
@@ -181,8 +191,8 @@ const hasBeenRejected = (rec: EmaTenantRecord): boolean =>
 
 // ─── Write rules: pure, applied by the registry to the FRESH record inside its transaction ───
 
-/** A tenant as a write decides it; the registry adds the server-managed timestamps, token epoch and rejected issuers. */
-export type EmaTenantDraft = Omit<EmaTenantRecord, 'created_at' | 'updated_at' | 'token_epoch' | 'rejected_issuer_hashes'>;
+/** A tenant as a write decides it; the registry adds the server-managed timestamps, token epoch, rev and rejected issuers. */
+export type EmaTenantDraft = Omit<EmaTenantRecord, 'created_at' | 'updated_at' | 'token_epoch' | 'rev' | 'rejected_issuer_hashes'>;
 
 /** Whether a write takes a tenant out of a state (enabled, approved) it was in. */
 const leaves = (before: boolean, after: boolean): boolean => before && !after;
@@ -192,14 +202,20 @@ function sameBinding(existing: EmaTenantRecord, next: EmaTenantDraft): boolean {
 	return existing.issuer === next.issuer && existing.jwks_uri === next.jwks_uri && existing.tier === next.tier;
 }
 
+/** Whether `next` drops a client `existing` allowed: the tokens minted for that client go with it. */
+const dropsClient = (existing: EmaTenantRecord, next: EmaTenantDraft): boolean =>
+	existing.allowed_client_ids.some((clientId) => !next.allowed_client_ids.includes(clientId));
+
 /**
  * Whether tokens minted under `existing` may keep standing once `next` is stored: same issuer, keys and
- * tier, still enabled and approved, and no earlier entitlement. Anything else revokes them by moving the
- * epoch, including a tier change (a round trip back to the old tier must not revive them).
+ * tier, no allowed client removed, still enabled and approved, and no earlier entitlement. Anything else
+ * revokes them by moving the epoch, including a tier change (a round trip back to the old tier must not
+ * revive them).
  */
 export function keepsTokenEpoch(existing: EmaTenantRecord, next: EmaTenantDraft): boolean {
 	return (
 		sameBinding(existing, next) &&
+		!dropsClient(existing, next) &&
 		!leaves(existing.enabled, next.enabled) &&
 		!leaves(isApproved(existing), isApproved(next)) &&
 		entitlementEnd(next) >= entitlementEnd(existing)
@@ -247,87 +263,43 @@ export function lowersPrivilegeOnly(existing: EmaTenantRecord, body: EmaSelfServ
 	return !body.enabled || (existing.enabled && body.entitlement_expires_at < entitlementEnd(existing));
 }
 
-/** The approve compare-and-set: the stored record still matches the snapshot the operator reviewed. */
+/** The approve compare-and-set: the stored record is still the revision the operator reviewed, on the same issuer and keys. */
 function matchesReviewed(rec: EmaTenantRecord, reviewed: EmaApproveRequest): boolean {
-	return rec.issuer === reviewed.issuer && rec.jwks_uri === reviewed.jwks_uri && rec.updated_at === reviewed.updated_at;
+	return rec.issuer === reviewed.issuer && rec.jwks_uri === reviewed.jwks_uri && (rec.rev ?? 0) === reviewed.rev;
 }
 
-// ─── Registry protocol: the `ema-*` QuotaCoordinator request kinds ───
-
-/** The fixed coordination key: every `ema-*` request routes to the ONE security shard it names. */
-export const EMA_REGISTRY_KEY = 'ema-registry';
-
-/** The most records one `ema-list` page returns (the operator list route's page size). */
-export const EMA_LIST_PAGE_LIMIT = 100;
-
-/** The jwks_uri the Worker discovered, and the issuer it discovered it for. */
-export interface EmaDiscovered {
-	issuer: string;
-	jwks_uri: string;
-}
-
-/** Operator upsert body with jwks_uri resolved (supplied or discovered). */
-export type EmaOperatorUpsert = Omit<EmaTenantUpsertRequest, 'jwks_uri'> & { jwks_uri: string };
-
-/** One write, applied by the registry to the fresh record inside its transaction. */
-export type EmaWrite =
-	| { op: 'operator-upsert'; body: EmaOperatorUpsert }
-	| { op: 'self-serve-upsert'; body: EmaSelfServeUpsertRequest; discovered?: EmaDiscovered }
-	| { op: 'approve'; reviewed: EmaApproveRequest }
-	| { op: 'reject' }
-	| { op: 'import'; record: EmaTenantRecord };
-
-export type EmaRegistryRequest =
-	| { kind: 'ema-get'; coordinationKey: string; tenantId: string }
-	| { kind: 'ema-list'; coordinationKey: string; limit: number; approval?: EmaApproval; cursor?: string }
-	| { kind: 'ema-resolve-issuer'; coordinationKey: string; issuer: string }
-	| { kind: 'ema-write'; coordinationKey: string; tenantId: string; write: EmaWrite }
-	| { kind: 'ema-delete'; coordinationKey: string; tenantId: string; op: 'operator' | 'self-serve' };
+// ─── Registry protocol: the `ema-*` QuotaCoordinator request kinds (EmaRegistryRequestSchema) ───
 
 /** A write the registry refused on the fresh record. `ema_record_changed` is retryable (rediscover, then write again). */
 export type EmaWriteError = 'not_found' | 'approval_stale' | 'issuer_conflict' | 'tenant_managed_by_operator' | 'ema_record_changed';
 
-export type EmaWriteResult = { record: EmaTenantRecord | null } | { error: EmaWriteError };
-export type EmaGetResult = { record: EmaTenantRecord | null; known: boolean };
-export type EmaListResult = { records: EmaTenantRecord[]; cursor?: string };
-export type EmaRegistryResponse = EmaGetResult | EmaListResult | EmaWriteResult;
+/**
+ * Why the registry could not answer: the legacy import has not run, a stored record or floor does not parse,
+ * or the request did not validate. The Worker turns each into a retryable 503, never a 401.
+ */
+export type EmaStoreStatus = 'ema_not_migrated' | 'ema_store_unavailable' | 'invalid_request';
 
-const EMA_WRITE_OPS = new Set<string>(['operator-upsert', 'self-serve-upsert', 'approve', 'reject', 'import']);
-const EMA_DELETE_OPS = new Set<string>(['operator', 'self-serve']);
+export type EmaRecordResult = { status: 'ok'; record: EmaTenantRecord | null };
+export type EmaWriteResult = EmaRecordResult | { status: EmaWriteError };
+export type EmaListResult = { status: 'ok'; records: EmaTenantRecord[]; cursor?: string };
+export type EmaMigrateResult = { status: 'ok'; imported: number };
+export type EmaRegistryResponse = EmaWriteResult | EmaListResult | EmaMigrateResult | { status: EmaStoreStatus };
 
-const isTenantId = (value: unknown): boolean => typeof value === 'string' && EMA_TENANT_ID_PATTERN.test(value);
-const isOptional = (value: unknown, valid: (v: unknown) => boolean): boolean => value === undefined || valid(value);
-const isListLimit = (value: unknown): boolean => typeof value === 'number' && value >= 1 && value <= EMA_LIST_PAGE_LIMIT;
-const isIssuerField = (value: unknown): boolean => typeof value === 'string' && value.length <= 512;
-const isWrite = (value: unknown): boolean =>
-	typeof value === 'object' && value !== null && EMA_WRITE_OPS.has((value as { op?: unknown }).op as string);
-
-/** Field invariants of the `ema-*` kinds, first failure wins. Required fields are the generic validator's job. */
-const EMA_PAYLOAD_CHECKS: ReadonlyArray<readonly [(obj: Record<string, unknown>) => boolean, string]> = [
-	[(o) => o.coordinationKey === EMA_REGISTRY_KEY, 'Invalid coordinationKey: ema kinds use the registry key'],
-	[(o) => isOptional(o.tenantId, isTenantId), 'Invalid tenantId'],
-	[(o) => isOptional(o.cursor, isTenantId), 'Invalid cursor'],
-	[(o) => isOptional(o.issuer, isIssuerField), 'Invalid issuer'],
-	[(o) => isOptional(o.approval, (v) => EmaApprovalSchema.safeParse(v).success), 'Invalid approval'],
-	[(o) => isOptional(o.limit, isListLimit), `Invalid limit: must be 1 to ${EMA_LIST_PAGE_LIMIT}`],
-	[(o) => isOptional(o.op, (v) => EMA_DELETE_OPS.has(v as string)), 'Invalid op'],
-	[(o) => isOptional(o.write, isWrite), 'Invalid write'],
-];
-
-/** The coordinator's per-field validator for the `ema-*` kinds (any other kind passes untouched). */
+/** The coordinator's door check for the `ema-*` kinds (any other kind passes untouched): a static message, never the input. */
 export function emaRegistryPayloadError(obj: Record<string, unknown>): string | undefined {
 	if (typeof obj.kind !== 'string' || !obj.kind.startsWith('ema-')) return undefined;
-	return EMA_PAYLOAD_CHECKS.find(([valid]) => !valid(obj))?.[1];
+	return EmaRegistryRequestSchema.safeParse(obj).success ? undefined : `Invalid ${obj.kind} request`;
 }
 
-// ─── Registry storage: runs INSIDE the coordinator's storage transaction ───
+// ─── Registry storage: runs INSIDE the registry instance's storage transaction ───
 
-const RECORD_PREFIX = 'strong:ema:tenant:';
-const ISSUER_PREFIX = 'strong:ema:issuer:';
-/** Registry storage keys. Exported for tests that seed or inspect the shard directly. */
+const RECORD_PREFIX = 'ema:tenant:';
+const ISSUER_PREFIX = 'ema:issuer:';
+/** Registry storage keys. Exported for tests that seed or inspect the registry directly. */
 export const emaRecordStorageKey = (tenantId: string): string => `${RECORD_PREFIX}${tenantId}`;
 export const emaIssuerStorageKey = (normalizedIssuer: string): string => `${ISSUER_PREFIX}${normalizedIssuer}`;
-export const emaEpochFloorStorageKey = (tenantId: string): string => `strong:version:ema-tenant-epoch:${tenantId}`;
+export const emaFloorStorageKey = (tenantId: string): string => `ema:floor:${tenantId}`;
+export const EMA_MIGRATED_STORAGE_KEY = 'ema:migrated';
 
 /** The most record keys one `ema-list` request scans, bounding the work a filtered page can do. */
 const EMA_LIST_SCAN_LIMIT = 1000;
@@ -335,6 +307,9 @@ const EMA_LIST_SCAN_LIMIT = 1000;
 type Txn = DurableObjectTransaction;
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+const OK_NULL: EmaRecordResult = { status: 'ok', record: null };
+const NOT_FOUND = { status: 'not_found' } as const;
 
 /** Drop undefined-valued keys, so a stored record has exactly the fields that are set. */
 const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
@@ -354,27 +329,44 @@ async function readRecordTx(txn: Txn, tenantId: string): Promise<EmaTenantRecord
 	return record;
 }
 
-/** The id's epoch floor, or undefined when the registry has never stored the id. */
-async function epochFloorTx(txn: Txn, tenantId: string): Promise<number | undefined> {
-	const floor = await txn.get<{ value?: unknown }>(emaEpochFloorStorageKey(tenantId));
-	return Number.isSafeInteger(floor?.value) ? (floor?.value as number) : undefined;
+/** An id's high-water marks, kept across deletes: its highest token epoch and rev. */
+interface EmaFloor {
+	value: number;
+	rev: number;
 }
 
-/** Raise the id's epoch floor to `epoch` (it never lowers), creating it at least 1, which marks the id known. */
-async function raiseEpochFloorTx(txn: Txn, tenantId: string, epoch: number): Promise<void> {
-	const floor = await epochFloorTx(txn, tenantId);
-	if (floor === undefined || epoch > floor) await txn.put(emaEpochFloorStorageKey(tenantId), { value: Math.max(epoch, floor ?? 1) });
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/**
+ * The id's floor, zeros when the registry never stored the id. Read with a plain get: a floor that is
+ * missing must read as missing, never be manufactured. One that does not parse throws (a 503): reading it as
+ * zero could hand a re-created tenant an epoch an old token still carries.
+ */
+async function floorTx(txn: Txn, tenantId: string): Promise<EmaFloor> {
+	const raw = await txn.get<Partial<EmaFloor>>(emaFloorStorageKey(tenantId));
+	if (raw === undefined) return { value: 0, rev: 0 };
+	if (!isCount(raw?.value)) throw new EmaTenantUnreadableError();
+	return { value: raw.value, rev: isCount(raw.rev) ? raw.rev : 0 };
 }
+
+/** Raise the id's floor to cover `epoch` and `rev`; it never lowers. */
+async function raiseFloorTx(txn: Txn, tenantId: string, epoch: number, rev: number): Promise<void> {
+	const floor = await floorTx(txn, tenantId);
+	await txn.put(emaFloorStorageKey(tenantId), { value: Math.max(floor.value, epoch), rev: Math.max(floor.rev, rev) });
+}
+
+/** The highest token epoch the id has used: its floor, or its record's epoch if that is higher. */
+const lastEpoch = (floor: EmaFloor, existing: EmaTenantRecord | null): number =>
+	Math.max(floor.value, existing ? tenantEpoch(existing) : 0);
 
 /**
  * The token epoch a write stores. It keeps the record's epoch only when keepsTokenEpoch allows it; every
- * other write (a create included) moves it past both the record's epoch and the id's floor, so no token
- * minted under any earlier version of this id, a deleted one included, can match it again.
+ * other write (a create included) moves it past the last epoch the id ever used, so no token minted under
+ * any earlier version of this id, a deleted one included, can match it again.
  */
-async function nextTokenEpochTx(txn: Txn, existing: EmaTenantRecord | null, draft: EmaTenantDraft): Promise<number> {
+function nextTokenEpoch(floor: EmaFloor, existing: EmaTenantRecord | null, draft: EmaTenantDraft): number {
 	if (existing && keepsTokenEpoch(existing, draft)) return tenantEpoch(existing);
-	const floor = (await epochFloorTx(txn, draft.tenant_id)) ?? 0;
-	return Math.max(floor, existing ? tenantEpoch(existing) : 0) + 1;
+	return lastEpoch(floor, existing) + 1;
 }
 
 /** Whether a DIFFERENT approved tenant holds `record`'s issuer. A stale entry (its record moved, left approval or is unreadable) does not. */
@@ -399,74 +391,108 @@ async function releaseIssuersOwnedByTx(txn: Txn, tenantId: string): Promise<void
 /** Store a record, raise its floor, and point (claimsIssuer) or release its issuer index entry. */
 async function putRecordTx(txn: Txn, record: EmaTenantRecord, previous: EmaTenantRecord | null, claimsIssuer: boolean): Promise<void> {
 	await txn.put(emaRecordStorageKey(record.tenant_id), record);
-	await raiseEpochFloorTx(txn, record.tenant_id, tenantEpoch(record));
+	await raiseFloorTx(txn, record.tenant_id, tenantEpoch(record), record.rev ?? 0);
 	if (claimsIssuer) await txn.put(emaIssuerStorageKey(record.issuer), record.tenant_id);
 	if (previous && (previous.issuer !== record.issuer || !claimsIssuer)) await releaseIssuerTx(txn, previous.issuer, record.tenant_id);
 }
 
-/**
- * The one store path of every write: created_at is preserved, updated_at stamped, and token_epoch and
- * rejected_issuer_hashes derived from the fresh record (nextTokenEpochTx, nextRejectedIssuerHashes); none
- * of them comes from a caller. Only an APPROVED tenant owns its issuer: approving one whose issuer another
- * approved tenant holds is `issuer_conflict`, and nothing is stored.
- */
-async function storeTx(txn: Txn, existing: EmaTenantRecord | null, input: EmaTenantDraft): Promise<EmaWriteResult> {
-	const draft: EmaTenantDraft = { ...input, issuer: normalizeIssuer(input.issuer) };
+/** The record a write stores: created_at kept, updated_at stamped, and epoch, rev and rejected issuers derived, never taken from a caller. */
+function composeRecord(
+	draft: EmaTenantDraft,
+	existing: EmaTenantRecord | null,
+	floor: EmaFloor,
+	rejected: string[] | undefined,
+): EmaTenantRecord {
 	const now = nowSeconds();
-	const record = EmaTenantRecordSchema.parse(
+	return EmaTenantRecordSchema.parse(
 		compact({
 			...draft,
 			created_at: existing?.created_at ?? now,
 			updated_at: now,
-			token_epoch: await nextTokenEpochTx(txn, existing, draft),
-			rejected_issuer_hashes: await nextRejectedIssuerHashes(existing, draft),
+			token_epoch: nextTokenEpoch(floor, existing, draft),
+			rev: Math.max(floor.rev, existing?.rev ?? 0) + 1,
+			rejected_issuer_hashes: rejected,
 		}),
 	);
-	const claimsIssuer = isApproved(record);
-	if (claimsIssuer && (await issuerHeldByAnother(txn, record))) return { error: 'issuer_conflict' };
-	await putRecordTx(txn, record, existing, claimsIssuer);
-	return { record };
 }
 
-/** Remove a tenant, its issuer index entry and (when unreadable) every entry naming it; the floor keeps its epoch. */
+/**
+ * The one store path of every write, applied to the fresh record (composeRecord). Only an APPROVED tenant
+ * owns its issuer: approving one whose issuer another approved tenant holds is `issuer_conflict`, and
+ * nothing is stored.
+ */
+async function storeTx(txn: Txn, existing: EmaTenantRecord | null, input: EmaTenantDraft): Promise<EmaWriteResult> {
+	const draft: EmaTenantDraft = { ...input, issuer: normalizeIssuer(input.issuer) };
+	const record = composeRecord(draft, existing, await floorTx(txn, draft.tenant_id), await nextRejectedIssuerHashes(existing, draft));
+	const claimsIssuer = isApproved(record);
+	if (claimsIssuer && (await issuerHeldByAnother(txn, record))) return { status: 'issuer_conflict' };
+	await putRecordTx(txn, record, existing, claimsIssuer);
+	return { status: 'ok', record };
+}
+
+/**
+ * Remove a tenant and its issuer index entry (every entry naming it, when its record cannot be read), and
+ * move its floor one past the last epoch it used, so a re-created tenant starts above every token it minted.
+ */
 async function removeTx(txn: Txn, tenantId: string): Promise<EmaWriteResult> {
 	const raw = await txn.get(emaRecordStorageKey(tenantId));
 	const existing = storedRecord(raw, tenantId);
 	await txn.delete(emaRecordStorageKey(tenantId));
 	if (existing) await releaseIssuerTx(txn, existing.issuer, tenantId);
 	else if (raw !== undefined) await releaseIssuersOwnedByTx(txn, tenantId);
-	await raiseEpochFloorTx(txn, tenantId, existing ? tenantEpoch(existing) : 1);
-	return { record: null };
+	await raiseFloorTx(txn, tenantId, lastEpoch(await floorTx(txn, tenantId), existing) + 1, 0);
+	return OK_NULL;
 }
+
+/** Whether the registry already knows the id: it holds a record or a floor for it. */
+const isKnownTx = async (txn: Txn, tenantId: string): Promise<boolean> =>
+	(await txn.get(emaRecordStorageKey(tenantId))) !== undefined || (await txn.get(emaFloorStorageKey(tenantId))) !== undefined;
 
 /**
- * Import a legacy KV record, only while the registry has never known the id (no record, no floor): a
- * deleted tenant is never resurrected from a stale KV copy. The record keeps its epoch, so tokens minted
- * under it keep working. It claims its issuer when approved and no other approved tenant holds it.
+ * Import one legacy record, unless the registry already knows its id or its issuer does not normalize (it
+ * could never have minted). It keeps its epoch, so tokens minted under it keep working, and it claims its
+ * issuer when approved and no other approved tenant already holds it.
  */
-async function importTx(txn: Txn, tenantId: string, existing: EmaTenantRecord | null, legacy: EmaTenantRecord): Promise<EmaWriteResult> {
-	if (existing || (await epochFloorTx(txn, tenantId)) !== undefined) return { record: existing };
-	const record = storedRecord(compact({ ...legacy, issuer: normalizeIssuer(legacy.issuer), token_epoch: tenantEpoch(legacy) }), tenantId);
-	if (!record) throw new EmaTenantUnreadableError();
+async function importTx(txn: Txn, legacy: EmaTenantRecord): Promise<boolean> {
+	const issuer = normalizedOrNull(legacy.issuer);
+	if (issuer === null || (await isKnownTx(txn, legacy.tenant_id))) return false;
+	const record = EmaTenantRecordSchema.parse(compact({ ...legacy, issuer, token_epoch: tenantEpoch(legacy), rev: legacy.rev ?? 0 }));
 	await putRecordTx(txn, record, null, isApproved(record) && !(await issuerHeldByAnother(txn, record)));
-	return { record };
+	return true;
 }
 
-const NOT_FOUND = { error: 'not_found' } as const;
+/** The one-time legacy import: every record in ONE transaction, then the marker. Once the marker exists it does nothing. */
+async function migrateTx(txn: Txn, records: EmaTenantRecord[]): Promise<EmaMigrateResult> {
+	if ((await txn.get(EMA_MIGRATED_STORAGE_KEY)) !== undefined) return { status: 'ok', imported: 0 };
+	let imported = 0;
+	for (const legacy of records) if (await importTx(txn, legacy)) imported += 1;
+	await txn.put(EMA_MIGRATED_STORAGE_KEY, { at: nowSeconds(), imported });
+	return { status: 'ok', imported };
+}
 
 /** An operator decision on the fresh record; approve also holds the reviewed compare-and-set. */
-function decision(existing: EmaTenantRecord | null, approval: EmaApproval, reviewed?: EmaApproveRequest): EmaTenantDraft | { error: EmaWriteError } {
+function decision(
+	existing: EmaTenantRecord | null,
+	approval: EmaApproval,
+	reviewed?: EmaApproveRequest,
+): EmaTenantDraft | { status: EmaWriteError } {
 	if (!existing) return NOT_FOUND;
-	if (reviewed && !matchesReviewed(existing, reviewed)) return { error: 'approval_stale' };
+	if (reviewed && !matchesReviewed(existing, reviewed)) return { status: 'approval_stale' };
 	return { ...existing, approval };
 }
+
+type SelfServeWrite = Extract<EmaWrite, { op: 'self-serve-upsert' }>;
 
 /**
  * The jwks_uri a self-serve write stores, decided on the FRESH record: the stored one for a write that only
  * lowers privilege, else the one discovered for the body's issuer. Undefined when the Worker skipped
  * discovery for a record that has since changed (ema_record_changed: rediscover and retry).
  */
-function selfServeJwksUri(existing: EmaTenantRecord | null, body: EmaSelfServeUpsertRequest, discovered?: EmaDiscovered): string | undefined {
+function selfServeJwksUri(
+	existing: EmaTenantRecord | null,
+	body: EmaSelfServeUpsertRequest,
+	discovered: SelfServeWrite['discovered'],
+): string | undefined {
 	if (existing && lowersPrivilegeOnly(existing, body)) return existing.jwks_uri;
 	return discovered?.issuer === body.issuer ? discovered.jwks_uri : undefined;
 }
@@ -478,12 +504,12 @@ function selfServeJwksUri(existing: EmaTenantRecord | null, body: EmaSelfServeUp
 async function selfServeDraft(
 	existing: EmaTenantRecord | null,
 	tenantId: string,
-	write: Extract<EmaWrite, { op: 'self-serve-upsert' }>,
-): Promise<EmaTenantDraft | { error: EmaWriteError }> {
-	if (existing && existing.source !== 'self-serve') return { error: 'tenant_managed_by_operator' };
+	write: SelfServeWrite,
+): Promise<EmaTenantDraft | { status: EmaWriteError }> {
+	if (existing && existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
 	const body = { ...write.body, issuer: normalizeIssuer(write.body.issuer) };
 	const jwksUri = selfServeJwksUri(existing, body, write.discovered);
-	if (!jwksUri) return { error: 'ema_record_changed' };
+	if (!jwksUri) return { status: 'ema_record_changed' };
 	return {
 		...body,
 		tenant_id: tenantId,
@@ -494,19 +520,17 @@ async function selfServeDraft(
 	};
 }
 
-type DraftOp = Exclude<EmaWrite['op'], 'import'>;
-
 /**
  * The draft each write op derives from the fresh record. Operator upsert: an omitted `approval` keeps the
  * stored one, and `source` never comes from the body (an operator edit never takes a tenant away from the
  * customer settings that sync it).
  */
 const DRAFTS: {
-	[K in DraftOp]: (
+	[K in EmaWrite['op']]: (
 		existing: EmaTenantRecord | null,
 		tenantId: string,
 		write: Extract<EmaWrite, { op: K }>,
-	) => Promise<EmaTenantDraft | { error: EmaWriteError }>;
+	) => Promise<EmaTenantDraft | { status: EmaWriteError }>;
 } = {
 	'operator-upsert': async (existing, tenantId, { body }) => ({
 		...body,
@@ -521,10 +545,13 @@ const DRAFTS: {
 
 async function writeTx(txn: Txn, tenantId: string, write: EmaWrite): Promise<EmaWriteResult> {
 	const existing = await readRecordTx(txn, tenantId);
-	if (write.op === 'import') return importTx(txn, tenantId, existing, write.record);
-	const draftFor = DRAFTS[write.op] as (e: EmaTenantRecord | null, t: string, w: EmaWrite) => Promise<EmaTenantDraft | { error: EmaWriteError }>;
+	const draftFor = DRAFTS[write.op] as (
+		e: EmaTenantRecord | null,
+		t: string,
+		w: EmaWrite,
+	) => Promise<EmaTenantDraft | { status: EmaWriteError }>;
 	const draft = await draftFor(existing, tenantId, write);
-	return 'error' in draft ? draft : storeTx(txn, existing, draft);
+	return 'status' in draft ? draft : storeTx(txn, existing, draft);
 }
 
 /**
@@ -532,11 +559,11 @@ async function writeTx(txn: Txn, tenantId: string, write: EmaWrite): Promise<Ema
  * and keeps a tenant the operator ever rejected as a disabled, lapsed tombstone that carries its rejected
  * issuers, so deleting and re-creating cannot launder a refusal. Either way its tokens die.
  */
-async function deleteTx(txn: Txn, tenantId: string, op: 'operator' | 'self-serve'): Promise<EmaWriteResult> {
-	if (op === 'operator') return removeTx(txn, tenantId);
+async function deleteTx(txn: Txn, tenantId: string, mode: 'operator' | 'self-serve'): Promise<EmaWriteResult> {
+	if (mode === 'operator') return removeTx(txn, tenantId);
 	const existing = await readRecordTx(txn, tenantId);
-	if (!existing) return { record: null };
-	if (existing.source !== 'self-serve') return { error: 'tenant_managed_by_operator' };
+	if (!existing) return OK_NULL;
+	if (existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
 	if (!hasBeenRejected(existing)) return removeTx(txn, tenantId);
 	return storeTx(txn, existing, { ...existing, enabled: false, entitlement_expires_at: nowSeconds() });
 }
@@ -547,50 +574,68 @@ function listedRecord(key: string, raw: unknown, approval: EmaApproval | undefin
 	return record && (!approval || effectiveApproval(record) === approval) ? record : null;
 }
 
+type ParsedRequest = ReturnType<typeof EmaRegistryRequestSchema.parse>;
+
 /** One page of records (id order) after `cursor`; `cursor` in the result names where the next page starts. */
-async function listTx(txn: Txn, req: Extract<EmaRegistryRequest, { kind: 'ema-list' }>): Promise<EmaListResult> {
+async function listTx(txn: Txn, req: Extract<ParsedRequest, { kind: 'ema-list' }>): Promise<EmaListResult> {
 	const startAfter = req.cursor === undefined ? undefined : emaRecordStorageKey(req.cursor);
 	const scanned = await txn.list({ prefix: RECORD_PREFIX, startAfter, limit: EMA_LIST_SCAN_LIMIT });
 	const records: EmaTenantRecord[] = [];
 	let last: string | undefined;
 	for (const [key, raw] of scanned) {
-		if (records.length === req.limit) return { records, cursor: last };
+		if (records.length === req.limit) return { status: 'ok', records, cursor: last };
 		last = key.slice(RECORD_PREFIX.length);
 		const record = listedRecord(key, raw, req.approval);
 		if (record) records.push(record);
 	}
-	return scanned.size === EMA_LIST_SCAN_LIMIT ? { records, cursor: last } : { records };
+	return scanned.size === EMA_LIST_SCAN_LIMIT ? { status: 'ok', records, cursor: last } : { status: 'ok', records };
 }
 
 /** The APPROVED tenant that owns `issuer` (already normalized), else null. */
-async function resolveIssuerTx(txn: Txn, issuer: string): Promise<EmaWriteResult> {
+async function resolveIssuerTx(txn: Txn, issuer: string): Promise<EmaRecordResult> {
 	const owner = await txn.get<string>(emaIssuerStorageKey(issuer));
 	const record = typeof owner === 'string' ? await readRecordTx(txn, owner) : null;
-	return { record: vouchesFor(record, issuer) ? record : null };
+	return { status: 'ok', record: vouchesFor(record, issuer) ? record : null };
 }
 
-async function getTx(txn: Txn, tenantId: string): Promise<EmaGetResult> {
-	const record = await readRecordTx(txn, tenantId);
-	return { record, known: record !== null || (await epochFloorTx(txn, tenantId)) !== undefined };
-}
+type ServedKind = Exclude<ParsedRequest['kind'], 'ema-migrate'>;
 
 const EMA_HANDLERS: {
-	[K in EmaRegistryRequest['kind']]: (txn: Txn, payload: Extract<EmaRegistryRequest, { kind: K }>) => Promise<EmaRegistryResponse>;
+	[K in ServedKind]: (txn: Txn, payload: Extract<ParsedRequest, { kind: K }>) => Promise<EmaRegistryResponse>;
 } = {
-	'ema-get': (txn, payload) => getTx(txn, payload.tenantId),
+	'ema-get': async (txn, payload) => ({ status: 'ok', record: await readRecordTx(txn, payload.tenantId) }),
 	'ema-list': listTx,
 	'ema-resolve-issuer': (txn, payload) => resolveIssuerTx(txn, payload.issuer),
 	'ema-write': (txn, payload) => writeTx(txn, payload.tenantId, payload.write),
-	'ema-delete': (txn, payload) => deleteTx(txn, payload.tenantId, payload.op),
+	'ema-delete': (txn, payload) => deleteTx(txn, payload.tenantId, payload.mode),
 };
 
-/** Run one `ema-*` request inside the registry shard's storage transaction (QuotaCoordinator calls this). */
-export function runEmaRegistryRequest(txn: Txn, payload: EmaRegistryRequest): Promise<EmaRegistryResponse> {
-	const handler = EMA_HANDLERS[payload.kind] as (txn: Txn, payload: EmaRegistryRequest) => Promise<EmaRegistryResponse>;
-	return handler(txn, payload);
+/** One request inside the transaction: the import itself, else a served kind once the import has run. */
+async function serveTx(txn: Txn, req: ParsedRequest): Promise<EmaRegistryResponse> {
+	if (req.kind === 'ema-migrate') return migrateTx(txn, req.records);
+	if ((await txn.get(EMA_MIGRATED_STORAGE_KEY)) === undefined) return { status: 'ema_not_migrated' };
+	const handler = EMA_HANDLERS[req.kind] as (txn: Txn, payload: ParsedRequest) => Promise<EmaRegistryResponse>;
+	return handler(txn, req);
 }
 
-// ─── Worker side: the registry client, with the lazy legacy-KV import ───
+/**
+ * Run one `ema-*` request inside the registry instance's storage transaction (QuotaCoordinator calls this).
+ * It answers a status union, never a thrown refusal: a payload that does not validate is `invalid_request`,
+ * and a stored record or floor that does not parse is `ema_store_unavailable`, after the transaction rolled
+ * back. Anything else (a storage failure) still throws to the caller, which the Worker also answers with 503.
+ */
+export async function runEmaRegistryTransaction(storage: DurableObjectStorage, payload: unknown): Promise<EmaRegistryResponse> {
+	const parsed = EmaRegistryRequestSchema.safeParse(payload);
+	if (!parsed.success) return { status: 'invalid_request' };
+	try {
+		return await storage.transaction((txn) => serveTx(txn, parsed.data));
+	} catch (err) {
+		if (err instanceof EmaTenantUnreadableError) return { status: 'ema_store_unavailable' };
+		throw err;
+	}
+}
+
+// ─── Worker side: the registry client, with the one-time legacy import ───
 
 /**
  * Where the registry lives: the coordinator (the authority) and, for the one-time legacy import only, the
@@ -602,16 +647,23 @@ export interface EmaRegistry {
 	kvEnvelopeKey?: Uint8Array;
 }
 
-/** One registry request. Any failure (no binding, an RPC error, an unreadable record) is a retryable 503, never a 401. */
-async function registryCall<T extends EmaRegistryResponse>(registry: EmaRegistry, payload: EmaRegistryRequest): Promise<T> {
+/** Every answer of a registry that could serve the request. */
+type EmaAnswer = Exclude<EmaRegistryResponse, { status: EmaStoreStatus }>;
+
+const STORE_STATUSES: ReadonlySet<string> = new Set<EmaStoreStatus>(['ema_not_migrated', 'ema_store_unavailable', 'invalid_request']);
+
+const registryUnavailable = (): StrongStateUnavailableError => new StrongStateUnavailableError('ema tenant registry');
+
+/** One round trip. No binding, an RPC failure or a reply without a status is a retryable 503, never a 401. */
+async function send(registry: EmaRegistry, payload: EmaRegistryRequest): Promise<EmaRegistryResponse> {
 	let result: unknown;
 	try {
 		result = await emaRegistryRequest(payload, registry.coordinator);
 	} catch {
-		throw new StrongStateUnavailableError('ema tenant registry');
+		throw registryUnavailable();
 	}
-	if (typeof result !== 'object' || result === null) throw new StrongStateUnavailableError('ema tenant registry');
-	return result as T;
+	if (typeof (result as { status?: unknown } | undefined)?.status !== 'string') throw registryUnavailable();
+	return result as EmaRegistryResponse;
 }
 
 const LEGACY_TENANT_PREFIX = `${OAUTH_KV_PREFIX}ema-tenant:`;
@@ -635,70 +687,80 @@ async function decodeLegacyRecord(raw: string, tenantId: string, envelopeKey: Ui
 	return parseLegacy(await openKv(raw, envelopeKey), tenantId);
 }
 
-/** Best-effort removal of an imported tenant's KV copy and of its issuer index entry (while that names it). */
-async function purgeLegacyTenant(kv: KVNamespace, tenantId: string, legacy: EmaTenantRecord | null): Promise<void> {
-	try {
-		await kv.delete(legacyTenantKey(tenantId));
-		const indexKey = legacy ? await legacyIssuerKey(normalizeIssuer(legacy.issuer)) : null;
-		if (indexKey && (await kv.get(indexKey)) === tenantId) await kv.delete(indexKey);
-	} catch {
-		// The registry now knows the id, so this KV copy is never read again; a failed delete only leaves garbage.
-	}
+/** Every legacy tenant id in KV. More than EMA_MIGRATE_LIMIT throws: the import never moves a partial set. */
+async function listLegacyTenantIds(kv: KVNamespace): Promise<string[]> {
+	const names: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await kv.list({ prefix: LEGACY_TENANT_PREFIX, cursor });
+		names.push(...page.keys.map((key) => key.name.slice(LEGACY_TENANT_PREFIX.length)));
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor !== undefined && names.length <= EMA_MIGRATE_LIMIT);
+	if (names.length > EMA_MIGRATE_LIMIT) throw new Error('Too many legacy EMA tenants to import');
+	return names.filter((id) => EMA_TENANT_ID_PATTERN.test(id));
+}
+
+/** The legacy record of every id, decoded fail-closed (decodeLegacyRecord); an id holding nothing honourable drops out. */
+async function readLegacyRecords(kv: KVNamespace, ids: string[], envelopeKey: Uint8Array | undefined): Promise<EmaTenantRecord[]> {
+	const records = await Promise.all(
+		ids.map(async (id) => {
+			const raw = await kv.get(legacyTenantKey(id));
+			return raw === null ? null : decodeLegacyRecord(raw, id, envelopeKey);
+		}),
+	);
+	return records.filter((record): record is EmaTenantRecord => record !== null);
+}
+
+/** The records the legacy issuer index named as their issuer's owner go first, so each keeps the issuer it held in KV. */
+async function indexOwnersFirst(kv: KVNamespace, records: EmaTenantRecord[]): Promise<EmaTenantRecord[]> {
+	const owns = await Promise.all(
+		records.map(async (record) => {
+			const issuer = normalizedOrNull(record.issuer);
+			return issuer !== null && (await kv.get(await legacyIssuerKey(issuer))) === record.tenant_id;
+		}),
+	);
+	return [...records.filter((_, i) => owns[i]), ...records.filter((_, i) => !owns[i])];
 }
 
 /**
- * Move a legacy KV tenant into the registry and clear its KV copy. The registry refuses the import when it
- * already knows the id (then it answers the record it holds, or null). Returns null when KV holds nothing
- * honourable for the id. Throws StrongStateUnavailableError when a stored record cannot be read.
+ * The one-time import of every legacy KV tenant. Without the SESSION_STORE nothing shows the legacy keyspace
+ * is empty, and a record that cannot be read may be the one a live token depends on: either way the registry
+ * stays unmigrated (every EMA call 503) rather than import a partial set. KV is only ever read here.
  */
-async function importLegacyTenant(registry: EmaRegistry, tenantId: string): Promise<EmaTenantRecord | null> {
+async function migrateLegacyTenants(registry: EmaRegistry): Promise<void> {
 	const kv = registry.kv;
-	if (!kv) return null;
-	let legacy: EmaTenantRecord | null;
+	if (!kv) throw registryUnavailable();
+	let records: EmaTenantRecord[];
 	try {
-		const raw = await kv.get(legacyTenantKey(tenantId));
-		legacy = raw === null ? null : await decodeLegacyRecord(raw, tenantId, registry.kvEnvelopeKey);
+		records = await indexOwnersFirst(kv, await readLegacyRecords(kv, await listLegacyTenantIds(kv), registry.kvEnvelopeKey));
 	} catch {
-		throw new StrongStateUnavailableError('ema legacy tenant import');
+		throw new StrongStateUnavailableError('ema legacy import');
 	}
-	if (!legacy) return null;
-	const imported = await registryCall<EmaWriteResult>(registry, {
-		kind: 'ema-write',
-		coordinationKey: EMA_REGISTRY_KEY,
-		tenantId,
-		write: { op: 'import', record: legacy },
-	});
-	await purgeLegacyTenant(kv, tenantId, legacy);
-	return 'record' in imported ? imported.record : null;
+	await send(registry, { kind: 'ema-migrate', records });
 }
 
 /**
- * The tenant record, or null when none exists. A registry miss on an id the registry has never known
- * imports a legacy KV record first. Throws StrongStateUnavailableError when the registry or a stored
- * record cannot be read.
+ * One registry request. A registry that has not imported the legacy KV tenants yet is migrated first (any
+ * Worker may send the import; the registry runs it once), then asked again. A status that is not an answer
+ * throws StrongStateUnavailableError: a retryable 503, never a 401 and never an absence.
  */
-export async function getEmaTenant(registry: EmaRegistry, tenantId: string): Promise<EmaTenantRecord | null> {
-	const found = await registryCall<EmaGetResult>(registry, { kind: 'ema-get', coordinationKey: EMA_REGISTRY_KEY, tenantId });
-	return found.record || found.known ? found.record : importLegacyTenant(registry, tenantId);
-}
-
-async function resolveIssuer(registry: EmaRegistry, normalized: string): Promise<EmaTenantRecord | null> {
-	const resolved = await registryCall<EmaWriteResult>(registry, { kind: 'ema-resolve-issuer', coordinationKey: EMA_REGISTRY_KEY, issuer: normalized });
-	return 'record' in resolved ? resolved.record : null;
-}
-
-/** On a registry miss: the legacy KV index's tenant for the issuer, imported, then the issuer resolved again. */
-async function resolveLegacyIssuer(registry: EmaRegistry, normalized: string): Promise<EmaTenantRecord | null> {
-	let tenantId: string | null = null;
-	try {
-		tenantId = (await registry.kv?.get(await legacyIssuerKey(normalized))) ?? null;
-	} catch {
-		throw new StrongStateUnavailableError('ema legacy issuer lookup');
+async function registryCall<T extends EmaAnswer>(registry: EmaRegistry, payload: EmaRegistryRequest): Promise<T> {
+	let result = await send(registry, payload);
+	if (result.status === 'ema_not_migrated') {
+		await migrateLegacyTenants(registry);
+		result = await send(registry, payload);
 	}
-	if (!tenantId || !EMA_TENANT_ID_PATTERN.test(tenantId)) return null;
-	await importLegacyTenant(registry, tenantId);
-	return resolveIssuer(registry, normalized);
+	if (STORE_STATUSES.has(result.status)) throw registryUnavailable();
+	return result as T;
 }
+
+/** The tenant record, or null when none exists. Throws StrongStateUnavailableError when the registry or the record cannot be read. */
+export async function getEmaTenant(registry: EmaRegistry, tenantId: string): Promise<EmaTenantRecord | null> {
+	return (await registryCall<EmaRecordResult>(registry, { kind: 'ema-get', tenantId })).record;
+}
+
+/** The longest issuer a record can hold (EmaTenantRecordSchema): a longer `iss` cannot be registered. */
+const MAX_ISSUER_LENGTH = 512;
 
 /**
  * Resolve an `iss` claim to its APPROVED tenant, read atomically from the registry: the one record the
@@ -706,52 +768,24 @@ async function resolveLegacyIssuer(registry: EmaRegistry, normalized: string): P
  * unregistered or unapproved.
  */
 export async function getEmaTenantByIssuer(registry: EmaRegistry, issuer: string): Promise<EmaTenantRecord | null> {
-	let normalized: string;
-	try {
-		normalized = normalizeIssuer(issuer);
-	} catch {
-		return null;
-	}
-	return (await resolveIssuer(registry, normalized)) ?? resolveLegacyIssuer(registry, normalized);
-}
-
-/** Import every legacy KV tenant (up to a page) before a first list page, skipping any that cannot be read. */
-async function importLegacyTenants(registry: EmaRegistry): Promise<void> {
-	let keys: KVNamespaceListKey<unknown>[] = [];
-	try {
-		keys = (await registry.kv?.list({ prefix: LEGACY_TENANT_PREFIX, limit: EMA_LIST_PAGE_LIMIT }))?.keys ?? [];
-	} catch {
-		throw new StrongStateUnavailableError('ema legacy tenant list');
-	}
-	const ids = keys.map((key) => key.name.slice(LEGACY_TENANT_PREFIX.length)).filter((id) => EMA_TENANT_ID_PATTERN.test(id));
-	await Promise.all(ids.map((id) => importLegacyTenant(registry, id).catch(() => null)));
+	const normalized = normalizedOrNull(issuer);
+	if (normalized === null || normalized.length > MAX_ISSUER_LENGTH) return null;
+	return (await registryCall<EmaRecordResult>(registry, { kind: 'ema-resolve-issuer', issuer: normalized })).record;
 }
 
 /** One page (≤ 100, id order) of tenants, optionally only those with `approval`; a returned `cursor` fetches the next page. */
-export async function listEmaTenants(registry: EmaRegistry, approval?: EmaApproval, cursor?: string): Promise<EmaListResult> {
-	if (cursor === undefined) await importLegacyTenants(registry);
-	return registryCall<EmaListResult>(registry, {
-		kind: 'ema-list',
-		coordinationKey: EMA_REGISTRY_KEY,
-		limit: EMA_LIST_PAGE_LIMIT,
-		approval,
-		cursor,
-	});
+export function listEmaTenants(registry: EmaRegistry, approval?: EmaApproval, cursor?: string): Promise<EmaListResult> {
+	return registryCall<EmaListResult>(registry, { kind: 'ema-list', limit: EMA_LIST_PAGE_LIMIT, approval, cursor });
 }
 
-/** Apply one write to the fresh record inside the registry. The route imports any legacy record first (getEmaTenant). */
-export function writeEmaTenant(registry: EmaRegistry, tenantId: string, write: Exclude<EmaWrite, { op: 'import' }>): Promise<EmaWriteResult> {
-	return registryCall<EmaWriteResult>(registry, { kind: 'ema-write', coordinationKey: EMA_REGISTRY_KEY, tenantId, write });
+/** Apply one write to the fresh record inside the registry. */
+export function writeEmaTenant(registry: EmaRegistry, tenantId: string, write: EmaWrite): Promise<EmaWriteResult> {
+	return registryCall<EmaWriteResult>(registry, { kind: 'ema-write', tenantId, write });
 }
 
-/**
- * Delete a tenant (see deleteTx). The operator's delete also clears any legacy KV copy, best-effort: the
- * registry now knows the id, so that copy can never be imported again anyway.
- */
-export async function deleteEmaTenant(registry: EmaRegistry, tenantId: string, op: 'operator' | 'self-serve'): Promise<EmaWriteResult> {
-	const result = await registryCall<EmaWriteResult>(registry, { kind: 'ema-delete', coordinationKey: EMA_REGISTRY_KEY, tenantId, op });
-	if (op === 'operator' && registry.kv) await purgeLegacyTenant(registry.kv, tenantId, null);
-	return result;
+/** Delete a tenant (see deleteTx). */
+export function deleteEmaTenant(registry: EmaRegistry, tenantId: string, mode: 'operator' | 'self-serve'): Promise<EmaWriteResult> {
+	return registryCall<EmaWriteResult>(registry, { kind: 'ema-delete', tenantId, mode });
 }
 
 /** The tenant_id of a well-formed `ema:<tenant_id>:<hash>` subject, else null. */
@@ -772,8 +806,8 @@ export interface EmaTokenClaims {
  * registry read: the token stands only while its tenant record exists, is active (isTenantActive), is on
  * the token's tier, and its epoch equals the token's `tep` (a token without one fails). Every revoking
  * write moves the epoch inside the same transaction that changes the record, so disabling, deleting,
- * re-creating, lapsing, re-keying or re-tiering a tenant cuts its tokens off at once, and nothing that
- * comes after (a re-enable, a re-approval, a tier round trip) brings them back. A registry that cannot
+ * re-creating, lapsing, re-keying, re-tiering or dropping a client cuts its tokens off at once, and nothing
+ * that comes after (a re-enable, a re-approval, a tier round trip) brings them back. A registry that cannot
  * be read throws StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
  */
 export async function isEmaTokenLive(registry: EmaRegistry, claims: EmaTokenClaims, nowSeconds: number): Promise<boolean> {
@@ -782,4 +816,3 @@ export async function isEmaTokenLive(registry: EmaRegistry, claims: EmaTokenClai
 	const rec = await getEmaTenant(registry, tenantId);
 	return rec !== null && isTenantActive(rec, nowSeconds) && claims.tier === rec.tier && claims.tep === tenantEpoch(rec);
 }
-

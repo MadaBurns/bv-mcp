@@ -1,10 +1,9 @@
 import { env, runInDurableObject, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
-import { resetQuotaCoordinatorState, securityStateShardNameForKey, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
 import { MAX_REQUEST_BODY_BYTES, OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
-import { EMA_REGISTRY_KEY, effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey } from '../../src/oauth/ema-tenants';
-import { sha256Hex } from '../../src/oauth/jwks';
+import { effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey, EMA_MIGRATED_STORAGE_KEY } from '../../src/oauth/ema-tenants';
 import { verifyJwt } from '../../src/oauth/jwt';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
@@ -367,7 +366,7 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	it('rejects an issuer whose index entry points at a record that no longer lists it, with the same wording', async () => {
 		// A stale index entry (issuer re-pointed at another tenant record) must not vouch for the issuer.
 		const stale = 'https://stale.okta.com';
-		await runInDurableObject(env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY)), (_instance, state) =>
+		await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), (_instance, state) =>
 			state.storage.put(emaIssuerStorageKey(stale), 'acme-corp'),
 		);
 		const body = await expectError(
@@ -749,8 +748,9 @@ describe('validateIdJagClaims (verified payload re-checks the routing claims)', 
 
 /** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
 async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
-	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY)), async (_instance, state) => {
+	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), async (_instance, state) => {
 		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
 		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
 	});
 }

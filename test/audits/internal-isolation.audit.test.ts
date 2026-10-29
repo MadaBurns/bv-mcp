@@ -339,3 +339,26 @@ describe('FIND-16: isPublicInternetRequest trusts only cf-connecting-ip', () => 
 		expect(isPublicInternetRequest({ cfConnectingIp: '', host: 'x' })).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Contract A11 M8: the QuotaCoordinator's full reset deletes the EMA tenant registry instance (every
+// tenant, every floor). It must stay a test-isolation helper: no production module may call a reset
+// helper or send the raw `reset` kind. Only quota-coordinator.ts itself (where they are defined) names them.
+// ---------------------------------------------------------------------------
+const SOURCES = import.meta.glob('/src/**/*.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const COORDINATOR_SOURCE = '/src/lib/quota-coordinator.ts';
+const RESET_CALL = /\b(resetQuotaCoordinatorState|resetQuotaCoordinatorShards|resetSecurityStateShards)\b|kind:\s*['"]reset['"]/;
+
+describe('M8: coordinator resets have no production callers', () => {
+	it('reads the source tree (positive control: the definitions are found where they live)', () => {
+		expect(Object.keys(SOURCES).length).toBeGreaterThan(50);
+		expect(RESET_CALL.test(SOURCES[COORDINATOR_SOURCE] ?? '')).toBe(true);
+	});
+
+	it('no src/ module other than quota-coordinator.ts names a reset helper or sends the reset kind', () => {
+		const callers = Object.entries(SOURCES)
+			.filter(([file, text]) => file !== COORDINATOR_SOURCE && RESET_CALL.test(text))
+			.map(([file]) => file);
+		expect(callers).toEqual([]);
+	});
+});

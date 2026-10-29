@@ -1,13 +1,13 @@
 import { env, createExecutionContext, runInDurableObject, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
-import { resetQuotaCoordinatorState, securityStateShardNameForKey } from '../../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME } from '../../src/lib/quota-coordinator';
 import { parseEnvelopeKey, sealKv } from '../../src/lib/kv-envelope';
 import {
-	EMA_REGISTRY_KEY,
 	effectiveApproval,
 	emaIssuerStorageKey,
 	emaRecordStorageKey,
+	EMA_MIGRATED_STORAGE_KEY,
 	getEmaTenant,
 	tenantEpoch,
 	type EmaRegistry,
@@ -442,7 +442,7 @@ describe('EMA self-serve tenants and operator approval', () => {
 	/** Operator approval with the reviewed snapshot (admin key). */
 	async function approve(): Promise<Response> {
 		const record = (await getEmaTenant(REGISTRY, TENANT))!;
-		const reviewed = { issuer: record.issuer, jwks_uri: record.jwks_uri, updated_at: record.updated_at };
+		const reviewed = { issuer: record.issuer, jwks_uri: record.jwks_uri, rev: record.rev ?? 0 };
 		return send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/approve`, ADMIN_KEY, reviewed));
 	}
 
@@ -527,7 +527,7 @@ describe('EMA self-serve tenants and operator approval', () => {
 		expect((await send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/reject`, ADMIN_KEY, undefined))).status).toBe(200);
 
 		// The route's own read answers the approved, pre-reject record; the write is decided inside the registry.
-		const staleRead = interceptCoordinator(['ema-get'], async () => ({ record: preReject, known: true }));
+		const staleRead = interceptCoordinator(['ema-get'], async () => ({ status: 'ok', record: preReject }));
 		const saved = await swapBinding('QUOTA_COORDINATOR', staleRead, () => selfServe({ name: 'Acme renamed' }));
 		expect(saved.status).toBe(200);
 		expect(((await saved.json()) as { approval: string }).approval).toBe('rejected');
@@ -603,18 +603,33 @@ describe('EMA tenant token epoch on the upsert route', () => {
 		expect(await currentEpoch()).toBeGreaterThan(created);
 	});
 
-	it('imports a sealed legacy KV tenant on first use: it exchanges, its KV record and issuer index are gone, and KV is never written', async () => {
+	it('M3: dropping an allowed client kills the tokens minted before it, and adding it back does not revive them', async () => {
+		const OTHER_CLIENT = 'https://other.example.com/client.json';
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		// Adding a client keeps the epoch: the standing token still works.
+		expect((await seedTenant({ allowed_client_ids: [WEB_CLIENT_ID, OTHER_CLIENT] })).status).toBe(200);
+		const kept = await callPaidTool(token);
+		expect(kept.status).toBe(200);
+		expect((await seedTenant({ allowed_client_ids: [OTHER_CLIENT] })).status).toBe(200);
+		expect((await seedTenant({ allowed_client_ids: [WEB_CLIENT_ID, OTHER_CLIENT] })).status).toBe(200);
+		expect((await send(mcpRequest(token, batchStatusCall, kept.sessionId))).status).toBe(401);
+	});
+
+	it('M5: a sealed legacy KV tenant is imported on first use and exchanges; KV keeps its copy but is never read or written again', async () => {
 		const legacy = { ...legacyTenant(), token_epoch: 7 };
 		await putLegacyKvTenant(legacy);
+		const sealed = await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp');
 		const token = await mintToken(await signIdJag());
 		expect(decodeClaims(token).tep).toBe(7);
 		expect((await callPaidTool(token)).status).toBe(200);
-		expect(await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp')).toBeNull();
-		expect(await env.SESSION_STORE.get(`oauth:ema-issuer:${await sha256Hex(IDP_ISSUER)}`)).toBeNull();
 		expect((await storedRecord()).token_epoch).toBe(7);
-		// Later writes go to the registry only.
+		// Later writes go to the registry only. The KV copy stays byte-identical (one release of rollback), and
+		// the still-enabled copy never speaks again: the disabled registry record alone decides the exchange.
 		expect((await seedTenant({ enabled: false })).status).toBe(200);
-		expect(await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp')).toBeNull();
+		expect(await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp')).toBe(sealed);
+		expect(await env.SESSION_STORE.get(`oauth:ema-issuer:${await sha256Hex(IDP_ISSUER)}`)).toBe('acme-corp');
+		expect((await exchange(await signIdJag())).status).toBe(400);
 	});
 
 	it('a token minted under a legacy record (tep = created_at) stays valid across the import until the first revoke', async () => {
@@ -634,7 +649,7 @@ describe('EMA tenant token epoch on the upsert route', () => {
 			);
 		const before = await callPaidTool(await forge());
 		expect(before.status).toBe(200);
-		expect(await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp')).toBeNull();
+		expect(await env.SESSION_STORE.get('oauth:ema-tenant:acme-corp')).not.toBeNull();
 
 		expect((await seedTenant({ enabled: false })).status).toBe(200);
 		expect((await seedTenant({ enabled: true })).status).toBe(200);
@@ -751,7 +766,11 @@ describe('EMA registry regressions (SQ-467 F1 and F2, contract A11)', () => {
 const REGISTRY: EmaRegistry = { coordinator: env.QUOTA_COORDINATOR, kv: env.SESSION_STORE, kvEnvelopeKey: ENVELOPE_KEY };
 
 /** Run with one worker binding swapped, restoring it afterwards. */
-async function swapBinding<T>(name: 'QUOTA_COORDINATOR' | 'SESSION_STORE' | 'KV_ENVELOPE_KEY', replacement: unknown, run: () => Promise<T>): Promise<T> {
+async function swapBinding<T>(
+	name: 'QUOTA_COORDINATOR' | 'SESSION_STORE' | 'KV_ENVELOPE_KEY',
+	replacement: unknown,
+	run: () => Promise<T>,
+): Promise<T> {
 	const bindings = e2eEnv as unknown as Record<string, unknown>;
 	const original = bindings[name];
 	bindings[name] = replacement;
@@ -799,9 +818,10 @@ async function putLegacyKvTenant(rec: EmaTenantRecord): Promise<void> {
 
 /** Overwrite one record directly in the registry shard (with its issuer index entry and epoch floor), bypassing every write rule. */
 async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
-	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY)), async (_instance, state) => {
+	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), async (_instance, state) => {
 		const indexKey = emaIssuerStorageKey(rec.issuer);
 		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
 		if (effectiveApproval(rec) === 'approved') await state.storage.put(indexKey, rec.tenant_id);
 		else if ((await state.storage.get(indexKey)) === rec.tenant_id) await state.storage.delete(indexKey);
 	});

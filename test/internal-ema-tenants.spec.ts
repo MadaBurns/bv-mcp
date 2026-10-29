@@ -8,15 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
 import {
-	EMA_REGISTRY_KEY,
 	effectiveApproval,
 	emaIssuerStorageKey,
 	emaRecordStorageKey,
+	EMA_MIGRATED_STORAGE_KEY,
 	getEmaTenant,
 	getEmaTenantByIssuer,
 	type EmaRegistry,
 } from '../src/oauth/ema-tenants';
-import { resetQuotaCoordinatorState, securityStateShardNameForKey, type QuotaCoordinator } from '../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME, type QuotaCoordinator } from '../src/lib/quota-coordinator';
 import type { EmaTenantRecord } from '../src/schemas/ema';
 import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import { clearKvPrefix } from './helpers/kv';
@@ -398,20 +398,25 @@ describe('PUT is one registry read and one registry write', () => {
 				};
 			},
 		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
-		return { ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, QUOTA_COORDINATOR: coordinator } as unknown as TestEnv;
+		return {
+			...env,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
+			KV_ENVELOPE_KEY: ENVELOPE_B64,
+			QUOTA_COORDINATOR: coordinator,
+		} as unknown as TestEnv;
 	}
 
-	it('an update PUT reads the tenant once and writes it once', async () => {
+	it('an update PUT is ONE registry write, decided on the fresh record (no separate read)', async () => {
 		expect((await send(call('PUT', '', upsertBody()))).status).toBe(200);
 		const counts: Record<string, number> = {};
 		expect((await send(call('PUT', '', upsertBody({ name: 'Acme Renamed' })), countingEnv(counts))).status).toBe(200);
-		expect(counts).toEqual({ 'ema-get': 1, 'ema-write': 1 });
+		expect(counts).toEqual({ 'ema-write': 1 });
 	});
 
-	it('a create PUT reads the tenant once (a registry miss on a never-known id also checks legacy KV) and writes it once', async () => {
+	it('the first PUT on an unmigrated registry is refused unserved, runs the one-time import, then writes once', async () => {
 		const counts: Record<string, number> = {};
 		expect((await send(call('PUT', '', upsertBody()), countingEnv(counts))).status).toBe(200);
-		expect(counts).toEqual({ 'ema-get': 1, 'ema-write': 1 });
+		expect(counts).toEqual({ 'ema-write': 2, 'ema-migrate': 1 });
 	});
 
 	it('an issuer move releases the old index entry inside the same write', async () => {
@@ -429,9 +434,7 @@ describe('PUT over an orphaned issuer index', () => {
 		await runInDurableObject(registryShard(), (_instance, state) => state.storage.delete(emaRecordStorageKey('acme-corp')));
 		const res = await send(call('PUT', '', upsertBody({ tenant_id: 'other-corp' })));
 		expect(res.status).toBe(200);
-		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe(
-			'other-corp',
-		);
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe('other-corp');
 	});
 });
 
@@ -467,12 +470,13 @@ describe('registry or SESSION_STORE failure -> 503 ema_store_unavailable', () =>
 /** The registry as the Worker sees it (coordinator + the legacy-import KV and envelope key). */
 const REGISTRY: EmaRegistry = { coordinator: env.QUOTA_COORDINATOR, kv: env.SESSION_STORE, kvEnvelopeKey: ENVELOPE_KEY };
 
-const registryShard = () => env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY));
+const registryShard = () => env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME);
 
 /** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
 async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
 	await runInDurableObject(registryShard(), async (_instance, state) => {
 		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
 		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
 	});
 }

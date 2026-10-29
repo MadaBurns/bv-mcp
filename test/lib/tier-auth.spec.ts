@@ -1,10 +1,10 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { EMA_REGISTRY_KEY, effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey } from '../../src/oauth/ema-tenants';
+import { effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey, EMA_MIGRATED_STORAGE_KEY } from '../../src/oauth/ema-tenants';
 import { newJti, signJwt } from '../../src/oauth/jwt';
 import { sha256Hex } from '../../src/oauth/jwks';
 import { parseEnvelopeKey, sealKv } from '../../src/lib/kv-envelope';
-import { resetQuotaCoordinatorState, securityStateShardNameForKey, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -61,8 +61,9 @@ function spyKv(opts: { failTenantReads?: boolean } = {}): {
 
 /** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
 async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
-	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY)), async (_instance, state) => {
+	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), async (_instance, state) => {
 		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
 		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
 	});
 }
@@ -129,14 +130,17 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 	it('imports a sealed legacy KV tenant on first use: 503 while the envelope key is missing, then live once it is set', async () => {
 		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 		const legacy = tenant();
-		await env.SESSION_STORE.put(`oauth:ema-tenant:${legacy.tenant_id}`, await sealKv(JSON.stringify(legacy), parseEnvelopeKey(ENVELOPE_KEY_BASE64)!));
+		await env.SESSION_STORE.put(
+			`oauth:ema-tenant:${legacy.tenant_id}`,
+			await sealKv(JSON.stringify(legacy), parseEnvelopeKey(ENVELOPE_KEY_BASE64)!),
+		);
 		await env.SESSION_STORE.put(`oauth:ema-issuer:${await sha256Hex(legacy.issuer)}`, legacy.tenant_id);
 		const { kv } = spyKv();
 		// A sealed record nobody can open is an outage, never an absent tenant.
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false, storageUnavailable: true });
 		expect((await resolve(await mint({ tep: EPOCH }), kv, ENVELOPE_KEY_BASE64)).authenticated).toBe(true);
-		expect(await env.SESSION_STORE.get(`oauth:ema-tenant:${legacy.tenant_id}`)).toBeNull();
-		// Imported: the registry answers from now on, with or without the key.
+		// The KV copy stays for one release (rollback); the registry answers from now on, with or without the key.
+		expect(await env.SESSION_STORE.get(`oauth:ema-tenant:${legacy.tenant_id}`)).not.toBeNull();
 		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
 	});
 

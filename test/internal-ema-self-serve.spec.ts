@@ -9,11 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
 import {
-	EMA_REGISTRY_KEY,
 	effectiveApproval,
-	emaEpochFloorStorageKey,
+	emaFloorStorageKey,
 	emaIssuerStorageKey,
 	emaRecordStorageKey,
+	EMA_MIGRATED_STORAGE_KEY,
 	getEmaTenant,
 	getEmaTenantByIssuer,
 	isEmaTokenLive,
@@ -22,7 +22,7 @@ import {
 	tenantEpoch,
 	type EmaRegistry,
 } from '../src/oauth/ema-tenants';
-import { resetQuotaCoordinatorState, securityStateShardNameForKey } from '../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME } from '../src/lib/quota-coordinator';
 import { parseEnvelopeKey, sealKv } from '../src/lib/kv-envelope';
 import type { EmaTenantRecord } from '../src/schemas/ema';
 import { clearKvPrefix } from './helpers/kv';
@@ -103,7 +103,7 @@ const putOperator = (overrides: Record<string, unknown> = {}) =>
 const stored = async (tenantId = TENANT_ID): Promise<EmaTenantRecord | null> => getEmaTenant(REGISTRY, tenantId);
 
 /** The snapshot an operator reviews before approving. */
-const reviewed = (rec: EmaTenantRecord) => ({ issuer: rec.issuer, jwks_uri: rec.jwks_uri, updated_at: rec.updated_at });
+const reviewed = (rec: EmaTenantRecord) => ({ issuer: rec.issuer, jwks_uri: rec.jwks_uri, rev: rec.rev ?? 0 });
 
 async function approve(tenantId = TENANT_ID, overrides: Record<string, unknown> = {}): Promise<Response> {
 	return send(call('POST', `/ema-tenants/${tenantId}/approve`, { ...reviewed((await stored(tenantId))!), ...overrides }));
@@ -126,7 +126,7 @@ async function epoch(tenantId = TENANT_ID): Promise<number> {
 	const rec = await stored(tenantId);
 	if (rec) return tenantEpoch(rec);
 	return runInDurableObject(registryShard(), async (_instance, state) => {
-		const floor = await state.storage.get<{ value: number }>(emaEpochFloorStorageKey(tenantId));
+		const floor = await state.storage.get<{ value: number }>(emaFloorStorageKey(tenantId));
 		return (floor?.value ?? 0) + 1;
 	});
 }
@@ -652,7 +652,9 @@ describe('the coordinator version, not the KV record, decides which tokens stand
 	it('the operator DELETE retires the epoch too, even for a registry record it cannot read', async () => {
 		await putOperator();
 		const tep = await epoch('acme-operator');
-		await runInDurableObject(registryShard(), (_instance, state) => state.storage.put(emaRecordStorageKey('acme-operator'), { corrupt: true }));
+		await runInDurableObject(registryShard(), (_instance, state) =>
+			state.storage.put(emaRecordStorageKey('acme-operator'), { corrupt: true }),
+		);
 		expect((await send(call('DELETE', '/ema-tenants/acme-operator'))).status).toBe(204);
 		expect(await epoch('acme-operator')).toBeGreaterThan(tep);
 	});
@@ -834,7 +836,7 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 	it.each([
 		['issuer', { issuer: OTHER_ISSUER }],
 		['jwks_uri', { jwks_uri: 'https://idp.acme.example.com/other-keys' }],
-		['updated_at', { updated_at: 1 }],
+		['rev', { rev: 999 }],
 	])('409 approval_stale when the reviewed %s no longer matches; nothing changes', async (_label, drift) => {
 		await putSelfServe();
 		const before = await stored();
@@ -856,7 +858,7 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 	it.each([
 		['no body', undefined],
 		['a missing field', { issuer: ISSUER, jwks_uri: JWKS_URI }],
-		['an extra field', { issuer: ISSUER, jwks_uri: JWKS_URI, updated_at: 1, approval: 'approved' }],
+		['an extra field', { issuer: ISSUER, jwks_uri: JWKS_URI, rev: 1, approval: 'approved' }],
 	])('400 on an approve with %s', async (_label, body) => {
 		await putSelfServe();
 		expect((await send(call('POST', `/ema-tenants/${TENANT_ID}/approve`, body))).status).toBe(400);
@@ -891,7 +893,7 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 	});
 
 	it('404 not_found for an absent or malformed tenant', async () => {
-		const missing = await send(call('POST', '/ema-tenants/missing-tenant/approve', { issuer: ISSUER, jwks_uri: JWKS_URI, updated_at: 1 }));
+		const missing = await send(call('POST', '/ema-tenants/missing-tenant/approve', { issuer: ISSUER, jwks_uri: JWKS_URI, rev: 1 }));
 		expect(missing.status).toBe(404);
 		expect(await missing.json()).toEqual({ error: 'not_found' });
 		expect((await send(call('POST', '/ema-tenants/missing-tenant/reject'))).status).toBe(404);
@@ -1043,7 +1045,7 @@ describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
 		['PUT', selfServePath(), selfServeBody()],
 		['GET', selfServePath(), undefined],
 		['DELETE', selfServePath(), undefined],
-		['POST', `/ema-tenants/${TENANT_ID}/approve`, { issuer: ISSUER, jwks_uri: JWKS_URI, updated_at: 1 }],
+		['POST', `/ema-tenants/${TENANT_ID}/approve`, { issuer: ISSUER, jwks_uri: JWKS_URI, rev: 1 }],
 		['POST', `/ema-tenants/${TENANT_ID}/reject`, undefined],
 		['GET', '/ema-tenants?approval=pending', undefined],
 	])('%s %s', async (method, path, body) => {
@@ -1063,12 +1065,13 @@ describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
 /** The registry as the Worker sees it (coordinator + the legacy-import KV and envelope key). */
 const REGISTRY: EmaRegistry = { coordinator: env.QUOTA_COORDINATOR, kv: env.SESSION_STORE!, kvEnvelopeKey: ENVELOPE_KEY };
 
-const registryShard = () => env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY));
+const registryShard = () => env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME);
 
 /** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
 async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
 	await runInDurableObject(registryShard(), async (_instance, state) => {
 		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
 		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
 	});
 }

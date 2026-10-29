@@ -88,7 +88,7 @@ import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from
 import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
-import { CLAUDE_WEB_CIMD_CLIENT_ID, redirectUriMatches, resolveClient } from './oauth/cimd';
+import { redirectUriMatches, resolveClient } from './oauth/cimd';
 import { resolveIssuer } from './oauth/discovery';
 import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 import { readBoundedText } from './lib/request-body';
@@ -1482,9 +1482,9 @@ internalRoutes.get('/trial-keys', async (c) => {
 //   /internal/oauth/ema-tenants*   operator, BV_MCP_EMA_ADMIN_KEY: seed, list, approve, reject, delete
 //   /internal/oauth/ema-self-serve bv-web settings, BV_MCP_OAUTH_MINT_KEY: customer-managed tenants only
 // bv-web holds the mint key, so it reaches the store only through the narrow self-serve door and can
-// never approve. The store is the EMA registry (oauth/ema-tenants.ts): one QuotaCoordinator shard that
-// applies every write to the fresh record inside a transaction. Only an approved tenant owns its issuer or
-// mints (isTenantActive).
+// never approve. The store is the EMA registry (oauth/ema-tenants.ts): one dedicated QuotaCoordinator
+// instance that applies every write to the fresh record inside a transaction. Only an approved tenant owns
+// its issuer or mints (isTenantActive).
 
 const EMA_DISCOVERY_TIMEOUT_MS = 5000;
 const EMA_DISCOVERY_MAX_BYTES = 16 * 1024;
@@ -1655,8 +1655,6 @@ async function selfServeJwksUri(
 	return jwksUri ? { jwksUri } : { error: 'issuer_discovery_failed' };
 }
 
-const isRecordChanged = (result: EmaWriteResult): boolean => 'error' in result && result.error === 'ema_record_changed';
-
 /**
  * Create-or-update a customer-managed tenant. The stored tenant is read first, so an operator-managed (409)
  * or unreadable (503) one is refused before any network call. A write that only lowers privilege
@@ -1669,15 +1667,15 @@ async function upsertSelfServeEmaTenant(
 	registry: EmaRegistry,
 	tenantId: string,
 	body: EmaSelfServeUpsertRequest,
-): Promise<EmaWriteResult | { error: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
+): Promise<EmaWriteResult | { status: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
 	const existing = await getEmaTenant(registry, tenantId);
-	if (existing && existing.source !== 'self-serve') return { error: 'tenant_managed_by_operator' };
+	if (existing && existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
 	if (existing && lowersPrivilegeOnly(existing, body)) {
 		const lowered = await writeEmaTenant(registry, tenantId, { op: 'self-serve-upsert', body });
-		if (!isRecordChanged(lowered)) return lowered;
+		if (lowered.status !== 'ema_record_changed') return lowered;
 	}
 	const discovered = await selfServeJwksUri(body.issuer);
-	if ('error' in discovered) return discovered;
+	if ('error' in discovered) return { status: discovered.error };
 	return writeEmaTenant(registry, tenantId, {
 		op: 'self-serve-upsert',
 		body,
@@ -1697,10 +1695,8 @@ async function decideEmaTenant(
 ): Promise<Response> {
 	const registry = emaRegistryOf(c.env, target.kv);
 	try {
-		// Read first so a tenant still only in legacy KV is imported before the decision lands on it.
-		await getEmaTenant(registry, target.tenantId);
 		const result = await writeEmaTenant(registry, target.tenantId, write);
-		if ('error' in result) return emaRouteError(c, result.error);
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
 		logEmaTenantMutation(target.tenantId, write.op, result.record);
 		return c.json(result.record, 200, EMA_NO_STORE);
 	} catch {
@@ -1710,9 +1706,9 @@ async function decideEmaTenant(
 
 /**
  * Refuse a write while OAuth is on without a (parseable) envelope key. Records are no longer sealed (the
- * registry holds them), but a tenant not yet imported may still sit sealed in legacy KV, and only the key
- * can import it; refusing up front keeps a write from running over a record it cannot see. With OAuth off
- * the grant is unreachable and nothing can strand.
+ * registry holds them in plaintext); the key only matters to the one-time import of the sealed legacy KV
+ * tenants, which runs before the registry serves anything. Refusing up front keeps the gate the routes had.
+ * With OAuth off the grant is unreachable and nothing can strand.
  */
 const requireEmaEnvelopeKey: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
 	if (c.env.ENABLE_OAUTH === 'true' && !emaEnvelopeKey(c.env)) return c.json({ error: 'envelope_key_required' }, 409, EMA_NO_STORE);
@@ -1741,9 +1737,8 @@ internalRoutes.put('/oauth/ema-tenants', requireEmaEnvelopeKey, async (c) => {
 
 	const registry = emaRegistryOf(c.env, kv);
 	try {
-		await getEmaTenant(registry, body.tenant_id);
 		const result = await writeEmaTenant(registry, body.tenant_id, { op: 'operator-upsert', body: { ...body, jwks_uri: jwksUri } });
-		return 'error' in result ? emaRouteError(c, result.error) : c.json(result.record, 200, EMA_NO_STORE);
+		return result.status === 'ok' ? c.json(result.record, 200, EMA_NO_STORE) : emaRouteError(c, result.status);
 	} catch {
 		return emaStoreError(c);
 	}
@@ -1833,7 +1828,7 @@ internalRoutes.put('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, as
 	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
 	try {
 		const result = await upsertSelfServeEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId, parsed.body);
-		if ('error' in result) return emaRouteError(c, result.error);
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
 		logEmaTenantMutation(target.tenantId, 'upsert', result.record);
 		return result.record ? c.json(emaSelfServeView(result.record), 200, EMA_NO_STORE) : emaStoreError(c);
 	} catch {
@@ -1867,7 +1862,7 @@ internalRoutes.delete('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey,
 	try {
 		const existing = await getEmaTenant(registry, target.tenantId);
 		const result = await deleteEmaTenant(registry, target.tenantId, 'self-serve');
-		if ('error' in result) return emaRouteError(c, result.error);
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
 		logEmaTenantMutation(target.tenantId, 'delete', existing);
 		return c.body(null, 204, EMA_NO_STORE);
 	} catch {

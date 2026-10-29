@@ -366,25 +366,44 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 > (`/internal/oauth/ema-self-serve/<tenant_id>`), which cannot approve anything.
 
 > **Storage: the EMA registry.** Tenant records, the approved-issuer index and each tenant's
-> epoch floor live in ONE QuotaCoordinator strong-state shard (fixed coordination key
-> `ema-registry`, keys under `strong:ema:` and `strong:version:ema-tenant-epoch:`, outside the
-> `quota:` prefix the cleanup alarm sweeps, so nothing expires them). Every read and write is one
-> Durable Object call that runs inside a storage transaction: a write is decided on the record as
-> it is now, never on a snapshot the Worker read earlier. Durable Object storage is encrypted at
-> rest and reachable only through this Worker's binding, so records are no longer sealed. That
-> one shard serves every EMA mint and every EMA bearer request (one call each); that is accepted
-> for current volume, so watch its latency if EMA traffic grows.
+> floor (the highest token epoch and revision the id ever had) live in ONE dedicated
+> QuotaCoordinator Durable Object instance named `ema-registry` (not a shared security shard),
+> under `ema:` keys, outside the `quota:` prefix the cleanup alarm sweeps, so nothing expires
+> them. Every read and write is one Durable Object call that runs inside a storage transaction: a
+> write is decided on the record as it is now, never on a snapshot the Worker read earlier. The
+> coordinator's full reset (`resetQuotaCoordinatorState`) deletes every tenant; it is a test helper
+> only, and an audit test fails if any production module calls it.
 >
-> **Records from before the registry are imported automatically.** A tenant written by an older
-> release sits in `SESSION_STORE` (`oauth:ema-tenant:<id>`, sealed with `KV_ENVELOPE_KEY`). The
-> first read of that tenant (a mint, a bearer request, an operator or self-serve call, or a
-> `GET /internal/oauth/ema-tenants` list) imports it into the registry with its token epoch, so
-> its live tokens keep working, and deletes the KV copy. The registry never reads KV again for an
-> id it knows, so a deleted tenant cannot come back from a stale copy. No operator step is needed.
-> `KV_ENVELOPE_KEY` now only matters for that import: a sealed legacy record with no key, or one
-> that does not open, is a 503 (never an absent tenant) until the key is set. While `ENABLE_OAUTH`
-> is `true` and the key is unset (or does not parse), the write routes still answer
-> `409 envelope_key_required`, so no write runs over a legacy record it cannot import.
+> **Plaintext at rest.** Records are no longer sealed with `KV_ENVELOPE_KEY`. The platform encrypts
+> Durable Object storage at rest and only this Worker's binding can call the registry, but account
+> members whose Cloudflare role lets them browse Durable Object storage in the dashboard (Data
+> Studio) can read the records: tenant ids and names, issuers, `jwks_uri`, client ids, tiers and
+> entitlement dates. None of these is key material or a token. Keep that access to operators.
+>
+> **Throughput.** That one instance serves every EMA mint and every EMA bearer request (one call
+> each). A single Durable Object handles roughly 1,000 requests a second; that is accepted for
+> current volume, so watch its latency and errors if EMA traffic grows. The mint's per-(IP, issuer)
+> limit (120 a minute) and per-IP ceiling (600 a minute) run before any registry call. Nothing
+> caches a registry answer; if a cache is ever added, it may only hold a dead verdict, never a live one.
+>
+> **The one-time import of older records.** A tenant written by an older release sits in
+> `SESSION_STORE` (`oauth:ema-tenant:<id>`, sealed with `KV_ENVELOPE_KEY`). Until the registry has
+> imported them it serves nothing: the first EMA call of any kind after the deploy reads EVERY
+> legacy tenant and imports them all in one transaction, then sets the `ema:migrated` marker. Each
+> keeps its token epoch, so its live tokens keep working; where two approved records list one
+> issuer, the one the old KV issuer index named keeps it. After the marker KV is never read again.
+> No operator step is needed. If any legacy record cannot be read (a sealed record while
+> `KV_ENVELOPE_KEY` is unset or wrong, a record that does not parse, more than 500 records),
+> nothing is imported and EVERY EMA call answers 503 until it is fixed: restore the key that sealed
+> them, or delete the broken `oauth:ema-tenant:<id>` key, and the next call imports. `KV_ENVELOPE_KEY`
+> now only matters for that import. While `ENABLE_OAUTH` is `true` and the key is unset (or does not
+> parse), the write routes still answer `409 envelope_key_required`.
+>
+> **Rollback and the deploy freeze.** The import never deletes or writes KV: the legacy copies stay
+> for one release so a rollback to the previous Worker finds them. Changes made after the deploy
+> live only in the registry and are lost by a rollback. Make no operator EMA edits while this
+> release deploys (old isolates may still write KV), nor while a rollback is still possible. Delete
+> the legacy `oauth:ema-tenant:*` and `oauth:ema-issuer:*` keys in the release after.
 
     PUT /internal/oauth/ema-tenants
     Authorization: Bearer <BV_MCP_EMA_ADMIN_KEY>
@@ -424,16 +443,18 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   challenge. Claude recovers by exchanging a fresh assertion.
 - The token epoch is the record's `token_epoch` (server-managed, never accepted in a PUT body). It
   only moves forward. Every revoking write (create, disable, an issuer or `jwks_uri` change, any
-  `tier` change, leaving approval, an earlier `entitlement_expires_at`) moves it inside the same
+  `tier` change, removing an `allowed_client_ids` entry, leaving approval, an earlier
+  `entitlement_expires_at`) moves it inside the same
   transaction that changes the record; a mint validates the assertion against one record and stamps
   that record's epoch as `tep`. A token minted against the record before a revoke therefore carries
   the old epoch and dies, and re-enabling, re-approving or a tier round trip never revives it. A
-  DELETE keeps the id's highest epoch as a floor, so a re-created tenant starts above it. If the
+  DELETE moves the id's floor one past its last epoch, so a re-created tenant starts above every
+  token the id ever minted. If the
   registry cannot answer, a mint or a bearer request answers 503 (retryable, never a 401) and a
   write answers `503 ema_store_unavailable` and changes nothing.
 - `GET /internal/oauth/ema-tenants` lists one page (at most 100, in `tenant_id` order; a
   `next_cursor` in the answer is the `?cursor=` of the next page), `GET
-  /internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
+/internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
   removes it (204). DELETE also releases the issuer even when the record can no longer be read.
 - Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
   created `pending` and mints nothing until approved; an operator-seeded tenant without an
@@ -441,11 +462,12 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 
       GET  /internal/oauth/ema-tenants?approval=pending        # also approved | rejected
       POST /internal/oauth/ema-tenants/<tenant_id>/approve
-      {"issuer": "<issuer>", "jwks_uri": "<jwks_uri>", "updated_at": <updated_at>}
+      {"issuer": "<issuer>", "jwks_uri": "<jwks_uri>", "rev": <rev>}
       POST /internal/oauth/ema-tenants/<tenant_id>/reject
 
-  Copy the three approve fields from the record you reviewed; if the record changed since,
-  the approve answers `409 approval_stale` and you review again. Approving claims the issuer:
+  Copy the three approve fields from the record you reviewed (`GET .../<tenant_id>` shows `rev`,
+  which every write raises); if the record changed since, even within the same second, the
+  approve answers `409 approval_stale` and you review again. Approving claims the issuer:
   `409 issuer_conflict` means another approved tenant already holds it. A reject is a ban
   on that issuer for that tenant: the customer's own DELETE of a rejected tenant leaves a
   disabled, lapsed tombstone that stays `rejected` (still `204`), so deleting and re-saving
@@ -458,10 +480,10 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   record, its history and its issuer outright. The self-serve DELETE, like the PUT, answers
   `409 envelope_key_required` while OAuth is on and `KV_ENVELOPE_KEY` is unset. The self-serve route refuses shared
   issuers (`isSharedIssuer` in `src/oauth/ema-tenants.ts`); the operator PUT does not check them.
-- When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
-  key is treated as absent (the grant fails closed for that issuer, and the tenant's
-  issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
-  the re-PUT counts as a create, so it starts a new token epoch.
+
+- `KV_ENVELOPE_KEY` no longer seals tenant records. Before the one-time import has run,
+  changing or removing it makes the import fail (every EMA call 503) until the key that
+  sealed the legacy records is back; once the import has run it no longer affects EMA.
 - A tenant whose exchanges answer `503 temporarily_unavailable` ("Issuer signing keys are
   unavailable") has a stored `jwks_uri` that cannot be fetched right now: the IdP is down, the
   URL is blocked by the outbound fetch policy, or the response is not a usable key set. Each
@@ -472,7 +494,7 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 
 Run after the Worker deploy, and again once a tenant is seeded:
 
-1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After ANY `KV_ENVELOPE_KEY` change (first set, rotation, removal) while legacy KV tenants may remain, also run `GET /internal/oauth/ema-tenants`, which imports every legacy tenant it can open, and confirm every seeded tenant is listed; a missing one could not be opened under the current key and needs the right key or a re-PUT.
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After the first deploy of the registry release, also run `GET /internal/oauth/ema-tenants` once: it runs the one-time import if no call has yet, and must list every tenant seeded before. A `503 ema_store_unavailable` means a legacy record could not be read (see "The one-time import of older records" above).
 2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
 3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
 4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).

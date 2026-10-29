@@ -57,13 +57,18 @@ export const EmaTenantRecordSchema = z
 		created_at: z.number().int(),
 		updated_at: z.number().int(),
 		/**
-		 * Server-managed, never accepted in a PUT body: a MIRROR of the tenant's token epoch, whose authority
-		 * is the QuotaCoordinator version `ema-tenant-epoch:<tenant_id>` (a KV record has no compare-and-set,
-		 * so it cannot be the authority). Every EMA access token carries that version as `tep`, so a revoking
-		 * write bumps it first to cut every token minted before. On a record written before the version
-		 * existed this value (else `created_at`) seeds it.
+		 * Server-managed, never accepted from a caller: the tenant's token epoch. Every EMA access token
+		 * carries it as `tep`, and the registry moves it (only ever up) in the same transaction as any write
+		 * that revokes, so every token minted before that write dies. Absent only on a legacy KV record
+		 * (then `created_at` stands in).
 		 */
 		token_epoch: z.number().int().positive().optional(),
+		/**
+		 * Server-managed: the record's revision, raised by every registry write. The approve compare-and-set
+		 * names it, so it catches any change the operator did not review, two in one second included.
+		 * Absent only on a legacy KV record.
+		 */
+		rev: z.number().int().nonnegative().optional(),
 		/**
 		 * sha256 (hex) of every normalized issuer the operator rejected for this tenant, oldest first, at most
 		 * EMA_REJECTED_ISSUER_LIMIT. A self-serve write naming one stays rejected, so moving to another issuer
@@ -122,10 +127,64 @@ export const EmaSelfServeUpsertRequestSchema = z
 export type EmaSelfServeUpsertRequest = z.infer<typeof EmaSelfServeUpsertRequestSchema>;
 
 /**
- * POST /internal/oauth/ema-tenants/:tenant_id/approve body: the snapshot the operator reviewed. The
- * approval lands only while the stored record still matches it on all three fields (else 409).
+ * POST /internal/oauth/ema-tenants/:tenant_id/approve body: the snapshot the operator reviewed (the record's
+ * issuer, jwks_uri and rev, as GET answers them). The approval lands only while the stored record still
+ * matches it on all three fields (else 409 approval_stale).
  */
 export const EmaApproveRequestSchema = z
-	.object({ issuer: z.string().max(512), jwks_uri: z.string().max(512), updated_at: z.number().int() })
+	.object({ issuer: z.string().max(512), jwks_uri: z.string().max(512), rev: z.number().int().nonnegative() })
 	.strict();
 export type EmaApproveRequest = z.infer<typeof EmaApproveRequestSchema>;
+
+// ─── The EMA registry protocol: the QuotaCoordinator `ema-*` request kinds (oauth/ema-tenants.ts) ───
+
+/** The most records one `ema-list` page returns (the operator list route's page size). */
+export const EMA_LIST_PAGE_LIMIT = 100;
+
+/** The most legacy KV tenants the one-time import moves; more refuses the import (every EMA call stays 503). */
+export const EMA_MIGRATE_LIMIT = 500;
+
+const EmaRegistryTenantIdSchema = z.string().regex(EMA_TENANT_ID_PATTERN);
+
+/** An operator upsert as the registry takes it: jwks_uri resolved, and still no server-managed field. */
+export const EmaOperatorUpsertSchema = EmaTenantUpsertRequestSchema.extend({ jwks_uri: HttpsUrlSchema }).strict();
+export type EmaOperatorUpsert = z.infer<typeof EmaOperatorUpsertSchema>;
+
+/**
+ * One write. Each body is the strict route body, so a caller can never set a server-managed field
+ * (token_epoch, rev, created_at, updated_at, rejected_issuer_hashes, source; approval only through the
+ * operator upsert): the registry derives them from the fresh record.
+ */
+export const EmaWriteSchema = z.discriminatedUnion('op', [
+	z.object({ op: z.literal('operator-upsert'), body: EmaOperatorUpsertSchema }).strict(),
+	z
+		.object({
+			op: z.literal('self-serve-upsert'),
+			body: EmaSelfServeUpsertRequestSchema,
+			/** The jwks_uri the Worker discovered, and the issuer it discovered it for. */
+			discovered: z.object({ issuer: HttpsUrlSchema, jwks_uri: HttpsUrlSchema }).strict().optional(),
+		})
+		.strict(),
+	z.object({ op: z.literal('approve'), reviewed: EmaApproveRequestSchema }).strict(),
+	z.object({ op: z.literal('reject') }).strict(),
+]);
+export type EmaWrite = z.infer<typeof EmaWriteSchema>;
+
+/** Every `ema-*` request. The coordinator refuses anything else at the door, and the registry parses it again. */
+export const EmaRegistryRequestSchema = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('ema-get'), tenantId: EmaRegistryTenantIdSchema }).strict(),
+	z
+		.object({
+			kind: z.literal('ema-list'),
+			limit: z.number().int().min(1).max(EMA_LIST_PAGE_LIMIT),
+			approval: EmaApprovalSchema.optional(),
+			cursor: EmaRegistryTenantIdSchema.optional(),
+		})
+		.strict(),
+	z.object({ kind: z.literal('ema-resolve-issuer'), issuer: z.string().max(512) }).strict(),
+	z.object({ kind: z.literal('ema-write'), tenantId: EmaRegistryTenantIdSchema, write: EmaWriteSchema }).strict(),
+	z.object({ kind: z.literal('ema-delete'), tenantId: EmaRegistryTenantIdSchema, mode: z.enum(['operator', 'self-serve']) }).strict(),
+	z.object({ kind: z.literal('ema-migrate'), records: z.array(EmaTenantRecordSchema).max(EMA_MIGRATE_LIMIT) }).strict(),
+]);
+/** A request as a caller builds it (defaults not yet applied). */
+export type EmaRegistryRequest = z.input<typeof EmaRegistryRequestSchema>;

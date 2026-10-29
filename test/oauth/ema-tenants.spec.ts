@@ -1,7 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	EMA_REGISTRY_KEY,
 	deleteEmaTenant,
 	effectiveApproval,
 	getEmaTenant,
@@ -139,7 +138,10 @@ describe('EMA tenant registry (contract A11)', () => {
 		return settled.record;
 	};
 	const putLegacy = async (rec: EmaTenantRecord, key: Uint8Array | null = ENVELOPE_KEY) => {
-		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:${rec.tenant_id}`, key ? await sealKv(JSON.stringify(rec), key) : JSON.stringify(rec));
+		await env.SESSION_STORE.put(
+			`${OAUTH_KV_PREFIX}ema-tenant:${rec.tenant_id}`,
+			key ? await sealKv(JSON.stringify(rec), key) : JSON.stringify(rec),
+		);
 		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-issuer:${await sha256Hex(normalizeIssuer(rec.issuer))}`, rec.tenant_id);
 	};
 
@@ -157,7 +159,7 @@ describe('EMA tenant registry (contract A11)', () => {
 
 	it('only an approved tenant owns its issuer: a second approved tenant is issuer_conflict and nothing is stored', async () => {
 		await record(upsert());
-		expect(await upsert({ tenant_id: 'other-corp', issuer: 'https://idp.example.com/' })).toEqual({ error: 'issuer_conflict' });
+		expect(await upsert({ tenant_id: 'other-corp', issuer: 'https://idp.example.com/' })).toEqual({ status: 'issuer_conflict' });
 		expect(await getEmaTenant(REGISTRY, 'other-corp')).toBeNull();
 		// A pending one may name it; it neither claims nor blocks the issuer.
 		await record(upsert({ tenant_id: 'other-corp', approval: 'pending' }));
@@ -169,7 +171,7 @@ describe('EMA tenant registry (contract A11)', () => {
 		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp2.example.com'))?.tenant_id).toBe('acme-corp');
 	});
 
-	it('the epoch only moves forward: kept on a rename and a re-enable, bumped on a disable and on ANY tier change', async () => {
+	it('the epoch only moves forward: kept on a rename, a re-enable and an added client; bumped on a disable, ANY tier change and a dropped client', async () => {
 		const created = tenantEpoch(await record(upsert()));
 		expect(tenantEpoch(await record(upsert({ name: 'Renamed' })))).toBe(created);
 		const disabled = tenantEpoch(await record(upsert({ enabled: false })));
@@ -177,46 +179,83 @@ describe('EMA tenant registry (contract A11)', () => {
 		expect(tenantEpoch(await record(upsert({ enabled: true })))).toBe(disabled);
 		const upgraded = tenantEpoch(await record(upsert({ tier: 'developer' })));
 		expect(upgraded).toBeGreaterThan(disabled);
-		expect(tenantEpoch(await record(upsert({ tier: 'enterprise' })))).toBeGreaterThan(upgraded);
+		const reTiered = tenantEpoch(await record(upsert({ tier: 'enterprise' })));
+		expect(reTiered).toBeGreaterThan(upgraded);
+		// M3: adding a client keeps the epoch; removing one revokes every token, the removed client's included.
+		const twoClients = [CLAUDE_WEB_CLIENT_ID, 'https://other.example.com/client.json'];
+		expect(tenantEpoch(await record(upsert({ allowed_client_ids: twoClients })))).toBe(reTiered);
+		expect(tenantEpoch(await record(upsert({ allowed_client_ids: [CLAUDE_WEB_CLIENT_ID] })))).toBeGreaterThan(reTiered);
 	});
 
-	it('delete keeps a floor, so a re-created tenant starts above every epoch the id ever had', async () => {
+	it('delete moves the floor one past the last epoch, so a re-created tenant starts above every epoch and rev the id ever had', async () => {
 		await record(upsert());
-		const last = tenantEpoch(await record(upsert({ enabled: false })));
-		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ record: null });
+		const deleted = await record(upsert({ enabled: false }));
+		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ status: 'ok', record: null });
 		expect(await getEmaTenant(REGISTRY, 'acme-corp')).toBeNull();
 		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com')).toBeNull();
-		expect(tenantEpoch(await record(upsert()))).toBe(last + 1);
+		// M4: floor = last + 1, re-create = max(floor, prev) + 1.
+		const recreated = await record(upsert());
+		expect(tenantEpoch(recreated)).toBe(tenantEpoch(deleted) + 2);
+		expect(recreated.rev).toBe((deleted.rev ?? 0) + 1);
 		// Deleting an id that was never stored is a no-op that still marks it known.
-		expect(await deleteEmaTenant(REGISTRY, 'never-stored', 'operator')).toEqual({ record: null });
+		expect(await deleteEmaTenant(REGISTRY, 'never-stored', 'operator')).toEqual({ status: 'ok', record: null });
 	});
 
-	it('approve is a compare-and-set on the fresh record; reject and approve of a missing tenant are not_found', async () => {
+	it('approve is a compare-and-set on issuer, keys and rev of the fresh record; reject and approve of a missing tenant are not_found', async () => {
 		const pending = await record(upsert({ approval: 'pending' }));
-		const reviewed = { issuer: pending.issuer, jwks_uri: pending.jwks_uri, updated_at: pending.updated_at };
-		expect(await writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed: { ...reviewed, jwks_uri: 'https://x.example/k' } })).toEqual({
-			error: 'approval_stale',
+		const reviewed = { issuer: pending.issuer, jwks_uri: pending.jwks_uri, rev: pending.rev ?? 0 };
+		expect(
+			await writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed: { ...reviewed, jwks_uri: 'https://x.example/k' } }),
+		).toEqual({
+			status: 'approval_stale',
 		});
-		expect((await record(writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed }))).approval).toBe('approved');
-		expect(await writeEmaTenant(REGISTRY, 'missing-tenant', { op: 'reject' })).toEqual({ error: 'not_found' });
+		// M6: any write after the review moves rev, even one in the same second on the same issuer and keys.
+		const changed = await record(upsert({ approval: 'pending', tier: 'developer' }));
+		expect(changed.updated_at - pending.updated_at).toBeLessThanOrEqual(1);
+		expect(await writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed })).toEqual({ status: 'approval_stale' });
+		const approved = await record(
+			writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed: { ...reviewed, rev: changed.rev ?? 0 } }),
+		);
+		expect(approved.approval).toBe('approved');
+		expect(await writeEmaTenant(REGISTRY, 'missing-tenant', { op: 'reject' })).toEqual({ status: 'not_found' });
 	});
 
 	it('a self-serve write that skipped discovery on a record that has since changed is ema_record_changed (retryable)', async () => {
-		const body = { name: 'Acme', issuer: 'https://idp.example.com', enabled: true, tier: 'enterprise' as const, entitlement_expires_at: 2_000_000_000 };
-		expect(await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body })).toEqual({ error: 'ema_record_changed' });
+		const body = {
+			name: 'Acme',
+			issuer: 'https://idp.example.com',
+			enabled: true,
+			tier: 'enterprise' as const,
+			entitlement_expires_at: Math.floor(Date.now() / 1000) + 3600,
+		};
+		expect(await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body })).toEqual({
+			status: 'ema_record_changed',
+		});
 		const discovered = { issuer: 'https://idp.example.com', jwks_uri: 'https://idp.example.com/keys' };
 		// Discovery for a different issuer than the body names is the same refusal.
 		expect(
-			await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body, discovered: { ...discovered, issuer: 'https://x.example' } }),
-		).toEqual({ error: 'ema_record_changed' });
-		expect((await record(writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body, discovered }))).approval).toBe('pending');
+			await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', {
+				op: 'self-serve-upsert',
+				body,
+				discovered: { ...discovered, issuer: 'https://x.example' },
+			}),
+		).toEqual({ status: 'ema_record_changed' });
+		expect((await record(writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body, discovered }))).approval).toBe(
+			'pending',
+		);
 		await record(upsert({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }));
-		expect(await writeEmaTenant(REGISTRY, 'beta-corp', { op: 'self-serve-upsert', body, discovered })).toEqual({ error: 'tenant_managed_by_operator' });
-		expect(await deleteEmaTenant(REGISTRY, 'beta-corp', 'self-serve')).toEqual({ error: 'tenant_managed_by_operator' });
+		expect(await writeEmaTenant(REGISTRY, 'beta-corp', { op: 'self-serve-upsert', body, discovered })).toEqual({
+			status: 'tenant_managed_by_operator',
+		});
+		expect(await deleteEmaTenant(REGISTRY, 'beta-corp', 'self-serve')).toEqual({ status: 'tenant_managed_by_operator' });
 	});
 
 	it('lists one page per call in tenant_id order, filtered by approval, with a cursor to the next page', async () => {
-		for (const [id, n] of [['tenant-a', 1], ['tenant-b', 2], ['tenant-c', 3]] as const) {
+		for (const [id, n] of [
+			['tenant-a', 1],
+			['tenant-b', 2],
+			['tenant-c', 3],
+		] as const) {
 			await record(upsert({ tenant_id: id, issuer: `https://idp${n}.example.com`, approval: n === 2 ? 'pending' : 'approved' }));
 		}
 		expect((await listEmaTenants(REGISTRY, 'pending')).records.map((r) => r.tenant_id)).toEqual(['tenant-b']);
@@ -226,38 +265,46 @@ describe('EMA tenant registry (contract A11)', () => {
 		expect((await listEmaTenants(REGISTRY, undefined, page.cursor)).records.map((r) => r.tenant_id)).toEqual(['tenant-c']);
 	});
 
-	it('imports a sealed legacy KV tenant on first read, keeps its epoch, clears KV, and never re-imports a deleted id', async () => {
+	it('M5: imports EVERY legacy KV tenant in one transaction on first use, keeps epochs and KV copies, and never reads KV again', async () => {
 		await putLegacy(tenant({ token_epoch: 42 }));
+		// A record from before token_epoch keeps created_at, the epoch its tokens carry.
+		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }));
 		const imported = (await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com'))!;
 		expect(imported.tenant_id).toBe('acme-corp');
 		expect(tenantEpoch(imported)).toBe(42);
-		expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-` })).keys).toEqual([]);
-		// A record from before token_epoch keeps created_at, the epoch its tokens carry.
-		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }));
 		expect(tenantEpoch((await getEmaTenant(REGISTRY, 'beta-corp'))!)).toBe(1_700_000_000);
-
-		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ record: null });
-		await putLegacy(tenant({ token_epoch: 42 })); // a stale KV copy reappearing
+		expect((await listEmaTenants(REGISTRY)).records.map((r) => r.tenant_id)).toEqual(['acme-corp', 'beta-corp']);
+		// The KV copies stay (one release of rollback), but the registry never consults them again.
+		expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-tenant:` })).keys).toHaveLength(2);
+		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ status: 'ok', record: null });
+		await putLegacy(tenant({ tenant_id: 'gamma-corp', issuer: 'https://gamma.example.com' }));
 		expect(await getEmaTenant(REGISTRY, 'acme-corp')).toBeNull();
+		expect(await getEmaTenant(REGISTRY, 'gamma-corp')).toBeNull();
 		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com')).toBeNull();
 	});
 
-	it('list imports legacy tenants first, skipping one it cannot read', async () => {
-		await putLegacy(tenant());
-		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }), new Uint8Array(32).fill(9));
-		expect((await listEmaTenants(REGISTRY)).records.map((r) => r.tenant_id)).toEqual(['acme-corp']);
+	it('M5: the tenant the legacy issuer index named keeps its issuer when two approved legacy records list it', async () => {
+		await putLegacy(tenant({ tenant_id: 'zeta-corp' }));
+		// acme-corp lists the same issuer and sorts first, but the KV index never named it.
+		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`, await sealKv(JSON.stringify(tenant()), ENVELOPE_KEY));
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com'))?.tenant_id).toBe('zeta-corp');
 	});
 
-	it('a sealed legacy record with no envelope key, or one that will not open, is a 503 (never absent); planted plaintext is ignored', async () => {
+	it('M5: a legacy record the import cannot read keeps EVERY call at 503 and imports nothing; planted plaintext is ignored', async () => {
 		await putLegacy(tenant());
-		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: undefined }, 'acme-corp')).rejects.toBeInstanceOf(StrongStateUnavailableError);
-		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: new Uint8Array(32).fill(3) }, 'acme-corp')).rejects.toBeInstanceOf(
+		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }), null);
+		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: undefined }, 'beta-corp')).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: new Uint8Array(32).fill(3) }, 'other-corp')).rejects.toBeInstanceOf(
 			StrongStateUnavailableError,
 		);
-		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }), null);
+		// Without the SESSION_STORE nothing proves the legacy keyspace empty: unmigrated, so 503 too.
+		await expect(getEmaTenant({ coordinator: env.QUOTA_COORDINATOR }, 'acme-corp')).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		expect(await emaRegistryRequest({ kind: 'ema-get', tenantId: 'acme-corp' }, env.QUOTA_COORDINATOR)).toEqual({
+			status: 'ema_not_migrated',
+		});
+		// With the key the import completes; the planted plaintext beta-corp is not imported.
+		expect((await getEmaTenant(REGISTRY, 'acme-corp'))?.tenant_id).toBe('acme-corp');
 		expect(await getEmaTenant(REGISTRY, 'beta-corp')).toBeNull();
-		// Without a key a plaintext legacy record is the real thing.
-		expect((await getEmaTenant({ ...REGISTRY, kvEnvelopeKey: undefined }, 'beta-corp'))?.tenant_id).toBe('beta-corp');
 	});
 
 	it('no coordinator binding is StrongStateUnavailableError for every registry call (never a value)', async () => {
@@ -322,7 +369,7 @@ describe('EMA tenant registry (contract A11)', () => {
 
 /** One raw ema-list page straight from the registry shard (a smaller page than the route uses). */
 async function registryList(opts: { limit: number; cursor?: string }) {
-	const page = await emaRegistryRequest({ kind: 'ema-list', coordinationKey: EMA_REGISTRY_KEY, ...opts }, env.QUOTA_COORDINATOR);
+	const page = await emaRegistryRequest({ kind: 'ema-list', ...opts }, env.QUOTA_COORDINATOR);
 	return page as { records: EmaTenantRecord[]; cursor?: string };
 }
 
