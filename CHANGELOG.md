@@ -8,6 +8,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.106.0] - 2026-10-30
+
+### Added
+
+- EMA self-serve GET and PUT responses expose the server-managed `rev`. PUT accepts an optional `expected_rev` precondition, checked against the fresh record inside the registry transaction. A stale revision or absent record returns `409 ema_record_changed` without a write. Omitting the precondition preserves existing last-write-wins behavior. Deploy this version before consumers send `expected_rev`.
+
+### Changed
+
+- Update Hono to 4.13.14 and the pinned CodeQL action to v4.39.1.
+- Move detailed agent guidance from CLAUDE.md into the repository operations skill.
+
+No new migration, secret, or scoring change. The dns-checks package stays at 1.61.1.
+
 ## [3.105.0] - 2026-10-30
 
 Enterprise Managed Auth tenants move to strongly consistent storage, with a self-serve route for the web dashboard and an operator approval step. `@blackveil/dns-checks` stays 1.61.1. Scoring model unchanged. No new secret (`BV_MCP_EMA_ADMIN_KEY` and `BV_MCP_OAUTH_MINT_KEY` were provisioned on 2026-10-29). **One-way data step:** on the first EMA call after deploy, every legacy KV tenant is imported into the registry once; KV copies are kept, read-never, for rollback (see Operator notes).
