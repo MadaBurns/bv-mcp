@@ -8,7 +8,9 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
-import { getEmaTenant, getEmaTenantByIssuer, isTenantActive, putEmaTenant } from '../src/oauth/ema-tenants';
+import { getEmaTenant, getEmaTenantByIssuer, isEmaTokenLive, isTenantActive, issuerHash, putEmaTenant } from '../src/oauth/ema-tenants';
+import { getEmaTenantEpoch } from '../src/oauth/storage';
+import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import type { EmaTenantRecord } from '../src/schemas/ema';
 import { clearKvPrefix } from './helpers/kv';
@@ -97,11 +99,38 @@ async function approve(tenantId = TENANT_ID, overrides: Record<string, unknown> 
 
 const reject = (tenantId = TENANT_ID) => send(call('POST', `/ema-tenants/${tenantId}/reject`));
 
-/** Rewrite the stored record with backdated timestamps/epoch so a later change is distinguishable within one tick. */
+/** Rewrite the stored record with a backdated updated_at so a later change is distinguishable within one tick. */
 async function backdate(tenantId = TENANT_ID): Promise<EmaTenantRecord> {
-	const rec = { ...(await stored(tenantId))!, updated_at: 1_000, token_epoch: 1 };
+	const rec = { ...(await stored(tenantId))!, updated_at: 1_000 };
 	await putEmaTenant(env.SESSION_STORE!, rec, ENVELOPE_KEY);
 	return rec;
+}
+
+/** The tenant's token epoch: the QuotaCoordinator version, which the record's token_epoch only mirrors. */
+const epoch = (tenantId = TENANT_ID): Promise<number> => getEmaTenantEpoch(tenantId, 1, env.QUOTA_COORDINATOR);
+
+/** Whether a token minted at `tep` still stands for `tenantId` (liveness, as the bearer path runs it). */
+const tokenLive = (tep: number, tenantId = TENANT_ID, tier = 'enterprise'): Promise<boolean> =>
+	isEmaTokenLive(
+		env.SESSION_STORE!,
+		{ sub: `ema:${tenantId}:${'0'.repeat(32)}`, tier, tep },
+		nowSeconds(),
+		ENVELOPE_KEY,
+		env.QUOTA_COORDINATOR,
+	);
+
+/** Hold every outbound fetch (discovery) open until released, then serve it from the stub installed by beforeEach. */
+function holdDiscovery(): { release: () => void; started: () => number } {
+	const served = globalThis.fetch;
+	let release!: () => void;
+	let started = 0;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+		started++;
+		await gate;
+		return served(input);
+	});
+	return { release, started: () => started };
 }
 
 /** Serves OIDC discovery for the test issuers (jwks overridable per issuer); records every fetch. */
@@ -109,6 +138,7 @@ let fetches: string[];
 let discovery: Record<string, string>;
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 	fetches = [];
 	discovery = { [ISSUER]: JWKS_URI, [OTHER_ISSUER]: OTHER_JWKS_URI };
 	vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
@@ -126,6 +156,7 @@ afterEach(async () => {
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 describe('EMA route gates: self-serve on the mint key, operator routes on the admin key', () => {
@@ -180,7 +211,6 @@ describe('EMA route gates: self-serve on the mint key, operator routes on the ad
 
 describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 	it('creates a pending, self-serve tenant with the discovered jwks_uri and the default client, and answers the redacted view', async () => {
-		const before = Date.now();
 		const expires = nowSeconds() + 30 * DAY;
 		const res = await putSelfServe({ entitlement_expires_at: expires });
 		expect(res.status).toBe(200);
@@ -214,7 +244,7 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 			jwks_uri: JWKS_URI,
 			allowed_client_ids: [CLAUDE_WEB_CLIENT_ID],
 		});
-		expect(record.token_epoch).toBeGreaterThanOrEqual(before);
+		expect(record.token_epoch).toBe(await epoch());
 		// Pending: not indexed, so the token grant cannot resolve the issuer yet.
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 	});
@@ -325,7 +355,8 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 	it('a routine renewal (same issuer, same keys) keeps the approval and the token epoch, and applies the new fields', async () => {
 		await putSelfServe();
 		expect((await approve()).status).toBe(200);
-		const { token_epoch: epoch } = await backdate();
+		await backdate();
+		const before = await epoch();
 
 		const res = await putSelfServe({
 			name: 'Acme Renamed',
@@ -335,7 +366,7 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		});
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ name: 'Acme Renamed', tier: 'developer', approval: 'approved' });
-		expect((await stored())!.token_epoch).toBe(epoch);
+		expect(await epoch()).toBe(before);
 		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))?.tenant_id).toBe(TENANT_ID);
 	});
 
@@ -348,12 +379,14 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		await putSelfServe();
 		expect((await approve()).status).toBe(200);
 		await backdate();
+		const before = await epoch();
 
 		const res = await putSelfServe({ issuer: OTHER_ISSUER });
 		expect(await res.json()).toMatchObject({ issuer: OTHER_ISSUER, approval: 'pending' });
 		const record = (await stored())!;
 		expect(record.jwks_uri).toBe(OTHER_JWKS_URI);
-		expect(record.token_epoch).toBeGreaterThan(1);
+		expect(await epoch()).toBeGreaterThan(before);
+		expect(record.token_epoch).toBe(await epoch());
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, OTHER_ISSUER, ENVELOPE_KEY)).toBeNull();
 	});
@@ -362,12 +395,14 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		await putSelfServe();
 		expect((await approve()).status).toBe(200);
 		await backdate();
+		const before = await epoch();
 		discovery[ISSUER] = 'https://idp.acme.example.com/rotated-keys';
 
 		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('pending');
 		const record = (await stored())!;
 		expect(record.jwks_uri).toBe('https://idp.acme.example.com/rotated-keys');
-		expect(record.token_epoch).toBeGreaterThan(1);
+		expect(await epoch()).toBeGreaterThan(before);
+		expect(record.token_epoch).toBe(await epoch());
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 	});
 
@@ -431,6 +466,7 @@ describe('a PUT that only lowers privilege needs no discovery (a revoke must lan
 
 	it('enabled true -> false keeps the approval and the stored jwks_uri, moves the epoch, and is inactive at token exchange', async () => {
 		await approvedWithDiscoveryGone();
+		const before = await epoch();
 		expect(await active()).toBe(true);
 		const res = await putSelfServe({ enabled: false });
 		expect(res.status).toBe(200);
@@ -438,7 +474,8 @@ describe('a PUT that only lowers privilege needs no discovery (a revoke must lan
 		expect(fetches).toEqual([]);
 		const record = (await stored())!;
 		expect(record.jwks_uri).toBe(JWKS_URI);
-		expect(record.token_epoch).toBeGreaterThan(1);
+		expect(await epoch()).toBeGreaterThan(before);
+		expect(record.token_epoch).toBe(await epoch());
 		expect(await active()).toBe(false);
 		// The token path resolves the tenant by issuer, then refuses it as inactive.
 		expect(isTenantActive((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))!, nowSeconds())).toBe(false);
@@ -463,6 +500,32 @@ describe('a PUT that only lowers privilege needs no discovery (a revoke must lan
 		expect(fetches).toEqual([]);
 		expect(await active()).toBe(false);
 	});
+
+	it.each([
+		['the discovery document is gone', (): void => void delete discovery[ISSUER]],
+		['discovery serves rotated keys', (): void => void (discovery[ISSUER] = 'https://idp.acme.example.com/rotated-keys')],
+	])(
+		'a disable is lowering WHATEVER expiry rides along (bv-web recomputes a LATER one): no discovery, no re-pend, epoch moves (%s)',
+		async (_label, breakDiscovery) => {
+			await putSelfServe();
+			expect((await approve()).status).toBe(200);
+			const approved = (await stored())!;
+			const before = await epoch();
+			breakDiscovery();
+			fetches.length = 0;
+
+			const res = await putSelfServe({ enabled: false, entitlement_expires_at: approved.entitlement_expires_at! + 5 * DAY });
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ enabled: false, approval: 'approved' });
+			expect(fetches).toEqual([]);
+			const record = (await stored())!;
+			expect(record.jwks_uri).toBe(JWKS_URI);
+			expect(record.entitlement_expires_at).toBe(approved.entitlement_expires_at! + 5 * DAY);
+			expect(await active()).toBe(false);
+			expect(await epoch()).toBeGreaterThan(before);
+			expect(record.token_epoch).toBe(await epoch());
+		},
+	);
 
 	it('a re-enable still needs discovery: 400 issuer_discovery_failed, and the tenant stays disabled', async () => {
 		await approvedWithDiscoveryGone();
@@ -504,6 +567,140 @@ describe('a PUT that only lowers privilege needs no discovery (a revoke must lan
 				.approval,
 		).toBe('pending');
 		expect((await stored())!.jwks_uri).toBe('https://idp.acme.example.com/rotated-keys');
+	});
+});
+
+describe('the coordinator version, not the KV record, decides which tokens stand (SQ-465 B1)', () => {
+	it('a raise that read the record before a concurrent revoke cannot revive the tokens the revoke killed', async () => {
+		await putSelfServe();
+		expect((await approve()).status).toBe(200);
+		const beforeRevoke = (await stored())!;
+		const tep = await epoch();
+		expect(await tokenLive(tep)).toBe(true);
+
+		// A raise (a later expiry needs discovery) reads the record, then waits on the IdP.
+		const hold = holdDiscovery();
+		fetches.length = 0;
+		const raise = putSelfServe({ entitlement_expires_at: nowSeconds() + 60 * DAY });
+		await vi.waitFor(() => expect(hold.started()).toBeGreaterThan(0));
+
+		// Meanwhile bv-web's revoke lands: a disable needs no discovery.
+		expect((await putSelfServe({ enabled: false })).status).toBe(200);
+		expect(await tokenLive(tep)).toBe(false);
+		const revoked = await epoch();
+		expect(revoked).toBeGreaterThan(tep);
+
+		hold.release();
+		expect((await raise).status).toBe(200);
+		// The raise re-enabled the tenant (a request bv-web really sent), but what it wrote mirrors the
+		// version the revoke set, and the token minted before the revoke stays dead.
+		expect((await stored())!.enabled).toBe(true);
+		expect((await stored())!.token_epoch).toBe(revoked);
+		expect(await epoch()).toBe(revoked);
+		expect(await tokenLive(tep)).toBe(false);
+		expect(await tokenLive(revoked)).toBe(true);
+
+		// Any OTHER writer holding the pre-revoke snapshot (no re-read) restores its old mirror epoch: still dead.
+		await putEmaTenant(env.SESSION_STORE!, beforeRevoke, ENVELOPE_KEY);
+		expect((await stored())!.token_epoch).toBe(tep);
+		expect(await tokenLive(tep)).toBe(false);
+		expect(await tokenLive(revoked)).toBe(true);
+	});
+
+	it('re-reads the record after discovery: a reject that lands while discovery is held still applies', async () => {
+		await putSelfServe();
+		const hold = holdDiscovery();
+		fetches.length = 0;
+		const second = putSelfServe({ name: 'Acme again' });
+		await vi.waitFor(() => expect(hold.started()).toBeGreaterThan(0));
+
+		expect((await reject()).status).toBe(200);
+		hold.release();
+		const res = await second;
+		expect(res.status).toBe(200);
+		// Decided on what is stored now (rejected), not on the pending record read before the IdP answered.
+		expect(await res.json()).toMatchObject({ name: 'Acme again', approval: 'rejected' });
+		expect((await stored())!.approval).toBe('rejected');
+	});
+
+	it('a self-serve delete bumps the epoch first, so the tokens of a deleted tenant die with it', async () => {
+		await putSelfServe();
+		expect((await approve()).status).toBe(200);
+		const tep = await epoch();
+		expect(await tokenLive(tep)).toBe(true);
+		expect((await sendSelfServe('DELETE')).status).toBe(204);
+		expect(await stored()).toBeNull();
+		expect(await epoch()).toBeGreaterThan(tep);
+		expect(await tokenLive(tep)).toBe(false);
+	});
+
+	it('the operator DELETE bumps the epoch too, even for a record it cannot read', async () => {
+		await putOperator();
+		const tep = await epoch('acme-operator');
+		await env.SESSION_STORE!.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-operator`, 'not-a-sealed-record');
+		expect((await send(call('DELETE', '/ema-tenants/acme-operator'))).status).toBe(204);
+		expect(await epoch('acme-operator')).toBeGreaterThan(tep);
+	});
+});
+
+describe('rejected issuers are remembered per tenant (SQ-465 B3)', () => {
+	const hashOf = (issuer: string) => issuerHash(issuer);
+
+	it('reject records the issuer; the tenant moves away and back, and the issuer is still rejected', async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		expect((await stored())!.rejected_issuer_hashes).toEqual([await hashOf(ISSUER)]);
+
+		expect(((await (await putSelfServe({ issuer: OTHER_ISSUER })).json()) as { approval: string }).approval).toBe('pending');
+		expect((await stored())!.rejected_issuer_hashes).toEqual([await hashOf(ISSUER)]);
+		// Back to the rejected issuer: the stored record is pending on another issuer, yet the ban holds.
+		expect(((await (await putSelfServe({ issuer: `${ISSUER}/` })).json()) as { approval: string }).approval).toBe('rejected');
+		expect(((await (await putSelfServe({ issuer: ISSUER })).json()) as { approval: string }).approval).toBe('rejected');
+	});
+
+	it('is never part of the self-serve view', async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		const view = (await (await sendSelfServe('GET')).json()) as Record<string, unknown>;
+		expect(view).not.toHaveProperty('rejected_issuer_hashes');
+		expect(view).toMatchObject({ approval: 'rejected' });
+		expect(await (await putSelfServe()).json()).not.toHaveProperty('rejected_issuer_hashes');
+	});
+
+	it('keeps at most 16, dropping the oldest', async () => {
+		await putSelfServe();
+		const filler = Array.from({ length: 16 }, (_, i) => i.toString(16).padStart(2, '0').repeat(32));
+		await putEmaTenant(env.SESSION_STORE!, { ...(await stored())!, rejected_issuer_hashes: filler }, ENVELOPE_KEY);
+		expect((await reject()).status).toBe(200);
+		const history = (await stored())!.rejected_issuer_hashes!;
+		expect(history).toHaveLength(16);
+		expect(history).not.toContain(filler[0]);
+		expect(history[15]).toBe(await hashOf(ISSUER));
+		expect(history.slice(0, 15)).toEqual(filler.slice(1));
+	});
+
+	it('the operator approving that issuer removes it from the history', async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		expect((await stored())!.rejected_issuer_hashes).toBeUndefined();
+		expect(((await (await putSelfServe({ name: 'Back in' })).json()) as { approval: string }).approval).toBe('approved');
+	});
+
+	it('a self-serve DELETE keeps a tombstone while any rejected issuer is remembered, and the operator DELETE clears it all', async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		// Moved to another issuer (pending now): rejected itself no longer, but its history is.
+		expect((await putSelfServe({ issuer: OTHER_ISSUER })).status).toBe(200);
+		expect((await sendSelfServe('DELETE')).status).toBe(204);
+		const tombstone = (await stored())!;
+		expect(tombstone).toMatchObject({ enabled: false, source: 'self-serve', issuer: OTHER_ISSUER });
+		expect(tombstone.rejected_issuer_hashes).toEqual([await hashOf(ISSUER)]);
+		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('rejected');
+
+		expect((await send(call('DELETE', `/ema-tenants/${TENANT_ID}`))).status).toBe(204);
+		expect(await stored()).toBeNull();
+		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('pending');
 	});
 });
 
@@ -552,7 +749,7 @@ describe('DELETE /internal/oauth/ema-self-serve/:tenant_id', () => {
 		const tombstone = (await stored())!;
 		expect(tombstone).toMatchObject({ enabled: false, approval: 'rejected', issuer: ISSUER, source: 'self-serve' });
 		expect(tombstone.entitlement_expires_at).toBeLessThanOrEqual(nowSeconds());
-		expect(tombstone.token_epoch).toBeGreaterThan(1);
+		expect(tombstone.token_epoch).toBe(await epoch());
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 		expect(await (await sendSelfServe('GET')).json()).toMatchObject({ approval: 'rejected', enabled: false });
 
@@ -578,6 +775,18 @@ describe('DELETE /internal/oauth/ema-self-serve/:tenant_id', () => {
 		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual({ error: 'tenant_managed_by_operator' });
 		expect((await stored())?.tenant_id).toBe(TENANT_ID);
+	});
+
+	it('409 envelope_key_required and nothing changed while OAuth is on without KV_ENVELOPE_KEY (a rejected delete is a write)', async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		const before = await stored();
+		const tep = await epoch();
+		const res = await send(call('DELETE', selfServePath()), baseEnv({ KV_ENVELOPE_KEY: undefined }));
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'envelope_key_required' });
+		expect(await stored()).toEqual(before);
+		expect(await epoch()).toBe(tep);
 	});
 
 	it('503 on a record it cannot read, which survives', async () => {
@@ -657,10 +866,12 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 		await putSelfServe();
 		expect((await approve()).status).toBe(200);
 		await backdate();
+		const before = await epoch();
 		const res = await reject();
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ approval: 'rejected' });
-		expect((await stored())!.token_epoch).toBeGreaterThan(1);
+		expect(await epoch()).toBeGreaterThan(before);
+		expect((await stored())!.token_epoch).toBe(await epoch());
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 	});
 
@@ -753,15 +964,23 @@ describe('operator PUT: approval, source and the shared token epoch', () => {
 	])('moves the token epoch on an operator %s', async (_label, patch) => {
 		expect((await putOperator()).status).toBe(200);
 		await backdate('acme-operator');
+		const before = await epoch('acme-operator');
 		expect((await putOperator(patch)).status).toBe(200);
-		expect((await stored('acme-operator'))!.token_epoch).toBeGreaterThan(1);
+		expect(await epoch('acme-operator')).toBeGreaterThan(before);
+		expect((await stored('acme-operator'))!.token_epoch).toBe(await epoch('acme-operator'));
 	});
 
-	it('keeps the token epoch on an operator same-issuer, same-keys renewal', async () => {
-		expect((await putOperator()).status).toBe(200);
+	it('keeps the token epoch on an operator same-issuer, same-keys renewal, and moves it when a dated entitlement is cut short', async () => {
+		expect((await putOperator({ entitlement_expires_at: nowSeconds() + 30 * DAY })).status).toBe(200);
 		await backdate('acme-operator');
+		const before = await epoch('acme-operator');
 		expect((await putOperator({ entitlement_expires_at: nowSeconds() + 90 * DAY })).status).toBe(200);
-		expect((await stored('acme-operator'))!.token_epoch).toBe(1);
+		expect(await epoch('acme-operator')).toBe(before);
+		expect((await stored('acme-operator'))!.token_epoch).toBe(before);
+
+		// Moving the end earlier (or dating an open-ended tenant) revokes what was minted under the longer one.
+		expect((await putOperator({ entitlement_expires_at: nowSeconds() + 10 * DAY })).status).toBe(200);
+		expect(await epoch('acme-operator')).toBeGreaterThan(before);
 	});
 });
 

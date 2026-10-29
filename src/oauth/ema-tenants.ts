@@ -15,7 +15,8 @@ import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaApproval, type Em
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
 import { sha256Hex } from './jwks';
-import { StrongStateUnavailableError } from './storage';
+import { getEmaTenantEpoch, StrongStateUnavailableError } from './storage';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
 const TENANT_PREFIX = `${OAUTH_KV_PREFIX}ema-tenant:`;
@@ -299,11 +300,29 @@ export async function deleteEmaTenant(kv: KVNamespace, tenantId: string, kvEnvel
 export const EMA_SUBJECT_PREFIX = 'ema:';
 
 /**
- * The epoch an EMA access token must carry as `tep`. A record written before `token_epoch`
- * existed falls back to `created_at`; the two never collide (ms vs s) and only equality matters.
+ * The LEGACY epoch of a record: the seed of its coordinator version when none exists yet (see
+ * getEmaTenantEpoch). The mirror `token_epoch` wins; a record written before it existed falls back to
+ * `created_at`. Never an authority on its own: the coordinator version is.
  */
 export function tenantEpoch(rec: EmaTenantRecord): number {
 	return rec.token_epoch ?? rec.created_at;
+}
+
+/**
+ * The epoch an EMA access token must carry as `tep` right now: the tenant's strongly consistent
+ * coordinator version, seeded from the record on first access. Throws StrongStateUnavailableError when
+ * the coordinator cannot answer (a retryable 503, never a 401).
+ */
+export function currentTenantEpoch(rec: EmaTenantRecord, quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>): Promise<number> {
+	return getEmaTenantEpoch(rec.tenant_id, tenantEpoch(rec), quotaCoordinator);
+}
+
+/** sha256 (hex) of a normalized issuer: the form `rejected_issuer_hashes` holds. */
+export const issuerHash = (normalizedIssuer: string): Promise<string> => sha256Hex(normalizedIssuer);
+
+/** Whether the operator ever rejected `normalizedIssuer` for this tenant (a null record has no history). */
+export async function hasRejectedIssuer(rec: EmaTenantRecord | null, normalizedIssuer: string): Promise<boolean> {
+	return !!rec?.rejected_issuer_hashes?.includes(await issuerHash(normalizedIssuer));
 }
 
 /** The tenant_id of a well-formed `ema:<tenant_id>:<hash>` subject, else null. */
@@ -319,23 +338,26 @@ export interface EmaTokenClaims {
 	tep?: unknown;
 }
 
-function tenantBacksToken(rec: EmaTenantRecord, claims: EmaTokenClaims, nowSeconds: number): boolean {
-	return isTenantActive(rec, nowSeconds) && claims.tier === rec.tier && claims.tep === tenantEpoch(rec);
+/** The cheap half of liveness, decided from the KV record alone: active, on the token's tier, and the token has a `tep`. */
+function recordBacksToken(rec: EmaTenantRecord, claims: EmaTokenClaims, nowSeconds: number): boolean {
+	return isTenantActive(rec, nowSeconds) && claims.tier === rec.tier && typeof claims.tep === 'number';
 }
 
 /**
  * Tenant-wide revocation for an already-minted EMA access token, checked on every request: the
  * token stands only while its tenant record exists and is readable, active (isTenantActive), on
- * the token's tier, and on the token's epoch (`tep`; a token without one fails).
- * Disabling, deleting, re-creating or lapsing a tenant therefore cuts its tokens off within KV
- * propagation (about a minute) instead of at their expiry. A store that cannot be read throws
- * StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
+ * the token's tier, and its epoch (`tep`; a token without one fails) equals the tenant's CURRENT
+ * coordinator version. That version only moves forward, so a stale KV write can re-enable a tenant but
+ * can never revive a token a revocation killed. Disabling, deleting, re-creating or lapsing a tenant
+ * cuts its tokens off within KV propagation (about a minute) instead of at their expiry. A store that
+ * cannot be read throws StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
  */
 export async function isEmaTokenLive(
 	kv: KVNamespace,
 	claims: EmaTokenClaims,
 	nowSeconds: number,
 	kvEnvelopeKey?: Uint8Array,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<boolean> {
 	const tenantId = emaSubjectTenantId(claims.sub);
 	if (!tenantId) return false;
@@ -345,7 +367,8 @@ export async function isEmaTokenLive(
 	} catch {
 		throw new StrongStateUnavailableError('ema tenant liveness');
 	}
-	return rec !== null && tenantBacksToken(rec, claims, nowSeconds);
+	if (rec === null || !recordBacksToken(rec, claims, nowSeconds)) return false;
+	return claims.tep === (await currentTenantEpoch(rec, quotaCoordinator));
 }
 
 /** List up to 100 tenants, skipping unreadable records. */

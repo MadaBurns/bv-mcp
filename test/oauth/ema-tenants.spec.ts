@@ -8,7 +8,10 @@ import {
 	getEmaTenant,
 	getEmaTenantByIssuer,
 	getEmaTenantForWrite,
+	hasRejectedIssuer,
+	isEmaTokenLive,
 	isSharedIssuer,
+	issuerHash,
 	isTenantActive,
 	listEmaTenants,
 	normalizeIssuer,
@@ -23,6 +26,8 @@ import {
 	type EmaTenantRecord,
 } from '../../src/schemas/ema';
 import { parseEnvelopeKey } from '../../src/lib/kv-envelope';
+import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { bumpEmaTenantEpoch, getEmaTenantEpoch, StrongStateUnavailableError } from '../../src/oauth/storage';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -47,9 +52,11 @@ function tenant(overrides: Partial<EmaTenantRecord> = {}): EmaTenantRecord {
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 describe('normalizeIssuer', () => {
@@ -505,5 +512,79 @@ describe('EMA approval schemas', () => {
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: horizon - 60 }).success).toBe(true);
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: horizon + 60 }).success).toBe(false);
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: now + 1.5 }).success).toBe(false);
+	});
+});
+
+describe('the tenant epoch is a coordinator version (SQ-466 A10)', () => {
+	const COORD = () => env.QUOTA_COORDINATOR;
+
+	it('seeds from the legacy epoch on first read, then only moves forward: a later get with a LOWER seed never lowers it', async () => {
+		expect(await getEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_123);
+		expect(await bumpEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
+		expect(await getEmaTenantEpoch('acme-corp', 1_700_000_000, COORD())).toBe(1_800_000_000_124);
+		expect(await bumpEmaTenantEpoch('acme-corp', 5, COORD())).toBe(1_800_000_000_125);
+	});
+
+	it('a bump on a tenant with no version yet starts from the legacy epoch, so a later seeded read cannot revive the old token', async () => {
+		expect(await bumpEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
+		expect(await getEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
+	});
+
+	it('an unusable legacy epoch falls back to 1, and tenants do not share a version', async () => {
+		expect(await getEmaTenantEpoch('acme-corp', Number.NaN, COORD())).toBe(1);
+		expect(await getEmaTenantEpoch('acme-corp', -5, COORD())).toBe(1);
+		expect(await bumpEmaTenantEpoch('acme-corp', 1, COORD())).toBe(2);
+		expect(await getEmaTenantEpoch('globex', 1, COORD())).toBe(1);
+	});
+
+	it('no coordinator binding is StrongStateUnavailableError for a read and for a bump (never a number)', async () => {
+		await expect(getEmaTenantEpoch('acme-corp', 1, undefined)).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(bumpEmaTenantEpoch('acme-corp', 1, undefined)).rejects.toBeInstanceOf(StrongStateUnavailableError);
+	});
+
+	describe('isEmaTokenLive', () => {
+		const sub = `ema:acme-corp:${'0'.repeat(32)}`;
+		const now = () => Math.floor(Date.now() / 1000);
+
+		it('needs the token tep to equal the coordinator version, whatever the KV mirror says', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100 }));
+			const live = (tep: unknown) => isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep }, now(), undefined, COORD());
+			expect(await live(100)).toBe(true);
+			await bumpEmaTenantEpoch('acme-corp', 100, COORD());
+			expect(await live(100)).toBe(false);
+			// The KV mirror still says 100 and the tenant is active: only the coordinator version decides.
+			expect((await getEmaTenant(env.SESSION_STORE, 'acme-corp'))!.token_epoch).toBe(100);
+			expect(await live(101)).toBe(true);
+			expect(await live(undefined)).toBe(false);
+			expect(await live('101')).toBe(false);
+		});
+
+		it('is a StrongStateUnavailableError (retryable 503) when the coordinator cannot answer an active tenant', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100 }));
+			await expect(
+				isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep: 100 }, now(), undefined, undefined),
+			).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		});
+
+		it('an inactive tenant is simply not live, with no coordinator needed', async () => {
+			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100, enabled: false }));
+			expect(await isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep: 100 }, now(), undefined, undefined)).toBe(false);
+		});
+	});
+
+	it('hasRejectedIssuer matches the sha256 of the normalized issuer, and a missing record has no history', async () => {
+		const rec = tenant({ rejected_issuer_hashes: [await issuerHash('https://idp.example.com')] });
+		expect(await hasRejectedIssuer(rec, 'https://idp.example.com')).toBe(true);
+		expect(await hasRejectedIssuer(rec, 'https://other.example.com')).toBe(false);
+		expect(await hasRejectedIssuer(tenant(), 'https://idp.example.com')).toBe(false);
+		expect(await hasRejectedIssuer(null, 'https://idp.example.com')).toBe(false);
+	});
+
+	it('the record schema bounds rejected_issuer_hashes: lowercase sha256 hex, at most 16', () => {
+		const hash = 'a'.repeat(64);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: [hash] })).success).toBe(true);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: Array(17).fill(hash) })).success).toBe(false);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['https://idp.example.com'] })).success).toBe(false);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['A'.repeat(64)] })).success).toBe(false);
 	});
 });

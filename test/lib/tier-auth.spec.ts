@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { putEmaTenant } from '../../src/oauth/ema-tenants';
 import { newJti, signJwt } from '../../src/oauth/jwt';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { bumpEmaTenantEpoch } from '../../src/oauth/storage';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -149,6 +150,15 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 		await env.SESSION_STORE.delete(`${TENANT_PREFIX}acme-corp`);
 		const { kv } = spyKv();
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
+	});
+
+	it('judges the epoch by the coordinator version: once it moves, a token the KV record still vouches for is rejected', async () => {
+		const { kv } = spyKv();
+		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
+		expect(await bumpEmaTenantEpoch('acme-corp', EPOCH, env.QUOTA_COORDINATOR)).toBe(EPOCH + 1);
+		// The record is untouched (token_epoch is still EPOCH, enabled, same tier), yet the old token is dead.
+		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
+		expect((await resolve(await mint({ tep: EPOCH + 1 }), kv)).authenticated).toBe(true);
 	});
 
 	it('rejects a malformed ema: subject without reading any tenant record', async () => {

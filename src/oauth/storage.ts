@@ -105,7 +105,7 @@ async function safeKvDelete(kv: KVNamespace, key: string, operation: string): Pr
 }
 
 async function coordinationKey(
-	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation' | 'assertion-jti',
+	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation' | 'assertion-jti' | 'ema-tenant-epoch',
 	value: string,
 ): Promise<string> {
 	return `oauth:${kind}:${await sha256Hex(value)}`;
@@ -476,6 +476,66 @@ export async function bumpTokenVersion(
 	} catch {
 		// Strong version is authoritative; KV is a migration/visibility mirror.
 	}
+	return result.value;
+}
+
+// ---------------------------------------------------------------------------
+// EMA tenant token epoch
+//
+// The authority for "which access tokens of this tenant still stand" is a strongly consistent, monotonic
+// QuotaCoordinator version, NOT the tenant's KV record: KV has no compare-and-set, so a stale read-modify-
+// write could lower a KV epoch and resurrect revoked tokens. Every revoking write bumps this version BEFORE
+// it writes KV; mint stamps the current value as `tep`; liveness requires `tep` to equal it. A record
+// written before the version existed supplies its legacy epoch as the default, which the first access (read
+// or bump) persists atomically, so existing tokens stay valid until something revokes them.
+// ---------------------------------------------------------------------------
+
+const legacyEpochOrOne = (legacyEpoch: number): number => (Number.isSafeInteger(legacyEpoch) && legacyEpoch >= 1 ? legacyEpoch : 1);
+
+/**
+ * The tenant's current token epoch. `legacyEpoch` seeds the version when none exists yet (a record written
+ * before the version did). Throws StrongStateUnavailableError when the coordinator cannot answer.
+ */
+export async function getEmaTenantEpoch(
+	tenantId: string,
+	legacyEpoch: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
+	let result;
+	try {
+		result = await getVersionWithCoordinator(
+			await coordinationKey('ema-tenant-epoch', tenantId),
+			legacyEpochOrOne(legacyEpoch),
+			quotaCoordinator,
+		);
+	} catch {
+		throw new StrongStateUnavailableError('ema tenant epoch read');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('ema tenant epoch read');
+	return result.value;
+}
+
+/**
+ * Atomically move the tenant's token epoch forward and return it, revoking every token stamped with an
+ * earlier one. Callers bump BEFORE writing the KV record the bump belongs to, so a write that fails to
+ * bump never lands. Throws StrongStateUnavailableError when the coordinator cannot answer.
+ */
+export async function bumpEmaTenantEpoch(
+	tenantId: string,
+	legacyEpoch: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
+	let result;
+	try {
+		result = await bumpVersionWithCoordinator(
+			await coordinationKey('ema-tenant-epoch', tenantId),
+			legacyEpochOrOne(legacyEpoch),
+			quotaCoordinator,
+		);
+	} catch {
+		throw new StrongStateUnavailableError('ema tenant epoch bump');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('ema tenant epoch bump');
 	return result.value;
 }
 

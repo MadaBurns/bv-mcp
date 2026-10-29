@@ -414,9 +414,20 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   request with an EMA bearer re-reads the tenant record, and a token whose tenant is
   missing, unreadable, disabled, past `entitlement_expires_at`, on another `tier`, or on
   an older token epoch gets the normal 401 challenge. Re-enabling does NOT restore them,
-  because the record's `token_epoch` (server-managed epoch ms, set on create and on each
-  suspend, never accepted in the PUT body) has moved; a re-created tenant starts a new
-  epoch too. Claude recovers by exchanging a fresh assertion.
+  because the tenant's token epoch has moved; a re-created tenant starts a new epoch too.
+  Claude recovers by exchanging a fresh assertion.
+- The token epoch's authority is a monotonic version in the QuotaCoordinator Durable Object
+  (key `ema-tenant-epoch:<tenant_id>`), not the KV record: KV has no compare-and-set, so a
+  stale read-modify-write could otherwise lower an epoch and revive revoked tokens. Every
+  revoking write (create, disable, an issuer or `jwks_uri` change, leaving approval, an
+  earlier `entitlement_expires_at`, any DELETE) bumps that version BEFORE it writes KV; mint
+  stamps the current version as `tep`; a bearer stands only while `tep` equals it. The
+  record's `token_epoch` (server-managed, never accepted in a PUT body) is only a mirror.
+  If the coordinator cannot answer, a mint or a bearer request answers 503 (retryable, never
+  a 401) and a revoking write aborts with 503 and writes nothing. A tenant stored before this
+  version existed seeds it from its `token_epoch` (else `created_at`) on first use, so its
+  tokens stay valid until something revokes them. A stale write can still re-enable a tenant
+  (the request that wrote it asked for that) but never revives a token an earlier revoke killed.
 - `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
   reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
   also releases the issuer even when the record can no longer be read.
@@ -434,9 +445,14 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   `409 issuer_conflict` means another approved tenant already holds it. A reject is a ban
   on that issuer for that tenant: the customer's own DELETE of a rejected tenant leaves a
   disabled, lapsed tombstone that stays `rejected` (still `204`), so deleting and re-saving
-  the same issuer does not start over. It ends only when the customer saves a different
-  issuer (back to `pending`) or you `DELETE /internal/oauth/ema-tenants/<tenant_id>` with
-  the admin key, which removes the record outright. The self-serve route refuses shared
+  the same issuer does not start over. The record keeps `rejected_issuer_hashes` (sha256 of
+  each issuer you rejected for that tenant, newest last, at most 16): saving any of them
+  again stays `rejected` even after the customer moved to another issuer in between, and
+  the tombstone is kept while the list is non-empty. A different issuer starts `pending`.
+  It ends when you approve that issuer (it leaves the list) or you
+  `DELETE /internal/oauth/ema-tenants/<tenant_id>` with the admin key, which removes the
+  record, its history and its issuer outright. The self-serve DELETE, like the PUT, answers
+  `409 envelope_key_required` while OAuth is on and `KV_ENVELOPE_KEY` is unset. The self-serve route refuses shared
   issuers (`isSharedIssuer` in `src/oauth/ema-tenants.ts`); the operator PUT does not check them.
 - When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
   key is treated as absent (the grant fails closed for that issuer, and the tenant's

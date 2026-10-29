@@ -20,6 +20,9 @@ const HttpsUrlSchema = z
 		}
 	}, 'must be an https URL');
 
+/** How many rejected issuers a tenant remembers; the oldest is dropped past it. */
+export const EMA_REJECTED_ISSUER_LIMIT = 16;
+
 export const EMA_TENANT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,47}$/;
 
 /**
@@ -54,11 +57,22 @@ export const EmaTenantRecordSchema = z
 		created_at: z.number().int(),
 		updated_at: z.number().int(),
 		/**
-		 * Epoch MILLISECONDS, server-managed: set by the upsert route, never accepted in a PUT body.
-		 * Every EMA access token carries the tenant's epoch as `tep`, so moving it revokes every token
-		 * minted before. Absent on records written before it existed (the epoch is then `created_at`).
+		 * Server-managed, never accepted in a PUT body: a MIRROR of the tenant's token epoch, whose authority
+		 * is the QuotaCoordinator version `ema-tenant-epoch:<tenant_id>` (a KV record has no compare-and-set,
+		 * so it cannot be the authority). Every EMA access token carries that version as `tep`, so a revoking
+		 * write bumps it first to cut every token minted before. On a record written before the version
+		 * existed this value (else `created_at`) seeds it.
 		 */
 		token_epoch: z.number().int().positive().optional(),
+		/**
+		 * sha256 (hex) of every normalized issuer the operator rejected for this tenant, oldest first, at most
+		 * EMA_REJECTED_ISSUER_LIMIT. A self-serve write naming one stays rejected, so moving to another issuer
+		 * and back cannot launder a refusal. Server-managed; the operator approving that issuer removes it.
+		 */
+		rejected_issuer_hashes: z
+			.array(z.string().regex(/^[a-f0-9]{64}$/))
+			.max(EMA_REJECTED_ISSUER_LIMIT)
+			.optional(),
 		/** Absent = approved for an operator record (seeded before approval existed), pending for a self-serve one. */
 		approval: EmaApprovalSchema.optional(),
 		/**

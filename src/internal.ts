@@ -59,6 +59,7 @@ import { validateDomain, sanitizeDomain, validateOutboundUrl } from './lib/sanit
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import {
+	EMA_REJECTED_ISSUER_LIMIT,
 	EMA_SELF_SERVE_TENANT_ID_PATTERN,
 	EMA_TENANT_ID_PATTERN,
 	EmaApprovalSchema,
@@ -77,10 +78,13 @@ import {
 	effectiveApproval,
 	getEmaTenant,
 	getEmaTenantForWrite,
+	hasRejectedIssuer,
 	isSharedIssuer,
+	issuerHash,
 	listEmaTenants,
 	normalizeIssuer,
 	putEmaTenant,
+	tenantEpoch,
 } from './oauth/ema-tenants';
 import { safeFetch } from './lib/safe-fetch';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './lib/response-body';
@@ -97,6 +101,7 @@ import {
 	putCode,
 	bumpTokenVersion,
 	bumpTokenVersionIdempotently,
+	bumpEmaTenantEpoch,
 	raiseMinimumEntitlementGeneration,
 } from './oauth/storage';
 import type { QuotaCoordinator } from './lib/quota-coordinator';
@@ -1562,51 +1567,92 @@ async function readEmaBody<T extends { issuer: string }>(
 	}
 }
 
-/** A tenant as a route decides it; writeEmaTenant adds the server-managed timestamps and token epoch. */
-type EmaTenantDraft = Omit<EmaTenantRecord, 'created_at' | 'updated_at' | 'token_epoch'>;
+/**
+ * What every EMA write needs: the tenant record store (KV, sealed by the envelope key) and the strongly
+ * consistent QuotaCoordinator that is the authority for the tenant's token epoch.
+ */
+interface EmaStore {
+	kv: KVNamespace;
+	kvEnvelopeKey: Uint8Array | undefined;
+	coordinator: DurableObjectNamespace<QuotaCoordinator> | undefined;
+}
+
+/** A tenant as a route decides it; writeEmaTenant adds the server-managed timestamps, token epoch and rejected issuers. */
+type EmaTenantDraft = Omit<EmaTenantRecord, 'created_at' | 'updated_at' | 'token_epoch' | 'rejected_issuer_hashes'>;
 
 /** Whether a write takes a tenant out of a state (enabled, approved) it was in. */
 const leaves = (before: boolean, after: boolean): boolean => before && !after;
 
-/** Whether tokens minted under `existing` may keep standing once `next` is stored: same issuer and keys, still live. */
+const entitlementEnd = (rec: Pick<EmaTenantRecord, 'entitlement_expires_at'>): number => rec.entitlement_expires_at ?? Infinity;
+
+/**
+ * Whether tokens minted under `existing` may keep standing once `next` is stored: same issuer and keys,
+ * still enabled and approved, and no earlier entitlement.
+ */
 function keepsTokenEpoch(existing: EmaTenantRecord, next: EmaTenantDraft): boolean {
 	return (
 		existing.issuer === next.issuer &&
 		existing.jwks_uri === next.jwks_uri &&
 		!leaves(existing.enabled, next.enabled) &&
-		!leaves(effectiveApproval(existing) === 'approved', effectiveApproval(next) === 'approved')
+		!leaves(effectiveApproval(existing) === 'approved', effectiveApproval(next) === 'approved') &&
+		entitlementEnd(next) >= entitlementEnd(existing)
 	);
 }
 
 /**
- * The tenant's token epoch (epoch ms) after a write by ANY route. A fresh one, revoking every access
- * token minted before, when the tenant is created, its normalized issuer or jwks_uri changes, it is
- * disabled, or it leaves approval. Otherwise unchanged: re-enabling or re-approving does NOT revive the
- * tokens a suspension killed, and a routine same-issuer renewal keeps live ones.
+ * The tenant's token epoch after a write by ANY route; the value the KV record mirrors. A write that
+ * revokes (the tenant is created, its normalized issuer or jwks_uri changes, it is disabled, it leaves
+ * approval, or its entitlement moves earlier) first BUMPS the coordinator version, which kills every token
+ * stamped with an earlier one, and the record then mirrors the new value. Any other write leaves the
+ * version alone: re-enabling or re-approving does NOT revive the tokens a suspension killed, and a routine
+ * same-issuer renewal keeps live ones. The bump is the caller's first step: when it fails the write aborts
+ * (503) before KV is touched, and a stale KV write can never lower the version.
  */
-function nextTokenEpoch(existing: EmaTenantRecord | null, next: EmaTenantDraft): number | undefined {
-	return existing && keepsTokenEpoch(existing, next) ? existing.token_epoch : Date.now();
+async function nextTokenEpoch(store: EmaStore, existing: EmaTenantRecord | null, next: EmaTenantDraft): Promise<number | undefined> {
+	if (existing && keepsTokenEpoch(existing, next)) return existing.token_epoch;
+	return bumpEmaTenantEpoch(next.tenant_id, existing ? tenantEpoch(existing) : 1, store.coordinator);
 }
 
 /**
- * The one write path of every EMA route: created_at is preserved, updated_at stamped and token_epoch
- * derived (nextTokenEpoch); none of them is taken from a caller. `existing` is the snapshot the route
- * already read (null = none), so a write reads the tenant key once.
+ * The tenant's rejected-issuer history after a write: a rejected tenant's issuer is appended (the oldest is
+ * dropped past EMA_REJECTED_ISSUER_LIMIT) and an approved tenant's issuer is removed, since the operator has
+ * now accepted exactly that issuer. Pending leaves the list as it was.
  */
-function writeEmaTenant(
-	kv: KVNamespace,
-	draft: EmaTenantDraft,
-	existing: EmaTenantRecord | null,
-	kvEnvelopeKey: Uint8Array | undefined,
-): Promise<EmaTenantRecord> {
+async function nextRejectedIssuerHashes(existing: EmaTenantRecord | null, next: EmaTenantDraft): Promise<string[] | undefined> {
+	const hashes = existing?.rejected_issuer_hashes ?? [];
+	const hash = await issuerHash(next.issuer);
+	const others = hashes.filter((known) => known !== hash);
+	const approval = effectiveApproval(next);
+	const updated = approval === 'rejected' ? [...others, hash].slice(-EMA_REJECTED_ISSUER_LIMIT) : approval === 'approved' ? others : hashes;
+	return updated.length > 0 ? updated : undefined;
+}
+
+/**
+ * The one write path of every EMA route: created_at is preserved, updated_at stamped, and token_epoch
+ * and rejected_issuer_hashes derived (nextTokenEpoch, nextRejectedIssuerHashes); none of them is taken
+ * from a caller. `existing` is the snapshot the route already read (null = none), so a write reads the
+ * tenant key once. The epoch is settled in the coordinator BEFORE the KV record is written.
+ */
+async function writeEmaTenant(store: EmaStore, draft: EmaTenantDraft, existing: EmaTenantRecord | null): Promise<EmaTenantRecord> {
 	const now = Math.floor(Date.now() / 1000);
+	const token_epoch = await nextTokenEpoch(store, existing, draft);
 	const record: EmaTenantRecord = {
 		...draft,
 		created_at: existing?.created_at ?? now,
 		updated_at: now,
-		token_epoch: nextTokenEpoch(existing, draft),
+		token_epoch,
+		rejected_issuer_hashes: await nextRejectedIssuerHashes(existing, draft),
 	};
-	return putEmaTenant(kv, record, kvEnvelopeKey, existing);
+	return putEmaTenant(store.kv, record, store.kvEnvelopeKey, existing);
+}
+
+/**
+ * Delete a tenant and its issuer index, first bumping its token epoch so the tokens it issued die with it
+ * (and a later re-creation cannot revive them). `existing` is null when nothing readable is stored.
+ */
+async function deleteEmaTenantRevoking(store: EmaStore, tenantId: string, existing: EmaTenantRecord | null): Promise<void> {
+	await bumpEmaTenantEpoch(tenantId, existing ? tenantEpoch(existing) : 1, store.coordinator);
+	await deleteEmaTenant(store.kv, tenantId, store.kvEnvelopeKey);
 }
 
 /**
@@ -1614,20 +1660,15 @@ function writeEmaTenant(
  * the body: a new record is the operator's and an existing one keeps its manager, so an operator edit
  * never takes a tenant away from the customer settings that sync it.
  */
-async function upsertEmaTenant(
-	kv: KVNamespace,
-	body: EmaTenantUpsertRequest,
-	jwksUri: string,
-	kvEnvelopeKey: Uint8Array | undefined,
-): Promise<EmaTenantRecord> {
-	const existing = await getEmaTenant(kv, body.tenant_id, kvEnvelopeKey);
+async function upsertEmaTenant(store: EmaStore, body: EmaTenantUpsertRequest, jwksUri: string): Promise<EmaTenantRecord> {
+	const existing = await getEmaTenant(store.kv, body.tenant_id, store.kvEnvelopeKey);
 	const draft: EmaTenantDraft = {
 		...body,
 		jwks_uri: jwksUri,
 		approval: body.approval ?? existing?.approval,
 		source: existing?.source ?? 'operator',
 	};
-	return writeEmaTenant(kv, draft, existing, kvEnvelopeKey);
+	return writeEmaTenant(store, draft, existing);
 }
 
 /** The self-serve route's refusal to touch a tenant it does not manage (an operator-seeded one). */
@@ -1654,11 +1695,13 @@ async function readSelfServeTenant(
 }
 
 /**
- * Approval after a self-serve write. A new tenant, or a move to another issuer, waits for the operator.
- * Otherwise the stored decision stands ('rejected' is sticky), except that an approved tenant whose
+ * Approval after a self-serve write. An issuer the operator ever rejected for this tenant stays rejected,
+ * wherever the tenant has moved since. Otherwise a new tenant, or a move to another issuer, waits for the
+ * operator, and the stored decision stands ('rejected' is sticky), except that an approved tenant whose
  * rediscovered jwks_uri changed goes back to pending: the operator approved those keys, not these.
  */
-function selfServeApproval(existing: EmaTenantRecord | null, issuer: string, jwksUri: string): EmaApproval {
+async function selfServeApproval(existing: EmaTenantRecord | null, issuer: string, jwksUri: string): Promise<EmaApproval> {
+	if (await hasRejectedIssuer(existing, issuer)) return 'rejected';
 	if (!existing || existing.issuer !== issuer) return 'pending';
 	const current = effectiveApproval(existing);
 	return current === 'approved' && existing.jwks_uri !== jwksUri ? 'pending' : current;
@@ -1668,29 +1711,36 @@ const TIER_RANK: Record<EmaTenantRecord['tier'], number> = { developer: 0, enter
 
 /**
  * Whether a self-serve write only lowers what the stored tenant may do, so it needs no discovery: same
- * issuer, no re-enable, no tier increase, no later expiry, and it either leaves the tenant disabled or
- * moves the expiry earlier (a past value included). Such a write reuses the stored jwks_uri, so a revoke
- * from bv-web lands even while the IdP's discovery document is down or gone.
+ * issuer, no tier increase, and either a disable (whatever expiry rides along: bv-web recomputes it from
+ * the subscription, so it is often LATER than the stored one) or an enabled tenant whose expiry moves
+ * earlier (a past value included). Such a write reuses the stored jwks_uri, so a revoke from bv-web lands
+ * even while the IdP's discovery document is down or gone, and it never re-pends the tenant.
  */
 function lowersPrivilegeOnly(existing: EmaTenantRecord, body: EmaSelfServeUpsertRequest): boolean {
-	if (existing.issuer !== body.issuer) return false;
-	const storedExpiry = existing.entitlement_expires_at ?? Infinity;
-	return !raisesPrivilege(existing, body, storedExpiry) && (!body.enabled || body.entitlement_expires_at < storedExpiry);
+	if (existing.issuer !== body.issuer || TIER_RANK[body.tier] > TIER_RANK[existing.tier]) return false;
+	return !body.enabled || (existing.enabled && body.entitlement_expires_at < entitlementEnd(existing));
 }
 
-/** A re-enable, a tier increase or a later expiry than the stored one. */
-function raisesPrivilege(existing: EmaTenantRecord, body: EmaSelfServeUpsertRequest, storedExpiry: number): boolean {
-	return (
-		(body.enabled && !existing.enabled) || TIER_RANK[body.tier] > TIER_RANK[existing.tier] || body.entitlement_expires_at > storedExpiry
-	);
-}
-
-/** The jwks_uri a self-serve write stores: the stored one for a lowering write, else the issuer's discovered one. */
-async function resolveSelfServeJwksUri(
-	existing: EmaTenantRecord | null,
+/**
+ * The stored tenant and the jwks_uri a self-serve write stores: the stored one for a lowering write,
+ * else the issuer's discovered one. The tenant is read first (an operator-managed or unreadable one
+ * is refused before any network call) and read AGAIN after discovery, so approval and the lowering test
+ * are decided on what is stored now, not on what was stored before the IdP answered.
+ */
+async function readSelfServeWrite(
+	store: EmaStore,
+	tenantId: string,
 	body: EmaSelfServeUpsertRequest,
-): Promise<{ jwksUri: string } | { error: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
-	return existing && lowersPrivilegeOnly(existing, body) ? { jwksUri: existing.jwks_uri } : selfServeJwksUri(body.issuer);
+): Promise<{ existing: EmaTenantRecord | null; jwksUri: string } | { error: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
+	let discovered: string | undefined;
+	for (;;) {
+		const existing = await readSelfServeTenant(store.kv, tenantId, store.kvEnvelopeKey);
+		if (existing && lowersPrivilegeOnly(existing, body)) return { existing, jwksUri: existing.jwks_uri };
+		if (discovered) return { existing, jwksUri: discovered };
+		const result = await selfServeJwksUri(body.issuer);
+		if ('error' in result) return result;
+		discovered = result.jwksUri;
+	}
 }
 
 /**
@@ -1700,22 +1750,21 @@ async function resolveSelfServeJwksUri(
  * is the snapshot the route read (null = none).
  */
 async function upsertSelfServeEmaTenant(
-	kv: KVNamespace,
+	store: EmaStore,
 	tenantId: string,
 	body: EmaSelfServeUpsertRequest,
 	jwksUri: string,
 	existing: EmaTenantRecord | null,
-	kvEnvelopeKey: Uint8Array | undefined,
 ): Promise<EmaTenantRecord> {
 	const draft: EmaTenantDraft = {
 		...body,
 		tenant_id: tenantId,
 		allowed_client_ids: [CLAUDE_WEB_CIMD_CLIENT_ID],
 		jwks_uri: jwksUri,
-		approval: selfServeApproval(existing, body.issuer, jwksUri),
+		approval: await selfServeApproval(existing, body.issuer, jwksUri),
 		source: 'self-serve',
 	};
-	return writeEmaTenant(kv, draft, existing, kvEnvelopeKey);
+	return writeEmaTenant(store, draft, existing);
 }
 
 /** The approve compare-and-set: the stored record still matches the snapshot the operator reviewed. */
@@ -1752,6 +1801,12 @@ function logEmaTenantMutation(tenantId: string, action: 'upsert' | 'delete' | 'a
 
 const emaEnvelopeKey = (env: InternalEnv): Uint8Array | undefined => parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
+const emaStoreOf = (env: InternalEnv, kv: KVNamespace): EmaStore => ({
+	kv,
+	kvEnvelopeKey: emaEnvelopeKey(env),
+	coordinator: env.QUOTA_COORDINATOR,
+});
+
 /**
  * Map store failures to static responses: issuer conflict or an operator-managed tenant → 409; anything
  * else (KV outage, a stored record that cannot be read) → 503.
@@ -1783,15 +1838,20 @@ function emaItemTarget(
 const selfServeTarget = (c: import('hono').Context<InternalAppEnv>) =>
 	emaItemTarget(c, EMA_SELF_SERVE_BAD_ID, EMA_SELF_SERVE_TENANT_ID_PATTERN);
 
+/** Whether the operator ever refused this tenant: it is rejected now, or remembers an issuer it rejected before. */
+const hasBeenRejected = (rec: EmaTenantRecord): boolean =>
+	effectiveApproval(rec) === 'rejected' || (rec.rejected_issuer_hashes?.length ?? 0) > 0;
+
 /**
- * Self-serve delete. A rejected tenant is not removed: it keeps a disabled, lapsed tombstone that stays
- * rejected on its issuer, so deleting and re-creating cannot launder the operator's refusal. Anything
- * else is removed with its issuer index. Only the operator's own DELETE clears a rejected tenant.
+ * Self-serve delete. A tenant the operator ever rejected is not removed: it keeps a disabled, lapsed
+ * tombstone that carries its rejected issuers, so deleting and re-creating cannot launder a refusal. Any
+ * other tenant is removed with its issuer index. Only the operator's own DELETE clears a rejected tenant.
+ * Either way its tokens die first (writeEmaTenant and deleteEmaTenantRevoking bump the epoch).
  */
-async function deleteSelfServeEmaTenant(kv: KVNamespace, existing: EmaTenantRecord, kvEnvelopeKey: Uint8Array | undefined): Promise<void> {
-	if (effectiveApproval(existing) !== 'rejected') return deleteEmaTenant(kv, existing.tenant_id, kvEnvelopeKey);
+async function deleteSelfServeEmaTenant(store: EmaStore, existing: EmaTenantRecord): Promise<void> {
+	if (!hasBeenRejected(existing)) return deleteEmaTenantRevoking(store, existing.tenant_id, existing);
 	const lapsed: EmaTenantDraft = { ...existing, enabled: false, entitlement_expires_at: Math.floor(Date.now() / 1000) };
-	await writeEmaTenant(kv, lapsed, existing, kvEnvelopeKey);
+	await writeEmaTenant(store, lapsed, existing);
 }
 
 /** A self-serve issuer's jwks_uri, or its static 400 code. A shared issuer is refused before any network call. */
@@ -1814,13 +1874,13 @@ async function decideEmaTenant(
 	action: 'approve' | 'reject',
 	reviewed?: EmaApproveRequest,
 ): Promise<Response> {
-	const kvEnvelopeKey = emaEnvelopeKey(c.env);
+	const store = emaStoreOf(c.env, target.kv);
 	try {
-		const existing = await getEmaTenant(target.kv, target.tenantId, kvEnvelopeKey);
+		const existing = await getEmaTenant(store.kv, target.tenantId, store.kvEnvelopeKey);
 		if (!existing) return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
 		if (reviewed && !matchesReviewed(existing, reviewed)) return c.json({ error: 'approval_stale' }, 409, EMA_NO_STORE);
 		const approval = action === 'approve' ? 'approved' : 'rejected';
-		const stored = await writeEmaTenant(target.kv, { ...existing, approval }, existing, kvEnvelopeKey);
+		const stored = await writeEmaTenant(store, { ...existing, approval }, existing);
 		logEmaTenantMutation(target.tenantId, action, stored);
 		return c.json(stored, 200, EMA_NO_STORE);
 	} catch (err) {
@@ -1860,7 +1920,7 @@ internalRoutes.put('/oauth/ema-tenants', requireEmaEnvelopeKey, async (c) => {
 	if (!jwksUri) return c.json({ error: 'issuer_discovery_failed' }, 400, EMA_NO_STORE);
 
 	try {
-		return c.json(await upsertEmaTenant(kv, body, jwksUri, emaEnvelopeKey(c.env)), 200, EMA_NO_STORE);
+		return c.json(await upsertEmaTenant(emaStoreOf(c.env, kv), body, jwksUri), 200, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
 	}
@@ -1915,12 +1975,16 @@ internalRoutes.post('/oauth/ema-tenants/:tenant_id/reject', requireEmaEnvelopeKe
 	return decideEmaTenant(c, target, 'reject');
 });
 
-/** DELETE /internal/oauth/ema-tenants/:tenant_id — idempotent; removes the record and its issuer index. */
+/**
+ * DELETE /internal/oauth/ema-tenants/:tenant_id — idempotent; removes the record and its issuer index, and
+ * the tokens it issued (the epoch is bumped first). It also clears a rejected tenant's history entirely.
+ */
 internalRoutes.delete('/oauth/ema-tenants/:tenant_id', async (c) => {
 	const target = emaItemTarget(c);
 	if (target instanceof Response) return target;
 	try {
-		await deleteEmaTenant(target.kv, target.tenantId, emaEnvelopeKey(c.env));
+		const store = emaStoreOf(c.env, target.kv);
+		await deleteEmaTenantRevoking(store, target.tenantId, await getEmaTenant(store.kv, target.tenantId, store.kvEnvelopeKey));
 		return c.body(null, 204, EMA_NO_STORE);
 	} catch (err) {
 		return emaStoreError(c, err);
@@ -1944,12 +2008,11 @@ internalRoutes.put('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, as
 	if (target instanceof Response) return target;
 	const parsed = await readEmaBody(c.req.raw, EmaSelfServeUpsertRequestSchema);
 	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
-	const kvEnvelopeKey = emaEnvelopeKey(c.env);
+	const store = emaStoreOf(c.env, target.kv);
 	try {
-		const existing = await readSelfServeTenant(target.kv, target.tenantId, kvEnvelopeKey);
-		const resolved = await resolveSelfServeJwksUri(existing, parsed.body);
+		const resolved = await readSelfServeWrite(store, target.tenantId, parsed.body);
 		if ('error' in resolved) return c.json({ error: resolved.error }, 400, EMA_NO_STORE);
-		const stored = await upsertSelfServeEmaTenant(target.kv, target.tenantId, parsed.body, resolved.jwksUri, existing, kvEnvelopeKey);
+		const stored = await upsertSelfServeEmaTenant(store, target.tenantId, parsed.body, resolved.jwksUri, resolved.existing);
 		logEmaTenantMutation(target.tenantId, 'upsert', stored);
 		return c.json(emaSelfServeView(stored), 200, EMA_NO_STORE);
 	} catch (err) {
@@ -1972,15 +2035,16 @@ internalRoutes.get('/oauth/ema-self-serve/:tenant_id', async (c) => {
 
 /**
  * DELETE /internal/oauth/ema-self-serve/:tenant_id — idempotent (204); refuses an operator-managed or
- * unreadable tenant. A rejected tenant stays as a tombstone (deleteSelfServeEmaTenant).
+ * unreadable tenant. A tenant the operator ever rejected stays as a tombstone (deleteSelfServeEmaTenant),
+ * which is a write, so it needs the envelope key like the PUT does.
  */
-internalRoutes.delete('/oauth/ema-self-serve/:tenant_id', async (c) => {
+internalRoutes.delete('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, async (c) => {
 	const target = selfServeTarget(c);
 	if (target instanceof Response) return target;
-	const kvEnvelopeKey = emaEnvelopeKey(c.env);
+	const store = emaStoreOf(c.env, target.kv);
 	try {
-		const existing = await readSelfServeTenant(target.kv, target.tenantId, kvEnvelopeKey);
-		if (existing) await deleteSelfServeEmaTenant(target.kv, existing, kvEnvelopeKey);
+		const existing = await readSelfServeTenant(store.kv, target.tenantId, store.kvEnvelopeKey);
+		if (existing) await deleteSelfServeEmaTenant(store, existing);
 		logEmaTenantMutation(target.tenantId, 'delete', existing);
 		return c.body(null, 204, EMA_NO_STORE);
 	} catch (err) {
