@@ -223,7 +223,9 @@ Organization: SomeRegistrar GmbH
 	describe('label-only `Registrar:` followed by an indented `Label: value` block', () => {
 		// Synthetic .eu/.be-style block; the VALUE is the registrar, never `Name: X`.
 		it('resolves the indented Name value', () => {
-			const r = parseWhoisResponse('Domain: example.eu\nRegistrar:\n    Name: Example Registrar BV\n    Website: https://registrar.example\n');
+			const r = parseWhoisResponse(
+				'Domain: example.eu\nRegistrar:\n    Name: Example Registrar BV\n    Website: https://registrar.example\n',
+			);
 			expect(r.registrar).toBe('Example Registrar BV');
 		});
 
@@ -233,22 +235,30 @@ Organization: SomeRegistrar GmbH
 		});
 
 		it('returns null when the block has neither Name nor Organization', () => {
-			const r = parseWhoisResponse('Domain: example.eu\nRegistrar:\n    Website: https://registrar.example\n    Email: a@registrar.example\n');
+			const r = parseWhoisResponse(
+				'Domain: example.eu\nRegistrar:\n    Website: https://registrar.example\n    Email: a@registrar.example\n',
+			);
 			expect(r.registrar).toBeNull();
 		});
 
 		it('stops at a blank line (a later block Name is not the registrar)', () => {
-			const r = parseWhoisResponse('Domain: example.eu\nRegistrar:\n    Website: https://registrar.example\n\n    Name: Technical Contact\n');
+			const r = parseWhoisResponse(
+				'Domain: example.eu\nRegistrar:\n    Website: https://registrar.example\n\n    Name: Technical Contact\n',
+			);
 			expect(r.registrar).toBeNull();
 		});
 
 		it('handles CRLF line endings', () => {
-			const r = parseWhoisResponse('Domain: example.eu\r\nRegistrar:\r\n    Name: Example Registrar BV\r\n    Website: https://registrar.example\r\n');
+			const r = parseWhoisResponse(
+				'Domain: example.eu\r\nRegistrar:\r\n    Name: Example Registrar BV\r\n    Website: https://registrar.example\r\n',
+			);
 			expect(r.registrar).toBe('Example Registrar BV');
 		});
 
 		it('keeps the Nominet plain-name continuation unchanged', () => {
-			const r = parseWhoisResponse('Domain name:\n    example.co.uk\n\n    Registrar:\n        Example Registrar Ltd. [Tag = EXAMPLE]\n        URL: https://registrar.example\n');
+			const r = parseWhoisResponse(
+				'Domain name:\n    example.co.uk\n\n    Registrar:\n        Example Registrar Ltd. [Tag = EXAMPLE]\n        URL: https://registrar.example\n',
+			);
 			expect(r.registrar).toBe('Example Registrar Ltd.');
 		});
 	});
