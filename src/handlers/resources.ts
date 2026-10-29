@@ -9,6 +9,7 @@
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
+import { JSON_RPC_ERRORS, JsonRpcClientError } from '../lib/json-rpc';
 import { TOOLS } from '../schemas/tool-definitions';
 import { INTERNAL_ONLY_TOOLS } from '../lib/config';
 import { SCAN_CATEGORIES } from '../tools/scan-domain';
@@ -303,7 +304,7 @@ export function handleResourcesRead(params: Record<string, unknown>): {
 	// through Object.prototype and serve a non-string as a "resource".
 	const content = Object.hasOwn(RESOURCE_CONTENT, uri) ? RESOURCE_CONTENT[uri] : undefined;
 	if (!content) {
-		throw new Error(`Resource not found: ${uri}`);
+		throw new JsonRpcClientError(JSON_RPC_ERRORS.RESOURCE_NOT_FOUND, `Resource not found: ${uri}`);
 	}
 	const resource = RESOURCES.find((r) => r.uri === uri);
 	return {

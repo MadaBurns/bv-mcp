@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { JSON_RPC_ERRORS, JsonRpcClientError } from '../lib/json-rpc';
 import { DomainSchema, GradeSchema } from '../schemas/primitives';
 
 /** MCP Prompt argument definition */
@@ -224,7 +225,7 @@ Include verification steps and DMARC report monitoring timeline.`,
 			];
 
 		default:
-			throw new Error(`Invalid prompt name: ${name}`);
+			throw new JsonRpcClientError(JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid prompt name: ${name}`);
 	}
 }
 
@@ -251,7 +252,7 @@ export function handlePromptsGet(params: Record<string, unknown>): {
 
 	const prompt = PROMPTS.find((p) => p.name === name);
 	if (!prompt) {
-		throw new Error(`Invalid prompt name: ${name}`);
+		throw new JsonRpcClientError(JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid prompt name: ${name}`);
 	}
 
 	const rawArgs = (params.arguments ?? {}) as Record<string, unknown>;

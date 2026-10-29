@@ -10,7 +10,7 @@ import {
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
 import { fireAndForget, getLogger, logEvent, logError } from '../lib/log';
-import { jsonRpcError, JSON_RPC_ERRORS, isJsonRpcNotification, sanitizeErrorMessage } from '../lib/json-rpc';
+import { jsonRpcError, JSON_RPC_ERRORS, JsonRpcClientError, isJsonRpcNotification, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	FREE_TOOL_DAILY_LIMITS,
@@ -1704,6 +1704,17 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			eventId,
 		};
 	} catch (err) {
+		if (err instanceof JsonRpcClientError) {
+			emitRequestAnalytics(options, method, 'error', true, err.code, err.message);
+			return {
+				kind: 'response',
+				payload: jsonRpcError(id, err.code, sanitizeErrorMessage(err, 'Invalid params')),
+				headers: {},
+				httpStatus: 400,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
 		emitRequestAnalytics(options, method, 'error', true);
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'error',

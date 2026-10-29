@@ -84,7 +84,13 @@ describe('handleResourcesRead', () => {
 	});
 
 	it('throws for an unknown URI', () => {
-		expect(() => handleResourcesRead({ uri: 'dns-security://guides/nonexistent' })).toThrow('Resource not found');
+		expect(() => handleResourcesRead({ uri: 'dns-security://guides/nonexistent' })).toThrow(
+			expect.objectContaining({
+				name: 'JsonRpcClientError',
+				code: -32002,
+				message: 'Resource not found: dns-security://guides/nonexistent',
+			}),
+		);
 	});
 
 	it('throws when uri is a number', () => {
