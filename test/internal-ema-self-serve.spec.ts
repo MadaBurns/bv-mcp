@@ -238,6 +238,7 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 			'entitlement_expires_at',
 			'issuer',
 			'name',
+			'rev',
 			'tenant_id',
 			'tier',
 			'updated_at',
@@ -718,6 +719,86 @@ describe('rejected issuers are remembered per tenant (SQ-465 B3)', () => {
 		expect((await send(call('DELETE', `/ema-tenants/${TENANT_ID}`))).status).toBe(204);
 		expect(await stored()).toBeNull();
 		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('pending');
+	});
+});
+
+describe('PUT expected_rev: the optional compare-and-set inside the registry transaction (SQ-473)', () => {
+	const getRev = async (): Promise<number> => ((await (await sendSelfServe('GET')).json()) as { rev: number }).rev;
+
+	it('a matching expected_rev writes and bumps rev; the GET view and the PUT answer expose rev', async () => {
+		await putSelfServe();
+		const rev = await getRev();
+		expect(rev).toBe((await stored())!.rev);
+		const res = await putSelfServe({ name: 'Acme Renamed', expected_rev: rev });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ name: 'Acme Renamed', rev: rev + 1 });
+		expect(await getRev()).toBe(rev + 1);
+		expect(await stored()).not.toHaveProperty('expected_rev');
+	});
+
+	it('a stale expected_rev is 409 ema_record_changed and leaves the record byte-identical (a re-enable cannot overwrite a revoke)', async () => {
+		await putSelfServe();
+		const rev = await getRev();
+		// The webhook path disables the tenant (latest intent wins, no expected_rev): rev moves on.
+		expect((await putSelfServe({ enabled: false })).status).toBe(200);
+		const before = JSON.stringify(await stored());
+		fetches.length = 0;
+
+		const res = await putSelfServe({ enabled: true, expected_rev: rev });
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect(JSON.stringify(await stored())).toBe(before);
+		expect((await stored())!.enabled).toBe(false);
+		expect(fetches).toEqual([]);
+	});
+
+	it('an absent expected_rev keeps the old behaviour: the write lands whatever rev the record is at', async () => {
+		await putSelfServe();
+		await putSelfServe({ name: 'Second' });
+		const res = await putSelfServe({ name: 'Third' });
+		expect(res.status).toBe(200);
+		expect((await stored())!.name).toBe('Third');
+	});
+
+	it('race replay: GET rev=n, a concurrent PUT bumps it to n+1, then a PUT with expected_rev=n is 409', async () => {
+		await putSelfServe();
+		const n = await getRev();
+		expect((await putSelfServe({ name: 'Concurrent writer' })).status).toBe(200);
+		expect(await getRev()).toBe(n + 1);
+		const res = await putSelfServe({ name: 'Stale sweep', expected_rev: n });
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect((await stored())!.name).toBe('Concurrent writer');
+		expect(await getRev()).toBe(n + 1);
+	});
+
+	it('the registry decides on the FRESH record: a rev moved while discovery is held still refuses the write', async () => {
+		await putSelfServe();
+		const n = await getRev();
+		const held = holdDiscovery();
+		const pending = putSelfServe({ name: 'Raise', expected_rev: n, entitlement_expires_at: nowSeconds() + 60 * DAY });
+		await vi.waitFor(() => expect(held.started()).toBeGreaterThan(0));
+		// A concurrent write lands while the raise waits on discovery.
+		await putRegistryRecord({ ...(await stored())!, name: 'Moved', rev: n + 1 });
+		held.release();
+		const res = await pending;
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect((await stored())!.name).toBe('Moved');
+	});
+
+	it('an expected_rev for an absent record is 409 and nothing is created', async () => {
+		const res = await putSelfServe({ expected_rev: 0 });
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect(await stored()).toBeNull();
+		expect(fetches).toEqual([]);
+	});
+
+	it.each([[-1], [1.5], ['3'], [null]])('400 on a malformed expected_rev (%j): nothing stored', async (bad) => {
+		const res = await putSelfServe({ expected_rev: bad });
+		expect(res.status).toBe(400);
+		expect(await stored()).toBeNull();
 	});
 });
 

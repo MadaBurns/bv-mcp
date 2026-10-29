@@ -76,6 +76,7 @@ import {
 	isSharedIssuer,
 	listEmaTenants,
 	lowersPrivilegeOnly,
+	matchesExpectedRev,
 	normalizeIssuer,
 	writeEmaTenant,
 	type EmaRegistry,
@@ -1624,6 +1625,8 @@ function emaSelfServeView(rec: EmaTenantRecord) {
 		tier: rec.tier,
 		entitlement_expires_at: rec.entitlement_expires_at,
 		updated_at: rec.updated_at,
+		/** The revision a caller sends back as `expected_rev` to make its next PUT a compare-and-set. */
+		rev: rec.rev ?? 0,
 	};
 }
 
@@ -1699,6 +1702,8 @@ async function upsertSelfServeEmaTenant(
 ): Promise<EmaWriteResult | { status: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
 	const existing = await getEmaTenant(registry, tenantId);
 	if (existing && existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
+	// Early answer for a stale expected_rev (no discovery fetch); the registry transaction stays the authority.
+	if (!matchesExpectedRev(existing, body.expected_rev)) return { status: 'ema_record_changed' };
 	if (existing && lowersPrivilegeOnly(existing, body)) {
 		const lowered = await writeEmaTenant(registry, tenantId, { op: 'self-serve-upsert', body });
 		if (lowered.status !== 'ema_record_changed') return lowered;

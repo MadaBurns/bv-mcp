@@ -122,6 +122,11 @@ export const EmaSelfServeUpsertRequestSchema = z
 			.int()
 			.positive()
 			.refine((value) => value <= Math.floor(Date.now() / 1000) + EMA_SELF_SERVE_MAX_ENTITLEMENT_SECONDS, 'must be at most 400 days ahead'),
+		/**
+		 * Optional compare-and-set: the `rev` the caller last read (GET answers it). The registry applies the write only while
+		 * the stored record is still at that rev, else 409 ema_record_changed. A precondition, never stored; omitted = latest write wins.
+		 */
+		expected_rev: z.number().int().nonnegative().optional(),
 	})
 	.strict();
 export type EmaSelfServeUpsertRequest = z.infer<typeof EmaSelfServeUpsertRequestSchema>;

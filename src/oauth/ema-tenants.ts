@@ -263,6 +263,11 @@ export function lowersPrivilegeOnly(existing: EmaTenantRecord, body: EmaSelfServ
 	return !body.enabled || (existing.enabled && body.entitlement_expires_at < entitlementEnd(existing));
 }
 
+/** The self-serve compare-and-set: a caller that named `expected_rev` still sees that revision (an absent record never matches). */
+export function matchesExpectedRev(rec: EmaTenantRecord | null, expectedRev: number | undefined): boolean {
+	return expectedRev === undefined || (rec !== null && (rec.rev ?? 0) === expectedRev);
+}
+
 /** The approve compare-and-set: the stored record is still the revision the operator reviewed, on the same issuer and keys. */
 function matchesReviewed(rec: EmaTenantRecord, reviewed: EmaApproveRequest): boolean {
 	return rec.issuer === reviewed.issuer && rec.jwks_uri === reviewed.jwks_uri && (rec.rev ?? 0) === reviewed.rev;
@@ -507,7 +512,9 @@ async function selfServeDraft(
 	write: SelfServeWrite,
 ): Promise<EmaTenantDraft | { status: EmaWriteError }> {
 	if (existing && existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
-	const body = { ...write.body, issuer: normalizeIssuer(write.body.issuer) };
+	if (!matchesExpectedRev(existing, write.body.expected_rev)) return { status: 'ema_record_changed' };
+	const { expected_rev: _expectedRev, ...fields } = write.body;
+	const body = { ...fields, issuer: normalizeIssuer(fields.issuer) };
 	const jwksUri = selfServeJwksUri(existing, body, write.discovered);
 	if (!jwksUri) return { status: 'ema_record_changed' };
 	return {
