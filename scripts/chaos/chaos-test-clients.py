@@ -25,6 +25,7 @@ import sys
 import re
 import os
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
@@ -49,15 +50,74 @@ CLIENT_TYPES = [
 INTERACTIVE_TYPES = {name for name, _, interactive in CLIENT_TYPES if interactive}
 
 results = []
+skipped_quota = []
+_last = threading.local()  # most recent HTTP response seen by this thread
+
+QUOTA_MARKERS = ("distinct domains", "requests per day", "retry after")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _sse_last_data(body_text):
+    """Return the payload of the last `data:` line in an SSE body, or None."""
+    payload = None
+    for line in body_text.splitlines():
+        if line.startswith("data:"):
+            payload = line[5:].strip()
+    return payload
+
+
+def _looks_like_sse(body_text):
+    return body_text.lstrip().startswith(("id:", "event:", "data:"))
+
+
+def normalize_mcp_text(body_text, content_type=None):
+    """Return the JSON text of an MCP response body, whether JSON or SSE."""
+    if content_type is not None:
+        is_sse = "text/event-stream" in content_type.lower()
+    else:
+        is_sse = _looks_like_sse(body_text)
+    if is_sse:
+        payload = _sse_last_data(body_text)
+        return payload if payload is not None else ""
+    return body_text
+
+
+def parse_mcp_body(body_text, content_type=None):
+    """Parse an MCP response: SSE (last data: line) or plain JSON. Empty -> None."""
+    text = normalize_mcp_text(body_text, content_type)
+    if not text or not text.strip():
+        return None
+    return json.loads(text)
+
+
+def is_quota_skip(status, body_text):
+    """True when a 429 / -32029 response names a shared-IP quota."""
+    try:
+        d = parse_mcp_body(body_text)
+    except Exception:
+        d = None
+    err = d.get("error") if isinstance(d, dict) else None
+    code = err.get("code") if isinstance(err, dict) else None
+    if status != 429 and code != -32029:
+        return False
+    msg = str(err.get("message", "")) if isinstance(err, dict) else str(body_text or "")
+    return any(m in msg.lower() for m in QUOTA_MARKERS)
+
+
 def record(name, passed, detail=""):
+    last = getattr(_last, "value", None)
+    if not passed and last and is_quota_skip(*last):
+        skipped_quota.append(name)
+        print(f"  [SKIPPED-QUOTA] {name}")
+        return
     status = "PASS" if passed else "FAIL"
     results.append((name, passed))
     msg = f"  [{status}] {name}"
-    if detail and not passed:
-        msg += f"  -- {detail}"
+    if not passed:
+        if detail:
+            msg += f"  -- {detail}"
+        if last:
+            msg += f"  [HTTP {last[0]}, body[:300]={last[1][:300]!r}]"
     print(msg)
 
 
@@ -70,6 +130,8 @@ def curl_json(method, path, body=None, headers=None, include_headers=False,
         url = f"{url}?{qs}"
     cmd = ["curl", "-s", "-w", "\n%{http_code}",
            "--connect-timeout", "10", "--max-time", str(timeout)]
+    if not any(h.lower().startswith("accept:") for h in (headers or [])):
+        cmd += ["-H", "Accept: application/json, text/event-stream"]
     if include_headers:
         cmd.append("-D-")
     if method != "GET":
@@ -84,14 +146,20 @@ def curl_json(method, path, body=None, headers=None, include_headers=False,
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
         output = r.stdout.strip()
         if not output:
+            _last.value = (0, "EMPTY_RESPONSE")
             return 0, "EMPTY_RESPONSE", ""
         lines = output.split("\n")
         status_code = int(lines[-1]) if lines[-1].isdigit() else 0
         body_text = "\n".join(lines[:-1])
+        if not include_headers:
+            body_text = normalize_mcp_text(body_text)
+        _last.value = (status_code, body_text)
         return status_code, body_text, r.stdout
     except subprocess.TimeoutExpired:
+        _last.value = (0, "TIMEOUT")
         return 0, "TIMEOUT", ""
     except Exception as e:
+        _last.value = (0, str(e))
         return 0, str(e), ""
 
 
@@ -193,6 +261,21 @@ def tools_list_available(status, body_text, allow_rate_limited=False):
         return True, f"{count} tools"
 
     return False, f"HTTP {status}, tools={count}, rate={rate_limited}"
+
+
+def query_key_ignored(status, body_text):
+    """A ?api_key= call must look unauthenticated: 401/403, a quota error, or a free-tier result."""
+    if status in (401, 403):
+        return True
+    try:
+        d = parse_mcp_body(body_text)
+    except Exception:
+        return False
+    if not isinstance(d, dict):
+        return False
+    if is_rate_limited(body_text) or is_quota_skip(status, body_text):
+        return True
+    return status == 200 and bool(d.get("result", {}).get("content"))
 
 
 def validate_key():
@@ -383,29 +466,26 @@ def test_api_key_param():
     if not sid:
         return
 
-    # 4b. tools/call via ?api_key= (no Bearer)
+    # 4b. tools/call via ?api_key= must be IGNORED (REJECT_QUERY_API_KEY=true in
+    # prod): the caller is unauthenticated, so we expect a free-tier outcome --
+    # a quota message, a 401/403 upgrade envelope, or an ordinary free-tier result.
     status, body, _ = tool_call(
         sid, ua, "check_spf",
         {"domain": "cloudflare.com", "format": "compact"},
         auth="none", params=params,
     )
-    try:
-        d = json.loads(body)
-        ok = bool(d.get("result", {}).get("content"))
-        record("4b. tools/call with ?api_key= → content returned", ok,
-               f"status={status}, keys={list(d.keys())}")
-    except Exception as e:
-        record("4b. tools/call with ?api_key=", False, str(e))
+    record("4b. tools/call with ?api_key= → key ignored (unauthenticated outcome)",
+           query_key_ignored(status, body), f"status={status}")
 
-    # 4c. No session, just ?api_key= in URL (Smithery proxy-style)
+    # 4c. No session, just ?api_key= in URL: same as 8a, 400 missing session.
     status, body, _ = curl_json(
         "POST", "/mcp",
         body=jsonrpc("tools/list", {}, 3),
         headers=make_headers(ua, auth="none"),
         params=params,
     )
-    ok, detail = tools_list_available(status, body)
-    record("4c. tools/list no session + ?api_key= → tools returned", ok, detail)
+    record("4c. tools/list no session + ?api_key= → 400 missing-session",
+           status == 400, f"got {status}")
 
     delete_session(sid, ua)
 
@@ -622,17 +702,16 @@ def test_session_edge_cases():
     except Exception as e:
         record("8a. No session header → 400 missing-session", False, str(e))
 
-    # 8b. tools/list on valid-format unknown session ID → auto-revival → 200
-    # (or rate-limited — both mean server is alive and handling the request correctly)
+    # 8b. tools/list on valid-format unknown session ID → 404 (expired/terminated;
+    # no auto-revival since 2601 -- see src/mcp/route-gates.ts)
     fake_sid = "b" * 64  # valid 64-hex-char format, never created
     status, body, _ = curl_json(
         "POST", "/mcp",
         body=jsonrpc("tools/list", {}, 2),
         headers=make_headers(ua, session_id=fake_sid),
     )
-    ok, detail = tools_list_available(status, body, allow_rate_limited=True)
-    record("8b. Valid-format unknown session → auto-revival (tools returned or rate-limited)",
-           ok, detail)
+    record("8b. Valid-format unknown session → 404 session expired or terminated",
+           status == 404, f"got {status}")
 
     # 8c. Invalid session format → 404
     # Server validates header presence (absent → 400) but any value triggers a KV
@@ -734,9 +813,22 @@ def test_protocol_guards():
     )
     record(f"9c. Body > 10 KB ({body_len}B) → 413", status == 413, f"got {status}")
 
-    # GET /mcp without Accept: text/event-stream → 406
-    status, body, _ = curl_json("GET", "/mcp", headers=[f"User-Agent: {ua}"])
-    record("9d. GET /mcp no Accept → 406", status == 406, f"got {status}")
+    # GET /mcp with a valid session but no Accept header → 405 + Allow: GET, POST
+    # (since 3.29.2; `-H 'Accept:'` suppresses curl's default */*)
+    g_sid, _ = create_session(ua, auth=auth_mode)
+    if g_sid:
+        status, body, raw = curl_json(
+            "GET", "/mcp",
+            headers=[f"User-Agent: {ua}", f"Mcp-Session-Id: {g_sid}", "Accept:"],
+            include_headers=True,
+        )
+        allow = [l for l in raw.split("\n") if l.lower().startswith("allow:")]
+        record("9d. GET /mcp no Accept → 405 + Allow: GET, POST",
+               status == 405 and bool(allow) and "GET" in allow[0] and "POST" in allow[0],
+               f"got {status}, allow={allow}")
+        delete_session(g_sid, ua)
+    else:
+        record("9d. GET /mcp no Accept → 405", True, "skipped (rate limited)")
 
 
 # ─── Section 10: Batch JSON-RPC ──────────────────────────────────────────────
@@ -863,6 +955,8 @@ def main():
     print("=" * 65)
     print(f"  passed  {passed}/{total}")
     print(f"  failed  {failed}/{total}")
+    if skipped_quota:
+        print(f"  skipped-quota  {len(skipped_quota)}: " + "; ".join(skipped_quota))
     print(f"  time    {total_time:.1f}s")
 
     if failed:
