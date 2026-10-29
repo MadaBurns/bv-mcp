@@ -1675,9 +1675,22 @@ const TIER_RANK: Record<EmaTenantRecord['tier'], number> = { developer: 0, enter
 function lowersPrivilegeOnly(existing: EmaTenantRecord, body: EmaSelfServeUpsertRequest): boolean {
 	if (existing.issuer !== body.issuer) return false;
 	const storedExpiry = existing.entitlement_expires_at ?? Infinity;
-	const raises =
-		(body.enabled && !existing.enabled) || TIER_RANK[body.tier] > TIER_RANK[existing.tier] || body.entitlement_expires_at > storedExpiry;
-	return !raises && (!body.enabled || body.entitlement_expires_at < storedExpiry);
+	return !raisesPrivilege(existing, body, storedExpiry) && (!body.enabled || body.entitlement_expires_at < storedExpiry);
+}
+
+/** A re-enable, a tier increase or a later expiry than the stored one. */
+function raisesPrivilege(existing: EmaTenantRecord, body: EmaSelfServeUpsertRequest, storedExpiry: number): boolean {
+	return (
+		(body.enabled && !existing.enabled) || TIER_RANK[body.tier] > TIER_RANK[existing.tier] || body.entitlement_expires_at > storedExpiry
+	);
+}
+
+/** The jwks_uri a self-serve write stores: the stored one for a lowering write, else the issuer's discovered one. */
+async function resolveSelfServeJwksUri(
+	existing: EmaTenantRecord | null,
+	body: EmaSelfServeUpsertRequest,
+): Promise<{ jwksUri: string } | { error: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
+	return existing && lowersPrivilegeOnly(existing, body) ? { jwksUri: existing.jwks_uri } : selfServeJwksUri(body.issuer);
 }
 
 /**
@@ -1934,8 +1947,7 @@ internalRoutes.put('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, as
 	const kvEnvelopeKey = emaEnvelopeKey(c.env);
 	try {
 		const existing = await readSelfServeTenant(target.kv, target.tenantId, kvEnvelopeKey);
-		const resolved =
-			existing && lowersPrivilegeOnly(existing, parsed.body) ? { jwksUri: existing.jwks_uri } : await selfServeJwksUri(parsed.body.issuer);
+		const resolved = await resolveSelfServeJwksUri(existing, parsed.body);
 		if ('error' in resolved) return c.json({ error: resolved.error }, 400, EMA_NO_STORE);
 		const stored = await upsertSelfServeEmaTenant(target.kv, target.tenantId, parsed.body, resolved.jwksUri, existing, kvEnvelopeKey);
 		logEmaTenantMutation(target.tenantId, 'upsert', stored);
