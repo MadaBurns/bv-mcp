@@ -74,29 +74,34 @@ describe('consumeOAuthRateLimit — deferred KV mirror write (SQ-450)', () => {
 	it('defers the mirror on a denial too, and the verdict is still the coordinator 429', async () => {
 		const k = gatedKv();
 		const deferred: Promise<unknown>[] = [];
-		const verdict = await consumeOAuthRateLimit({
+		const pending = consumeOAuthRateLimit({
 			...options,
 			kv: k.kv,
 			quotaCoordinator: coordinator({ allowed: false, limit: 30, used: 30, remaining: 0 }),
 			waitUntil: (p) => void deferred.push(p),
 		});
-		expect(verdict).toEqual({ exceeded: true, retryAfterSeconds: 30 });
-		expect(verdict.unavailable).toBeUndefined();
+		expect(await settlesPromptly(pending)).toBe(true);
 		expect(deferred).toHaveLength(1);
 		k.release();
+		const verdict = await pending;
+		expect(verdict).toEqual({ exceeded: true, retryAfterSeconds: 30 });
+		expect(verdict.unavailable).toBeUndefined();
 		await Promise.all(deferred);
 	});
 
 	it('a deferred mirror write that fails never rejects the waitUntil promise', async () => {
 		const k = gatedKv({ failPut: true });
 		const deferred: Promise<unknown>[] = [];
-		await consumeOAuthRateLimit({
+		const pending = consumeOAuthRateLimit({
 			...options,
 			kv: k.kv,
 			quotaCoordinator: coordinator({ allowed: true, limit: 30, used: 1, remaining: 29 }),
 			waitUntil: (p) => void deferred.push(p),
 		});
+		expect(await settlesPromptly(pending)).toBe(true);
+		expect(deferred).toHaveLength(1);
 		k.release();
+		await expect(pending).resolves.toEqual({ exceeded: false, retryAfterSeconds: 0 });
 		await expect(Promise.all(deferred)).resolves.toBeDefined();
 		expect(k.put).toHaveBeenCalledTimes(1);
 	});
