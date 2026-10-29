@@ -17,6 +17,7 @@ import { isPublicInternetRequest } from '../../src/internal';
 type TestEnv = typeof env & {
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	BV_MCP_BRAND_WEBHOOK_KEY?: string;
 	OAUTH_SIGNING_SECRET?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
@@ -63,6 +64,11 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 		['PUT', '/internal/oauth/ema-tenants'],
 		['GET', '/internal/oauth/ema-tenants/acme-corp'],
 		['DELETE', '/internal/oauth/ema-tenants/acme-corp'],
+		['POST', '/internal/oauth/ema-tenants/acme-corp/approve'],
+		['POST', '/internal/oauth/ema-tenants/acme-corp/reject'],
+		['PUT', '/internal/oauth/ema-self-serve/web-acme'],
+		['GET', '/internal/oauth/ema-self-serve/web-acme'],
+		['DELETE', '/internal/oauth/ema-self-serve/web-acme'],
 	])('returns 404 for %s %s when cf-connecting-ip is present', async (method, path) => {
 		// EMA tenant seeding decides which IdPs may mint access tokens — same isolation as trial-keys.
 		const req = new Request(`http://example.com${path}`, {
@@ -234,39 +240,73 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 		expect(res.status).toBe(503);
 	});
 
-	it.each([
+	const EMA_ADMIN = 'ema-admin-capability-isolation-test-key-32b';
+	const EMA_MINT = 'mint-capability-isolation-test-key-32-bytes';
+	const emaOperatorRoutes: Array<[string, string]> = [
 		['PUT', '/internal/oauth/ema-tenants'],
 		['GET', '/internal/oauth/ema-tenants'],
 		['GET', '/internal/oauth/ema-tenants/acme-corp'],
 		['DELETE', '/internal/oauth/ema-tenants/acme-corp'],
-	])('returns 503 for %s %s with no BV_MCP_OAUTH_MINT_KEY (fail closed)', async (method, path) => {
-		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
-		const req = new Request(`http://example.com${path}`, {
+		['POST', '/internal/oauth/ema-tenants/acme-corp/approve'],
+		['POST', '/internal/oauth/ema-tenants/acme-corp/reject'],
+	];
+	const emaSelfServeRoutes: Array<[string, string]> = [
+		['PUT', '/internal/oauth/ema-self-serve/web-acme'],
+		['GET', '/internal/oauth/ema-self-serve/web-acme'],
+		['DELETE', '/internal/oauth/ema-self-serve/web-acme'],
+	];
+	const emaRequest = (method: string, path: string, bearer?: string) =>
+		new Request(`http://example.com${path}`, {
 			method,
-			headers: { 'Content-Type': 'application/json' },
-			body: method === 'PUT' ? JSON.stringify({ tenant_id: 'acme-corp' }) : undefined,
+			headers: { 'Content-Type': 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
+			body: method === 'PUT' || method === 'POST' ? JSON.stringify({ tenant_id: 'acme-corp' }) : undefined,
 		});
-		const res = await send(req, customEnv);
-		expect(res.status).toBe(503);
+
+	it.each(emaOperatorRoutes)(
+		'returns 503 for %s %s with no BV_MCP_EMA_ADMIN_KEY, even with the mint key set (fail closed)',
+		async (method, path) => {
+			const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: EMA_MINT, BV_MCP_EMA_ADMIN_KEY: undefined } as TestEnv;
+			expect((await send(emaRequest(method, path, EMA_MINT), customEnv)).status).toBe(503);
+		},
+	);
+
+	it.each(emaSelfServeRoutes)('returns 503 for %s %s with no BV_MCP_OAUTH_MINT_KEY (fail closed)', async (method, path) => {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined, BV_MCP_EMA_ADMIN_KEY: EMA_ADMIN } as TestEnv;
+		expect((await send(emaRequest(method, path, EMA_ADMIN), customEnv)).status).toBe(503);
 	});
 
-	it('does not let the revoke or brand-webhook capability authorize EMA tenant seeding', async () => {
+	it('does not let the mint (bv-web), revoke or brand-webhook capability authorize the EMA operator routes', async () => {
+		// bv-web holds the mint key: it must never approve, reject, seed or list.
 		const customEnv = {
 			...env,
-			BV_MCP_OAUTH_MINT_KEY: 'mint-capability-isolation-test-key-32-bytes',
+			BV_MCP_EMA_ADMIN_KEY: EMA_ADMIN,
+			BV_MCP_OAUTH_MINT_KEY: EMA_MINT,
 			BV_MCP_OAUTH_REVOKE_KEY: 'revoke-capability-isolation-test-key-32-by',
 			BV_MCP_BRAND_WEBHOOK_KEY: 'brand-webhook-capability-isolation-test-key',
 		} as TestEnv;
-		for (const key of ['revoke-capability-isolation-test-key-32-by', 'brand-webhook-capability-isolation-test-key']) {
-			const req = new Request('http://example.com/internal/oauth/ema-tenants', { headers: { Authorization: `Bearer ${key}` } });
-			expect((await send(req, customEnv)).status).toBe(401);
+		for (const key of [EMA_MINT, 'revoke-capability-isolation-test-key-32-by', 'brand-webhook-capability-isolation-test-key']) {
+			for (const [method, path] of emaOperatorRoutes) expect((await send(emaRequest(method, path, key), customEnv)).status).toBe(401);
 		}
+		// Each door keeps its own capability: the operator key does not open the self-serve seam either.
+		for (const [method, path] of emaSelfServeRoutes) expect((await send(emaRequest(method, path, EMA_ADMIN), customEnv)).status).toBe(401);
 	});
 
-	it('does not alias the EMA tenant routes onto a looser path', async () => {
+	it('refuses an EMA admin key that aliases another capability (fail closed, 503)', async () => {
+		const customEnv = { ...env, BV_MCP_EMA_ADMIN_KEY: EMA_MINT, BV_MCP_OAUTH_MINT_KEY: EMA_MINT } as TestEnv;
+		expect((await send(emaRequest('GET', '/internal/oauth/ema-tenants', EMA_MINT), customEnv)).status).toBe(503);
+	});
+
+	it('does not alias the EMA routes onto a looser path', async () => {
 		// A trailing-slash or case variant must never fall through the gate to a handler without it.
-		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: 'mint-capability-isolation-test-key-32-bytes' } as TestEnv;
-		for (const path of ['/internal/oauth/ema-tenants/', '/internal/oauth/EMA-tenants', '/internal//oauth/ema-tenants']) {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: EMA_MINT, BV_MCP_EMA_ADMIN_KEY: EMA_ADMIN } as TestEnv;
+		for (const path of [
+			'/internal/oauth/ema-tenants/',
+			'/internal/oauth/EMA-tenants',
+			'/internal//oauth/ema-tenants',
+			'/internal/oauth/ema-self-serve/',
+			'/internal/oauth/EMA-self-serve/web-acme',
+			'/internal//oauth/ema-self-serve/web-acme',
+		]) {
 			const res = await send(new Request(`http://example.com${path}`), customEnv);
 			expect([401, 404]).toContain(res.status);
 		}
@@ -297,5 +337,28 @@ describe('FIND-16: isPublicInternetRequest trusts only cf-connecting-ip', () => 
 	it('returns false when cfConnectingIp is an empty string (falsy — treated as absent)', () => {
 		// Boolean('') is false, so an empty string is treated as absent.
 		expect(isPublicInternetRequest({ cfConnectingIp: '', host: 'x' })).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Contract A11 M8: the QuotaCoordinator's full reset deletes the EMA tenant registry instance (every
+// tenant, every floor). It must stay a test-isolation helper: no production module may call a reset
+// helper or send the raw `reset` kind. Only quota-coordinator.ts itself (where they are defined) names them.
+// ---------------------------------------------------------------------------
+const SOURCES = import.meta.glob('/src/**/*.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const COORDINATOR_SOURCE = '/src/lib/quota-coordinator.ts';
+const RESET_CALL = /\b(resetQuotaCoordinatorState|resetQuotaCoordinatorShards|resetSecurityStateShards)\b|kind:\s*['"]reset['"]/;
+
+describe('M8: coordinator resets have no production callers', () => {
+	it('reads the source tree (positive control: the definitions are found where they live)', () => {
+		expect(Object.keys(SOURCES).length).toBeGreaterThan(50);
+		expect(RESET_CALL.test(SOURCES[COORDINATOR_SOURCE] ?? '')).toBe(true);
+	});
+
+	it('no src/ module other than quota-coordinator.ts names a reset helper or sends the reset kind', () => {
+		const callers = Object.entries(SOURCES)
+			.filter(([file, text]) => file !== COORDINATOR_SOURCE && RESET_CALL.test(text))
+			.map(([file]) => file);
+		expect(callers).toEqual([]);
 	});
 });

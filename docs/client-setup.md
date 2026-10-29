@@ -502,7 +502,7 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
 4. Call `/mcp` with `Authorization: Bearer <access_token>`.
 
-**Claude Team and Enterprise admins**: your organization can connect this server through your identity provider (Enterprise Managed Auth, `jwt-bearer` grant) so members never see a sign-in window. Setup, values to enter in Okta, and troubleshooting: [enterprise-managed-auth.md](enterprise-managed-auth.md).
+**Claude Team and Enterprise admins**: your organization can connect this server through your identity provider (Enterprise Managed Auth, `jwt-bearer` grant) so members never see a sign-in window. Dashboard setup, values to enter in Okta and Claude, and troubleshooting: [enterprise-managed-auth.md](enterprise-managed-auth.md).
 
 #### Recovering legacy Brand Audit ownership after OAuth rotation
 
