@@ -6,15 +6,21 @@
 #
 # Checks, each printed as PASS/FAIL:
 #   1. serverInfo.version == X.Y.Z on both hosts, N probes each (a mixed result = still propagating)
-#   2. an unknown tool argument is rejected ("unknown argument(s)")
+#   2. an unknown tool argument is rejected ("unknown argument(s)"). If the anonymous quota for this
+#      IP is spent (JSON-RPC -32029) the probe is retried once on an authenticated session when a key
+#      is available (BV_VERIFY_KEY, else BV_INTERNAL_DEV_KEY from the main checkout's .dev.vars);
+#      with no key it reports SKIP, not FAIL — a spent quota says nothing about the release.
 #   3. tools/list: every tool publishes additionalProperties:false, and the tool count equals the
 #      "N MCP tools" claim in serverInfo.description
 #   4. MCP Registry /versions/latest == X.Y.Z, active, isLatest       (skipped with --before-publish)
 #   5. GitHub Release vX.Y.Z exists and is not a draft                 (skipped with --before-publish)
 #
 # Limits — read before citing a PASS:
-#   - Anonymous tier only. It proves nothing about owner/paid tools, auth or quotas, and the custom
-#     domain masks the egress IP, so it could not exercise the owner tier even with a key.
+#   - Anonymous tier only, except check 2's quota fallback, which only re-asks the same question
+#     authenticated and prints the tier the key resolved to (x-quota-tier; owner also needs the egress
+#     IP on the owner allowlist — measured 2026-10-29 resolving owner on BOTH hosts). It proves nothing
+#     about owner/paid tools, auth or quotas. The key is passed to curl via a mode-600 header file and
+#     is never printed or put on a command line.
 #   - It does not measure scoring or any check's correctness; a behaviour probe for the release's
 #     actual change is still yours to run.
 #   - Registry reads are CDN-cached; a cache-buster is sent, but a FAIL seconds after publishing
@@ -46,19 +52,34 @@ REPO="MadaBurns/bv-mcp"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 FAILS=0
+SKIPS=0
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; FAILS=$((FAILS + 1)); }
+skip() { printf 'SKIP  %s\n' "$1"; SKIPS=$((SKIPS + 1)); }
+
+# Optional key for check 2's quota fallback. Read, never echoed; written only to a 600 header file.
+AUTH_HDR="$TMP/auth.hdr"
+NOAUTH_HDR="$TMP/noauth.hdr"
+: >"$NOAUTH_HDR"
+key="${BV_VERIFY_KEY:-}"
+if [ -z "$key" ]; then
+	common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && vars="$(dirname "$common")/.dev.vars"
+	[ -n "${vars:-}" ] && [ -f "$vars" ] && key=$(awk -F= '/^[[:space:]]*BV_INTERNAL_DEV_KEY[[:space:]]*=/{v=substr($0,index($0,"=")+1);gsub(/^[[:space:]"]+|[[:space:]"]+$/,"",v);k=v}END{printf "%s",k}' "$vars")
+fi
+if [ -n "$key" ]; then (umask 077; printf 'authorization: Bearer %s\n' "$key" >"$AUTH_HDR"); fi
+unset key
+HDR="$NOAUTH_HDR"
 
 # Streamable HTTP answers either JSON or one SSE "data:" line; print the JSON-RPC object.
 rpc_json() { node -e 'const t=require("fs").readFileSync(0,"utf8");const l=t.split("\n").find(x=>x.startsWith("data:"));process.stdout.write(l?l.slice(5).trim():t.trim())'; }
 
 post() { # host session body -> JSON-RPC object on stdout
-	curl -sS --max-time 30 -X POST "$1/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+	curl -sS --max-time 30 -D "$TMP/post.hdr" -X POST "$1/mcp" -H @"$HDR" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
 		-H "mcp-session-id: $2" -H 'mcp-protocol-version: 2025-06-18' -d "$3" | rpc_json
 }
 
 open_session() { # host -> sets sid, writes $TMP/init.out
-	curl -sS --max-time 30 -D "$TMP/hdr" -o "$TMP/init.out" -X POST "$1/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$INIT"
+	curl -sS --max-time 30 -D "$TMP/hdr" -o "$TMP/init.out" -X POST "$1/mcp" -H @"$HDR" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$INIT"
 	sid=$(awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}' "$TMP/hdr" | tr -d '\r')
 	[ -n "$sid" ] && post "$1" "$sid" '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
 }
@@ -92,7 +113,22 @@ for H in $HOSTS; do
 		echo "NOTE  $H fresh session was rejected as expired; retrying once on a new session"
 		open_session "$H"; r=$(post "$H" "$sid" "$CALL") ;;
 	esac
-	case "$r" in *"unknown argument(s): verify_release_bogus"*) pass "$H unknown argument rejected" ;; *) fail "$H unknown argument NOT rejected: $(printf %s "$r" | cut -c1-160)" ;; esac
+	retried=0
+	case "$r" in *'"code":-32029'*)
+		if [ -s "$AUTH_HDR" ]; then
+			echo "NOTE  $H anonymous quota spent (-32029); retrying once on an authenticated session"
+			retried=1; HDR="$AUTH_HDR"; open_session "$H"; r=$(post "$H" "$sid" "$CALL"); HDR="$NOAUTH_HDR"
+			tier=$(awk -F': ' 'tolower($1)=="x-quota-tier"{print $2}' "$TMP/post.hdr" | tr -d '\r')
+			echo "NOTE  $H authenticated retry resolved to tier: ${tier:-unreported}"
+		fi ;;
+	esac
+	case "$r" in
+	*"unknown argument(s): verify_release_bogus"*) pass "$H unknown argument rejected" ;;
+	*'"code":-32029'*) skip "$H unknown-argument probe: quota spent (-32029) and no key to retry with; set BV_VERIFY_KEY" ;;
+	*) fail "$H unknown argument NOT rejected: $(printf %s "$r" | cut -c1-160)" ;;
+	esac
+	# Later probes reuse this session; re-open anonymously so check 3 stays an anonymous-tier read.
+	[ "$retried" -eq 1 ] && open_session "$H"
 
 	# 3. tools/list shape vs the advertised count
 	post "$H" "$sid" '{"jsonrpc":"2.0","id":3,"method":"tools/list"}' >"$TMP/tools.json"
@@ -123,6 +159,6 @@ else
 	fi
 fi
 
-[ "$FAILS" -eq 0 ] && { echo "ALL PASS ($VERSION)"; exit 0; }
+[ "$FAILS" -eq 0 ] && { [ "$SKIPS" -gt 0 ] && echo "ALL PASS ($VERSION), $SKIPS probe(s) SKIPPED — not verified" || echo "ALL PASS ($VERSION)"; exit 0; }
 echo "$FAILS check(s) FAILED ($VERSION)"
 exit 1

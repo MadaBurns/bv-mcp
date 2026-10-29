@@ -60,7 +60,7 @@ async function runCron(cron: string) {
 	const ctx = createExecutionContext();
 	await worker.scheduled!(
 		{ scheduledTime: Date.now(), cron, type: 'scheduled' } as ScheduledEvent,
-		env as Record<string, unknown>,
+		env,
 		ctx,
 	);
 	await waitOnExecutionContext(ctx);

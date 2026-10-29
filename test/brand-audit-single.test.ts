@@ -1,3 +1,5 @@
+// Standalone RDAP uses the same narrow category boundary as check-rdap-lookup.
+import type { CheckCategory as StandaloneCheckCategory } from '../src/lib/scoring';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -42,11 +44,12 @@ function summaryFinding(seedDomain: string, surfaced: number): Finding {
 
 function rdapResult(registrar: string, source: 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown', registrant: string | null = null): CheckResult {
 	return {
-		category: 'rdap',
+		category: 'rdap' as StandaloneCheckCategory,
+		passed: true,
 		score: 100,
 		findings: [
 			{
-				category: 'rdap',
+				category: 'rdap' as StandaloneCheckCategory,
 				title: `RDAP registrar`,
 				severity: 'info',
 				detail: `${registrar} (${source})`,
@@ -60,6 +63,7 @@ function discoveryResult(seed: string, candidates: Array<{ domain: string; signa
 	const candFindings = candidates.map((c) => candidateFinding(c.domain, c.signals, c.conf, c.conf >= 0.85 ? 'low' : 'info'));
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [summaryFinding(seed, candidates.length), ...candFindings],
 	};
@@ -68,6 +72,7 @@ function discoveryResult(seed: string, candidates: Array<{ domain: string; signa
 function emptyDiscoveryResult(seed: string): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [
 			{
@@ -485,6 +490,7 @@ describe('brandAuditSingle', () => {
 			};
 			return {
 				category: 'brand_discovery',
+				passed: true,
 				score: 100,
 				findings: [summaryFinding(seed, 1), f],
 			};

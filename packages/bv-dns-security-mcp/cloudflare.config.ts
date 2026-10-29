@@ -29,7 +29,7 @@
 import { bindings, defineConfig, exports, triggers } from 'cf/config';
 import type { QueueConsumerTrigger, ScheduledTrigger, WorkerConfig } from 'cf/config';
 import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { REQUIRED_PRODUCTION_VARS, mergeOverlay, parseJsonc, validateOverlayKeys } from '../../scripts/lib/overlay-merge.mjs';
 
 export const PRODUCTION_WORKER_NAME = 'bv-dns-security-mcp';

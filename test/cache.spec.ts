@@ -209,6 +209,112 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 	});
 });
 
+describe('cache recovery and concurrent misses', () => {
+	it('replaces a memory fallback when KV writes recover', async () => {
+		const store = new Map<string, unknown>();
+		const kv = {
+			get: vi.fn(async (key: string) => store.get(key) ?? null),
+			put: vi.fn(async (key: string, value: string) => {
+				store.set(key, JSON.parse(value));
+			}),
+		};
+		kv.put.mockRejectedValueOnce(new Error('KV unavailable'));
+		await cacheSet('recovery', 'old', kv as unknown as KVNamespace);
+		expect(await cacheGet('recovery', kv as unknown as KVNamespace)).toBe('old');
+		await cacheSet('recovery', 'fresh', kv as unknown as KVNamespace);
+		expect(await cacheGet('recovery', kv as unknown as KVNamespace)).toBe('fresh');
+	});
+
+	it('an older KV write cannot remove a newer memory fallback', async () => {
+		let finishOlder!: () => void;
+		const kv = {
+			get: vi.fn().mockResolvedValue('old'),
+			put: vi
+				.fn()
+				.mockImplementationOnce(
+					() =>
+						new Promise<void>((resolve) => {
+							finishOlder = resolve;
+						}),
+				)
+				.mockRejectedValueOnce(new Error('KV unavailable')),
+		};
+		const older = cacheSet('write-race', 'old', kv as unknown as KVNamespace);
+		await cacheSet('write-race', 'fresh', kv as unknown as KVNamespace);
+		finishOlder();
+		await older;
+		expect(await cacheGet('write-race', kv as unknown as KVNamespace)).toBe('fresh');
+	});
+
+	it('deduplicates same-isolate misses before awaiting the KV sentinel', async () => {
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn(async () => 'computed');
+		const results = await Promise.all([
+			runWithCache('concurrent-kv', run, kv as unknown as KVNamespace),
+			runWithCache('concurrent-kv', run, kv as unknown as KVNamespace),
+		]);
+		expect(results).toEqual(['computed', 'computed']);
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it('an expired computation cannot remove a newer in-flight promise', async () => {
+		vi.useFakeTimers();
+		try {
+			let finishFirst!: (value: string) => void;
+			let finishSecond!: (value: string) => void;
+			const first = runWithCache(
+				'replacement',
+				() =>
+					new Promise<string>((resolve) => {
+						finishFirst = resolve;
+					}),
+				undefined,
+				0,
+				true,
+			);
+			await vi.advanceTimersByTimeAsync(30_000);
+			const second = runWithCache(
+				'replacement',
+				() =>
+					new Promise<string>((resolve) => {
+						finishSecond = resolve;
+					}),
+				undefined,
+				0,
+				true,
+			);
+			await vi.advanceTimersByTimeAsync(0);
+			finishFirst('first');
+			await first;
+			const unexpectedRun = vi.fn(async () => 'duplicate');
+			const third = runWithCache('replacement', unexpectedRun, undefined, 0, true);
+			finishSecond('second');
+			expect(await Promise.all([second, third])).toEqual(['second', 'second']);
+			expect(unexpectedRun).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('cleans up the sentinel when the callback throws synchronously', async () => {
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn(() => {
+			throw new Error('sync failure');
+		});
+		await expect(runWithCache('sync-throw', run, kv as unknown as KVNamespace)).rejects.toThrow('sync failure');
+		expect(kv.delete).toHaveBeenCalledWith('sync-throw:computing');
+		expect(await runWithCache('sync-throw', async () => 'recovered', kv as unknown as KVNamespace)).toBe('recovered');
+	});
+});
+
 describe('runWithCache', () => {
 	it('returns cached value when available', async () => {
 		IN_MEMORY_CACHE.set('rw:hit', 'cached-value');
@@ -259,8 +365,9 @@ describe('runWithCache', () => {
 describe('runWithCache — cross-isolate dedup', () => {
 	it('writes sentinel to KV before executing on cache miss', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)  // cacheGet
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet
 				.mockResolvedValueOnce(null), // sentinel check
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -269,25 +376,22 @@ describe('runWithCache — cross-isolate dedup', () => {
 		await runWithCache('sentinel:write', run, mockKV as unknown as KVNamespace);
 		expect(run).toHaveBeenCalledOnce();
 		// Sentinel was written (second put call — first is the result cache write)
-		const sentinelPut = mockKV.put.mock.calls.find(
-			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:write:computing'
-		);
+		const sentinelPut = mockKV.put.mock.calls.find((c: unknown[]) => c[0] === 'sentinel:write:computing');
 		expect(sentinelPut).toBeDefined();
 	});
 
 	it('writes sentinel with 10-second TTL', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)  // cacheGet
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet
 				.mockResolvedValueOnce(null), // sentinel check
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		};
 		const run = vi.fn().mockResolvedValue('result');
 		await runWithCache('sentinel:ttl', run, mockKV as unknown as KVNamespace);
-		const sentinelPut = mockKV.put.mock.calls.find(
-			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:ttl:computing'
-		);
+		const sentinelPut = mockKV.put.mock.calls.find((c: unknown[]) => c[0] === 'sentinel:ttl:computing');
 		expect(sentinelPut).toBeDefined();
 		// Sentinel TTL is 60s — Cloudflare KV's minimum expirationTtl (values
 		// below 60 are rejected, which made the previous 10s sentinel a no-op).
@@ -297,8 +401,9 @@ describe('runWithCache — cross-isolate dedup', () => {
 
 	it('cleans up sentinel after successful computation', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)  // cacheGet
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet
 				.mockResolvedValueOnce(null), // sentinel check
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -310,8 +415,9 @@ describe('runWithCache — cross-isolate dedup', () => {
 
 	it('cleans up sentinel on computation failure', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)  // cacheGet
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet
 				.mockResolvedValueOnce(null), // sentinel check
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -323,9 +429,10 @@ describe('runWithCache — cross-isolate dedup', () => {
 
 	it('polls and returns result when sentinel exists and result appears', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)       // cacheGet — no cached result
-				.mockResolvedValueOnce('12345')     // sentinel exists (another isolate computing)
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet — no cached result
+				.mockResolvedValueOnce('12345') // sentinel exists (another isolate computing)
 				.mockResolvedValueOnce('polled-result'), // poll attempt 1 succeeds
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -338,12 +445,13 @@ describe('runWithCache — cross-isolate dedup', () => {
 
 	it('falls back to execution when polling exhausts without result (3 polls)', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)   // cacheGet — no cached result
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet — no cached result
 				.mockResolvedValueOnce('12345') // sentinel exists
-				.mockResolvedValueOnce(null)    // poll 1 (250ms) — nothing
-				.mockResolvedValueOnce(null)    // poll 2 (500ms) — nothing
-				.mockResolvedValueOnce(null),   // poll 3 (750ms) — nothing
+				.mockResolvedValueOnce(null) // poll 1 (250ms) — nothing
+				.mockResolvedValueOnce(null) // poll 2 (500ms) — nothing
+				.mockResolvedValueOnce(null), // poll 3 (750ms) — nothing
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		};
@@ -370,16 +478,15 @@ describe('runWithCache — cross-isolate dedup', () => {
 		const result = await runWithCache('sentinel:skip', run, mockKV as unknown as KVNamespace, undefined, true);
 		expect(result).toBe('forced');
 		// Sentinel check should NOT have been called (only the result cache put)
-		const sentinelCheck = mockKV.get.mock.calls.find(
-			(c: [string, ...unknown[]]) => c[0] === 'sentinel:skip:computing'
-		);
+		const sentinelCheck = mockKV.get.mock.calls.find((c: unknown[]) => c[0] === 'sentinel:skip:computing');
 		expect(sentinelCheck).toBeUndefined();
 	});
 
 	it('degrades gracefully when KV sentinel operations fail', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)          // cacheGet
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet
 				.mockRejectedValueOnce(new Error('KV down')), // sentinel check fails
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -434,7 +541,15 @@ describe('runWithCache sentinel lifecycle', () => {
 	it('sentinel is deleted in finally even when run() throws', async () => {
 		const { kv, store } = makeMockKv();
 		const { runWithCache } = await import('../src/lib/cache');
-		await expect(runWithCache('sentinel-throw-key', async () => { throw new Error('boom'); }, kv)).rejects.toThrow('boom');
+		await expect(
+			runWithCache(
+				'sentinel-throw-key',
+				async () => {
+					throw new Error('boom');
+				},
+				kv,
+			),
+		).rejects.toThrow('boom');
 		expect(store.get('sentinel-throw-key:computing')).toBeUndefined();
 	});
 
@@ -458,7 +573,7 @@ describe('runWithCache — skipSentinel flag', () => {
 
 	it('skipSentinel:true, cold miss: result is returned and cached; no sentinel kv.get/put/delete', async () => {
 		const mockKV = {
-			get: vi.fn().mockResolvedValue(null),   // persistent: main-key lookup returns null (miss)
+			get: vi.fn().mockResolvedValue(null), // persistent: main-key lookup returns null (miss)
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		};
@@ -475,11 +590,11 @@ describe('runWithCache — skipSentinel flag', () => {
 		expect(mockKV.get).toHaveBeenCalledTimes(1);
 
 		// Result is written to KV
-		const resultPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => c[0] === 'ss:miss');
+		const resultPut = mockKV.put.mock.calls.find((c: unknown[]) => c[0] === 'ss:miss');
 		expect(resultPut).toBeDefined();
 
 		// NO sentinel kv.put (`:computing` key must not appear)
-		const sentinelPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => (c[0] as string).endsWith(':computing'));
+		const sentinelPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).endsWith(':computing'));
 		expect(sentinelPut).toBeUndefined();
 
 		// NO kv.delete at all
@@ -488,8 +603,9 @@ describe('runWithCache — skipSentinel flag', () => {
 
 	it('skipSentinel default (false), cold miss: sentinel IS written and deleted — current behavior preserved', async () => {
 		const mockKV = {
-			get: vi.fn()
-				.mockResolvedValueOnce(null)  // cacheGet — main key miss
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet — main key miss
 				.mockResolvedValueOnce(null), // sentinel check — nobody else computing
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
@@ -503,7 +619,7 @@ describe('runWithCache — skipSentinel flag', () => {
 		expect(mockKV.get).toHaveBeenCalledWith('ss:default:computing');
 
 		// Sentinel was written
-		const sentinelPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => c[0] === 'ss:default:computing');
+		const sentinelPut = mockKV.put.mock.calls.find((c: unknown[]) => c[0] === 'ss:default:computing');
 		expect(sentinelPut).toBeDefined();
 
 		// Sentinel was cleaned up
@@ -512,7 +628,7 @@ describe('runWithCache — skipSentinel flag', () => {
 
 	it('skipSentinel:true, cache HIT: returns cached value; no run(), no puts, no deletes', async () => {
 		const mockKV = {
-			get: vi.fn().mockResolvedValue({ cached: true }),   // main key is a hit
+			get: vi.fn().mockResolvedValue({ cached: true }), // main key is a hit
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		};

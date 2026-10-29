@@ -443,8 +443,8 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 	// ADAM non-negotiable #9: gated/paid-only tools must NOT fold a tool-daily check
 	// into the batch — the prior serial path 403'd before ever incrementing tool-daily.
 	// The batch must receive `undefined` as the toolDailyLimit for a gated tool so no
-	// per-tool-daily counter is touched on the 403 path.
-	it('excludes tool-daily from the batch for a gated paid-only tool (no tool-daily increment on 403)', async () => {
+	// per-tool-daily counter is touched on the gated (401 + challenge / 403) path.
+	it('excludes tool-daily from the batch for a gated paid-only tool (no tool-daily increment on the gated response)', async () => {
 		const batchSpy = vi.fn().mockResolvedValue({ rate: { allowed: true, minuteRemaining: 49, hourRemaining: 299 } });
 		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
 			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
@@ -462,17 +462,22 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 					jsonrpc: '2.0',
 					id: 42,
 					method: 'tools/call',
-					// discover_subdomains is in GATED_PAID_ONLY_TOOLS → 403 for unauthenticated.
+					// discover_subdomains is in GATED_PAID_ONLY_TOOLS → gated for unauthenticated.
 					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
 				} as JsonRpcRequest,
 				isAuthenticated: false,
+				unauthChallenge: 'Bearer resource_metadata="https://dns-mcp.example.test/.well-known/oauth-protected-resource", scope="mcp"',
 			}),
 		);
 
-		// 403 UPGRADE_REQUIRED, exactly as the serial path returned.
+		// UPGRADE_REQUIRED body as the serial path returned, now HTTP 401 + WWW-Authenticate because a challenge was supplied.
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(403);
+		expect(result.httpStatus).toBe(401);
+		expect(result.headers['www-authenticate']).toContain(
+			'resource_metadata="https://dns-mcp.example.test/.well-known/oauth-protected-resource"',
+		);
+		expect((result.payload as { error: { code: number } }).error.code).toBe(-32003);
 
 		// The batch was invoked, and its 3rd positional arg (toolDailyLimit) is undefined
 		// for the gated tool — so no per-tool-daily counter was ever touched.
@@ -1155,7 +1160,14 @@ describe('executeMcpRequest — analytics', () => {
 				body: { jsonrpc: '2.0', id: 23, method: 'tools/list', params: {} } as JsonRpcRequest,
 				analytics: {
 					emitRequestEvent: emitRequestEventSpy,
-					emitToolCallEvent: vi.fn(),
+					enabled: true,
+					emitToolEvent: vi.fn(),
+					emitDegradationEvent: vi.fn(),
+					emitUngradedNotCachedEvent: vi.fn(),
+					emitDohPrimarySummary: vi.fn(),
+					emitQuotaShardEvent: vi.fn(),
+					emitQueueBatchEvent: vi.fn(),
+					emitTailAggregate: vi.fn(),
 					emitRateLimitEvent: vi.fn(),
 					emitSessionEvent: vi.fn(),
 				},
@@ -1195,7 +1207,14 @@ describe('executeMcpRequest — analytics', () => {
 				isAuthenticated: false,
 				analytics: {
 					emitRequestEvent: emitRequestEventSpy,
-					emitToolCallEvent: vi.fn(),
+					enabled: true,
+					emitToolEvent: vi.fn(),
+					emitDegradationEvent: vi.fn(),
+					emitUngradedNotCachedEvent: vi.fn(),
+					emitDohPrimarySummary: vi.fn(),
+					emitQuotaShardEvent: vi.fn(),
+					emitQueueBatchEvent: vi.fn(),
+					emitTailAggregate: vi.fn(),
 					emitRateLimitEvent: vi.fn(),
 					emitSessionEvent: vi.fn(),
 				},
@@ -1234,7 +1253,14 @@ describe('executeMcpRequest — analytics', () => {
 				isAuthenticated: false,
 				analytics: {
 					emitRequestEvent: vi.fn(),
-					emitToolCallEvent: vi.fn(),
+					enabled: true,
+					emitToolEvent: vi.fn(),
+					emitDegradationEvent: vi.fn(),
+					emitUngradedNotCachedEvent: vi.fn(),
+					emitDohPrimarySummary: vi.fn(),
+					emitQuotaShardEvent: vi.fn(),
+					emitQueueBatchEvent: vi.fn(),
+					emitTailAggregate: vi.fn(),
 					emitRateLimitEvent: emitRateLimitEventSpy,
 					emitSessionEvent: vi.fn(),
 				},
@@ -1346,5 +1372,49 @@ describe('executeMcpRequest — eventId propagation', () => {
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.eventId).toBe('42');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Unknown resource URI / prompt name are client errors, not 500 + -32603
+// ---------------------------------------------------------------------------
+
+describe('executeMcpRequest — unknown resource / prompt', () => {
+	// Earlier suites vi.doMock the dispatcher and route gates; these cases need the real ones.
+	beforeEach(() => {
+		vi.doUnmock('../src/mcp/dispatch');
+		vi.doUnmock('../src/mcp/route-gates');
+	});
+
+	it('resources/read with an unknown URI returns -32002 "Resource not found: <uri>" over HTTP 400', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'dns-security://guides/nope' } } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(5);
+		expect(payload.error.code).toBe(-32002);
+		expect(payload.error.message).toBe('Resource not found: dns-security://guides/nope');
+	});
+
+	it('prompts/get with an unknown name returns -32602 "Invalid prompt name: <name>" over HTTP 400', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 6, method: 'prompts/get', params: { name: 'no-such-prompt' } } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(6);
+		expect(payload.error.code).toBe(-32602);
+		expect(payload.error.message).toBe('Invalid prompt name: no-such-prompt');
 	});
 });

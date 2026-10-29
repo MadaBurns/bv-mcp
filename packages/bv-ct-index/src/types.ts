@@ -83,4 +83,9 @@ export interface RunDescriptor {
 	block_index: ArrayBuffer | ArrayBufferView | number[];
 	/** ISO timestamp. */
 	created_at: string;
+	/** Read-path columns (migrations/0005_runs_key_filter.sql), left out of catalog.ts RUN_COLUMNS: compaction never reads them. */
+	/** The key filter (codec KEY_FILTER_VERSION); null = none, so every read takes the run. */
+	key_filter?: ArrayBuffer | ArrayBufferView | number[] | null;
+	/** The interval-index split key (codec runSplitKey); null = not indexed. */
+	key_split?: string | null;
 }

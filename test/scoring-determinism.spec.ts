@@ -93,6 +93,8 @@ describe('scoring determinism', () => {
 			const cloned: CheckResult[] = JSON.parse(JSON.stringify(results));
 			const score = computeScanScore(cloned);
 			const { adjustedScore } = applyInteractionPenalties(score);
+			expect(adjustedScore.overall).not.toBeNull();
+			if (adjustedScore.overall === null) throw new Error('Expected a graded score');
 			scores.push(adjustedScore.overall);
 		}
 
@@ -153,6 +155,8 @@ describe('scoring determinism', () => {
 			const rotated = [...results.slice(i % results.length), ...results.slice(0, i % results.length)];
 			const score = computeScanScore(rotated);
 			const { adjustedScore } = applyInteractionPenalties(score);
+			expect(adjustedScore.overall).not.toBeNull();
+			if (adjustedScore.overall === null) throw new Error('Expected a graded score');
 			scores.push(adjustedScore.overall);
 		}
 

@@ -8,6 +8,132 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.105.0] - 2026-10-30
+
+Enterprise Managed Auth tenants move to strongly consistent storage, with a self-serve route for the web dashboard and an operator approval step. `@blackveil/dns-checks` stays 1.61.1. Scoring model unchanged. No new secret (`BV_MCP_EMA_ADMIN_KEY` and `BV_MCP_OAUTH_MINT_KEY` were provisioned on 2026-10-29). **One-way data step:** on the first EMA call after deploy, every legacy KV tenant is imported into the registry once; KV copies are kept, read-never, for rollback (see Operator notes).
+
+### Added
+
+- Self-serve EMA tenant route for the web dashboard (`/internal/oauth/ema-self-serve/:tenant_id`, `BV_MCP_OAUTH_MINT_KEY`). A new or re-keyed tenant waits for a one-time operator approval; an issuer shared by more than one customer is refused.
+- Operator approve and reject routes (`/internal/oauth/ema-tenants/:tenant_id/approve|reject`, `BV_MCP_EMA_ADMIN_KEY`). Approve compares the reviewed `{issuer, jwks_uri, rev}` with the record, so a change made after review cannot be approved by accident.
+- `npm run ema:approve` (`scripts/ema-approve.sh`): prints the exact approve or reject request after checking the issuer, the JWKS host and live key thumbprints. It never sends the request and never reads the admin key.
+- The operator tenant list accepts `?cursor=` and returns `next_cursor`.
+
+### Changed
+
+- EMA tenant records and the issuer index live in a dedicated Durable Object instance (`ema-registry`) instead of KV. Every approval, epoch, issuer-ownership and reject decision runs inside one storage transaction, so stale reads can no longer revive a revoked tenant or let two tenants claim one issuer.
+- Any revoking change (suspend, delete, reject, re-key, tier change, removing an allowed client id) invalidates that tenant's issued tokens immediately; it used to wait up to about 60 s for KV propagation.
+- jwt-bearer grant: the assertion's `nbf` is enforced, a trailing slash on `resource` is tolerated, and the granted `resource` is echoed in the token response.
+- The customer guide (`docs/enterprise-managed-auth.md`) covers the dashboard flow.
+
+### Fixed
+
+- `/internal/tools/*`: an empty, short or aliased optional capability key (`BV_MCP_TOOL_DELEGATION_KEY`, `BV_MCP_WATCH_CLEANUP_KEY`) now disables only itself instead of answering 503 to every caller. It still never authenticates.
+- `scripts/verify-release.sh` skips or authenticates when the anonymous daily quota is spent.
+
+### Operator notes
+
+- Make no EMA tenant edits while this release deploys or while a rollback is still possible. A rollback restores the KV copies from import time, so a tenant deleted, rejected or disabled after the deploy comes back active and must be re-revoked by hand (runbook §8a).
+- Any EMA registry failure answers 503, never 401. A host without a `QUOTA_COORDINATOR` binding answers 503 for every EMA call.
+- CI gained a PR-time gate that fails a change to `@blackveil/dns-checks` shipping inputs when the package version still names an existing tag with different contents.
+
+## [3.104.4] - 2026-10-29
+
+Two fixes from a digital-twin adjudication of the 3.104.1 chaos-sweep observations (#1323). Ships the 3.104.2 and 3.104.3 changes too: 3.104.3 reached `main` but was never deployed. `@blackveil/dns-checks` stays 1.61.1. No migration, no new secret, no scoring change.
+
+### Changed
+
+- Scan targets `home.arpa` and `service.arpa` (the local-network names from RFC 8375 and RFC 9665) are now rejected as reserved, like `.home` and `.local`. Other `.arpa` names, including public `in-addr.arpa` reverse zones, are unchanged.
+
+### Fixed
+
+- A session created by `initialize` is now written to the session store before the response is sent, so the client's next request no longer intermittently answers 404 "session expired or terminated" when it lands on a different isolate (seen in production on 2026-10-25). A cold `initialize` may take longer, by up to about 1 s on a cold store write. A failed store write still degrades to the in-memory session and does not fail `initialize`.
+
+## [3.104.3] - 2026-10-29
+
+Release-identity release for 3.104.2. `@blackveil/dns-checks` 1.61.1 (parity corpus 1.61.1) is cut because 3.104.2 changed its WHOIS parser (`packages/dns-checks/src/whois/parse.ts`, the `.eu`/`.be` registrar block) without a package version bump, so the deploy source-identity gate refused v3.104.2 against the `dns-checks-v1.61.0` tag. No code change beyond the version surfaces; behaviour is the 3.104.2 behaviour. Scoring model unchanged. The `bv-whois` and `bv-infra-probe` sidecars were already deployed from v3.104.2 and need no redeploy.
+
+## [3.104.2] - 2026-10-29
+
+Fixes from a live chaos sweep of 3.104.1 (#1320). Takes effect with `npm run deploy:prod`, `npm run deploy:whois` and `npm run deploy:infra-probe`. No migration, no new secret, no scoring change.
+
+### Changed
+
+- `POST /oauth/token` (and the root `/token` alias) now sends `Cache-Control: no-store` on every response, as RFC 6749 section 5.1 asks of a token endpoint. The 415 (wrong content type), 413 (oversize body), 429 and `unsupported_grant_type` responses previously carried no cache header. The 429 from the token rate limiter also now carries `Retry-After` with the seconds left in its window. Bodies and status codes are unchanged.
+- The OAuth endpoint rate limiters no longer hold the response for their KV mirror write. With the quota coordinator bound, each limiter call made three serial platform round trips: a KV read that seeds the coordinator, the coordinator call, and a KV write that only mirrors the count. The response does not need the write, and the write cannot change the verdict, so it now runs after the response. That removes one of the three round trips from every `POST /oauth/token` limiter (two per request), the consent limiter on `POST /oauth/authorize`, and the CIMD cache-miss limiter on `/oauth/authorize`. Live timings before the change were about 0.9 to 1.5 s for one limiter call and 1.6 to 3.1 s for two. Limits, windows and fail-closed behaviour are unchanged. The self-host KV-only fallback still waits for its write, because there the write is the count.
+- Chaos harnesses (`scripts/chaos/`): `chaos-test-clients.py`, `chaos-test-v210.py` and `score-stability-test.py` accept JSON and Streamable HTTP SSE bodies, expect current behaviour (405 for a GET without `Accept`, 404 for an unknown session, unknown arguments rejected, anonymous batch cap 4), and report quota refusals as skipped rather than failed. The score-stability harness no longer cycles the default domain list to reach `--count`, which had scored one domain twice as two stable results, and records each scan's check statuses and latency. Test tooling only.
+
+### Fixed
+
+- `resources/read` for an unknown URI now answers JSON-RPC `-32002` ("Resource not found: <uri>") and `prompts/get` for an unknown name answers `-32602` ("Invalid prompt name: <name>"), both over HTTP 400 like other invalid-params rejections, instead of HTTP 500 with the generic `-32603`. The handlers throw a typed `JsonRpcClientError` that `executeMcpRequest` maps, rather than matching on the message.
+- WHOIS registrar parsing: `.eu` and `.be` registrars now resolve. Those registries print the registrar as a block, a bare `Registrar:` line followed by indented `Organization:` or `Name:` lines, which the shared parser (`@blackveil/dns-checks` whois) refused, so every lookup came back as `unrecognised_response`. The parser now reads that block's value (Organization preferred), stopping at a blank or non-indented line; a block with neither field still yields no registrar, and `.eu` and `.be` are not added to any policy-redaction list. The parser is shared, so this corrects both `rdap_lookup` on the main Worker and the `bv-whois` shim. It takes effect with `npm run deploy:prod` and `npm run deploy:whois` (SQ-446, SQ-451).
+- `check_authoritative_dns_infra`: a nonexistent (NXDOMAIN) domain now abstains with "does not resolve (NXDOMAIN), so its authoritative DNS infrastructure was not assessed" instead of the transient "retrying may succeed" wording. It is still an abstention (excluded from scoring, no missing control, no score change); a real no-contact case with a delegation keeps the retry wording.
+  The NXDOMAIN detection runs in the infra-probe sidecar, so it takes effect with `npm run deploy:infra-probe` as well as `npm run deploy:prod`.
+
+## [3.104.1] - 2026-10-28
+
+Hardening from the post-merge security review of the Enterprise Managed Auth release (#1318). No new secret; `KV_ENVELOPE_KEY` is now required before a tenant can be seeded.
+
+### Changed
+
+- OAuth `jwt-bearer` (Enterprise Managed Auth): when the tenant's JWKS cannot be fetched (the IdP is unreachable, the stored `jwks_uri` is blocked by the outbound fetch policy, or the response is not a usable key set) the exchange now answers HTTP 503 `temporarily_unavailable` ("Issuer signing keys are unavailable", `Cache-Control: no-store`) and logs one `ema_jwks_unavailable` line with the tenant id and the failure class, instead of a 400 `invalid_grant` that read like a forged assertion. A `kid` still absent after a successful fetch and the one forced refetch stays `invalid_grant`.
+- `/oauth/token` rate limiting is cheapest-gate-first again: a known client IP's 600/min per-IP ceiling now covers every grant type and runs before the request body is read, so a flood of max-size bodies is cut without reading them from the 601st request in a minute. After the bounded read, `authorization_code` and every other non-jwt-bearer request still takes the shared 30/min per-IP bucket (429 from the 31st), and a jwt-bearer exchange takes only its (IP, issuer) 120/min bucket and never the shared one. Cost per request from a known IP: `authorization_code` and other non-jwt-bearer grants now consume two limiter operations (ceiling + shared bucket) instead of one; jwt-bearer stays at two (ceiling + issuer bucket). An unknown IP (no `cf-connecting-ip`) is unchanged: no ceiling, the shared bucket for every grant. The ceiling's counters move to a new key (`oauth:token-ceiling-rl:`), so they restart once at deploy.
+- Internal: one shared `sha256Hex` (`src/oauth/jwks.ts`) backs the CIMD cache, the EMA issuer index and the OAuth coordination keys, and every key hashes byte-identically (pinned by fixed-input tests). The EMA tenant schema's default `allowed_client_ids` reuses `CLAUDE_WEB_CIMD_CLIENT_ID`. `isPlainObject` and `decodeJsonSegment` are exported from `jwks.ts` for the token endpoint to reuse.
+- Enterprise Managed Auth operator route: `PUT /internal/oauth/ema-tenants` now answers `409 envelope_key_required` and writes nothing while `ENABLE_OAUTH` is `true` and `KV_ENVELOPE_KEY` is unset or unparseable. Tenant records are read fail-closed (a plaintext record reads as absent once the key is set), so a tenant seeded without the key would have vanished, with its tokens answering 401, the moment the key was added. Set `KV_ENVELOPE_KEY` and redeploy before seeding the first tenant (runbook section 8a). An upsert also now reads the tenant record once instead of up to three times, so the token-epoch decision and the old-issuer release come from the same snapshot; epoch rules, `issuer_conflict` and orphaned-index release are unchanged. No migration, no new secret.
+
+### Security
+
+- OAuth `jwt-bearer`: the assertion's `iss` and `client_id` are now also checked on the signature-verified payload (the normalized `iss` must equal the routed tenant's issuer and `client_id` the request's), rejecting a mismatch with `invalid_grant` "Assertion not accepted". Before, only the unverified decode that picks the tenant read them; the signature covers the same bytes, so this is defence in depth rather than a reachable bypass.
+
+### Fixed
+
+- OAuth (CIMD): a client metadata document that lists a redirect URI outside the allowlist no longer fails as a whole. The cached client record keeps only the allowlisted redirect URIs, so a non-allowlisted redirect still never matches; a document left with no allowlisted redirect URI is still rejected and negatively cached for 60 s. Before, one unexpected entry in Claude's published document would have answered "Unknown client_id" to every Claude user. Only the number of dropped entries is logged.
+- EMA (JWKS): an ID-JAG whose JWS header has no `kid` now verifies against a key set that publishes several compatible keys, as during key rotation. Up to five candidates are tried in set order and the first that verifies is accepted; more than five, or any candidate with private material or a weak or unimportable key, is refused as `no_key`. A header `kid` still selects exactly one key.
+
+## [3.104.0] - 2026-10-28
+
+### Added
+
+- **Enterprise Managed Auth (EMA)** for Claude Team and Enterprise organizations (US-14, #1316). `POST /oauth/token` accepts the RFC 7523 `jwt-bearer` grant with an Identity Assertion JWT Authorization Grant (`typ: oauth-id-jag+jwt`, RS256/ES256) signed by a customer IdP that an operator has registered as a tenant. The assertion's issuer must be an enabled tenant whose entitlement has not lapsed, the requesting `client_id` must be on that tenant's allowlist and resolve, the assertion's `client_id` claim must match it, the signature must verify against the tenant's JWKS (one forced refetch on an unknown `kid`), `aud` must be this server's issuer, the lifetime at most one hour within 30 s of skew, a `resource` must name `/mcp`, and each `jti` is accepted once. The response grants scope `mcp` at the tenant's tier (never owner), clamped to the entitlement, with no `refresh_token`. Authorization-server metadata lists the grant and advertises `authorization_grant_profiles_supported: ["urn:ietf:params:oauth:grant-profile:id-jag"]`.
+- OAuth **Client ID Metadata Document (CIMD) clients**: `/oauth/authorize`, the jwt-bearer grant and `/internal/oauth/grants` accept an https `client_id` URL such as Claude's without Dynamic Client Registration. The document is fetched through `safeFetch` with no redirects, a 3 s timeout and a 5 KB cap; it must name itself as that exact `client_id`, describe a public client and list only allowlisted redirect URIs. Valid documents are cached for an hour (sealed when `KV_ENVELOPE_KEY` is set). Loopback redirects (`localhost`, `127.0.0.1`) match with the port ignored (RFC 8252 section 7.3) for CIMD and DCR clients alike. Metadata advertises `client_id_metadata_document_supported: true`; OAuth `client_id` inputs accept up to 512 characters (was 200).
+- **EMA tenant store and operator route**: `PUT/GET /internal/oauth/ema-tenants` and `GET/DELETE /internal/oauth/ema-tenants/:tenant_id` register the IdP issuers a tenant trusts (issuer normalized, one issuer per tenant, `jwks_uri` resolved from the issuer's OIDC discovery document when omitted and validated as a public outbound URL), gated by the existing `BV_MCP_OAUTH_MINT_KEY`; records are sealed in `SESSION_STORE` when `KV_ENVELOPE_KEY` is set and treated as absent when unsealed or mismatched. No migration, no new secret.
+- `src/oauth/jwks.ts`: an RS256/ES256 JWS verifier with a cached, bounded JWKS fetch (600 s cache, 5 s timeout, 64 KB cap, no redirects, single-flight forced refresh at most once per 60 s per URI, key-less sets rejected, `key_ops` honoured, cached set returned when a forced refresh fails).
+- Documentation and tooling: `docs/enterprise-managed-auth.md` (customer-administrator setup guide, Okta values, troubleshooting by error code), an operator runbook section on seeding, suspending and verifying a tenant, and `scripts/verify-ema.sh` (`npm run check:ema`) for live post-deploy verification of the metadata, the 401 challenge and the grant.
+- `bv-ct-index` sidecar: name lookups skip runs that cannot hold the domain. Each run carries a per-run key filter (a Bloom filter over name prefixes) checked inside the D1 catalog query, and the catalog finds overlapping runs through a new interval index. Migration `0005_runs_key_filter.sql` adds two nullable columns and must be applied to the remote D1 before this code deploys; runs written before it have no filter and are always read until compaction rewrites them. The sidecar is still not bound to bv-mcp.
+- `bv-ct-index` sidecar: `npm -w packages/bv-ct-index run test:coverage` writes a real coverage report (Istanbul provider) and a tracked `.claude/quality-gate/crap.json` lets the CRAP gate measure the package. Test-tooling only.
+
+### Changed
+
+- An unauthenticated `tools/call` to a paid-only tool now returns HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token", error_description="Authentication required for this tool", resource_metadata="<issuer>/.well-known/oauth-protected-resource", scope="mcp"` instead of a bare 403, when OAuth is enabled and ready, so clients that start OAuth on a 401 (Claude's Connect card, Enterprise Managed Auth's silent exchange) can reach paid tools. The JSON-RPC body (`-32003` + `data.upgrade`) is unchanged; signed-in free/agent callers still get a plain 403, batch requests stay HTTP 200, and self-hosts without OAuth keep the 403. A rejected bearer on `/mcp` also carries the `invalid_token` challenge when OAuth is ready, and `WWW-Authenticate` is exposed through CORS.
+- OAuth `jwt-bearer` rate limiting: these exchanges no longer share the 30/min per-IP `/oauth/token` bucket, because every claude.ai exchange for every tenant arrives from Anthropic's small egress range. A request from a known client IP is limited per (IP, claimed issuer) at 120/min with a 600/min per-IP ceiling across issuers; an unknown IP keeps the shared bucket. Every other grant, including malformed or oversize bodies, is still gated by the shared bucket first.
+- OAuth `jwt-bearer` rejections of an unknown, disabled or lapsed tenant all return `invalid_grant` with the single description `Assertion not accepted`, so the error text cannot enumerate which issuers are trusted.
+- `/internal/oauth/grants` (bv-web paid consent) resolves CIMD clients, matches loopback redirects with the port ignored, requires the requested `redirect_uri` to pass the same redirect policy as `/oauth/authorize` (400 `invalid_redirect_uri`), and accepts a `clientId` up to 512 characters. The `authorization_code` exchange is unchanged.
+- `bv-ct-index` sidecar: a lookup opens only the runs that hold its page (lazy merge driven by the block index), so a 50-name page of a very large apex no longer reads every overlapping run. Compaction runs every 15 minutes (cron `2,17,32,47 * * * *`), compacts tier 0 in 15-minute windows, rolls tier-1 runs up hourly, and writes output runs up to six at a time; a new `ct_compaction_job_done` log line reports each job. No migration; takes effect with `npm run deploy:ct-index`.
+
+### Security
+
+- EMA **tenant-wide revocation**: disabling, deleting or re-creating a tenant, letting its `entitlement_expires_at` pass, or changing its tier cuts off that tenant's existing access tokens within KV propagation (about 60 s) instead of at expiry. Every EMA token carries a `tep` claim (the tenant's server-managed `token_epoch`, set on create and on each suspend), and each `/mcp` request with an `ema:` subject re-reads the sealed tenant record; a mismatch gets the normal 401 challenge and a store outage the retryable 503. Re-enabling a tenant does not revive earlier tokens. Non-EMA bearers do no extra I/O.
+- OAuth CIMD hardening: a `client_id` with an explicit port is not CIMD-shaped (closes a port oracle), cache-miss metadata fetches are limited to 10 per client IP per 60 s on `/oauth/authorize`, a failed fetch is negatively cached for 60 s, `getClient` no longer builds a KV key for a `client_id` over 200 characters (a 512-character id previously answered 503), and CIMD cache records live at `oauth:cimd:<sha256>` outside the keyspace `getClient` reads.
+- EMA tenant store: with `KV_ENVELOPE_KEY` set, an unsealed tenant record or one whose `tenant_id` does not match its key is treated as absent; `normalizeIssuer` is idempotent; a `jwks_uri` must pass the outbound-URL gate before it is stored; an issuer index entry whose owning record is missing no longer blocks re-registration or deletion.
+
+### Fixed
+
+- `bv-ct-index` sidecar: a compaction output put that fails now fails the job before its catalog swap, so a rejected parallel put can no longer leave the catalog pointing at an R2 object that was never written. A scheduled event whose cron matches no case logs `ct_cron_unmatched` instead of doing nothing. No migration; takes effect with `npm run deploy:ct-index`.
+
+## [3.103.3] - 2026-10-26
+
+### Fixed
+
+- Preserve fresh cache fallbacks after KV recovery and overlapping writes; deduplicate concurrent misses before sentinel I/O and retain newer in-flight computations during cleanup.
+- Stop SSE timers immediately on cancellation and close streams safely after formatter failures.
+- Abort timed-out tenant webhooks and dispose response bodies without delaying delivery status.
+- Reject failed compiler runs that emit no parseable diagnostics.
+
+### Changed
+
+- Clear all 528 existing test type errors and tighten the hermetic test typecheck baseline to zero.
+- Advance `@blackveil/dns-checks` package and parity corpus to 1.61.0. Sparse score types match measured-only results; undefined scores remain unmeasured. Scoring weights, thresholds and numeric formulas are unchanged.
+
 ## [3.103.2] - 2026-10-26
 
 ### Fixed

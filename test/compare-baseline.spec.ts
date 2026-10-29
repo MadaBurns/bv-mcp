@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { getProfileWeights } from '../src/lib/scoring';
 import type { CheckResult } from '../src/lib/scoring';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
@@ -80,6 +81,7 @@ function createMockScan(overrides?: Partial<ScanDomainResult>): ScanDomainResult
 			},
 			findings: [],
 			summary: '',
+			evidence: { attempted: 4, completed: 4, ratio: 1 },
 		},
 		checks: [
 			{ category: 'spf', passed: true, score: 90, findings: [] },
@@ -98,6 +100,10 @@ function createMockScan(overrides?: Partial<ScanDomainResult>): ScanDomainResult
 			description: 'Strong controls with room for advanced hardening.',
 			nextStep: 'Improve optional controls and monitoring depth.',
 		},
+		context: { profile: 'mail_enabled', signals: [], weights: getProfileWeights('mail_enabled'), detectedProvider: null },
+		scoringNote: null,
+		adaptiveWeightDeltas: null,
+		interactionEffects: [],
 		cached: false,
 		timestamp: new Date().toISOString(),
 		...overrides,

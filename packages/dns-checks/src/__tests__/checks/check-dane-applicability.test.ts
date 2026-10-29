@@ -22,9 +22,9 @@
  * may move.
  */
 
-import { describe, it, expect } from 'vitest';
+import { assert, describe, it, expect } from 'vitest';
 import { checkDANE } from '../../checks/check-dane';
-import { computeScanScore } from '../../scoring';
+import { computeScanScore, getProfileWeights, type DomainContext } from '../../scoring';
 import type { CheckResult, DNSQueryFunction, RawDNSQueryFunction } from '../../types';
 
 /** DoH rcodes. */
@@ -213,7 +213,10 @@ describe('#639 blast radius — scoring moves ONLY on the failure paths', () => 
 		return dane ? [...base, dane] : base;
 	}
 
-	const ctx = { profile: 'non_mail' as const, signals: [], weights: {}, detectedProvider: null };
+	// Isolate hardening applicability: the historical fixture gave core/protective zero weight.
+	const weights = structuredClone(getProfileWeights('non_mail'));
+	for (const weight of Object.values(weights)) weight.importance = 0;
+	const ctx: DomainContext = { profile: 'non_mail', signals: [], weights, detectedProvider: null };
 
 	it('leaves a cleanly-resolving non-mail domain BYTE-IDENTICAL (the not-applicable path still scores 100)', () => {
 		// This is the assertion the fix was accepted on: nothing about a domain whose DNS
@@ -232,8 +235,10 @@ describe('#639 blast radius — scoring moves ONLY on the failure paths', () => 
 		const errored = mk('dane', 0, { passed: false, checkStatus: 'error', partial: true });
 		const after = computeScanScore(roster(errored), ctx);
 		const before = computeScanScore(roster(mk('dane', 100)), ctx);
+		assert(typeof before.overall === 'number');
+		assert(typeof after.overall === 'number');
 		expect(after.overall).toBeLessThan(before.overall);
-		expect(before.overall - (after.overall ?? 0)).toBeLessThanOrEqual(1);
+		expect(before.overall - after.overall).toBeLessThanOrEqual(1);
 		expect(after.categoryScores.dane).toBeUndefined();
 	});
 

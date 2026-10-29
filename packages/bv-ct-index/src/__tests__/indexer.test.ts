@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
  * The T0 indexer (queue consumer of bv-ct-index-entries), the kill switch, and the Worker's queue and
- * `17 * * * *` cron wiring.
+ * compaction cron wiring.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import worker from '../index';
 import { runCompactionJob } from '../indexer/compact';
-import { runCompactionCron } from '../indexer/plan';
+import { COMPACTION_CRON, runCompactionCron } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import { KILLED_RETRY_DELAY_SECONDS, indexEntries } from '../indexer/write';
 import type { NameObservation } from '../types';
@@ -160,7 +160,8 @@ describe('kill switch', () => {
 	it('stops the indexer, the planner and jobs, stays on across midnight, and leaves reads alone', async () => {
 		const env = testEnv();
 		await ingest(env, T, [obs('www.example.com')]);
-		const plannedBeforeKill = (await runCompactionCron(env, T + 2 * HOUR_MS)).jobs;
+		// T is 01:05, so this is the 03:17 tick, which plans every tier.
+		const plannedBeforeKill = (await runCompactionCron(env, T + 2 * HOUR_MS + 12 * 60_000)).jobs;
 		expect(plannedBeforeKill).toHaveLength(1);
 		await env.CURSORS.prepare('UPDATE ops_ledger SET killed = 1').run();
 
@@ -190,12 +191,13 @@ describe('kill switch', () => {
 describe('Worker wiring', () => {
 	const controller = (cron: string, scheduledTime: number) => ({ cron, scheduledTime, noRetry: () => undefined }) as ScheduledController;
 
-	it('routes each queue to its consumer and plans compaction on the 17 * * * * cron', async () => {
+	it('routes each queue to its consumer and plans compaction on the COMPACTION_CRON cron', async () => {
 		const env = testEnv();
 		await worker.queue(fakeBatch('bv-ct-index-entries', [batchBody([obs('www.example.com')])]), env);
 		expect((await catalog()).map((run) => run.tier)).toEqual([0]);
 
-		await worker.scheduled(controller('17 * * * *', Date.now() + 2 * HOUR_MS), env);
+		// The :17 tick two hours on, which plans every T0 run that is due.
+		await worker.scheduled(controller(COMPACTION_CRON, Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 2 * HOUR_MS + 17 * 60_000), env);
 		expect(env.queue.sent.map((job) => job.tier)).toEqual([1]);
 
 		const jobs = fakeBatch('bv-ct-index-compact', [env.queue.sent[0], { not: 'a job' }]);

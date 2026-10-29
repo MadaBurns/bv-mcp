@@ -176,7 +176,7 @@ describe('withRobotsGate', () => {
 	});
 
 	it('uses manual redirect mode for robots.txt and never follows a redirect target', async () => {
-		const inner = vi.fn(async (url: string) => {
+		const inner = vi.fn(async (url: string, _init?: RequestInit) => {
 			if (url === 'https://example.com/robots.txt') {
 				return new Response(null, {
 					status: 302,

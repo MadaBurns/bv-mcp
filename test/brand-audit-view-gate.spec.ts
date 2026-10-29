@@ -38,6 +38,7 @@ describe('view=registrar_complement tier gate', () => {
 		vi.doMock('../src/tools/brand-audit-single', () => {
 			brandAuditSingleMock = vi.fn().mockResolvedValue({
 				category: 'brand_discovery',
+				passed: true,
 				score: 100,
 				findings: [
 					{

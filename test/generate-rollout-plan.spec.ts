@@ -281,7 +281,7 @@ describe('formatRolloutPlan', () => {
 
 	it('compact format is shorter than full format', async () => {
 		const { formatRolloutPlan } = await import('../src/tools/generate-rollout-plan');
-		const data = {
+		const data: RolloutPlanResult = {
 			domain: 'example.com',
 			currentPolicy: 'none',
 			targetPolicy: 'reject',
@@ -293,10 +293,10 @@ describe('formatRolloutPlan', () => {
 				{ name: 'Reject', record: 'v=DMARC1; p=reject; rua=mailto:d@example.com', duration: 'ongoing', successCriteria: 'Monitor', rollback: 'p=quarantine' },
 			],
 			estimatedDuration: '~4 weeks',
-		} as const;
+		};
 
-		const compact = formatRolloutPlan(data as RolloutPlanResult, 'compact');
-		const full = formatRolloutPlan(data as RolloutPlanResult, 'full');
+		const compact = formatRolloutPlan(data, 'compact');
+		const full = formatRolloutPlan(data, 'full');
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('example.com');
 		expect(compact).toContain('none -> reject');

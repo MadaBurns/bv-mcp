@@ -16,6 +16,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { CheckResult } from '../../src/lib/scoring';
 
 interface AuditTargetRow {
 	status: 'queued' | 'running' | 'completed' | 'failed';
@@ -129,19 +130,20 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 	return { db, getCounter: () => ({ ...counter }), getTargetRow: () => ({ ...targetRow }) };
 }
 
-const resultWithLookupFailed = {
-	category: 'brand_audit',
+const resultWithLookupFailed: CheckResult = {
+	category: 'brand_discovery',
 	score: 100,
+	passed: true,
 	findings: [
 		{
-			category: 'brand_audit',
+			category: 'brand_discovery',
 			title: 'summary',
 			severity: 'info' as const,
 			detail: '',
 			metadata: { summary: true, targetRegistrarSource: 'rdap' },
 		},
 		{
-			category: 'brand_audit',
+			category: 'brand_discovery',
 			title: 'candidate',
 			severity: 'low' as const,
 			detail: '',
@@ -150,12 +152,13 @@ const resultWithLookupFailed = {
 	],
 };
 
-const resultClean = {
-	category: 'brand_audit',
+const resultClean: CheckResult = {
+	category: 'brand_discovery',
 	score: 100,
+	passed: true,
 	findings: [
 		{
-			category: 'brand_audit',
+			category: 'brand_discovery',
 			title: 'summary',
 			severity: 'info' as const,
 			detail: '',
@@ -165,7 +168,7 @@ const resultClean = {
 };
 
 /** Plain orchestrator stub — records calls in `calls[]` instead of vi.fn. */
-function makeOrchestrator(returnValue: unknown) {
+function makeOrchestrator(returnValue: CheckResult) {
 	const calls: Array<{ target: string; opts: { force_refresh?: boolean } }> = [];
 	const fn = async (target: string, opts: { force_refresh?: boolean }) => {
 		calls.push({ target, opts });
@@ -305,7 +308,7 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 
 	it('retry orchestrator throw preserves the original result_json (no destructive overwrite)', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
-		const originalResultJson = JSON.stringify({ category: 'brand_audit', findings: [], score: 100 });
+		const originalResultJson = JSON.stringify({ category: 'brand_discovery', findings: [], score: 100 });
 		const { db, getTargetRow } = makeMockD1({
 			target: { status: 'completed', completed_at: 1000, result_json: originalResultJson, error: null },
 		});

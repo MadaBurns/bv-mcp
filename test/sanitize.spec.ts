@@ -54,6 +54,8 @@ describe('sanitize library', () => {
 				'.home',
 				'.corp',
 				'.intranet',
+				'.home.arpa',
+				'.service.arpa',
 			];
 			for (const tld of reservedTLDs) {
 				const domain = `host${tld}`;
@@ -61,6 +63,18 @@ describe('sanitize library', () => {
 				expect(result.valid).toBe(false);
 				expect(result.error).toContain('reserved TLD');
 			}
+		});
+
+		it('rejects the exact local-network special-use names home.arpa and service.arpa', () => {
+			for (const name of ['home.arpa', 'service.arpa']) {
+				const result = validateDomain(name);
+				expect(result.valid).toBe(false);
+				expect(result.error).toContain('reserved TLD');
+			}
+		});
+
+		it('keeps public reverse zones under .arpa valid', () => {
+			expect(validateDomain('8.8.8.8.in-addr.arpa').valid).toBe(true);
 		});
 
 		it('rejects bare reserved TLD names', () => {

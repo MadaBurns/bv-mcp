@@ -11,7 +11,7 @@ describe('PDF Engine (Playwright)', () => {
 		expect(buffer.length).toBeGreaterThan(100);
 		
 		// Check for PDF magic bytes: %PDF-
-		const header = buffer.toString('utf-8', 0, 5);
+		const header = new TextDecoder().decode(buffer.subarray(0, 5));
 		expect(header).toBe('%PDF-');
 	});
 
@@ -25,6 +25,6 @@ describe('PDF Engine (Playwright)', () => {
 		const buffer = await generatePdf(html, options);
 		
 		expect(buffer.length).toBeGreaterThan(100);
-		expect(buffer.toString('utf-8', 0, 5)).toBe('%PDF-');
+		expect(new TextDecoder().decode(buffer.subarray(0, 5))).toBe('%PDF-');
 	});
 });

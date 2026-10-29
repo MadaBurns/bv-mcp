@@ -13,8 +13,13 @@ describe('oauth discovery endpoints', () => {
 		expect(meta.registration_endpoint).toMatch(/\/oauth\/register$/);
 		expect(meta.code_challenge_methods_supported).toEqual(['S256']);
 		expect(meta.response_types_supported).toContain('code');
-		expect(meta.grant_types_supported).toContain('authorization_code');
+		expect(meta.grant_types_supported).toEqual(['authorization_code', 'urn:ietf:params:oauth:grant-type:jwt-bearer']);
+		// Enterprise Managed Auth: Okta / the ext-auth profile require the ID-JAG grant profile.
+		expect(meta.authorization_grant_profiles_supported).toEqual(['urn:ietf:params:oauth:grant-profile:id-jag']);
 		expect(meta.authorization_response_iss_parameter_supported).toBe(true);
+		// Claude uses Client ID Metadata Documents only when BOTH are advertised.
+		expect(meta.client_id_metadata_document_supported).toBe(true);
+		expect(meta.token_endpoint_auth_methods_supported).toContain('none');
 	});
 
 	it('GET /.well-known/oauth-protected-resource returns RFC 9728 metadata', async () => {

@@ -79,14 +79,14 @@ describe('auth', () => {
 
 		it('returns JSON-RPC error body', async () => {
 			const response = unauthorizedResponse();
-			const body = await response.json();
+			const body = await response.json<{ error: { message: string }; jsonrpc: string; id: null }>();
 			expect(body).toHaveProperty('error');
 			expect(body.error.message).toContain('Unauthorized');
 		});
 
 		it('includes JSON-RPC 2.0 envelope', async () => {
 			const response = unauthorizedResponse();
-			const body = await response.json();
+			const body = await response.json<{ error: { message: string }; jsonrpc: string; id: null }>();
 			expect(body.jsonrpc).toBe('2.0');
 			expect(body.id).toBeNull();
 		});

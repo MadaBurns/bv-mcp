@@ -30,8 +30,8 @@
  */
 
 import { Hono } from 'hono';
-import { ZodError } from 'zod';
-import { logError } from './lib/log';
+import { z, ZodError } from 'zod';
+import { logError, logEvent } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall, INTERNAL_BATCH_SAFE_TOOLS } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
@@ -43,6 +43,7 @@ import {
 	evaluateToolPolicy,
 	isAgentAllowedTool,
 	isAgentCaller,
+	isAllowedOAuthRedirectUri,
 	isContractFlagGateEnabled,
 	MAX_REQUEST_BODY_BYTES,
 	OAUTH_CODE_TTL_SECONDS,
@@ -54,19 +55,45 @@ import {
 import { declaredToolArgKeys, normalizeToolName } from './handlers/tool-args';
 import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
 import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
-import { validateDomain, sanitizeDomain } from './lib/sanitize';
+import { validateDomain, sanitizeDomain, validateOutboundUrl } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
+import {
+	EMA_SELF_SERVE_TENANT_ID_PATTERN,
+	EMA_TENANT_ID_PATTERN,
+	EmaApprovalSchema,
+	EmaApproveRequestSchema,
+	EmaSelfServeUpsertRequestSchema,
+	EmaTenantUpsertRequestSchema,
+	type EmaApproveRequest,
+	type EmaSelfServeUpsertRequest,
+	type EmaTenantRecord,
+} from './schemas/ema';
+import {
+	deleteEmaTenant,
+	effectiveApproval,
+	getEmaTenant,
+	isSharedIssuer,
+	listEmaTenants,
+	lowersPrivilegeOnly,
+	normalizeIssuer,
+	writeEmaTenant,
+	type EmaRegistry,
+	type EmaWriteError,
+	type EmaWriteResult,
+} from './oauth/ema-tenants';
+import { safeFetch } from './lib/safe-fetch';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './lib/response-body';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
 import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
+import { redirectUriMatches, resolveClient } from './oauth/cimd';
 import { resolveIssuer } from './oauth/discovery';
 import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 import { readBoundedText } from './lib/request-body';
 import {
 	createAuthorizationCode,
-	getClient,
 	putCode,
 	bumpTokenVersion,
 	bumpTokenVersionIdempotently,
@@ -76,7 +103,11 @@ import type { QuotaCoordinator } from './lib/quota-coordinator';
 import { computeStrongIdempotencyKeys, STRONG_IDEMPOTENCY_TTL_SECONDS } from './lib/request-dedup';
 import { deriveCanonicalTenantPrincipal } from './lib/auth-principal';
 import { adoptAnonymousBrandAuditWatchInternal, reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
-import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './lib/security-capabilities';
+import {
+	isStrongDistinctSecurityCapability,
+	securityCapabilityCollision,
+	type McpSecurityCriticalSecretKey,
+} from './lib/security-capabilities';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -127,6 +158,11 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	/** Revocation-only capability for entitlement/token invalidation; cannot mint. */
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	/**
+	 * Operator-only capability for /internal/oauth/ema-tenants* (seed, list, approve, reject). bv-web holds
+	 * the mint key and reaches EMA only through /internal/oauth/ema-self-serve, so it can never approve.
+	 */
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	/** Canonical public OAuth issuer; required by the paid internal grant handoff. */
 	OAUTH_ISSUER?: string;
 	/** Dedicated credential for tenant orchestration; never accepted by tool or OAuth routes. */
@@ -188,6 +224,8 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
 	KV_ENVELOPE_KEY?: string;
+	/** OAuth route gate ('true' = on). Read by the EMA tenant upsert to require KV_ENVELOPE_KEY. */
+	ENABLE_OAUTH?: string;
 	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
 	INTELLIGENCE_DB?: D1Database;
 	/** Base64-encoded 32-byte AES-256-GCM key used to decrypt `mcp_access_log.ip_ciphertext` in the forensics endpoint. */
@@ -530,6 +568,37 @@ internalRoutes.use('*', async (c, next) => {
 	return next();
 });
 
+type OptionalDedicatedCapability = 'BV_MCP_TOOL_DELEGATION_KEY' | 'BV_MCP_WATCH_CLEANUP_KEY';
+
+/**
+ * Optional dedicated capabilities of the lenient gate. A defined-but-invalid one (empty,
+ * under 32 bytes, or aliasing another critical secret) disables only itself; it must never
+ * 503 callers presenting a valid primary credential.
+ */
+const isOptionalDedicatedCapability = (name: string): name is OptionalDedicatedCapability =>
+	name === 'BV_MCP_TOOL_DELEGATION_KEY' || name === 'BV_MCP_WATCH_CLEANUP_KEY';
+
+const warnedOptionalCapabilities = new Set<OptionalDedicatedCapability>();
+
+/** Log once per isolate when a defined optional capability is unusable. Names the key and reason, never the value. */
+function warnOptionalCapabilityDisabledOnce(env: InternalEnv, name: OptionalDedicatedCapability): void {
+	const value = env[name];
+	if (value === undefined || warnedOptionalCapabilities.has(name) || dedicatedCapability(env, name) !== null) return;
+	warnedOptionalCapabilities.add(name);
+	const collidesWith = securityCapabilityCollision(env, name);
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'internal_auth',
+		result: 'optional_capability_disabled',
+		details: {
+			key: name,
+			reason: collidesWith ? 'aliased' : value.length === 0 ? 'empty' : 'too_short',
+			collidesWith: collidesWith ?? undefined,
+		},
+	});
+}
+
 /**
  * Defense-in-depth bearer gate for /tools/*, /analytics/*, and /tenants/*.
  *
@@ -577,20 +646,14 @@ const internalLenientAuthGate = (
 			.map((name) => ({ name, key: c.env[name] }))
 			.filter(
 				(entry): entry is { name: (typeof acceptedKeys)[number]; key: string } => typeof entry.key === 'string' && entry.key.length > 0,
-			);
-		// Tenant delegation is higher trust than the fleet/mobile/tool credentials.
-		// Weak or reused configuration is a deployment error, never an auth match:
-		// otherwise a holder of the colliding lower-trust secret inherits tenant
-		// assertion authority merely by adding headers.
-		if (acceptedKeys.includes('BV_MCP_TOOL_DELEGATION_KEY') && c.env.BV_MCP_TOOL_DELEGATION_KEY !== undefined) {
-			if (!dedicatedCapability(c.env, 'BV_MCP_TOOL_DELEGATION_KEY')) {
-				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
-			}
-		}
-		if (acceptedKeys.includes('BV_MCP_WATCH_CLEANUP_KEY') && c.env.BV_MCP_WATCH_CLEANUP_KEY !== undefined) {
-			if (!dedicatedCapability(c.env, 'BV_MCP_WATCH_CLEANUP_KEY')) {
-				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
-			}
+			)
+			// Tenant delegation is higher trust than the fleet/mobile credentials. A weak or
+			// reused optional capability is never an auth match (otherwise a holder of the
+			// colliding lower-trust secret inherits tenant assertion authority), but it
+			// disables only that capability: the primary credentials keep working.
+			.filter((entry) => !isOptionalDedicatedCapability(entry.name) || dedicatedCapability(c.env, entry.name) !== null);
+		for (const name of acceptedKeys) {
+			if (isOptionalDedicatedCapability(name)) warnOptionalCapabilityDisabledOnce(c.env, name);
 		}
 		if (expected.length === 0) {
 			// Misconfig: gate is active but no key configured for this route group — fail closed.
@@ -864,6 +927,19 @@ internalRoutes.post('/tools/call', async (c) => {
 });
 
 /**
+ * Why a grant's redirect_uri is refused, or null. Unregistered first; then the redirect policy, as in
+ * /oauth/authorize: a registered URI is not enough, because a legacy client or a permissive CIMD
+ * document can list a callback the policy forbids, and a grant here mints a real authorization code.
+ */
+function grantRedirectError(
+	redirectUri: string,
+	registered: readonly string[],
+): 'redirect_uri_not_registered' | 'invalid_redirect_uri' | null {
+	if (!redirectUriMatches(redirectUri, registered)) return 'redirect_uri_not_registered';
+	return isAllowedOAuthRedirectUri(redirectUri) ? null : 'invalid_redirect_uri';
+}
+
+/**
  * POST /internal/oauth/grants
  *
  * Internal bv-web handoff endpoint for paid customer OAuth consent. bv-web
@@ -894,12 +970,16 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	}
 
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
-	const client = await getClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
+	// A registered (DCR) client or a Client ID Metadata Document client, with the same redirect
+	// matching /oauth/authorize applies (exact, loopback port ignored), so bv-web can complete
+	// paid consent for the Claude CIMD clients too.
+	const client = await resolveClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
 	if (!client) {
 		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
 	}
-	if (!client.redirect_uris.includes(body.redirectUri)) {
-		return c.json({ error: 'redirect_uri_not_registered' }, 400, { 'Cache-Control': 'no-store' });
+	const redirectError = grantRedirectError(body.redirectUri, client.redirect_uris);
+	if (redirectError) {
+		return c.json({ error: redirectError }, 400, { 'Cache-Control': 'no-store' });
 	}
 	// Service-binding requests use a synthetic `https://internal` URL, so the
 	// public issuer cannot safely be derived from the request Host. Require the
@@ -1421,6 +1501,402 @@ internalRoutes.get('/trial-keys', async (c) => {
 		})),
 		total: keys.length,
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Enterprise Managed Auth (EMA) tenants — per-tenant trusted-issuer allowlist
+// ---------------------------------------------------------------------------
+//
+// Two doors onto one store:
+//   /internal/oauth/ema-tenants*   operator, BV_MCP_EMA_ADMIN_KEY: seed, list, approve, reject, delete
+//   /internal/oauth/ema-self-serve bv-web settings, BV_MCP_OAUTH_MINT_KEY: customer-managed tenants only
+// bv-web holds the mint key, so it reaches the store only through the narrow self-serve door and can
+// never approve. The store is the EMA registry (oauth/ema-tenants.ts): one dedicated QuotaCoordinator
+// instance that applies every write to the fresh record inside a transaction. Only an approved tenant owns
+// its issuer or mints (isTenantActive).
+
+const EMA_DISCOVERY_TIMEOUT_MS = 5000;
+const EMA_DISCOVERY_MAX_BYTES = 16 * 1024;
+const EMA_NO_STORE = { 'Cache-Control': 'no-store' } as const;
+const EmaDiscoveryDocumentSchema = z.object({ issuer: z.string(), jwks_uri: z.string() });
+
+/**
+ * Auth gate for the operator EMA routes. They decide which IdPs may mint access tokens, so they take a
+ * dedicated operator capability bv-web never holds: 503 when BV_MCP_EMA_ADMIN_KEY is unset (or weak, or
+ * aliases another capability), 401 on a missing or wrong bearer.
+ */
+const emaAdminAuthGate: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_EMA_ADMIN_KEY');
+	if (!expected) return c.json({ error: 'internal_auth_not_configured' }, 503, EMA_NO_STORE);
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) return c.json({ error: 'unauthorized' }, 401, EMA_NO_STORE);
+	return next();
+};
+internalRoutes.use('/oauth/ema-tenants', emaAdminAuthGate);
+internalRoutes.use('/oauth/ema-tenants/*', emaAdminAuthGate);
+// The bv-web settings seam rides the capability bv-web already holds server-side. `X-BV-Caller` is an audit label only.
+internalRoutes.use('/oauth/ema-self-serve', trialKeysAuthGate);
+internalRoutes.use('/oauth/ema-self-serve/*', trialKeysAuthGate);
+
+/** Fetch `{issuer}/.well-known/openid-configuration`: 200 only, no redirects, ≤ 16KB. Null on any failure. */
+async function fetchEmaDiscoveryDocument(normalizedIssuer: string): Promise<unknown> {
+	try {
+		const response = await safeFetch(`${normalizedIssuer}/.well-known/openid-configuration`, {
+			redirect: 'manual',
+			signal: AbortSignal.timeout(EMA_DISCOVERY_TIMEOUT_MS),
+			headers: { Accept: 'application/json' },
+		});
+		if (response.status !== 200) {
+			await disposeUnreadResponseBody(response);
+			return null;
+		}
+		return await readJsonResponseCapped<unknown>(response, EMA_DISCOVERY_MAX_BYTES);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The `jwks_uri` of a discovery document, only when the document names the SAME issuer
+ * (normalized comparison) and the jwks_uri passes the outbound-URL gate. Null otherwise.
+ */
+function jwksUriFromDiscovery(doc: unknown, normalizedIssuer: string): string | null {
+	const parsed = EmaDiscoveryDocumentSchema.safeParse(doc);
+	if (!parsed.success) return null;
+	try {
+		if (normalizeIssuer(parsed.data.issuer) !== normalizedIssuer) return null;
+		return validateOutboundUrl(parsed.data.jwks_uri).valid ? parsed.data.jwks_uri : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Zod-issue-path 400 convention; unrecognized-key messages echo caller field names, so they are replaced. */
+function emaValidationError(err: ZodError): string {
+	const issue = err.issues[0];
+	if (issue.code === 'unrecognized_keys') return 'Invalid request body: unrecognized field';
+	return `Invalid ${issue.path.join('.') || 'request body'}: ${issue.message}`;
+}
+
+/** Parse a body with `schema` and normalize its issuer. Errors are static strings; caller input is never echoed. */
+async function readEmaBody<T extends { issuer: string }>(
+	request: Request,
+	schema: { parse(input: unknown): T },
+): Promise<{ body: T } | { error: string; status: 400 | 413 }> {
+	try {
+		const bodyRead = await readBoundedText(request, MAX_REQUEST_BODY_BYTES);
+		if (!bodyRead.ok) return { error: 'request_too_large', status: 413 };
+		const body = schema.parse(JSON.parse(bodyRead.text));
+		return { body: { ...body, issuer: normalizeIssuer(body.issuer) } };
+	} catch (err) {
+		if (err instanceof ZodError) return { error: emaValidationError(err), status: 400 };
+		return { error: 'Invalid request body', status: 400 };
+	}
+}
+
+/**
+ * Every refusal a route answers with a static code: the registry's write refusals and the self-serve
+ * discovery refusals. `ema_record_changed` is retryable: the record moved under a write that skipped discovery.
+ */
+type EmaRouteError = EmaWriteError | 'issuer_not_allowed' | 'issuer_discovery_failed';
+
+const EMA_ROUTE_ERROR_STATUS: Record<EmaRouteError, 400 | 404 | 409> = {
+	issuer_not_allowed: 400,
+	issuer_discovery_failed: 400,
+	not_found: 404,
+	approval_stale: 409,
+	issuer_conflict: 409,
+	tenant_managed_by_operator: 409,
+	ema_record_changed: 409,
+};
+
+function emaRouteError(c: import('hono').Context<InternalAppEnv>, error: EmaRouteError): Response {
+	return c.json({ error }, EMA_ROUTE_ERROR_STATUS[error], EMA_NO_STORE);
+}
+
+/** What the self-serve caller sees: never jwks_uri, allowed_client_ids, token_epoch, source or created_at. */
+function emaSelfServeView(rec: EmaTenantRecord) {
+	return {
+		tenant_id: rec.tenant_id,
+		name: rec.name,
+		issuer: rec.issuer,
+		enabled: rec.enabled,
+		approval: effectiveApproval(rec),
+		tier: rec.tier,
+		entitlement_expires_at: rec.entitlement_expires_at,
+		updated_at: rec.updated_at,
+	};
+}
+
+/** One `ema_tenant_mutation` line per self-serve write and per operator decision: ids and state only, never issuer or key material. */
+function logEmaTenantMutation(tenantId: string, action: 'upsert' | 'delete' | 'approve' | 'reject', rec: EmaTenantRecord | null): void {
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'info',
+		category: 'oauth',
+		result: 'ema_tenant_mutation',
+		details: rec
+			? { tenant_id: tenantId, action, source: rec.source ?? 'operator', approval: effectiveApproval(rec) }
+			: { tenant_id: tenantId, action },
+	});
+}
+
+const emaEnvelopeKey = (env: InternalEnv): Uint8Array | undefined => parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
+
+/** The registry (the coordinator's EMA shard), with the SESSION_STORE and envelope key its legacy import reads. */
+const emaRegistryOf = (env: InternalEnv, kv: KVNamespace): EmaRegistry => ({
+	coordinator: env.QUOTA_COORDINATOR,
+	kv,
+	kvEnvelopeKey: emaEnvelopeKey(env),
+});
+
+/** A registry that cannot answer, or a stored record that cannot be read, is a retryable 503: never a 401, never absence. */
+function emaStoreError(c: import('hono').Context<InternalAppEnv>): Response {
+	return c.json({ error: 'ema_store_unavailable' }, 503, { ...EMA_NO_STORE, 'Retry-After': '30' });
+}
+
+const EMA_TENANT_NOT_FOUND = { error: 'not_found', status: 404 } as const;
+const EMA_SELF_SERVE_BAD_ID = { error: 'Invalid tenant_id: must be web- followed by the bv-web tenant id', status: 400 } as const;
+
+/**
+ * The SESSION_STORE and a :tenant_id matching `idPattern`, or the static error the route family answers
+ * with: operator item routes 404 a malformed id, self-serve routes 400 one that is not a `web-` id.
+ */
+function emaItemTarget(
+	c: import('hono').Context<InternalAppEnv>,
+	badId: { error: string; status: 400 | 404 } = EMA_TENANT_NOT_FOUND,
+	idPattern: RegExp = EMA_TENANT_ID_PATTERN,
+): { kv: KVNamespace; tenantId: string } | Response {
+	const kv = c.env.SESSION_STORE;
+	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
+	const tenantId = c.req.param('tenant_id') ?? '';
+	return idPattern.test(tenantId) ? { kv, tenantId } : c.json({ error: badId.error }, badId.status, EMA_NO_STORE);
+}
+
+const selfServeTarget = (c: import('hono').Context<InternalAppEnv>) =>
+	emaItemTarget(c, EMA_SELF_SERVE_BAD_ID, EMA_SELF_SERVE_TENANT_ID_PATTERN);
+
+/** A self-serve issuer's jwks_uri, or its static 400 code. A shared issuer is refused before any network call. */
+async function selfServeJwksUri(
+	issuer: string,
+): Promise<{ jwksUri: string } | { error: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
+	if (isSharedIssuer(issuer)) return { error: 'issuer_not_allowed' };
+	const jwksUri = jwksUriFromDiscovery(await fetchEmaDiscoveryDocument(issuer), issuer);
+	return jwksUri ? { jwksUri } : { error: 'issuer_discovery_failed' };
+}
+
+/**
+ * Create-or-update a customer-managed tenant. The stored tenant is read first, so an operator-managed (409)
+ * or unreadable (503) one is refused before any network call. A write that only lowers privilege
+ * (lowersPrivilegeOnly) skips discovery and reuses the stored jwks_uri; every other write discovers it. The
+ * registry then decides jwks_uri, approval and epoch again on the FRESH record inside its transaction: when
+ * the record moved so that discovery is needed after all, it answers ema_record_changed and the write is
+ * retried once with discovery (which cannot answer that again).
+ */
+async function upsertSelfServeEmaTenant(
+	registry: EmaRegistry,
+	tenantId: string,
+	body: EmaSelfServeUpsertRequest,
+): Promise<EmaWriteResult | { status: 'issuer_not_allowed' | 'issuer_discovery_failed' }> {
+	const existing = await getEmaTenant(registry, tenantId);
+	if (existing && existing.source !== 'self-serve') return { status: 'tenant_managed_by_operator' };
+	if (existing && lowersPrivilegeOnly(existing, body)) {
+		const lowered = await writeEmaTenant(registry, tenantId, { op: 'self-serve-upsert', body });
+		if (lowered.status !== 'ema_record_changed') return lowered;
+	}
+	const discovered = await selfServeJwksUri(body.issuer);
+	if ('error' in discovered) return { status: discovered.error };
+	return writeEmaTenant(registry, tenantId, {
+		op: 'self-serve-upsert',
+		body,
+		discovered: { issuer: body.issuer, jwks_uri: discovered.jwksUri },
+	});
+}
+
+/**
+ * Apply an operator decision inside the registry. Approve carries the reviewed snapshot and refuses (409
+ * approval_stale) once the record has moved on; it also claims the issuer index, so approving a second tenant
+ * for an issuer another approved tenant holds is 409 issuer_conflict. Reject is sticky and releases the issuer.
+ */
+async function decideEmaTenant(
+	c: import('hono').Context<InternalAppEnv>,
+	target: { kv: KVNamespace; tenantId: string },
+	write: { op: 'approve'; reviewed: EmaApproveRequest } | { op: 'reject' },
+): Promise<Response> {
+	const registry = emaRegistryOf(c.env, target.kv);
+	try {
+		const result = await writeEmaTenant(registry, target.tenantId, write);
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
+		logEmaTenantMutation(target.tenantId, write.op, result.record);
+		return c.json(result.record, 200, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
+}
+
+/**
+ * Refuse a write while OAuth is on without a (parseable) envelope key. Records are no longer sealed (the
+ * registry holds them in plaintext); the key only matters to the one-time import of the sealed legacy KV
+ * tenants, which runs before the registry serves anything. Refusing up front keeps the gate the routes had.
+ * With OAuth off the grant is unreachable and nothing can strand.
+ */
+const requireEmaEnvelopeKey: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
+	if (c.env.ENABLE_OAUTH === 'true' && !emaEnvelopeKey(c.env)) return c.json({ error: 'envelope_key_required' }, 409, EMA_NO_STORE);
+	return next();
+};
+
+/**
+ * PUT /internal/oauth/ema-tenants — operator upsert. `jwks_uri` is resolved from the
+ * issuer's OIDC discovery document when omitted.
+ */
+internalRoutes.put('/oauth/ema-tenants', requireEmaEnvelopeKey, async (c) => {
+	const kv = c.env.SESSION_STORE;
+	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
+
+	const parsed = await readEmaBody(c.req.raw, EmaTenantUpsertRequestSchema);
+	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
+
+	const { body } = parsed;
+	// An operator-supplied jwks_uri is gated here; a discovered one is gated inside jwksUriFromDiscovery.
+	// Static error string: the rejected value (which may carry userinfo) is never echoed.
+	if (body.jwks_uri && !validateOutboundUrl(body.jwks_uri).valid) {
+		return c.json({ error: 'Invalid jwks_uri: must be a public https URL' }, 400, EMA_NO_STORE);
+	}
+	const jwksUri = body.jwks_uri ?? jwksUriFromDiscovery(await fetchEmaDiscoveryDocument(body.issuer), body.issuer);
+	if (!jwksUri) return c.json({ error: 'issuer_discovery_failed' }, 400, EMA_NO_STORE);
+
+	const registry = emaRegistryOf(c.env, kv);
+	try {
+		const result = await writeEmaTenant(registry, body.tenant_id, { op: 'operator-upsert', body: { ...body, jwks_uri: jwksUri } });
+		return result.status === 'ok' ? c.json(result.record, 200, EMA_NO_STORE) : emaRouteError(c, result.status);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+/**
+ * GET /internal/oauth/ema-tenants — one page (≤ 100, tenant_id order) of tenants. `?approval=pending` (or
+ * approved / rejected) filters it, e.g. to the operator's review queue (see effectiveApproval for records
+ * without one); `next_cursor`, when present, is the `?cursor=` of the next page.
+ */
+internalRoutes.get('/oauth/ema-tenants', async (c) => {
+	const kv = c.env.SESSION_STORE;
+	if (!kv) return c.json({ error: 'session_store_not_configured' }, 500, EMA_NO_STORE);
+	const filter = EmaApprovalSchema.optional().safeParse(c.req.query('approval'));
+	if (!filter.success) return c.json({ error: 'Invalid approval: must be pending, approved or rejected' }, 400, EMA_NO_STORE);
+	const cursor = c.req.query('cursor');
+	if (cursor !== undefined && !EMA_TENANT_ID_PATTERN.test(cursor)) return c.json({ error: 'Invalid cursor' }, 400, EMA_NO_STORE);
+	try {
+		const page = await listEmaTenants(emaRegistryOf(c.env, kv), filter.data, cursor);
+		return c.json({ tenants: page.records, total: page.records.length, next_cursor: page.cursor }, 200, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+/** GET /internal/oauth/ema-tenants/:tenant_id */
+internalRoutes.get('/oauth/ema-tenants/:tenant_id', async (c) => {
+	const target = emaItemTarget(c);
+	if (target instanceof Response) return target;
+	try {
+		const tenant = await getEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId);
+		return tenant ? c.json(tenant, 200, EMA_NO_STORE) : c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+/**
+ * POST /internal/oauth/ema-tenants/:tenant_id/approve — the operator's one-time sign-off. Body: the
+ * reviewed {issuer, jwks_uri, rev}, which must still match the record (compared inside the registry transaction). Answers the full record.
+ */
+internalRoutes.post('/oauth/ema-tenants/:tenant_id/approve', requireEmaEnvelopeKey, async (c) => {
+	const target = emaItemTarget(c);
+	if (target instanceof Response) return target;
+	const parsed = await readEmaBody(c.req.raw, EmaApproveRequestSchema);
+	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
+	return decideEmaTenant(c, target, { op: 'approve', reviewed: parsed.body });
+});
+
+/** POST /internal/oauth/ema-tenants/:tenant_id/reject — sticky refusal; releases the issuer. Answers the full record. */
+internalRoutes.post('/oauth/ema-tenants/:tenant_id/reject', requireEmaEnvelopeKey, async (c) => {
+	const target = emaItemTarget(c);
+	if (target instanceof Response) return target;
+	return decideEmaTenant(c, target, { op: 'reject' });
+});
+
+/**
+ * DELETE /internal/oauth/ema-tenants/:tenant_id — idempotent; removes the record and its issuer index, and
+ * the tokens it issued (the id's epoch floor outlives it). It also clears a rejected tenant's history entirely.
+ */
+internalRoutes.delete('/oauth/ema-tenants/:tenant_id', async (c) => {
+	const target = emaItemTarget(c);
+	if (target instanceof Response) return target;
+	try {
+		await deleteEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId, 'operator');
+		return c.body(null, 204, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+// ─── EMA self-serve: the bv-web settings seam for customer-managed tenants ───
+// :tenant_id is `web-<bv-web tenant id>`, and bv-web supplies tier and entitlement from the
+// subscription. These routes only ever touch records whose source is 'self-serve'.
+
+/**
+ * PUT /internal/oauth/ema-self-serve/:tenant_id — create or update a customer-managed tenant from
+ * {name, issuer, enabled, tier, entitlement_expires_at}. Shared issuers are refused, jwks_uri is always
+ * discovered (except on a write that only lowers privilege, which reuses the stored one: see
+ * lowersPrivilegeOnly), and a new tenant, a moved issuer or changed keys wait for operator approval
+ * (upsertSelfServeEmaTenant). Answers the redacted view.
+ */
+internalRoutes.put('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, async (c) => {
+	const target = selfServeTarget(c);
+	if (target instanceof Response) return target;
+	const parsed = await readEmaBody(c.req.raw, EmaSelfServeUpsertRequestSchema);
+	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
+	try {
+		const result = await upsertSelfServeEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId, parsed.body);
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
+		logEmaTenantMutation(target.tenantId, 'upsert', result.record);
+		return result.record ? c.json(emaSelfServeView(result.record), 200, EMA_NO_STORE) : emaStoreError(c);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+/** GET /internal/oauth/ema-self-serve/:tenant_id — the redacted view; 404 when absent or operator-managed. */
+internalRoutes.get('/oauth/ema-self-serve/:tenant_id', async (c) => {
+	const target = selfServeTarget(c);
+	if (target instanceof Response) return target;
+	try {
+		const tenant = await getEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId);
+		if (tenant?.source !== 'self-serve') return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
+		return c.json(emaSelfServeView(tenant), 200, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
+});
+
+/**
+ * DELETE /internal/oauth/ema-self-serve/:tenant_id — idempotent (204); refuses an operator-managed (409) or
+ * unreadable (503) tenant. A tenant the operator ever rejected stays as a disabled, lapsed tombstone that
+ * keeps its rejected issuers, so delete-and-recreate cannot launder a refusal; only the operator's own DELETE
+ * clears it. Either way its tokens die. It is a write, so it needs the envelope key like the PUT does.
+ */
+internalRoutes.delete('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, async (c) => {
+	const target = selfServeTarget(c);
+	if (target instanceof Response) return target;
+	const registry = emaRegistryOf(c.env, target.kv);
+	try {
+		const existing = await getEmaTenant(registry, target.tenantId);
+		const result = await deleteEmaTenant(registry, target.tenantId, 'self-serve');
+		if (result.status !== 'ok') return emaRouteError(c, result.status);
+		logEmaTenantMutation(target.tenantId, 'delete', existing);
+		return c.body(null, 204, EMA_NO_STORE);
+	} catch {
+		return emaStoreError(c);
+	}
 });
 
 // ─── Analytics Endpoints ───────────────────────────────────────────────

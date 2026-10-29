@@ -59,7 +59,7 @@ The distinction is where the hostname came from, not how the URL is spelled.
 
 **Paid-only tools**: offensive / recon / multi-domain tools listed in
 `GATED_PAID_ONLY_TOOLS` (`lib/config.ts`) are developer+ only —
-free/unauth/agent get HTTP **403** `UPGRADE_REQUIRED` (`-32003`). OSINT and
+unauthenticated callers get HTTP **401** + a `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource", scope="mcp"` challenge (Claude starts OAuth only on a 401; `unauthChallenge` option, supplied by `index.ts` iff `oauthAvailability` is `ready`, else the legacy 403), signed-in free/agent get HTTP **403** `UPGRADE_REQUIRED` (`-32003`, no header; re-authenticating cannot help). The body is identical. OSINT and
 bucket pollers stay free. ⚠️ The four brand pollers (`brand_audit_status`,
 `brand_audit_get_report`, `discover_brand_domains_*`) are NOT in that set but
 are `0` in `FREE_TOOL_DAILY_LIMITS`, so anonymous calls get **429**, not 403. The SSOT is audited by
@@ -101,7 +101,8 @@ Beyond that guard the capabilities are **distinct keys, not one shared secret**:
 | `BV_MCP_TENANT_KEY` | tenant orchestration |
 | `BV_MCP_TOOL_DELEGATION_KEY` | web Brand Watch register/list/delete |
 | `BV_MCP_WATCH_CLEANUP_KEY` | ops-only list/delete |
-| `BV_MCP_OAUTH_MINT_KEY` | grants / trial issuance |
+| `BV_MCP_OAUTH_MINT_KEY` | bv-web-held; gates `/internal/oauth/grants`, `/internal/trial-keys*` and `/internal/oauth/ema-self-serve/*`; one shared value on both Workers |
+| `BV_MCP_EMA_ADMIN_KEY` | operator-only; gates `/internal/oauth/ema-tenants*` plus approve/reject; never on bv-web |
 | `BV_MCP_OAUTH_REVOKE_KEY` | subject revocation |
 
 - High-trust capabilities require **at least 32 UTF-8 bytes** and **fail closed
@@ -114,6 +115,17 @@ Beyond that guard the capabilities are **distinct keys, not one shared secret**:
 - `X-Tenant` + `X-Auth-Tier` are accepted **only** with one of the two narrow
   tenant capabilities; the fleet web key is rejected for them.
 - Mutating calls support durable `Idempotency-Key` replay protection.
+
+## Enterprise Managed Auth (jwt-bearer / ID-JAG)
+
+`POST /oauth/token` `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` (`handleJwtBearerGrant` → `acceptIdJag`, `src/oauth/token.ts`; the 600/min per-IP ceiling runs before the body read for every grant, then jwt-bearer uses only its (IP, issuer) 120/min bucket and never the 30/min shared bucket). Customer guide `docs/enterprise-managed-auth.md`; seeding `docs/operator-runbook.md` §8a.
+
+- **Tenant allowlist** (`src/oauth/ema-tenants.ts`): ONE QuotaCoordinator Durable Object instance `ema-registry`, keys `ema:tenant:<tenant_id>`, `ema:issuer:<issuer>` → the one approved owner, `ema:floor:<tenant_id>` (epoch/rev high-water mark that survives a delete), `ema:migrated` (one-shot legacy-KV import; every EMA call is 503 until it exists). Every approval/epoch/issuer/reject decision runs inside one storage transaction; payloads are strict and server fields (`token_epoch`, `rev`, timestamps) are never caller-set. Records are plaintext at rest. Operator writes go via `/internal/oauth/ema-tenants*` (incl. approve/reject) under `BV_MCP_EMA_ADMIN_KEY`; customer self-serve goes via `/internal/oauth/ema-self-serve/*` under `BV_MCP_OAUTH_MINT_KEY`. Self-serve PUT body is `{name, issuer, enabled, tier, entitlement_expires_at}` (expiry required, at most now+400d; `tenant_id` must be `web-` prefixed); errors: 400 `issuer_not_allowed`, 400 `issuer_discovery_failed`, 409 `tenant_managed_by_operator`, 503 `ema_store_unavailable`. Approve takes `{issuer, jwks_uri, rev}` (`npm run ema:approve` prints the request) and answers 409 `approval_stale` or `issuer_conflict`. The issuer lookup runs before signature verification: an unregistered `iss` fails closed regardless of how the assertion is signed.
+- **Validation order** (first failure is final; static descriptions; `Cache-Control: no-store`): body shape (`invalid_request`) → issuer pinned to Host → header `typ` = `oauth-id-jag+jwt` → enabled, unexpired tenant (`invalid_grant`) → client in `allowed_client_ids` and `resolveClient` (`invalid_client`) → claim `client_id` = request (`invalid_grant`) → signature via `getJwksCached` + `verifyJwsWithJwks`, ONE forced refetch on `no_key` (every JWKS failure is `invalid_grant`) → `aud` = our issuer, exp/iat window (30s skew, lifetime ≤ 1h), `sub`/`jti` → `resource` = `${issuer}/mcp` (`invalid_target`) → one-time `jti`.
+- **One-time jti**: `claimAssertionJti(tenant.issuer, jti)` on `QUOTA_COORDINATOR` until exp+30s. A state outage is 503 `temporarily_unavailable`, never an admitted replay.
+- **Minted token**: subject `ema:<tenant_id>:<first 32 hex of sha256(sub)>`, tier = the tenant tier (`developer`/`enterprise`, **never `owner`**), TTL = min(1h, tenant entitlement), scope always `mcp`, NO `refresh_token`. Tokens carry `tep` (the tenant's `token_epoch`, bumped by every revoking write: suspend, re-key, tier change, client-id removal, delete floor); `tier-auth.ts` re-reads the registry record for `ema:` subjects only (in parallel with the token-version read) and answers 401 when the tenant is missing, disabled, lapsed, re-tiered or on a newer epoch, so a revoking write cuts off issued tokens immediately (strongly consistent); a registry outage is 503, never 401.
+- **CIMD** (`src/oauth/cimd.ts`): fetched client documents are cached at `oauth:cimd:<sha256hex(url)>` (TTL 1h; outside the `oauth:client:` keyspace, so no `cimd:<hex>` client-id alias exists), a failed fetch is negatively cached 60s at `oauth:cimd-neg:<sha256hex(url)>`, cache-miss fetches are limited to 10 per IP per minute on `/oauth/authorize`; JWKS at `oauth:ema-jwks:<sha256hex(uri)>` (TTL 600s, forced refetch throttled to 1/60s).
+- **Metadata flags Claude looks for** (`discovery.ts`): `authorization_grant_profiles_supported: ["urn:ietf:params:oauth:grant-profile:id-jag"]` and `client_id_metadata_document_supported: true` (plus jwt-bearer in `grant_types_supported`). Live check: `npm run check:ema`.
 
 ## Client-visible error wording is an ALLOWLIST
 

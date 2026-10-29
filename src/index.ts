@@ -187,6 +187,8 @@ type BvMcpEnv = Env & {
 	/** Dedicated inbound capability for OAuth/trial grant issuance and subject revocation. */
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	/** Operator-only capability for /internal/oauth/ema-tenants* (seed, list, approve, reject). Never provisioned to bv-web. */
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	BV_MCP_TOOL_DELEGATION_KEY?: string;
 	BV_MCP_WATCH_CLEANUP_KEY?: string;
 	/** Dedicated outbound capability for the exact bv-web Brand Drift receiver. */
@@ -526,7 +528,7 @@ for (const path of authedPaths) {
 				'X-API-Key',
 				'X-BV-Legacy-Owner-Token',
 			],
-			exposeHeaders: ['Mcp-Session-Id'],
+			exposeHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
 		}),
 	);
 
@@ -597,7 +599,7 @@ for (const path of authedPaths) {
 
 		// If token was provided but not recognized, or if auth is required and not authenticated, reject
 		if ((token && !tierResult.authenticated) || (c.env.REQUIRE_AUTH === 'true' && !tierResult.authenticated)) {
-			const response = unauthorizedResponse();
+			const response = unauthorizedResponse(unauthChallengeParams(c));
 			// The global post-next middleware never runs on early returns, so
 			// stamp the deprecation signal here too — clients fixing their auth
 			// header path should see it on 401 (the most common failure mode
@@ -1056,6 +1058,7 @@ app.post('/mcp', async (c) => {
 					asyncBatchKv: c.env.SCAN_CACHE,
 					brandReportsR2: c.env.BRAND_REPORTS,
 					publicOrigin: new URL(c.req.url).origin,
+					unauthChallenge: buildUnauthChallenge(c),
 					browserRenderer: c.env.BV_BROWSER_RENDERER,
 					discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 					...buildBrandTierLookups(c.env),
@@ -1173,6 +1176,7 @@ app.post('/mcp', async (c) => {
 		asyncBatchKv: c.env.SCAN_CACHE,
 		brandReportsR2: c.env.BRAND_REPORTS,
 		publicOrigin: new URL(c.req.url).origin,
+		unauthChallenge: buildUnauthChallenge(c),
 		browserRenderer: c.env.BV_BROWSER_RENDERER,
 		discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 		...buildBrandTierLookups(c.env),
@@ -1391,6 +1395,7 @@ app.post('/mcp/messages', async (c) => {
 				asyncBatchKv: c.env.SCAN_CACHE,
 				brandReportsR2: c.env.BRAND_REPORTS,
 				publicOrigin: new URL(c.req.url).origin,
+				unauthChallenge: buildUnauthChallenge(c),
 				browserRenderer: c.env.BV_BROWSER_RENDERER,
 				discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 				...buildBrandTierLookups(c.env),
@@ -1631,6 +1636,25 @@ app.get('/reports/:auditId/:target', async (c) => {
 });
 
 app.route('/internal', internalRoutes);
+
+/**
+ * `resource_metadata` + `scope` auth-params pointing a client at this server's protected-resource
+ * metadata, or undefined when OAuth is not 'ready' (the PRM route would 404 / 503 there, so a
+ * challenge would be a dead end and self-hosts keep their pre-OAuth 401/403 shapes).
+ */
+function unauthChallengeParams(c: Context<AppEnv>): string | undefined {
+	if (oauthAvailability(c.env) !== 'ready') return undefined;
+	return `resource_metadata="${resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)}/.well-known/oauth-protected-resource", scope="mcp"`;
+}
+
+/**
+ * Full `WWW-Authenticate` value for an unauthenticated call to a paid-only tool, or undefined when
+ * OAuth is unavailable. Claude starts OAuth (its Connect card) only on an HTTP 401 carrying this.
+ */
+function buildUnauthChallenge(c: Context<AppEnv>): string | undefined {
+	const params = unauthChallengeParams(c);
+	return params ? `Bearer error="invalid_token", error_description="Authentication required for this tool", ${params}` : undefined;
+}
 
 // OAuth 2.1 discovery endpoints (RFC 8414 + RFC 9728).
 //

@@ -19,6 +19,7 @@ import { PDFDocument } from 'pdf-lib';
 function makeBrandAuditResult(): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [
 			{
@@ -89,6 +90,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		const empty = await renderBrandAuditPdf(
 			{
 				category: 'brand_discovery',
+				passed: true,
 				score: 100,
 				findings: [
 					{ category: 'brand_discovery', title: 's', severity: 'info', detail: '', metadata: { summary: true, target: 'apple.com' } },
@@ -113,6 +115,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const empty: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{ category: 'brand_discovery', title: 'summary', severity: 'info', detail: '', metadata: { summary: true, target: 'example.com' } },
@@ -135,6 +138,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		};
 		const withWarnings: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{
@@ -151,6 +155,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		};
 		const withoutWarnings: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [baseSummary],
 		};
@@ -168,6 +173,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const malicious: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{
@@ -229,10 +235,11 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 			}));
 		const withReasons: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: makeFindings(['some specific reason text appears here']),
 		};
-		const withoutReasons: CheckResult = { category: 'brand_discovery', score: 100, findings: makeFindings([]) };
+		const withoutReasons: CheckResult = { category: 'brand_discovery', passed: true, score: 100, findings: makeFindings([]) };
 
 		const aBytes = await renderBrandAuditPdf(withReasons, 'example.com', { serverVersion: '2.21.4' });
 		const bBytes = await renderBrandAuditPdf(withoutReasons, 'example.com', { serverVersion: '2.21.4' });
@@ -260,6 +267,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const unicode: CheckResult = {
 			category: 'brand_discovery',
+			passed: true,
 			score: 100,
 			findings: [
 				{

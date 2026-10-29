@@ -10,7 +10,7 @@ import {
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
 import { fireAndForget, getLogger, logEvent, logError } from '../lib/log';
-import { jsonRpcError, JSON_RPC_ERRORS, isJsonRpcNotification, sanitizeErrorMessage } from '../lib/json-rpc';
+import { jsonRpcError, JSON_RPC_ERRORS, JsonRpcClientError, isJsonRpcNotification, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	FREE_TOOL_DAILY_LIMITS,
@@ -203,6 +203,14 @@ export interface ExecuteMcpRequestOptions {
 	 * emits a relative path instead.
 	 */
 	publicOrigin?: string;
+	/**
+	 * Full `WWW-Authenticate` header VALUE for an UNAUTHENTICATED call to a paid-only tool.
+	 * When set, that gate returns HTTP 401 + this challenge (so a client that starts OAuth
+	 * on a 401, e.g. Claude's Connect card, can discover the protected-resource metadata);
+	 * absent → the legacy 403 (self-hosts without OAuth, where the PRM URL would 404).
+	 * The JSON-RPC body is identical either way. Authenticated free/agent 403s never use it.
+	 */
+	unauthChallenge?: string;
 	/** Service binding to bv-browser-renderer Worker. v2.21.2+. */
 	browserRenderer?: { fetch: typeof fetch };
 	/** principalId for the calling user — required by enforceBrandAuditQuota and IDOR-cache fix. v2.21.2+. */
@@ -799,6 +807,7 @@ function buildGatedToolResponse(
 	options: ExecuteMcpRequestOptions,
 	eventId: string | undefined,
 	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
+	challenge?: string,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	options.analytics?.emitRateLimitEvent({
 		limitType: 'gated_tool',
@@ -808,7 +817,10 @@ function buildGatedToolResponse(
 		country: options.country,
 		authTier: options.authTier ?? 'anon',
 	});
-	emitRequestAnalytics(options, method, 'error', true);
+	// An unauthenticated caller with an OAuth challenge gets 401: thread it to analytics so the
+	// fuzz counter classifies it as `auth_fail`, as buildAuthRequiredResponse does.
+	const httpStatus = challenge ? 401 : 403;
+	emitRequestAnalytics(options, method, 'error', true, undefined, undefined, challenge ? 401 : undefined);
 	if (accessLogInput) {
 		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
@@ -826,8 +838,8 @@ function buildGatedToolResponse(
 	return {
 		kind: 'response',
 		payload: jsonRpcError(id, JSON_RPC_ERRORS.UPGRADE_REQUIRED, message, upgradeData),
-		headers: {},
-		httpStatus: 403,
+		headers: challenge ? { 'www-authenticate': challenge } : {},
+		httpStatus,
 		useErrorEnvelope: true,
 		eventId,
 	};
@@ -1109,7 +1121,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			return buildAuthRequiredResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 		if (!unauthPolicy.allowed && unauthPolicy.block === 'paid_only') {
-			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput, options.unauthChallenge);
 		}
 		if (toolDailyLimit !== undefined) {
 			// Verdict came from the batched evaluate above (same round trip as scoped-rate).
@@ -1692,6 +1704,17 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			eventId,
 		};
 	} catch (err) {
+		if (err instanceof JsonRpcClientError) {
+			emitRequestAnalytics(options, method, 'error', true, err.code, err.message);
+			return {
+				kind: 'response',
+				payload: jsonRpcError(id, err.code, sanitizeErrorMessage(err, 'Invalid params')),
+				headers: {},
+				httpStatus: 400,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
 		emitRequestAnalytics(options, method, 'error', true);
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'error',

@@ -198,7 +198,7 @@ async function fetchWithRedirects(
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
 		const isRedirect =
-			(status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
+			(status >= 300 && status < 400) || String(response.type) === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
 		if (!isRedirect) break;
 
 		// This hop redirects, so it is an intermediate/edge hop — harvest its CDN

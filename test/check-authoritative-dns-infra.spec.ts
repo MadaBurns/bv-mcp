@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkAuthoritativeDnsInfra } from '../src/tools/check-authoritative-dns-infra';
+import { NxdomainError, probeAuthoritativeDns } from '../src/lib/authoritative-dns-infra/authoritative-probe';
+import { createDohResponse, setupFetchMock } from './helpers/dns-mock';
 
 describe('checkAuthoritativeDnsInfra', () => {
 	it('returns a partial worker-only result when the infra probe binding is absent', async () => {
@@ -530,6 +532,27 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(result.findings.some((f) => f.title === 'Cloudflare-hosted nameservers not probed')).toBe(false);
 	});
 
+	it('says a nonexistent (NXDOMAIN) domain does not exist, not that a retry may succeed (SQ-447)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'no-such-name.example',
+			checkedAt: '2026-09-24T04:16:00.000Z',
+			errors: ['raw_dns_probe_nxdomain'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('no-such-name.example', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
+		expect(finding!.detail).toMatch(/does not resolve \(NXDOMAIN\)/);
+		expect(finding!.detail).toMatch(/not assessed/);
+		expect(finding!.detail).not.toMatch(/is transient|retrying may succeed/i);
+		// Still an abstention: excluded from scoring, never a missing control or a penalty.
+		expect(finding!.metadata?.inconclusive).toBe(true);
+		expect(finding!.metadata?.missingControl).toBeUndefined();
+		expect(result).toMatchObject({ checkStatus: 'error', passed: false, score: 0, partial: true });
+	});
+
 	it('notes Cloudflare nameservers as not probed in a mixed delegation without changing the score (#1131)', async () => {
 		const measured = {
 			hostname: 'example.com',
@@ -577,5 +600,41 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(text).not.toContain('<script>');
 		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
 		expect(finding!.metadata?.errorKind).toBe('platform_unreachable');
+	});
+});
+
+describe('probeAuthoritativeDns NXDOMAIN target (SQ-447)', () => {
+	const { restore } = setupFetchMock();
+	afterEach(() => restore());
+
+	it('reports raw_dns_probe_nxdomain when the NS lookup answers NXDOMAIN, and skips the address fallback', async () => {
+		const recursiveQuery = vi.fn(async (name: string) => {
+			throw new NxdomainError(name);
+		});
+		const openSession = vi.fn();
+
+		const evidence = await probeAuthoritativeDns('no-such-name.example', { recursiveQuery, openSession }, { activeProbes: false });
+
+		expect(evidence.errors).toEqual(['raw_dns_probe_nxdomain']);
+		expect(recursiveQuery).toHaveBeenCalledTimes(1);
+		expect(openSession).not.toHaveBeenCalled();
+	});
+
+	it('detects NXDOMAIN from the default DoH lookup rcode, while an empty NOERROR answer stays no-contact', async () => {
+		const respond = (status: number) => {
+			globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+				const u = new URL(typeof url === 'string' ? url : url.toString());
+				const name = u.searchParams.get('name') ?? '';
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [], { status }));
+			});
+		};
+
+		respond(3);
+		const nx = await probeAuthoritativeDns('no-such-name.example', {}, { activeProbes: false });
+		expect(nx.errors).toEqual(['raw_dns_probe_nxdomain']);
+
+		respond(0);
+		const empty = await probeAuthoritativeDns('empty.example', {}, { activeProbes: false });
+		expect(empty.errors).toEqual(['raw_dns_probe_no_contact']);
 	});
 });

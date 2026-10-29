@@ -1,8 +1,29 @@
 import { SELF, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { putClient } from '../../src/oauth/storage';
 import { clearKvPrefix } from '../helpers/kv';
+
+const CLAUDE_WEB_CIMD = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+const CLAUDE_CODE_CIMD = 'https://claude.ai/oauth/claude-code-client-metadata';
+const CLAUDE_CODE_DOC = {
+	client_id: CLAUDE_CODE_CIMD,
+	client_name: 'Claude Code',
+	redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+	token_endpoint_auth_method: 'none',
+};
+
+/** Serve `doc` at its own client_id URL; every other fetch goes to the real implementation. */
+function stubCimdDocument(doc: { client_id: string } & Record<string, unknown>) {
+	const realFetch = globalThis.fetch;
+	const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url !== doc.client_id) return realFetch(input, init);
+		return new Response(JSON.stringify(doc), { status: 200, headers: { 'content-type': 'application/json' } });
+	});
+	vi.stubGlobal('fetch', mock);
+	return mock;
+}
 
 async function registerClient(): Promise<string> {
 	const res = await SELF.fetch('https://example.com/oauth/register', {
@@ -57,7 +78,11 @@ describe('GET /oauth/authorize', () => {
 		url.searchParams.set('code_challenge', 'x'.repeat(43));
 		url.searchParams.set('code_challenge_method', 'S256');
 		const ctx = createExecutionContext();
-		const res = await worker.fetch(new Request(url.toString()), { ...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false', BV_WEB_OAUTH_CONSENT_URL: undefined }, ctx);
+		// Missing consent configuration is intentional; bypass deployment-literal typing only at the Worker boundary.
+		const noConsentEnv: Omit<typeof env, 'BV_WEB_OAUTH_CONSENT_URL'> & { BV_WEB_OAUTH_CONSENT_URL?: string } = {
+			...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false', BV_WEB_OAUTH_CONSENT_URL: undefined,
+		};
+		const res = await worker.fetch(new Request(url.toString()), noConsentEnv as Parameters<typeof worker.fetch>[1], ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(503);
 		const body = await res.text();
@@ -185,5 +210,137 @@ describe('GET /oauth/authorize', () => {
 		const body = await res.text();
 		expect(body).not.toContain('<!doctype html>');
 		expect(body).not.toContain('<html');
+	});
+});
+
+describe('GET /oauth/authorize — Client ID Metadata Document clients', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function cimdAuthorizeRequest(clientId: string, redirectUri: string): Request {
+		const url = new URL('https://example.com/oauth/authorize');
+		url.searchParams.set('client_id', clientId);
+		url.searchParams.set('redirect_uri', redirectUri);
+		url.searchParams.set('response_type', 'code');
+		url.searchParams.set('state', 'stateval');
+		url.searchParams.set('code_challenge', 'x'.repeat(43));
+		url.searchParams.set('code_challenge_method', 'S256');
+		return new Request(url.toString(), { redirect: 'manual' });
+	}
+
+	it('renders consent for the Claude web CIMD client, naming its client_id host instead of its self-asserted name', async () => {
+		const fetchMock = stubCimdDocument({
+			client_id: CLAUDE_WEB_CIMD,
+			client_name: 'Totally Your Bank',
+			redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+			token_endpoint_auth_method: 'none',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(cimdAuthorizeRequest(CLAUDE_WEB_CIMD, 'https://claude.ai/api/mcp/auth_callback'), env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('<title>Authorize claude.ai</title>');
+		expect(html).toContain('Client <code>claude.ai</code>');
+		expect(html).not.toContain('Totally Your Bank');
+		expect(fetchMock).toHaveBeenCalledWith(CLAUDE_WEB_CIMD, expect.objectContaining({ redirect: 'manual' }));
+	});
+
+	it('accepts the Claude Code CIMD client on an ephemeral loopback port', async () => {
+		stubCimdDocument(CLAUDE_CODE_DOC);
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(cimdAuthorizeRequest(CLAUDE_CODE_CIMD, 'http://localhost:53682/callback'), env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain('Client <code>claude.ai</code>');
+	});
+
+	it('rejects a CIMD client whose document does not list the requested redirect_uri', async () => {
+		stubCimdDocument(CLAUDE_CODE_DOC);
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(cimdAuthorizeRequest(CLAUDE_CODE_CIMD, 'http://localhost:53682/elsewhere'), env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(400);
+		expect(res.headers.get('location')).toBeNull();
+	});
+
+	it('resolves a CIMD client whose document also lists a foreign redirect_uri, and refuses that foreign URI', async () => {
+		stubCimdDocument({
+			client_id: CLAUDE_WEB_CIMD,
+			client_name: 'Claude',
+			redirect_uris: ['https://attacker.example.net/cb', 'https://claude.ai/api/mcp/auth_callback'],
+			token_endpoint_auth_method: 'none',
+		});
+		const allowedCtx = createExecutionContext();
+		const allowed = await worker.fetch(cimdAuthorizeRequest(CLAUDE_WEB_CIMD, 'https://claude.ai/api/mcp/auth_callback'), env, allowedCtx);
+		await waitOnExecutionContext(allowedCtx);
+		expect(allowed.status).toBe(200);
+
+		const foreignCtx = createExecutionContext();
+		const foreign = await worker.fetch(cimdAuthorizeRequest(CLAUDE_WEB_CIMD, 'https://attacker.example.net/cb'), env, foreignCtx);
+		await waitOnExecutionContext(foreignCtx);
+		expect(foreign.status).toBe(400);
+		expect(await foreign.text()).toBe('redirect_uri not registered to this client');
+		expect(foreign.headers.get('location')).toBeNull();
+	});
+
+	async function authorizeFrom(ip: string, clientId: string): Promise<Response> {
+		const base = cimdAuthorizeRequest(clientId, 'https://claude.ai/api/mcp/auth_callback');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(new Request(base.url, { headers: { 'cf-connecting-ip': ip }, redirect: 'manual' }), env, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	it('answers "Unknown client_id" without fetching once an IP exceeds 10 CIMD cache-miss fetches per minute', async () => {
+		const realFetch = globalThis.fetch;
+		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (!url.startsWith('https://hostile.example.org/')) return realFetch(input, init);
+			return new Response('not found', { status: 404 });
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		const hostile = (n: number) => `https://hostile.example.org/meta-${n}`;
+		const hostileCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).startsWith('https://hostile.example.org/')).length;
+
+		for (let n = 1; n <= 10; n++) expect((await authorizeFrom('203.0.113.50', hostile(n))).status).toBe(400);
+		expect(hostileCalls()).toBe(10);
+
+		const eleventh = await authorizeFrom('203.0.113.50', hostile(11));
+		expect(eleventh.status).toBe(400);
+		expect(await eleventh.text()).toBe('Unknown client_id');
+		expect(hostileCalls()).toBe(10);
+
+		// Another IP is unaffected.
+		expect((await authorizeFrom('203.0.113.51', hostile(11))).status).toBe(400);
+		expect(hostileCalls()).toBe(11);
+	});
+
+	it('denies a 512-character CIMD-shaped client_id with 400, never a KV-key 503', async () => {
+		const longId = `https://claude.ai/oauth/${'a'.repeat(512 - 'https://claude.ai/oauth/'.length)}`;
+		stubCimdDocument({ client_id: longId, client_name: 'x', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
+		const res = await authorizeFrom('203.0.113.60', longId);
+		expect(res.status).toBe(200);
+		const blockedHostPrefix = 'https://metadata.internal/';
+		const miss = await authorizeFrom('203.0.113.61', `${blockedHostPrefix}${'b'.repeat(512 - blockedHostPrefix.length)}`);
+		expect(miss.status).toBe(400);
+		expect(await miss.text()).toBe('Unknown client_id');
+	});
+
+	it('rejects a client_id naming the cached CIMD record key (cimd:<hash>) as an unknown client', async () => {
+		stubCimdDocument({
+			client_id: CLAUDE_WEB_CIMD,
+			client_name: 'Claude',
+			redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+			token_endpoint_auth_method: 'none',
+		});
+		expect((await authorizeFrom('203.0.113.70', CLAUDE_WEB_CIMD)).status).toBe(200);
+		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(CLAUDE_WEB_CIMD)));
+		const hex = Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+		const res = await authorizeFrom('203.0.113.70', `cimd:${hex}`);
+		expect(res.status).toBe(400);
+		expect(await res.text()).toBe('Unknown client_id');
 	});
 });

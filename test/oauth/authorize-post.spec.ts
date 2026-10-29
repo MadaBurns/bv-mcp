@@ -6,6 +6,27 @@ import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { MAX_CONSENT_BODY_BYTES } from '../../src/oauth/authorize';
 import { clearKvPrefix } from '../helpers/kv';
 
+const CLAUDE_WEB_CIMD = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+const CLAUDE_CODE_CIMD = 'https://claude.ai/oauth/claude-code-client-metadata';
+const CLAUDE_CODE_DOC = {
+	client_id: CLAUDE_CODE_CIMD,
+	client_name: 'Claude Code',
+	redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+	token_endpoint_auth_method: 'none',
+};
+
+/** Serve `doc` at its own client_id URL; every other fetch goes to the real implementation. */
+function stubCimdDocument(doc: { client_id: string } & Record<string, unknown>) {
+	const realFetch = globalThis.fetch;
+	const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url !== doc.client_id) return realFetch(input, init);
+		return new Response(JSON.stringify(doc), { status: 200, headers: { 'content-type': 'application/json' } });
+	});
+	vi.stubGlobal('fetch', mock);
+	return mock;
+}
+
 const TEST_API_KEY = 'testkey';
 
 async function registerClient(): Promise<string> {
@@ -394,5 +415,57 @@ describe('POST /oauth/authorize', () => {
 		expect(loc.searchParams.get('error')).toBe('temporarily_unavailable');
 		expect(loc.searchParams.get('state')).toBe('stateval');
 		expect(loc.toString()).not.toContain('SQ-199 authorize test');
+	});
+});
+
+describe('POST /oauth/authorize — Client ID Metadata Document clients', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it.each([
+		[
+			'the Claude web client at its registered callback',
+			{
+				client_id: CLAUDE_WEB_CIMD,
+				client_name: 'Claude',
+				redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+				token_endpoint_auth_method: 'none',
+			},
+			'https://claude.ai/api/mcp/auth_callback',
+		],
+		['the Claude Code client on its requested loopback port', CLAUDE_CODE_DOC, 'http://127.0.0.1:41234/callback'],
+	])('issues a code to %s', async (_label, doc, redirectUri) => {
+		stubCimdDocument(doc);
+		const q = new URLSearchParams({
+			client_id: doc.client_id,
+			redirect_uri: redirectUri,
+			response_type: 'code',
+			state: 'stateval',
+			code_challenge: 'x'.repeat(43),
+			code_challenge_method: 'S256',
+		}).toString();
+		const form = new URLSearchParams({ api_key: TEST_API_KEY, _q: q });
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+		const request = new Request('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.origin + loc.pathname).toBe(redirectUri);
+		expect(loc.searchParams.get('state')).toBe('stateval');
+		const code = loc.searchParams.get('code');
+		expect(code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+		const raw = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}code:${code}`);
+		const rec = JSON.parse(raw as string) as { client_id: string; redirect_uri: string };
+		expect(rec.client_id).toBe(doc.client_id);
+		expect(rec.redirect_uri).toBe(redirectUri);
 	});
 });

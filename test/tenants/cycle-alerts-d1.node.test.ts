@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { readFileSync, readdirSync } from 'node:fs';
+import { URL } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from '../../src/tenants/scheduled-handlers';

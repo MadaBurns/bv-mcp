@@ -13,7 +13,6 @@ npx wrangler dev   # Local Worker dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```
 
-
 ## Development
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web APIs only)
@@ -59,6 +58,15 @@ Safe examples:
 - Domains: `tenant-001.example.test`, `mail.example.com`, `service.example.invalid`
 - Emails: `admin@example.test`, `security@example.com`
 - IPs: RFC 5737 ranges such as `192.0.2.10`, `198.51.100.20`, and `203.0.113.30`
+
+## Third-party intellectual property
+
+This repository is public. Nothing that belongs to someone else may be committed, in any file type, including docs, tests, fixtures and comments:
+
+- **No copied text.** Vendor documentation, product guides, blog posts and standards drafts are rewritten in our own words. Menu paths, field names, URLs, error codes and protocol values are facts and may be stated; sentences and tables may not be reproduced. A short quotation needs the source named next to it.
+- **No copied documents or keys.** Do not paste a vendor's published metadata documents, JWKS, sample tokens, certificates, logos or images. Test fixtures are minimal synthetic objects, and keys are generated in the test.
+- **No third-party or customer code** outside `package.json` dependencies, which `npm run audit:licenses` checks against the allowlist.
+- **Name vendors only where the feature needs the name** (a client ID, a configuration screen, a supported provider). Do not name customers, prospects or partners; the repo-safety scanner carries a hashed denylist of names that must never appear, and an operator extends it.
 
 Run `npm run audit:repo-safety` and `npm run audit:oss-safety` before opening a PR that changes fixtures, docs, scripts, workflow files, or package publishing metadata.
 

@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { env as workerEnv } from 'cloudflare:test';
 
 // Mock the brand-audit consumer so we control success vs. throw at the dispatch
 // boundary. worker (src/index.ts) statically imports handleBrandAuditQueue, so
@@ -65,7 +66,7 @@ describe('R4 queue-batch analytics counter', () => {
 		const batch = makeBatch('brand-audit-queue', 3);
 		// BRAND_AUDIT_DB present so the dispatch runs the consumer (not the
 		// ack-and-return missing-binding short-circuit).
-		const env = { MCP_ANALYTICS, BRAND_AUDIT_DB: {} } as unknown as Record<string, unknown>;
+		const env = { ...workerEnv, MCP_ANALYTICS };
 
 		await worker.queue!(batch, env, makeCtx());
 
@@ -87,7 +88,7 @@ describe('R4 queue-batch analytics counter', () => {
 
 		const worker = (await import('../src')).default;
 		const batch = makeBatch('brand-audit-queue', 4);
-		const env = { MCP_ANALYTICS, BRAND_AUDIT_DB: {} } as unknown as Record<string, unknown>;
+		const env = { ...workerEnv, MCP_ANALYTICS };
 
 		// The error must propagate so Cloudflare redelivers the batch.
 		await expect(worker.queue!(batch, env, makeCtx())).rejects.toThrow('consumer blew up');
@@ -106,7 +107,7 @@ describe('R4 queue-batch analytics counter', () => {
 
 		const worker = (await import('../src')).default;
 		const batch = makeBatch('brand-audit-queue', 1);
-		const env = { BRAND_AUDIT_DB: {} } as unknown as Record<string, unknown>;
+		const env = { ...workerEnv, MCP_ANALYTICS: undefined };
 
 		await expect(worker.queue!(batch, env, makeCtx())).resolves.toBeUndefined();
 	});

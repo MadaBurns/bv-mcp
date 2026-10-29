@@ -245,7 +245,7 @@ describe('correlateSans', () => {
 		const fetchFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
 			requestSignal = init?.signal;
 			let bodyController: ReadableStreamDefaultController<Uint8Array>;
-			const body = new ReadableStream<Uint8Array>({ start: (controller) => (bodyController = controller) });
+			const body = new ReadableStream<Uint8Array>({ start: (controller) => { bodyController = controller; } });
 			init?.signal?.addEventListener('abort', () => bodyController.error(init.signal?.reason), { once: true });
 			return new Response(body, { status: 200 });
 		}) as unknown as typeof fetch;
@@ -391,7 +391,7 @@ describe('correlateSans', () => {
 		const csFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
 			requestSignal = init?.signal;
 			let bodyController: ReadableStreamDefaultController<Uint8Array>;
-			const body = new ReadableStream<Uint8Array>({ start: (controller) => (bodyController = controller) });
+			const body = new ReadableStream<Uint8Array>({ start: (controller) => { bodyController = controller; } });
 			init?.signal?.addEventListener('abort', () => bodyController.error(init.signal?.reason), { once: true });
 			return new Response(body, { status: 200 });
 		}) as unknown as typeof fetch;

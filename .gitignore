@@ -92,6 +92,10 @@ wrangler.production.jsonc
 !.claude/hooks/*.sh
 !.claude/skills/
 !.claude/skills/**
+# CRAP gate config is tracked; its per-run receipts under the same directory are not
+!.claude/quality-gate/
+.claude/quality-gate/*
+!.claude/quality-gate/crap.json
 .gemini
 
 # Workspace

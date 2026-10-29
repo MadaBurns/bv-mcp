@@ -1,8 +1,24 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { env, runInDurableObject } from 'cloudflare:test';
 import type { ScanTelemetry } from '../src/lib/adaptive-weights';
+
+// Validate JSON at the test boundary rather than assuming an untyped response shape.
+const accumulatorBody = z.object({
+	weights: z.record(z.string(), z.number()).optional(),
+	baselineFailureRates: z.record(z.string(), z.number()).optional(),
+	snapshots: z.array(z.object({ avgScore: z.number(), scanCount: z.number() }).passthrough()).optional(),
+}).catchall(z.unknown());
+function required<T>(value: T | undefined): T {
+	if (value === undefined) throw new Error('Expected response field to be present');
+	return value;
+}
+
+async function readBody(response: Response) {
+	return accumulatorBody.parse(await response.json());
+}
 
 function getStub(name: string): DurableObjectStub {
 	return env.PROFILE_ACCUMULATOR.getByName(name);
@@ -49,7 +65,7 @@ describe('ProfileAccumulator', () => {
 		// Valid profile name but no data ingested yet — returns empty weights
 		const res = await getWeights(stub, 'web_only');
 		expect(res.status).toBe(200);
-		const body = await res.json();
+		const body = await readBody(res);
 		expect(body.sampleCount).toBe(0);
 		expect(body.blendFactor).toBe(0);
 		expect(body.weights).toEqual({});
@@ -75,10 +91,10 @@ describe('ProfileAccumulator', () => {
 
 		const res = await getWeights(stub, profile);
 		expect(res.status).toBe(200);
-		const body = await res.json();
+		const body = await readBody(res);
 		expect(body.sampleCount).toBe(1);
 		expect(body.blendFactor).toBeGreaterThan(0);
-		expect(Object.keys(body.weights).length).toBe(2);
+		expect(Object.keys(required(body.weights)).length).toBe(2);
 	});
 
 	it('accumulates multiple ingests with EMA', async () => {
@@ -98,7 +114,7 @@ describe('ProfileAccumulator', () => {
 
 		const res = await getWeights(stub, profile);
 		expect(res.status).toBe(200);
-		const body = await res.json();
+		const body = await readBody(res);
 		expect(body.sampleCount).toBe(5);
 		// blendFactor = min(1.0, 5/200) = 0.025, rounded to 2 decimals = 0.03
 		expect(body.blendFactor).toBeCloseTo(Math.min(1.0, 5 / 200), 1);
@@ -134,14 +150,14 @@ describe('ProfileAccumulator', () => {
 		}
 
 		const profileRes = await getWeights(stub, profile);
-		const profileBody = await profileRes.json();
+		const profileBody = await readBody(profileRes);
 
 		const providerRes = await getWeights(stub, profile, provider);
-		const providerBody = await providerRes.json();
+		const providerBody = await readBody(providerRes);
 
 		// Provider always-fail has higher failure EMA than profile (mixed pass/fail),
 		// so the provider overlay modifier is positive, making provider weight >= profile weight
-		expect(providerBody.weights.dmarc).toBeGreaterThanOrEqual(profileBody.weights.dmarc);
+		expect(required(providerBody.weights).dmarc).toBeGreaterThanOrEqual(required(profileBody.weights).dmarc);
 	});
 
 	it('returns 400 for missing profile on GET /weights', async () => {
@@ -220,7 +236,7 @@ describe('ProfileAccumulator', () => {
 
 		// Only dmarc should have been ingested
 		const res = await getWeights(stub, 'minimal');
-		const body = await res.json();
+		const body = await readBody(res);
 		expect(body.weights).toHaveProperty('dmarc');
 		expect(body.weights).not.toHaveProperty('fake_category');
 	});
@@ -252,7 +268,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getBenchmark(stub, 'mail_enabled');
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('insufficient_data');
 			expect(body.totalScans).toBe(5);
 			expect(body.minimumRequired).toBe(100);
@@ -276,7 +292,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getBenchmark(stub, 'mail_enabled');
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('ok');
 			expect(body.totalScans).toBe(110);
 			expect(body.meanScore).toBeGreaterThan(0);
@@ -292,7 +308,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getBenchmark(stub);
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.profile).toBe('mail_enabled');
 		});
 
@@ -312,7 +328,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getProviderInsights(stub, 'unknown-provider');
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('no_data');
 		});
 
@@ -335,7 +351,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getProviderInsights(stub, provider, 'mail_enabled');
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('ok');
 			expect(body.provider).toBe(provider);
 			expect(body.totalScans).toBe(10);
@@ -367,7 +383,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getTrends(stub, 'mail_enabled');
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('no_data');
 		});
 
@@ -389,17 +405,17 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getTrends(stub, 'mail_enabled', 24);
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('ok');
 			expect(body.snapshotCount).toBeGreaterThanOrEqual(1);
 			expect(body.totalScans).toBe(5);
 			expect(body.periodAvgScore).toBeGreaterThan(0);
 			expect(body.snapshots).toBeInstanceOf(Array);
-			expect(body.snapshots[0]).toHaveProperty('hour');
-			expect(body.snapshots[0]).toHaveProperty('timestamp');
-			expect(body.snapshots[0]).toHaveProperty('avgScore');
-			expect(body.snapshots[0]).toHaveProperty('scanCount');
-			expect(body.snapshots[0]).toHaveProperty('failureRates');
+			expect(required(body.snapshots)[0]).toHaveProperty('hour');
+			expect(required(body.snapshots)[0]).toHaveProperty('timestamp');
+			expect(required(body.snapshots)[0]).toHaveProperty('avgScore');
+			expect(required(body.snapshots)[0]).toHaveProperty('scanCount');
+			expect(required(body.snapshots)[0]).toHaveProperty('failureRates');
 		});
 
 		it('defaults to 168 hours when no hours param', async () => {
@@ -407,7 +423,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			const res = await getTrends(stub);
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.hours).toBe(168);
 		});
 
@@ -426,7 +442,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 			// Very large hours — clamped to 720
 			const res = await getTrends(stub, 'mail_enabled', 9999);
 			expect(res.status).toBe(200);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.hours).toBe(720);
 		});
 
@@ -457,18 +473,18 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			// Histogram should have data
 			const benchRes = await getBenchmark(stub, 'mail_enabled');
-			const bench = await benchRes.json();
+			const bench = await readBody(benchRes);
 			expect(bench.totalScans).toBe(1);
 
 			// Provider cohort should have data
 			const provRes = await getProviderInsights(stub, 'test-provider', 'mail_enabled');
-			const prov = await provRes.json();
+			const prov = await readBody(provRes);
 			expect(prov.status).toBe('ok');
 			expect(prov.totalScans).toBe(1);
 
 			// Trends should have data
 			const trendRes = await getTrends(stub, 'mail_enabled', 1);
-			const trend = await trendRes.json();
+			const trend = await readBody(trendRes);
 			expect(trend.status).toBe('ok');
 			expect(trend.totalScans).toBe(1);
 		});
@@ -486,12 +502,12 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			// Weights should still work (profile_stats updated)
 			const weightsRes = await getWeights(stub, 'enterprise_mail');
-			const weights = await weightsRes.json();
+			const weights = await readBody(weightsRes);
 			expect(weights.sampleCount).toBe(1);
 
 			// But benchmark should show 0 scans (no histogram data)
 			const benchRes = await getBenchmark(stub, 'enterprise_mail');
-			const bench = await benchRes.json();
+			const bench = await readBody(benchRes);
 			expect(bench.totalScans).toBe(0);
 		});
 
@@ -509,7 +525,7 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			// Score should be clamped — bucket should be 90 (max)
 			const res = await getBenchmark(stub, 'mail_enabled');
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.totalScans).toBe(1);
 		});
 
@@ -530,11 +546,11 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 
 			// Weights updated but no histogram
 			const weightsRes = await getWeights(stub, 'mail_enabled');
-			const weights = await weightsRes.json();
+			const weights = await readBody(weightsRes);
 			expect(weights.sampleCount).toBe(1);
 
 			const benchRes = await getBenchmark(stub, 'mail_enabled');
-			const bench = await benchRes.json();
+			const bench = await readBody(benchRes);
 			expect(bench.totalScans).toBe(0);
 		});
 	});
@@ -556,12 +572,12 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 			}
 
 			const res = await getTrends(stub, 'mail_enabled', 1);
-			const body = await res.json();
+			const body = await readBody(res);
 			expect(body.status).toBe('ok');
-			expect(body.snapshots.length).toBe(1);
-			expect(body.snapshots[0].scanCount).toBe(4);
+			expect(required(body.snapshots).length).toBe(1);
+			expect(required(body.snapshots)[0].scanCount).toBe(4);
 			// Running average of 60, 70, 80, 90 = 75
-			expect(body.snapshots[0].avgScore).toBeCloseTo(75, 0);
+			expect(required(body.snapshots)[0].avgScore).toBeCloseTo(75, 0);
 		});
 	});
 });
@@ -604,19 +620,19 @@ describe('ProfileAccumulator — SCORING_CONFIG.baselineFailureRates wiring', ()
 	it('an override reaches the /benchmark baseline echo', async () => {
 		const stub = getStub('baseline-override-benchmark');
 
-		const unset = await (await getBenchmark(stub, 'mail_enabled')).json();
-		expect(unset.baselineFailureRates.dmarc).toBe(0.4);
+		const unset = await readBody(await getBenchmark(stub, 'mail_enabled'));
+		expect(required(unset.baselineFailureRates).dmarc).toBe(0.4);
 
 		const overridden = await withScoringConfig(stub, JSON.stringify({ baselineFailureRates: { dmarc: 0.99 } }), async () =>
-			(await getBenchmark(stub, 'mail_enabled')).json(),
+			readBody(await getBenchmark(stub, 'mail_enabled')),
 		);
-		expect(overridden.baselineFailureRates.dmarc).toBe(0.99);
+		expect(required(overridden.baselineFailureRates).dmarc).toBe(0.99);
 		// Untouched categories still come from the worker-side static table.
-		expect(overridden.baselineFailureRates.spf).toBe(0.25);
+		expect(required(overridden.baselineFailureRates).spf).toBe(0.25);
 
 		// And the override does not leak once it is removed again.
-		const after = await (await getBenchmark(stub, 'mail_enabled')).json();
-		expect(after.baselineFailureRates.dmarc).toBe(0.4);
+		const after = await readBody(await getBenchmark(stub, 'mail_enabled'));
+		expect(required(after.baselineFailureRates).dmarc).toBe(0.4);
 	});
 
 	it('an override changes the adaptive weight the accumulator computes', async () => {
@@ -634,15 +650,15 @@ describe('ProfileAccumulator — SCORING_CONFIG.baselineFailureRates wiring', ()
 			});
 		}
 
-		const baselineWeights = await (await getWeights(stub, 'mail_enabled')).json();
+		const baselineWeights = await readBody(await getWeights(stub, 'mail_enabled'));
 		expect(baselineWeights.sampleCount).toBeGreaterThan(0);
-		expect(typeof baselineWeights.weights.dmarc).toBe('number');
+		expect(typeof required(baselineWeights.weights).dmarc).toBe('number');
 
 		// A HIGHER baseline means the observed failure rate looks less anomalous, so the
 		// adaptive weight moves DOWN relative to the un-overridden run.
 		const overriddenWeights = await withScoringConfig(stub, JSON.stringify({ baselineFailureRates: { dmarc: 0.99 } }), async () =>
-			(await getWeights(stub, 'mail_enabled')).json(),
+			readBody(await getWeights(stub, 'mail_enabled')),
 		);
-		expect(overriddenWeights.weights.dmarc).toBeLessThan(baselineWeights.weights.dmarc);
+		expect(required(overriddenWeights.weights).dmarc).toBeLessThan(required(baselineWeights.weights).dmarc);
 	});
 });

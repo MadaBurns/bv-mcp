@@ -1,6 +1,6 @@
 {
 	"name": "@blackveil/dns-checks",
-	"version": "1.60.2",
+	"version": "1.61.1",
 	"description": "Runtime-agnostic DNS and email security checks (16 checks + scoring engine) for BlackVeil Security",
 	"license": "BUSL-1.1",
 	"type": "module",

@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult, MaturityStage } from '../src/tools/scan-domain';
 import type { CheckCategory, CheckResult, ScanScore, DomainContext } from '../src/lib/scoring';
-import { computeScanEvidence } from '../src/lib/scoring';
+import { computeScanEvidence, getProfileWeights } from '../src/lib/scoring';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
@@ -20,7 +20,7 @@ function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDoma
 		} as ScanScore,
 		checks: [],
 		maturity: null as unknown as MaturityStage,
-		context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+		context: { profile: 'mail_enabled', signals: [], weights: getProfileWeights('mail_enabled'), detectedProvider: null } as DomainContext,
 		cached: false,
 		timestamp: '2026-04-05T00:00:00Z',
 		scoringNote: null,
@@ -180,7 +180,7 @@ describe('buildStructuredScanResult', () => {
 
 	it('sets notApplicableCategories for web_only profile with all-info email findings', () => {
 		const result = makeMockScanResult({
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'web_only', signals: [], weights: getProfileWeights('web_only'), detectedProvider: null } as DomainContext,
 			checks: [
 				{
 					category: 'spf',
@@ -198,7 +198,7 @@ describe('buildStructuredScanResult', () => {
 
 	it('sets notApplicableCategories for non_mail profile', () => {
 		const result = makeMockScanResult({
-			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'non_mail', signals: [], weights: getProfileWeights('non_mail'), detectedProvider: null } as DomainContext,
 			checks: [
 				{ category: 'dkim', passed: true, score: 100, findings: [] },
 				{
@@ -216,7 +216,7 @@ describe('buildStructuredScanResult', () => {
 
 	it('does not set notApplicableCategories for mail_enabled profile', () => {
 		const result = makeMockScanResult({
-			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'mail_enabled', signals: [], weights: getProfileWeights('mail_enabled'), detectedProvider: null } as DomainContext,
 			checks: [{ category: 'spf', passed: true, score: 100, findings: [] }] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
@@ -225,7 +225,7 @@ describe('buildStructuredScanResult', () => {
 
 	it('does not mark email category as N/A when it has non-info findings', () => {
 		const result = makeMockScanResult({
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'web_only', signals: [], weights: getProfileWeights('web_only'), detectedProvider: null } as DomainContext,
 			checks: [
 				{
 					category: 'spf',
@@ -244,7 +244,7 @@ describe('buildStructuredScanResult', () => {
 		// while http_security ERRORED (e.g. a WAF endpoint) and dnssec TIMED OUT — those
 		// two are "could not measure", not "does not apply".
 		const result = makeMockScanResult({
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'web_only', signals: [], weights: getProfileWeights('web_only'), detectedProvider: null } as DomainContext,
 			score: {
 				overall: 70,
 				grade: 'C+',
@@ -321,7 +321,7 @@ describe('buildStructuredScanResult', () => {
 				{ category: 'mta_sts', passed: false, score: 0, findings: [], checkStatus: 'error' },
 			] as CheckResult[];
 			const result = makeMockScanResult({
-				context: { profile, signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				context: { profile, signals: [], weights: getProfileWeights(profile), detectedProvider: null } as DomainContext,
 				score: {
 					overall: 70,
 					grade: 'C+',
@@ -511,7 +511,7 @@ describe('formatScanReport web-only email categories', () => {
 				// Three CheckResults below, none with checkStatus set → all completed.
 				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'web_only', signals: [], weights: getProfileWeights('web_only'), detectedProvider: null } as DomainContext,
 			checks: [
 				{
 					category: 'spf',
@@ -543,7 +543,7 @@ describe('formatScanReport web-only email categories', () => {
 				// One CheckResult below, no checkStatus set → completed.
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'mail_enabled', signals: [], weights: getProfileWeights('mail_enabled'), detectedProvider: null } as DomainContext,
 			checks: [
 				{ category: 'spf', passed: true, score: 100, findings: [{ category: 'spf', title: 'Info', severity: 'info', detail: 'x' }] },
 			] as CheckResult[],
@@ -653,7 +653,7 @@ describe('formatScanReport per-category measurement coverage', () => {
 			// `as unknown as` (not the bare `as` the older cases in this file use) — the partial
 			// literal does not overlap `DomainContext`, and the test-typecheck ratchet counts the
 			// direct cast as a new error. Do not "tidy" this back to a single cast.
-			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as unknown as DomainContext,
+			context: { profile: 'non_mail', signals: [], weights: getProfileWeights('non_mail'), detectedProvider: null } as DomainContext,
 			score: {
 				overall: 80,
 				grade: 'B',
@@ -852,7 +852,7 @@ describe('DANE not-applicable reporting (#639)', () => {
 				summary: 'ok',
 				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'non_mail', signals: ['No MX records'], weights: {}, detectedProvider: null } as DomainContext,
+			context: { profile: 'non_mail', signals: ['No MX records'], weights: getProfileWeights('non_mail'), detectedProvider: null } as DomainContext,
 			checks: [
 				daneNotApplicableCheck,
 				{ category: 'bimi', passed: true, score: 100, findings: [] },
@@ -873,7 +873,7 @@ describe('DANE not-applicable reporting (#639)', () => {
 	it('does the same under the web_only profile', () => {
 		const s = buildStructuredScanResult(
 			nonMailResult({
-				context: { profile: 'web_only', signals: ['No MX records'], weights: {}, detectedProvider: null } as DomainContext,
+				context: { profile: 'web_only', signals: ['No MX records'], weights: getProfileWeights('web_only'), detectedProvider: null } as DomainContext,
 			}),
 		);
 		expect(s.notApplicableCategories).toContain('dane');
@@ -889,7 +889,7 @@ describe('DANE not-applicable reporting (#639)', () => {
 	it('keeps dane applicable on a mail-enabled domain', () => {
 		const s = buildStructuredScanResult(
 			nonMailResult({
-				context: { profile: 'mail_enabled', signals: ['MX present'], weights: {}, detectedProvider: null } as DomainContext,
+				context: { profile: 'mail_enabled', signals: ['MX present'], weights: getProfileWeights('mail_enabled'), detectedProvider: null } as DomainContext,
 			}),
 		);
 		expect(s.notApplicableCategories).not.toContain('dane');

@@ -161,7 +161,7 @@ export function buildCheckCacheKey(
 	domain: string,
 	checkName: string,
 	version: string = SERVER_VERSION,
-	dnsChecksVersion: string = DNS_CHECKS_VERSION
+	dnsChecksVersion: string = DNS_CHECKS_VERSION,
 ): string {
 	return `${CACHE_KEY_PREFIX}v${version}-dc${dnsChecksVersion}:${domain}:check:${checkName}`;
 }
@@ -178,7 +178,7 @@ export function buildScanCacheKey(
 	domain: string,
 	profile?: string,
 	version: string = SERVER_VERSION,
-	dnsChecksVersion: string = DNS_CHECKS_VERSION
+	dnsChecksVersion: string = DNS_CHECKS_VERSION,
 ): string {
 	const base = `${CACHE_KEY_PREFIX}v${version}-dc${dnsChecksVersion}:${domain}`;
 	return profile ? `${base}:profile:${profile}` : base;
@@ -186,6 +186,9 @@ export function buildScanCacheKey(
 
 /** In-flight promise map for cache stampede (thundering herd) protection */
 const INFLIGHT = new Map<string, Promise<unknown>>();
+
+// Only the latest local write may update or invalidate a memory fallback.
+const CACHE_WRITES = new Map<string, object>();
 
 /** In-memory cache instance used as fallback when KV is unavailable */
 export const IN_MEMORY_CACHE = new TTLCache<unknown>({
@@ -205,20 +208,20 @@ export const IN_MEMORY_CACHE = new TTLCache<unknown>({
  * @param kv - Optional KV namespace for persistent caching
  */
 export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
-       // Sub-60s TTL entries (KV's minimum expirationTtl) are written to memory only, so
-       // memory must be consulted before KV (TTLCache.get already honors expiry).
-       const inMemory = IN_MEMORY_CACHE.get(key);
-       if (inMemory !== undefined) return inMemory as T;
-       if (kv) {
-	       try {
-		       const val = await kv.get(key, 'json');
-		       return (val ?? undefined) as T | undefined; // KV.get('json') returns unknown; generic T is caller-enforced
-	       } catch {
-		       // KV error — log warning and fall through to in-memory
-		       logError('[cache] KV get failed, falling back to in-memory');
-	       }
-       }
-       return IN_MEMORY_CACHE.get(key) as T | undefined;
+	// Sub-60s TTL entries (KV's minimum expirationTtl) are written to memory only, so
+	// memory must be consulted before KV (TTLCache.get already honors expiry).
+	const inMemory = IN_MEMORY_CACHE.get(key);
+	if (inMemory !== undefined) return inMemory as T;
+	if (kv) {
+		try {
+			const val = await kv.get(key, 'json');
+			return (val ?? undefined) as T | undefined; // KV.get('json') returns unknown; generic T is caller-enforced
+		} catch {
+			// KV error — log warning and fall through to in-memory
+			logError('[cache] KV get failed, falling back to in-memory');
+		}
+	}
+	return IN_MEMORY_CACHE.get(key) as T | undefined;
 }
 
 /**
@@ -228,7 +231,11 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
 export async function cacheDelete(key: string, kv?: KVNamespace): Promise<void> {
 	IN_MEMORY_CACHE.delete(key);
 	if (kv) {
-		try { await kv.delete(key); } catch { /* best-effort */ }
+		try {
+			await kv.delete(key);
+		} catch {
+			/* best-effort */
+		}
 	}
 }
 
@@ -250,24 +257,27 @@ export function cacheSetDeferred(key: string, value: unknown, ctx: ExecutionCont
 }
 
 export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, ttlSeconds?: number): Promise<void> {
-       const ttl = ttlSeconds ?? DEFAULT_TTL_SECONDS;
-       // ttl <= 0 means "do not cache" — several registry tools (osint_*_start)
-       // pass 0 to force a fresh run every call.
-       if (ttl <= 0) return;
-       // Cloudflare KV rejects expirationTtl below 60s. Sub-60 TTLs (status/
-       // findings pollers use 15–30s) are honored in-memory only — writing them
-       // to KV with a clamped 60s TTL would serve staler data than the caller
-       // asked for.
-       if (kv && ttl >= 60) {
-	       try {
-		       await kv.put(key, JSON.stringify(value), { expirationTtl: ttl });
-		       return;
-	       } catch {
-		       // KV error — log warning and fall through to in-memory
-		       logError('[cache] KV put failed, falling back to in-memory');
-	       }
-       }
-       IN_MEMORY_CACHE.set(key, value, ttl * 1000);
+	const ttl = ttlSeconds ?? DEFAULT_TTL_SECONDS;
+	// ttl <= 0 means "do not cache".
+	if (ttl <= 0) return;
+	const write = {};
+	CACHE_WRITES.set(key, write);
+	try {
+		// KV requires a minimum 60s TTL; shorter poller results remain memory-only.
+		if (kv && ttl >= 60) {
+			try {
+				await kv.put(key, JSON.stringify(value), { expirationTtl: ttl });
+				// A newer write may have installed a fallback while this put was pending.
+				if (CACHE_WRITES.get(key) === write) IN_MEMORY_CACHE.delete(key);
+				return;
+			} catch {
+				logError('[cache] KV put failed, falling back to in-memory');
+			}
+		}
+		if (CACHE_WRITES.get(key) === write) IN_MEMORY_CACHE.set(key, value, ttl * 1000);
+	} finally {
+		if (CACHE_WRITES.get(key) === write) CACHE_WRITES.delete(key);
+	}
 }
 
 /**
@@ -295,7 +305,15 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
  *   prevents. INFLIGHT still dedups concurrent calls within the same isolate.
  * @returns The cached or freshly computed result
  */
-export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean, shouldCache?: (result: T) => boolean, skipSentinel?: boolean): Promise<T> {
+export async function runWithCache<T>(
+	key: string,
+	run: () => Promise<T>,
+	kv?: KVNamespace,
+	ttlSeconds?: number,
+	skipCache?: boolean,
+	shouldCache?: (result: T) => boolean,
+	skipSentinel?: boolean,
+): Promise<T> {
 	if (!skipCache) {
 		const cached = await cacheGet<T>(key, kv);
 		if (cached !== undefined) return cached;
@@ -305,49 +323,51 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	const existing = INFLIGHT.get(key);
 	if (existing) return existing as Promise<T>;
 
-	// Cross-isolate dedup via KV sentinel (best-effort)
-	if (kv && !skipCache && !skipSentinel) {
-		const sentinelKey = `${key}:computing`;
-		try {
-			const sentinel = await kv.get(sentinelKey);
-			if (sentinel) {
-				// Another isolate is computing — poll for result
-				const polled = await pollForResult<T>(key, kv);
-				if (polled !== undefined) return polled;
-				// Poll exhausted — fall through and re-execute (acceptable double-execution)
-			} else {
-				// Claim the computation
-				await kv.put(sentinelKey, String(Date.now()), { expirationTtl: SENTINEL_TTL_SECONDS });
+	// Publish the local promise before any sentinel I/O or callback can yield.
+	// KV is eventually consistent, so it cannot replace in-isolate deduplication.
+	const cleanup = setTimeout(() => {
+		if (INFLIGHT.get(key) === promise) INFLIGHT.delete(key);
+	}, INFLIGHT_CLEANUP_MS);
+	const promise = Promise.resolve()
+		.then(async () => {
+			if (kv && !skipCache && !skipSentinel) {
+				const sentinelKey = `${key}:computing`;
+				try {
+					const sentinel = await kv.get(sentinelKey);
+					if (sentinel) {
+						// Another isolate is computing — poll for result
+						const polled = await pollForResult<T>(key, kv);
+						if (polled !== undefined) return polled;
+						// Poll exhausted — fall through and re-execute (acceptable double-execution)
+					} else {
+						// Claim the computation
+						await kv.put(sentinelKey, String(Date.now()), { expirationTtl: SENTINEL_TTL_SECONDS });
+					}
+				} catch {
+					// KV error — proceed without cross-isolate dedup
+				}
 			}
-		} catch {
-			// KV error — proceed without cross-isolate dedup
-		}
-	}
 
-	const cleanup = setTimeout(() => INFLIGHT.delete(key), INFLIGHT_CLEANUP_MS);
-	const promise = run()
-		.then(async (result) => {
-			// Only persist if the caller's predicate accepts the result.
-			// Default (no predicate) is to cache everything.
-			if (!shouldCache || shouldCache(result)) {
-				await cacheSet(key, result, kv, ttlSeconds);
+			try {
+				const result = await run();
+				if (!shouldCache || shouldCache(result)) {
+					await cacheSet(key, result, kv, ttlSeconds);
+				}
+				return result;
+			} finally {
+				if (kv && !skipSentinel) {
+					try {
+						await kv.delete(`${key}:computing`);
+					} catch {
+						/* best-effort */
+					}
+				}
 			}
-			// Clean up sentinel regardless — we still claimed the computation slot.
-			if (kv && !skipSentinel) {
-				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
-			}
-			return result;
-		})
-		.catch(async (err) => {
-			// Clean up sentinel on failure
-			if (kv && !skipSentinel) {
-				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
-			}
-			throw err;
 		})
 		.finally(() => {
 			clearTimeout(cleanup);
-			INFLIGHT.delete(key);
+			// An expired computation must not remove a newer computation's slot.
+			if (INFLIGHT.get(key) === promise) INFLIGHT.delete(key);
 		});
 
 	INFLIGHT.set(key, promise);

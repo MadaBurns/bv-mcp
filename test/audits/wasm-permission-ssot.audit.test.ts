@@ -6,6 +6,8 @@ import wasmLib from '../../crates/bv-wasm-core/src/lib.rs?raw';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 
 function expectedMode(tool: (typeof TOOLS)[number]): string {
+	expect(tool.annotations).toBeDefined();
+	if (!tool.annotations) throw new Error(`Missing annotations for ${tool.name}`);
 	if (tool.annotations.destructiveHint) return 'DangerFullAccess';
 	if (tool.annotations.readOnlyHint) return 'ReadOnly';
 	return 'WorkspaceWrite';

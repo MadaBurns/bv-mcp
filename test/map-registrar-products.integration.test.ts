@@ -23,12 +23,12 @@ function check(category: string, passed: boolean, findings: Array<{ title: strin
 	return { category, passed, score: passed ? 100 : 0, findings: findings.map((f) => ({ category, title: f.title, severity: f.severity, detail: '' })) } as CheckResult;
 }
 
-function rdapWithPosture(posture: LockPosture): CheckResult {
-	return { category: 'rdap', passed: true, score: 100, findings: [{ category: 'rdap', title: 'Registration details', severity: 'info', detail: '', metadata: { lockPosture: posture } } as never] } as CheckResult;
+function rdapWithPosture(posture: LockPosture) {
+	return { category: 'rdap', passed: true, score: 100, findings: [{ category: 'rdap', title: 'Registration details', severity: 'info', detail: '', metadata: { lockPosture: posture } }] };
 }
 
-function rdapFailed(): CheckResult {
-	return { category: 'rdap', passed: false, score: 0, findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } } as never] } as CheckResult;
+function rdapFailed() {
+	return { category: 'rdap', passed: false, score: 0, findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } }] };
 }
 
 afterEach(() => {
@@ -45,7 +45,7 @@ describe('mapRegistrarProducts — concurrency', () => {
 					setTimeout(() => r({ checks: [], score: { overall: 90, grade: 'A' } }), DELAY_MS),
 				),
 		);
-		mockCheckRdap.mockImplementation(() => new Promise<CheckResult>((r) => setTimeout(() => r(rdapFailed()), DELAY_MS)));
+		mockCheckRdap.mockImplementation(() => new Promise<ReturnType<typeof rdapFailed>>((r) => setTimeout(() => r(rdapFailed()), DELAY_MS)));
 
 		const { mapRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const t0 = Date.now();

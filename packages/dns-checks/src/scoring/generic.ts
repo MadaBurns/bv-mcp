@@ -51,7 +51,7 @@ export interface EmailBonusKeyMap {
  */
 export interface GenericScoringContext {
 	/** Category key → score (0–100). Absent keys default to 100. */
-	categoryScores: Record<string, number>;
+	categoryScores: Partial<Record<string, number>>;
 
 	/** Category key → tier classification. Only keys present here participate in scoring. */
 	tierMap: Record<string, CategoryTier>;
@@ -146,7 +146,7 @@ export interface GenericScanScore {
 	criticalPenalty: number;
 
 	/**
-	 * Category keys present in `tierMap` but ABSENT from the caller's `categoryScores` —
+	 * Category keys present in `tierMap` but absent or undefined in the caller's `categoryScores` —
 	 * i.e. keys `categoryScores` filled to the neutral default of 100 rather than echoing
 	 * a real measurement. That default is deliberate for the weighted-accumulation math
 	 * (an unsubmitted category must not zero or otherwise skew a tier it didn't
@@ -154,7 +154,7 @@ export interface GenericScanScore {
 	 * === 100` as "this category passed perfectly" is the same fabricated-grade defect
 	 * {@link displayGradeFor} exists to prevent one layer up — a direct caller of
 	 * `computeGenericScore` has no other signal to tell the two apart. Check this list (or
-	 * `key in categoryScores` on the ORIGINAL input) before treating a filled 100 as a
+	 * `categoryScores[key] !== undefined` on the ORIGINAL input) before treating a filled 100 as a
 	 * pass. Always populated (possibly empty), so equality/length checks never see
 	 * `undefined`.
 	 */
@@ -383,7 +383,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 	const filledScores: Record<string, number> = {};
 	const unmeasuredCategories: string[] = [];
 	for (const key of Object.keys(input.tierMap)) {
-		if (!(key in input.categoryScores)) {
+		if (input.categoryScores[key] === undefined) {
 			unmeasuredCategories.push(key);
 		}
 		filledScores[key] = input.categoryScores[key] ?? 100;
@@ -391,7 +391,8 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 	// Also include any explicitly-provided scores not in tierMap
 	for (const key of Object.keys(input.categoryScores)) {
 		if (!(key in filledScores)) {
-			filledScores[key] = input.categoryScores[key];
+			const score = input.categoryScores[key];
+			if (score !== undefined) filledScores[key] = score;
 		}
 	}
 

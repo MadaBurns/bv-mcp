@@ -216,7 +216,7 @@ describe('tier1GraphLookup', () => {
 		});
 
 		it('forwards Authorization bearer + X-Contract-Version header to the binding', async () => {
-			const fetchSpy = vi.fn(async () =>
+			const fetchSpy = vi.fn(async (_request: Request) =>
 				new Response(JSON.stringify(baseResponse), {
 					status: 200,
 					headers: { 'Content-Type': 'application/json' },
@@ -235,7 +235,7 @@ describe('tier1GraphLookup', () => {
 		});
 
 		it('URL-encodes the domain path segment to avoid binding-side path injection', async () => {
-			const fetchSpy = vi.fn(async () =>
+			const fetchSpy = vi.fn(async (_request: Request) =>
 				new Response(JSON.stringify(baseResponse), { status: 200 }),
 			);
 			const binding: Fetcher = { fetch: fetchSpy } as unknown as Fetcher;

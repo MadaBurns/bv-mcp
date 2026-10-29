@@ -154,7 +154,7 @@ describe('formatScanReport — ungraded scan', () => {
 	it.each(['compact', 'full'] as const)('withholds the maturity stage NUMBER but keeps its label [%s]', async (format) => {
 		const { formatScanReport, UNGRADED_DISPLAY } = await import('../src/tools/scan/format-report');
 		const result = scanResult(ungradedScore(), {
-			maturity: { stage: 0, label: 'Does not resolve', description: 'The domain does not exist in DNS.', nextStep: null },
+			maturity: { stage: 0, label: 'Does not resolve', description: 'The domain does not exist in DNS.', nextStep: '' },
 		});
 		const text = formatScanReport(result, format);
 

@@ -99,6 +99,9 @@ export default {
 				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs }));
 				break;
 			}
+			default:
+				// A schedule no case matches (code rolled back while the triggers stayed) must be visible, not silent.
+				console.log(JSON.stringify({ event: 'ct_cron_unmatched', cron: controller.cron }));
 		}
 	},
 	async queue(batch, env) {

@@ -19,8 +19,8 @@ afterEach(() => {
 function createFakeD1() {
 	const run = vi.fn(async () => ({ success: true }));
 	const all = vi.fn(async () => ({ results: [] }));
-	const bind = vi.fn(() => ({ run, all }));
-	const prepare = vi.fn(() => ({ bind }));
+	const bind = vi.fn((..._args: unknown[]) => ({ run, all }));
+	const prepare = vi.fn((_sql: string) => ({ bind }));
 	return { db: { prepare } as unknown as D1Database, prepare, bind, run };
 }
 

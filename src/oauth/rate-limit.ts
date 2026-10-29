@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { OAUTH_KV_PREFIX } from '../lib/config';
 import {
 	reserveBudgetWithCoordinator,
 	type BudgetReservationResult,
 	type QuotaCoordinator,
 } from '../lib/quota-coordinator';
+
+/** CIMD metadata fetches (cache misses only) allowed per client IP per window; each one is an outbound request to a caller-named host. */
+export const CIMD_FETCH_RATE_LIMIT = 10;
+export const CIMD_FETCH_RATE_WINDOW_SECONDS = 60;
 
 export interface OAuthRateLimitResult {
 	exceeded: boolean;
@@ -23,6 +28,23 @@ interface OAuthRateLimitOptions {
 	limit: number;
 	windowSeconds: number;
 	nowMs?: number;
+	/**
+	 * The request's `waitUntil`. When given, the coordinator path's KV mirror write runs after the
+	 * response instead of in front of it (SQ-450): nothing in the request reads it, and the
+	 * coordinator, not the mirror, decides the verdict. The KV-only fallback ignores it, because
+	 * there the write IS the count and its failure must still fail the request.
+	 */
+	waitUntil?: (promise: Promise<unknown>) => void;
+}
+
+/** A request's `waitUntil`, or undefined where the context has no execution context (Hono throws on access). */
+export function requestWaitUntil(c: { readonly executionCtx: Pick<ExecutionContext, 'waitUntil'> }): ((promise: Promise<unknown>) => void) | undefined {
+	try {
+		const ctx = c.executionCtx;
+		return (promise) => ctx.waitUntil(promise);
+	} catch {
+		return undefined;
+	}
 }
 
 interface StoredWindow {
@@ -113,6 +135,25 @@ export async function consumeOAuthRateLimit(options: OAuthRateLimitOptions): Pro
 		return consumeViaCoordinator(options, options.quotaCoordinator, nowMs, windowMs);
 	}
 	return consumeViaKvWindow(options, nowMs, windowMs);
+}
+
+/** Consume one CIMD cache-miss fetch from the client IP's window (bucket `cimd-fetch`, KV mirror `oauth:cimd-rl:<ip>`). */
+export function consumeCimdFetchRateLimit(
+	kv: KVNamespace,
+	ip: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<OAuthRateLimitResult> {
+	return consumeOAuthRateLimit({
+		kv,
+		quotaCoordinator,
+		waitUntil,
+		coordinationScope: 'cimd-fetch',
+		kvKey: `${OAUTH_KV_PREFIX}cimd-rl:${ip}`,
+		principal: ip,
+		limit: CIMD_FETCH_RATE_LIMIT,
+		windowSeconds: CIMD_FETCH_RATE_WINDOW_SECONDS,
+	});
 }
 
 /**
@@ -221,7 +262,9 @@ async function settleReservation(
 		// instead, unconditionally preserving "never 429 a principal with used === 0".
 		return unavailableResult(aligned.expiresAt, aligned.attemptNowMs);
 	}
-	await mirrorWindow(options, reservation.used, aligned.expiresAt, aligned.attemptNowMs);
+	const mirrored = mirrorWindow(options, reservation.used, aligned.expiresAt, aligned.attemptNowMs);
+	if (options.waitUntil) options.waitUntil(mirrored);
+	else await mirrored;
 	return {
 		exceeded: !reservation.allowed,
 		retryAfterSeconds: reservation.allowed ? 0 : retryAfterSeconds(aligned.expiresAt, aligned.attemptNowMs),

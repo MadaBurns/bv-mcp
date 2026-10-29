@@ -1,3 +1,5 @@
+// Standalone RDAP uses the same narrow category boundary as check-rdap-lookup.
+import type { CheckCategory as StandaloneCheckCategory } from '../src/lib/scoring';
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
@@ -35,6 +37,7 @@ function candidateFinding(domain: string): Finding {
 function discoveryResult(seedDomain: string, candidates: string[]): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: [summaryFinding(seedDomain, candidates.length), ...candidates.map(candidateFinding)],
 	};
@@ -62,7 +65,7 @@ describe('runBrandAuditPipeline — safeRegistrarLookup transient-failure handli
 		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['flaky.net']));
 		const checkRdapLookup = vi.fn(async (domain: string) => {
 			if (domain === 'flaky.net') throw new Error('upstream flap');
-			return { category: 'rdap', score: 100, findings: [] } as CheckResult;
+			return { category: 'rdap' as StandaloneCheckCategory, passed: true, score: 100, findings: [] } as CheckResult;
 		});
 
 		const result = await runBrandAuditPipeline(
@@ -79,7 +82,8 @@ describe('runBrandAuditPipeline — safeRegistrarLookup transient-failure handli
 	it('preserves unknown (not lookup_failed) when rdap returns 0 findings cleanly', async () => {
 		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', []));
 		const checkRdapLookup = vi.fn(async () => ({
-			category: 'rdap',
+			category: 'rdap' as StandaloneCheckCategory,
+			passed: true,
 			score: 100,
 			findings: [],
 		}) as CheckResult);

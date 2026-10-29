@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it, vi } from 'vitest';
-import type { FetchFunction } from '@blackveil/dns-checks';
 
 const OBSERVED_AT = '2026-09-05T00:00:00.000Z';
 
-function siteFetch(pages: Record<string, { body?: string; status?: number; headers?: Record<string, string> }>): FetchFunction {
-	return vi.fn(async (url: string, _init?: RequestInit) => {
+function siteFetch(pages: Record<string, { body?: string; status?: number; headers?: Record<string, string> }>) {
+	return vi.fn(async (url: string, _init?: RequestInit & { credentials?: 'omit' }) => {
 		if (url === 'https://example.com/robots.txt') return new Response(null, { status: 404 });
 		const page = pages[url];
 		if (!page) return new Response(null, { status: 404 });
@@ -14,7 +13,7 @@ function siteFetch(pages: Record<string, { body?: string; status?: number; heade
 			status: page.status ?? 200,
 			headers: { 'content-type': 'text/html; charset=utf-8', ...(page.headers ?? {}) },
 		});
-	}) as FetchFunction;
+	});
 }
 
 describe('sampled CSP coverage audit', () => {
@@ -53,7 +52,7 @@ describe('sampled CSP coverage audit', () => {
 		const fetchFn = vi.fn(async (url: string) => {
 			if (url.endsWith('/robots.txt')) return new Response('User-agent: *\nDisallow: /', { status: 200 });
 			throw new Error('page fetch must not run');
-		}) as FetchFunction;
+		});
 		const { auditCspCoverage } = await import('../src/tools/audit-csp-coverage');
 		const result = await auditCspCoverage('example.com', { fetchFn, now: () => OBSERVED_AT });
 
@@ -66,7 +65,7 @@ describe('sampled CSP coverage audit', () => {
 		const fetchFn = vi.fn(async (url: string) => {
 			if (url.endsWith('/robots.txt')) return new Response(null, { status: 503 });
 			return new Response('', { status: 200, headers: { 'content-type': 'text/html', 'content-security-policy': "default-src 'self'" } });
-		}) as FetchFunction;
+		});
 		const { auditCspCoverage } = await import('../src/tools/audit-csp-coverage');
 		const result = await auditCspCoverage('example.com', { fetchFn, now: () => OBSERVED_AT });
 
@@ -79,7 +78,7 @@ describe('sampled CSP coverage audit', () => {
 		const fetchFn = vi.fn(async (url: string) => {
 			if (url.endsWith('/robots.txt')) return new Response(null, { status: 404 });
 			return new Response(null, { status: 302, headers: { location: 'https://attacker.example/' } });
-		}) as FetchFunction;
+		});
 		const { auditCspCoverage } = await import('../src/tools/audit-csp-coverage');
 		const result = await auditCspCoverage('example.com', { fetchFn, now: () => OBSERVED_AT });
 
@@ -144,7 +143,7 @@ describe('sampled CSP coverage audit', () => {
 				}),
 				{ status: 200, headers: { 'content-type': 'text/html' } },
 			);
-		}) as FetchFunction;
+		});
 		const result = await auditCspCoverage('example.com', { fetchFn, now: () => OBSERVED_AT });
 		const pageCalls = vi.mocked(fetchFn).mock.calls.filter(([url]) => !url.endsWith('/robots.txt'));
 

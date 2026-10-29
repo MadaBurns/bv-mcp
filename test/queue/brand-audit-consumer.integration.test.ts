@@ -15,6 +15,7 @@
  *     marked completed
  */
 
+import type { CheckResult } from '../../src/lib/scoring';
 import { describe, it, expect, vi } from 'vitest';
 
 interface D1Call {
@@ -319,7 +320,7 @@ describe('processBrandAuditMessage', () => {
 				status: 'completed',
 				payload: { resumed: true },
 			});
-			return { category: 'brand_discovery', score: 100, findings: [] };
+			return { category: 'brand_discovery', score: 100, passed: true, findings: [] } satisfies CheckResult;
 		});
 
 		const verdict = await processBrandAuditMessage(
@@ -349,7 +350,7 @@ describe('processBrandAuditMessage', () => {
 		});
 		const brandAuditSingle = vi.fn(async (_target, options) => {
 			await options.stepStore?.get('aud-1', 'example.com', 'discovery');
-			return { category: 'brand_discovery', score: 100, findings: [] };
+			return { category: 'brand_discovery', score: 100, passed: true, findings: [] } satisfies CheckResult;
 		});
 
 		const verdict = await processBrandAuditMessage(

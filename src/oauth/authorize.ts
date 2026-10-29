@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
 import type { AppEnv } from '../index';
-import { AuthorizeQuerySchema } from '../schemas/oauth';
-import { createAuthorizationCode, getClient, putCode, StrongStateUnavailableError } from './storage';
+import { AuthorizeQuerySchema, type ClientRecord } from '../schemas/oauth';
+import { createAuthorizationCode, putCode, StrongStateUnavailableError } from './storage';
+import { isCimdClientId, redirectUriMatches, resolveClient } from './cimd';
 import { isAuthorizedRequest } from '../lib/auth';
 import {
 	isAllowedOAuthRedirectUri,
@@ -14,7 +15,7 @@ import {
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
 import { readBoundedText } from '../lib/request-body';
-import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
+import { consumeOAuthRateLimit, requestWaitUntil, type OAuthRateLimitResult } from './rate-limit';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import { resolveIssuerStrict } from './discovery';
 
@@ -22,6 +23,14 @@ export const MAX_CONSENT_BODY_BYTES = 16 * 1024;
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * The name shown on the consent page. A CIMD document's client_name is self-asserted by
+ * whoever serves it, so a CIMD client is named by the host its client_id URL points at.
+ */
+function consentClientLabel(client: ClientRecord): string | undefined {
+	return isCimdClientId(client.client_id) ? new URL(client.client_id).hostname : client.client_name;
 }
 
 function renderConsentPage(params: { client_id: string; client_name?: string; query: string; errorMessage?: string }): string {
@@ -130,7 +139,11 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	let client;
 	try {
-		client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, {
+			ip: resolveClientIpFromRequestHeaders(c.req.raw.headers),
+			quotaCoordinator: c.env.QUOTA_COORDINATOR,
+			waitUntil: requestWaitUntil(c),
+		});
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
 			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
@@ -138,7 +151,7 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 		throw error;
 	}
 	if (!client) return new Response('Unknown client_id', { status: 400 });
-	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
+	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !redirectUriMatches(parsed.redirect_uri, client.redirect_uris)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
 	if (!ownerOAuthEnabled(c.env)) {
@@ -151,7 +164,7 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	}
 	// Canonicalized form; Phase 6 POST handler must re-parse via URLSearchParams and re-validate with AuthorizeQuerySchema.
 	const query = new URL(c.req.url).searchParams.toString();
-	return new Response(renderConsentPage({ client_id: parsed.client_id, client_name: client.client_name, query }), {
+	return new Response(renderConsentPage({ client_id: parsed.client_id, client_name: consentClientLabel(client), query }), {
 		headers: securityHeaders(),
 	});
 }
@@ -161,10 +174,12 @@ async function consentRateLimit(
 	kv: KVNamespace,
 	ip: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<OAuthRateLimitResult> {
 	return consumeOAuthRateLimit({
 		kv,
 		quotaCoordinator,
+		waitUntil,
 		coordinationScope: 'consent',
 		kvKey: `${OAUTH_KV_PREFIX}consent-rl:${ip}`,
 		principal: ip,
@@ -197,7 +212,7 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
-	const consentRate = await consentRateLimit(kv, ip, c.env.QUOTA_COORDINATOR);
+	const consentRate = await consentRateLimit(kv, ip, c.env.QUOTA_COORDINATOR, requestWaitUntil(c));
 	if (consentRate.unavailable) {
 		return new Response('Authorization rate-limit state unavailable', {
 			status: 503,
@@ -236,7 +251,11 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 
 	let client;
 	try {
-		client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, {
+			ip,
+			quotaCoordinator: c.env.QUOTA_COORDINATOR,
+			waitUntil: requestWaitUntil(c),
+		});
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
 			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
@@ -244,7 +263,7 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 		throw error;
 	}
 	if (!client) return new Response('Unknown client_id', { status: 400 });
-	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
+	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !redirectUriMatches(parsed.redirect_uri, client.redirect_uris)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
 	let issuer: string;
