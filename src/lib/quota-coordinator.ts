@@ -3,6 +3,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import { readBoundedText } from './request-body';
+import { emaRegistryPayloadError, runEmaRegistryRequest, type EmaRegistryRequest, type EmaRegistryResponse } from '../oauth/ema-tenants';
 
 const COORDINATOR_NAME = 'global-quota-coordinator';
 const CLEANUP_ALARM_INTERVAL_MS = 15 * 60 * 1000;
@@ -382,7 +383,9 @@ export type QuotaCoordinatorRequest =
 	  }
 	| {
 			kind: 'reset';
-	  };
+	  }
+	/** The EMA tenant registry (ema-tenants.ts): one fixed security shard, every request one storage transaction. */
+	| EmaRegistryRequest;
 
 export type QuotaCoordinatorResponse =
 	| RateLimitResult
@@ -399,6 +402,7 @@ export type QuotaCoordinatorResponse =
 	| IdempotencyCompleteResult
 	| IdempotencyReleaseResult
 	| EvaluateResponse
+	| EmaRegistryResponse
 	| undefined;
 
 /** Kinds that hold authorization/idempotency state, routed by `coordinationKey` on the frozen security shards. */
@@ -416,7 +420,8 @@ type SecurityStatePayload = Extract<
 			| 'version-bump-idempotent'
 			| 'idempotency-begin'
 			| 'idempotency-complete'
-			| 'idempotency-release';
+			| 'idempotency-release'
+			| EmaRegistryRequest['kind'];
 	}
 >;
 
@@ -432,6 +437,11 @@ const SECURITY_STATE_KINDS: ReadonlySet<string> = new Set<SecurityStatePayload['
 	'idempotency-begin',
 	'idempotency-complete',
 	'idempotency-release',
+	'ema-get',
+	'ema-list',
+	'ema-resolve-issuer',
+	'ema-write',
+	'ema-delete',
 ]);
 
 function isSecurityStatePayload(payload: QuotaCoordinatorRequest): payload is SecurityStatePayload {
@@ -777,6 +787,14 @@ export async function releaseIdempotentRequestWithCoordinator(
 	});
 }
 
+/** One EMA tenant registry request (see ema-tenants.ts); always routed to the registry's fixed security shard. */
+export function emaRegistryRequest(
+	payload: EmaRegistryRequest,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<EmaRegistryResponse | undefined> {
+	return callCoordinator<EmaRegistryResponse>(namespace, payload);
+}
+
 /**
  * Thrown when a real DO `evaluate` round trip returned a 2xx body that we cannot
  * parse into the expected `{ results: EvaluateResult[] }` shape (LINUS MUST-FIX #1:
@@ -1038,6 +1056,11 @@ const VALID_KINDS = new Set<string>([
 	'idempotency-begin',
 	'idempotency-complete',
 	'idempotency-release',
+	'ema-get',
+	'ema-list',
+	'ema-resolve-issuer',
+	'ema-write',
+	'ema-delete',
 	'evaluate',
 	'reset',
 ]);
@@ -1130,6 +1153,7 @@ const QUOTA_FIELD_VALIDATORS: readonly QuotaFieldValidator[] = [
 	safeIntegerField('expiresAt', 1, 'Invalid expiresAt: must be a positive safe integer'),
 	sha256HexField('requestHash'),
 	validateResultField,
+	emaRegistryPayloadError,
 ];
 
 /** Validate the per-field invariants on a single object (shared by top-level + evaluate sub-checks). */
@@ -1202,6 +1226,11 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		'idempotency-begin': ['coordinationKey', 'requestHash', 'expiresAt'],
 		'idempotency-complete': ['coordinationKey', 'requestHash', 'result'],
 		'idempotency-release': ['coordinationKey', 'requestHash'],
+		'ema-get': ['coordinationKey', 'tenantId'],
+		'ema-list': ['coordinationKey', 'limit'],
+		'ema-resolve-issuer': ['coordinationKey', 'issuer'],
+		'ema-write': ['coordinationKey', 'tenantId', 'write'],
+		'ema-delete': ['coordinationKey', 'tenantId', 'op'],
 	};
 	const missing = requireFields(...(requiredByKind[kind as QuotaCoordinatorRequest['kind']] ?? []));
 	if (missing) return { valid: false, error: `Invalid ${kind}: missing ${missing}` };
@@ -1743,6 +1772,15 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	/**
+	 * Every EMA registry kind runs inside ONE storage transaction on the registry shard, so a write applies
+	 * its rules to the fresh record and a read sees one consistent record. The keys live under `strong:`,
+	 * outside the KEY_PREFIX the cleanup alarm lists, so they never expire.
+	 */
+	private handleEmaRegistry(payload: EmaRegistryRequest): Promise<EmaRegistryResponse> {
+		return this.ctx.storage.transaction((txn: DurableObjectTransaction) => runEmaRegistryRequest(txn, payload));
+	}
+
 	private async handleReset(): Promise<undefined> {
 		await this.ctx.storage.deleteAll();
 		await this.ctx.storage.deleteAlarm();
@@ -1776,6 +1814,11 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		'idempotency-begin': (self, payload) => self.handleIdempotencyBegin(payload),
 		'idempotency-complete': (self, payload) => self.handleIdempotencyComplete(payload),
 		'idempotency-release': (self, payload) => self.handleIdempotencyRelease(payload),
+		'ema-get': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-list': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-resolve-issuer': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-write': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-delete': (self, payload) => self.handleEmaRegistry(payload),
 		evaluate: (self, payload) => self.handleEvaluate(payload),
 		reset: (self) => self.handleReset(),
 	};

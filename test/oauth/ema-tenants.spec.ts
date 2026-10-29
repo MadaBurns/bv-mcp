@@ -1,23 +1,29 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	EmaTenantConflictError,
-	EmaTenantUnreadableError,
+	EMA_REGISTRY_KEY,
 	deleteEmaTenant,
 	effectiveApproval,
 	getEmaTenant,
 	getEmaTenantByIssuer,
-	getEmaTenantForWrite,
 	hasRejectedIssuer,
 	isEmaTokenLive,
 	isSharedIssuer,
-	issuerHash,
 	isTenantActive,
+	issuerHash,
 	listEmaTenants,
 	normalizeIssuer,
-	putEmaTenant,
 	tenantEpoch,
+	writeEmaTenant,
+	type EmaOperatorUpsert,
+	type EmaRegistry,
+	type EmaWriteResult,
 } from '../../src/oauth/ema-tenants';
+import { parseEnvelopeKey, sealKv } from '../../src/lib/kv-envelope';
+import { emaRegistryRequest, resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { sha256Hex } from '../../src/oauth/jwks';
+import { StrongStateUnavailableError } from '../../src/oauth/storage';
+import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import {
 	EMA_SELF_SERVE_MAX_ENTITLEMENT_SECONDS,
 	EmaSelfServeUpsertRequestSchema,
@@ -25,10 +31,6 @@ import {
 	EmaTenantUpsertRequestSchema,
 	type EmaTenantRecord,
 } from '../../src/schemas/ema';
-import { parseEnvelopeKey } from '../../src/lib/kv-envelope';
-import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
-import { bumpEmaTenantEpoch, getEmaTenantEpoch, StrongStateUnavailableError } from '../../src/oauth/storage';
-import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
 const CLAUDE_WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
@@ -123,236 +125,206 @@ describe('EMA tenant schemas', () => {
 	});
 });
 
-describe('EMA tenant store', () => {
-	it('put then get / getByIssuer / list round-trips', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toEqual(tenant());
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toEqual(tenant());
-		expect(await listEmaTenants(env.SESSION_STORE)).toEqual([tenant()]);
+describe('EMA tenant registry (contract A11)', () => {
+	const REGISTRY: EmaRegistry = { coordinator: env.QUOTA_COORDINATOR, kv: env.SESSION_STORE, kvEnvelopeKey: ENVELOPE_KEY };
+	const operatorBody = (overrides: Partial<EmaOperatorUpsert> = {}): EmaOperatorUpsert => {
+		const { created_at: _c, updated_at: _u, ...fields } = tenant();
+		return { ...fields, ...overrides } as EmaOperatorUpsert;
+	};
+	const upsert = (overrides: Partial<EmaOperatorUpsert> = {}) =>
+		writeEmaTenant(REGISTRY, overrides.tenant_id ?? 'acme-corp', { op: 'operator-upsert', body: operatorBody(overrides) });
+	const record = async (result: Promise<EmaWriteResult>) => {
+		const settled = await result;
+		if (!('record' in settled) || !settled.record) throw new Error(`write refused: ${JSON.stringify(settled)}`);
+		return settled.record;
+	};
+	const putLegacy = async (rec: EmaTenantRecord, key: Uint8Array | null = ENVELOPE_KEY) => {
+		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:${rec.tenant_id}`, key ? await sealKv(JSON.stringify(rec), key) : JSON.stringify(rec));
+		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-issuer:${await sha256Hex(normalizeIssuer(rec.issuer))}`, rec.tenant_id);
+	};
+
+	it('upsert then get / getByIssuer / list round-trips, with the issuer stored and looked up in normalized form', async () => {
+		const stored = await record(upsert({ issuer: 'https://IDP.example.com/oauth2/default/' }));
+		expect(stored.issuer).toBe('https://idp.example.com/oauth2/default');
+		expect(await getEmaTenant(REGISTRY, 'acme-corp')).toEqual(stored);
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default/'))?.tenant_id).toBe('acme-corp');
+		expect((await listEmaTenants(REGISTRY)).records).toEqual([stored]);
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://other.example.com')).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'not a url')).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'http://idp.example.com/oauth2/default')).toBeNull();
+		expect(await getEmaTenant(REGISTRY, 'missing-tenant')).toBeNull();
 	});
 
-	it('indexes the issuer under oauth:ema-issuer:<lowercase sha256 hex> (fixed input, byte-identical across the refactor)', async () => {
-		// Independently computed: shasum -a 256 of 'https://idp.example.com'.
-		const indexKey = `${OAUTH_KV_PREFIX}ema-issuer:6e2977ae82314db30124ba2850e1a8d59388eb8f98aff11dfa82935b17b4657f`;
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		expect(await env.SESSION_STORE.get(indexKey)).toBe('acme-corp');
+	it('only an approved tenant owns its issuer: a second approved tenant is issuer_conflict and nothing is stored', async () => {
+		await record(upsert());
+		expect(await upsert({ tenant_id: 'other-corp', issuer: 'https://idp.example.com/' })).toEqual({ error: 'issuer_conflict' });
+		expect(await getEmaTenant(REGISTRY, 'other-corp')).toBeNull();
+		// A pending one may name it; it neither claims nor blocks the issuer.
+		await record(upsert({ tenant_id: 'other-corp', approval: 'pending' }));
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com'))?.tenant_id).toBe('acme-corp');
+		// Leaving approval releases it; an issuer move releases the old one.
+		await record(upsert({ approval: 'rejected' }));
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com')).toBeNull();
+		await record(upsert({ approval: 'approved', issuer: 'https://idp2.example.com', jwks_uri: 'https://idp2.example.com/keys' }));
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp2.example.com'))?.tenant_id).toBe('acme-corp');
 	});
 
-	it('looks the issuer up in normalized form (trailing slash, host case)', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ issuer: 'https://IDP.example.com/oauth2/default/' }));
-		const stored = await getEmaTenant(env.SESSION_STORE, 'acme-corp');
-		expect(stored?.issuer).toBe('https://idp.example.com/oauth2/default');
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe('acme-corp');
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://IDP.example.com/oauth2/default/'))?.tenant_id).toBe('acme-corp');
+	it('the epoch only moves forward: kept on a rename and a re-enable, bumped on a disable and on ANY tier change', async () => {
+		const created = tenantEpoch(await record(upsert()));
+		expect(tenantEpoch(await record(upsert({ name: 'Renamed' })))).toBe(created);
+		const disabled = tenantEpoch(await record(upsert({ enabled: false })));
+		expect(disabled).toBeGreaterThan(created);
+		expect(tenantEpoch(await record(upsert({ enabled: true })))).toBe(disabled);
+		const upgraded = tenantEpoch(await record(upsert({ tier: 'developer' })));
+		expect(upgraded).toBeGreaterThan(disabled);
+		expect(tenantEpoch(await record(upsert({ tier: 'enterprise' })))).toBeGreaterThan(upgraded);
 	});
 
-	it('returns null for unregistered, malformed and non-https issuers and for missing tenants', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://other.example.com')).toBeNull();
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'not a url')).toBeNull();
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'http://idp.example.com')).toBeNull();
-		expect(await getEmaTenant(env.SESSION_STORE, 'missing-tenant')).toBeNull();
+	it('delete keeps a floor, so a re-created tenant starts above every epoch the id ever had', async () => {
+		await record(upsert());
+		const last = tenantEpoch(await record(upsert({ enabled: false })));
+		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ record: null });
+		expect(await getEmaTenant(REGISTRY, 'acme-corp')).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com')).toBeNull();
+		expect(tenantEpoch(await record(upsert()))).toBe(last + 1);
+		// Deleting an id that was never stored is a no-op that still marks it known.
+		expect(await deleteEmaTenant(REGISTRY, 'never-stored', 'operator')).toEqual({ record: null });
 	});
 
-	it('seals the record when an envelope key is present and still reads it back', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
-		const raw = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`);
-		expect(raw).not.toBeNull();
-		expect(raw).not.toContain('idp.example.com');
-		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toEqual(tenant());
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
-		// Without the key a sealed record is unreadable, never mistaken for a tenant.
-		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toBeNull();
+	it('approve is a compare-and-set on the fresh record; reject and approve of a missing tenant are not_found', async () => {
+		const pending = await record(upsert({ approval: 'pending' }));
+		const reviewed = { issuer: pending.issuer, jwks_uri: pending.jwks_uri, updated_at: pending.updated_at };
+		expect(await writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed: { ...reviewed, jwks_uri: 'https://x.example/k' } })).toEqual({
+			error: 'approval_stale',
+		});
+		expect((await record(writeEmaTenant(REGISTRY, 'acme-corp', { op: 'approve', reviewed }))).approval).toBe('approved');
+		expect(await writeEmaTenant(REGISTRY, 'missing-tenant', { op: 'reject' })).toEqual({ error: 'not_found' });
 	});
 
-	it('round-trips a sealed token_epoch, and tenantEpoch falls back to created_at without one', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }), ENVELOPE_KEY);
-		const stored = await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY);
-		expect(stored?.token_epoch).toBe(1_800_000_000_123);
-		expect(tenantEpoch(stored!)).toBe(1_800_000_000_123);
-		expect(tenantEpoch(tenant())).toBe(1_700_000_000);
+	it('a self-serve write that skipped discovery on a record that has since changed is ema_record_changed (retryable)', async () => {
+		const body = { name: 'Acme', issuer: 'https://idp.example.com', enabled: true, tier: 'enterprise' as const, entitlement_expires_at: 2_000_000_000 };
+		expect(await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body })).toEqual({ error: 'ema_record_changed' });
+		const discovered = { issuer: 'https://idp.example.com', jwks_uri: 'https://idp.example.com/keys' };
+		// Discovery for a different issuer than the body names is the same refusal.
+		expect(
+			await writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body, discovered: { ...discovered, issuer: 'https://x.example' } }),
+		).toEqual({ error: 'ema_record_changed' });
+		expect((await record(writeEmaTenant(REGISTRY, 'web-acme-0000-0001', { op: 'self-serve-upsert', body, discovered }))).approval).toBe('pending');
+		await record(upsert({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }));
+		expect(await writeEmaTenant(REGISTRY, 'beta-corp', { op: 'self-serve-upsert', body, discovered })).toEqual({ error: 'tenant_managed_by_operator' });
+		expect(await deleteEmaTenant(REGISTRY, 'beta-corp', 'self-serve')).toEqual({ error: 'tenant_managed_by_operator' });
 	});
 
-	it('stores the record in plaintext when no envelope key is configured', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		const raw = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`);
-		expect(JSON.parse(raw!).tenant_id).toBe('acme-corp');
-	});
-
-	it('throws EmaTenantConflictError when a different tenant already owns the issuer', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		await expect(
-			putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp.example.com/' })),
-		).rejects.toBeInstanceOf(EmaTenantConflictError);
-		// The original mapping is untouched and the loser was not written.
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com'))?.tenant_id).toBe('acme-corp');
-		expect(await getEmaTenant(env.SESSION_STORE, 'other-corp')).toBeNull();
-	});
-
-	it('updating the same tenant is allowed and releases the old issuer index when the issuer changes', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		await putEmaTenant(env.SESSION_STORE, tenant({ issuer: 'https://idp2.example.com', jwks_uri: 'https://idp2.example.com/keys' }));
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp2.example.com'))?.tenant_id).toBe('acme-corp');
-		// The released issuer can now be claimed by another tenant.
-		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }));
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com'))?.tenant_id).toBe('other-corp');
-	});
-
-	describe('caller-supplied `existing` snapshot', () => {
-		const tenantKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
-		const moved = () => tenant({ issuer: 'https://idp2.example.com', jwks_uri: 'https://idp2.example.com/keys' });
-
-		function countingKv(counts: { reads: number }): KVNamespace {
-			const kv = env.SESSION_STORE;
-			return {
-				get: (key: string, ...rest: unknown[]) => {
-					if (key === tenantKey) counts.reads++;
-					return (kv.get as (...args: unknown[]) => Promise<unknown>)(key, ...rest);
-				},
-				put: kv.put.bind(kv),
-				delete: kv.delete.bind(kv),
-				list: kv.list.bind(kv),
-			} as unknown as KVNamespace;
+	it('lists one page per call in tenant_id order, filtered by approval, with a cursor to the next page', async () => {
+		for (const [id, n] of [['tenant-a', 1], ['tenant-b', 2], ['tenant-c', 3]] as const) {
+			await record(upsert({ tenant_id: id, issuer: `https://idp${n}.example.com`, approval: n === 2 ? 'pending' : 'approved' }));
 		}
-
-		it('does not re-read the tenant key, and releases the old issuer from the supplied snapshot', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			const snapshot = await getEmaTenant(env.SESSION_STORE, 'acme-corp');
-			const counts = { reads: 0 };
-			await putEmaTenant(countingKv(counts), moved(), undefined, snapshot);
-			expect(counts.reads).toBe(0);
-			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
-			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp2.example.com'))?.tenant_id).toBe('acme-corp');
-		});
-
-		it('omitting it reads the tenant key once (the pre-existing behaviour for other callers)', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			const counts = { reads: 0 };
-			await putEmaTenant(countingKv(counts), moved());
-			expect(counts.reads).toBe(1);
-			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
-		});
-
-		it('trusts the snapshot: `null` means no previous record, so no old issuer is released', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			const counts = { reads: 0 };
-			await putEmaTenant(countingKv(counts), moved(), undefined, null);
-			expect(counts.reads).toBe(0);
-			// The old index entry is untouched (two issuer keys remain), but the record no longer lists it, so it cannot vouch.
-			expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` })).keys).toHaveLength(2);
-			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
-		});
+		expect((await listEmaTenants(REGISTRY, 'pending')).records.map((r) => r.tenant_id)).toEqual(['tenant-b']);
+		const page = await registryList({ limit: 2 });
+		expect(page.records.map((r) => r.tenant_id)).toEqual(['tenant-a', 'tenant-b']);
+		expect(page.cursor).toBe('tenant-b');
+		expect((await listEmaTenants(REGISTRY, undefined, page.cursor)).records.map((r) => r.tenant_id)).toEqual(['tenant-c']);
 	});
 
-	it('delete removes the record and its issuer index, and leaves other tenants alone', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }));
-		await deleteEmaTenant(env.SESSION_STORE, 'acme-corp');
-		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toBeNull();
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp3.example.com'))?.tenant_id).toBe('other-corp');
-		expect(await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` }).then((l) => l.keys.length)).toBe(1);
+	it('imports a sealed legacy KV tenant on first read, keeps its epoch, clears KV, and never re-imports a deleted id', async () => {
+		await putLegacy(tenant({ token_epoch: 42 }));
+		const imported = (await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com'))!;
+		expect(imported.tenant_id).toBe('acme-corp');
+		expect(tenantEpoch(imported)).toBe(42);
+		expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-` })).keys).toEqual([]);
+		// A record from before token_epoch keeps created_at, the epoch its tokens carry.
+		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }));
+		expect(tenantEpoch((await getEmaTenant(REGISTRY, 'beta-corp'))!)).toBe(1_700_000_000);
+
+		expect(await deleteEmaTenant(REGISTRY, 'acme-corp', 'operator')).toEqual({ record: null });
+		await putLegacy(tenant({ token_epoch: 42 })); // a stale KV copy reappearing
+		expect(await getEmaTenant(REGISTRY, 'acme-corp')).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com')).toBeNull();
 	});
 
-	it('delete of a missing tenant is a no-op', async () => {
-		await expect(deleteEmaTenant(env.SESSION_STORE, 'missing-tenant')).resolves.toBeUndefined();
+	it('list imports legacy tenants first, skipping one it cannot read', async () => {
+		await putLegacy(tenant());
+		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }), new Uint8Array(32).fill(9));
+		expect((await listEmaTenants(REGISTRY)).records.map((r) => r.tenant_id)).toEqual(['acme-corp']);
 	});
 
-	it('a stale issuer index never vouches for an issuer the record no longer lists', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		// Simulate a half-applied update: record moved to a new issuer but the old index entry survived.
-		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`, JSON.stringify(tenant({ issuer: 'https://idp2.example.com' })));
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com')).toBeNull();
+	it('a sealed legacy record with no envelope key, or one that will not open, is a 503 (never absent); planted plaintext is ignored', async () => {
+		await putLegacy(tenant());
+		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: undefined }, 'acme-corp')).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(getEmaTenant({ ...REGISTRY, kvEnvelopeKey: new Uint8Array(32).fill(3) }, 'acme-corp')).rejects.toBeInstanceOf(
+			StrongStateUnavailableError,
+		);
+		await putLegacy(tenant({ tenant_id: 'beta-corp', issuer: 'https://beta.example.com' }), null);
+		expect(await getEmaTenant(REGISTRY, 'beta-corp')).toBeNull();
+		// Without a key a plaintext legacy record is the real thing.
+		expect((await getEmaTenant({ ...REGISTRY, kvEnvelopeKey: undefined }, 'beta-corp'))?.tenant_id).toBe('beta-corp');
 	});
 
-	describe('fail-closed sealing (envelope key set)', () => {
-		const tenantRecordKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
-		const issuerIndexKey = async (issuer: string) => {
-			const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(issuer)));
-			return `${OAUTH_KV_PREFIX}ema-issuer:${Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')}`;
-		};
-
-		it('treats a planted plaintext record as absent from get, getByIssuer and list', async () => {
-			const planted = tenant({ jwks_uri: 'https://evil.example.net/keys' });
-			await env.SESSION_STORE.put(tenantRecordKey, JSON.stringify(planted));
-			await env.SESSION_STORE.put(await issuerIndexKey(planted.issuer), planted.tenant_id);
-			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
-			expect(await getEmaTenantByIssuer(env.SESSION_STORE, planted.issuer, ENVELOPE_KEY)).toBeNull();
-			expect(await listEmaTenants(env.SESSION_STORE, ENVELOPE_KEY)).toEqual([]);
-			// Without a key configured the same record is the operator's own plaintext store and stays readable.
-			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toEqual(planted);
-		});
-
-		it('treats a sealed record whose tenant_id differs from the key it was read from as absent', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp2.example.com' }), ENVELOPE_KEY);
-			const sealed = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}ema-tenant:other-corp`);
-			// Copy other-corp's valid sealed blob under acme-corp's key, and point acme-corp's issuer index at it.
-			await env.SESSION_STORE.put(tenantRecordKey, sealed!);
-			await env.SESSION_STORE.put(await issuerIndexKey('https://idp2.example.com'), 'acme-corp');
-			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
-			expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp2.example.com', ENVELOPE_KEY)).toBeNull();
-			expect((await listEmaTenants(env.SESSION_STORE, ENVELOPE_KEY)).map((t) => t.tenant_id)).toEqual(['other-corp']);
-		});
-
-		it('rejects a tenant_id mismatch without an envelope key too', async () => {
-			await env.SESSION_STORE.put(tenantRecordKey, JSON.stringify(tenant({ tenant_id: 'other-corp' })));
-			expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp')).toBeNull();
-		});
+	it('no coordinator binding is StrongStateUnavailableError for every registry call (never a value)', async () => {
+		const none: EmaRegistry = { coordinator: undefined, kv: env.SESSION_STORE };
+		await expect(getEmaTenant(none, 'acme-corp')).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(getEmaTenantByIssuer(none, 'https://idp.example.com')).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(writeEmaTenant(none, 'acme-corp', { op: 'reject' })).rejects.toBeInstanceOf(StrongStateUnavailableError);
+		await expect(isEmaTokenLive(none, { sub: `ema:acme-corp:${'0'.repeat(32)}`, tier: 'enterprise', tep: 1 }, 0)).rejects.toBeInstanceOf(
+			StrongStateUnavailableError,
+		);
 	});
 
-	describe('orphaned issuer index', () => {
-		const recordKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
-		const indexCount = async () => (await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` })).keys.length;
-
-		it('treats an index entry whose record is missing as free: another tenant can claim the issuer', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			await env.SESSION_STORE.delete(recordKey('acme-corp'));
-			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }))).resolves.toMatchObject({
-				tenant_id: 'other-corp',
-			});
-			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com'))?.tenant_id).toBe('other-corp');
-		});
-
-		it('treats an index entry whose record is unreadable as free', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
-			await env.SESSION_STORE.put(recordKey('acme-corp'), 'garbage-not-json');
-			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }), ENVELOPE_KEY)).resolves.toMatchObject({
-				tenant_id: 'other-corp',
-			});
-		});
-
-		it('does not free an index entry whose owner record is readable and still lists the issuer', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			await expect(putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }))).rejects.toBeInstanceOf(EmaTenantConflictError);
-		});
-
-		it('delete releases the index even when the record is missing, leaving other tenants alone', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant());
-			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }));
-			await env.SESSION_STORE.delete(recordKey('acme-corp'));
-			await deleteEmaTenant(env.SESSION_STORE, 'acme-corp');
-			expect(await indexCount()).toBe(1);
-			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp3.example.com'))?.tenant_id).toBe('other-corp');
-		});
-
-		it('delete releases the index even when the record cannot be read', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
-			await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp', issuer: 'https://idp3.example.com' }), ENVELOPE_KEY);
-			await env.SESSION_STORE.put(recordKey('acme-corp'), 'garbage-not-json');
-			await deleteEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY);
-			expect(await env.SESSION_STORE.get(recordKey('acme-corp'))).toBeNull();
-			expect(await indexCount()).toBe(1);
-			expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp3.example.com', ENVELOPE_KEY))?.tenant_id).toBe('other-corp');
-		});
+	it('isEmaTokenLive needs the token tep to equal the record epoch, the record tier and an active tenant', async () => {
+		const stored = await record(upsert());
+		const claims = { sub: `ema:acme-corp:${'0'.repeat(32)}`, tier: 'enterprise', tep: tenantEpoch(stored) };
+		const now = Math.floor(Date.now() / 1000);
+		expect(await isEmaTokenLive(REGISTRY, claims, now)).toBe(true);
+		expect(await isEmaTokenLive(REGISTRY, { ...claims, tep: tenantEpoch(stored) - 1 }, now)).toBe(false);
+		expect(await isEmaTokenLive(REGISTRY, { ...claims, tier: 'developer' }, now)).toBe(false);
+		expect(await isEmaTokenLive(REGISTRY, { ...claims, sub: 'ema:Bad_Id:x' }, now)).toBe(false);
+		await record(upsert({ enabled: false }));
+		expect(await isEmaTokenLive(REGISTRY, claims, now)).toBe(false);
 	});
 
-	it('list skips schema-invalid records', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant());
-		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:broken-one`, JSON.stringify({ tenant_id: 'broken-one' }));
-		expect((await listEmaTenants(env.SESSION_STORE)).map((t) => t.tenant_id)).toEqual(['acme-corp']);
+	it('hasRejectedIssuer matches the sha256 of the normalized issuer, and a missing record has no history', async () => {
+		const rec = tenant({ rejected_issuer_hashes: [await issuerHash('https://idp.example.com')] });
+		expect(await hasRejectedIssuer(rec, 'https://idp.example.com')).toBe(true);
+		expect(await hasRejectedIssuer(rec, 'https://other.example.com')).toBe(false);
+		expect(await hasRejectedIssuer(tenant(), 'https://idp.example.com')).toBe(false);
+		expect(await hasRejectedIssuer(null, 'https://idp.example.com')).toBe(false);
+	});
+
+	it('the record schema bounds rejected_issuer_hashes: lowercase sha256 hex, at most 16', () => {
+		const hash = 'a'.repeat(64);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: [hash] })).success).toBe(true);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: Array(17).fill(hash) })).success).toBe(false);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['https://idp.example.com'] })).success).toBe(false);
+		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['A'.repeat(64)] })).success).toBe(false);
+	});
+
+	it.each([
+		[{}, 'approved'],
+		[{ source: 'operator' as const }, 'approved'],
+		[{ source: 'self-serve' as const }, 'pending'],
+		[{ source: 'self-serve' as const, approval: 'approved' as const }, 'approved'],
+		[{ approval: 'rejected' as const }, 'rejected'],
+	])('effectiveApproval(%j) is %s', (fields, expected) => {
+		expect(effectiveApproval(fields)).toBe(expected);
+	});
+
+	it('isTenantActive needs enabled, approved and an unexpired entitlement', () => {
+		const now = 1_800_000_000;
+		expect(isTenantActive(tenant(), now)).toBe(true);
+		expect(isTenantActive(tenant({ entitlement_expires_at: now + 1 }), now)).toBe(true);
+		expect(isTenantActive(tenant({ entitlement_expires_at: now }), now)).toBe(false);
+		expect(isTenantActive(tenant({ enabled: false }), now)).toBe(false);
+		expect(isTenantActive(tenant({ approval: 'pending' }), now)).toBe(false);
+		expect(isTenantActive(tenant({ approval: 'rejected' }), now)).toBe(false);
+		expect(isTenantActive(tenant({ source: 'self-serve' }), now)).toBe(false);
 	});
 });
+
+/** One raw ema-list page straight from the registry shard (a smaller page than the route uses). */
+async function registryList(opts: { limit: number; cursor?: string }) {
+	const page = await emaRegistryRequest({ kind: 'ema-list', coordinationKey: EMA_REGISTRY_KEY, ...opts }, env.QUOTA_COORDINATOR);
+	return page as { records: EmaTenantRecord[]; cursor?: string };
+}
 
 describe('isSharedIssuer', () => {
 	const GUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -413,82 +385,6 @@ describe('isSharedIssuer', () => {
 	});
 });
 
-describe('approval and the issuer index', () => {
-	const pending = (overrides: Partial<EmaTenantRecord> = {}) => tenant({ source: 'self-serve', approval: 'pending', ...overrides });
-
-	it.each([
-		[{}, 'approved'],
-		[{ source: 'operator' as const }, 'approved'],
-		[{ source: 'self-serve' as const }, 'pending'],
-		[{ source: 'self-serve' as const, approval: 'approved' as const }, 'approved'],
-		[{ approval: 'rejected' as const }, 'rejected'],
-	])('effectiveApproval(%j) is %s', (fields, expected) => {
-		expect(effectiveApproval(fields)).toBe(expected);
-	});
-
-	it('isTenantActive needs enabled, approved and an unexpired entitlement', () => {
-		const now = 1_800_000_000;
-		expect(isTenantActive(tenant(), now)).toBe(true);
-		expect(isTenantActive(tenant({ entitlement_expires_at: now + 1 }), now)).toBe(true);
-		expect(isTenantActive(tenant({ entitlement_expires_at: now }), now)).toBe(false);
-		expect(isTenantActive(tenant({ enabled: false }), now)).toBe(false);
-		expect(isTenantActive(tenant({ approval: 'pending' }), now)).toBe(false);
-		expect(isTenantActive(tenant({ approval: 'rejected' }), now)).toBe(false);
-		expect(isTenantActive(tenant({ source: 'self-serve' }), now)).toBe(false);
-	});
-
-	it('a pending record is stored but neither indexed nor resolvable by issuer, so any number may name one issuer', async () => {
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-first' }), ENVELOPE_KEY);
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-second' }), ENVELOPE_KEY);
-		expect((await getEmaTenant(env.SESSION_STORE, 'web-first', ENVELOPE_KEY))?.approval).toBe('pending');
-		expect((await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}ema-issuer:` })).keys).toEqual([]);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY)).toBeNull();
-	});
-
-	it('approval claims the index (conflicting with another APPROVED holder only), and leaving approval releases it', async () => {
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-first' }), ENVELOPE_KEY);
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-second' }), ENVELOPE_KEY);
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-first', approval: 'approved' }), ENVELOPE_KEY);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY))?.tenant_id).toBe('web-first');
-		await expect(
-			putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-second', approval: 'approved' }), ENVELOPE_KEY),
-		).rejects.toBeInstanceOf(EmaTenantConflictError);
-
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-first', approval: 'rejected' }), ENVELOPE_KEY);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY)).toBeNull();
-		await putEmaTenant(env.SESSION_STORE, pending({ tenant_id: 'web-second', approval: 'approved' }), ENVELOPE_KEY);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY))?.tenant_id).toBe('web-second');
-	});
-
-	it('a stale index entry pointing at a record that is no longer approved does not vouch, and does not block', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
-		// Rewrite the record as pending behind the store's back, leaving its index entry in place.
-		const { sealKv } = await import('../../src/lib/kv-envelope');
-		const sealed = await sealKv(JSON.stringify(tenant({ approval: 'pending' })), ENVELOPE_KEY);
-		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`, sealed);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY)).toBeNull();
-		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'other-corp' }), ENVELOPE_KEY);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE, 'https://idp.example.com', ENVELOPE_KEY))?.tenant_id).toBe('other-corp');
-	});
-});
-
-describe('getEmaTenantForWrite', () => {
-	it('is null only when nothing is stored, and returns a readable record', async () => {
-		expect(await getEmaTenantForWrite(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
-		await putEmaTenant(env.SESSION_STORE, tenant(), ENVELOPE_KEY);
-		expect((await getEmaTenantForWrite(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
-	});
-
-	it.each([
-		['a planted plaintext record', async () => JSON.stringify(tenant())],
-		['garbage', async () => 'not a record'],
-	])('throws EmaTenantUnreadableError on %s, where getEmaTenant reads absent', async (_label, value) => {
-		await env.SESSION_STORE.put(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`, await value());
-		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).toBeNull();
-		await expect(getEmaTenantForWrite(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).rejects.toBeInstanceOf(EmaTenantUnreadableError);
-	});
-});
-
 describe('EMA approval schemas', () => {
 	it.each([['pending'], ['approved'], ['rejected']])('record schema accepts approval %s and both sources', (approval) => {
 		expect(EmaTenantRecordSchema.safeParse({ ...tenant(), approval, source: 'self-serve' }).success).toBe(true);
@@ -512,79 +408,5 @@ describe('EMA approval schemas', () => {
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: horizon - 60 }).success).toBe(true);
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: horizon + 60 }).success).toBe(false);
 		expect(EmaSelfServeUpsertRequestSchema.safeParse({ ...body, entitlement_expires_at: now + 1.5 }).success).toBe(false);
-	});
-});
-
-describe('the tenant epoch is a coordinator version (SQ-466 A10)', () => {
-	const COORD = () => env.QUOTA_COORDINATOR;
-
-	it('seeds from the legacy epoch on first read, then only moves forward: a later get with a LOWER seed never lowers it', async () => {
-		expect(await getEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_123);
-		expect(await bumpEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
-		expect(await getEmaTenantEpoch('acme-corp', 1_700_000_000, COORD())).toBe(1_800_000_000_124);
-		expect(await bumpEmaTenantEpoch('acme-corp', 5, COORD())).toBe(1_800_000_000_125);
-	});
-
-	it('a bump on a tenant with no version yet starts from the legacy epoch, so a later seeded read cannot revive the old token', async () => {
-		expect(await bumpEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
-		expect(await getEmaTenantEpoch('acme-corp', 1_800_000_000_123, COORD())).toBe(1_800_000_000_124);
-	});
-
-	it('an unusable legacy epoch falls back to 1, and tenants do not share a version', async () => {
-		expect(await getEmaTenantEpoch('acme-corp', Number.NaN, COORD())).toBe(1);
-		expect(await getEmaTenantEpoch('acme-corp', -5, COORD())).toBe(1);
-		expect(await bumpEmaTenantEpoch('acme-corp', 1, COORD())).toBe(2);
-		expect(await getEmaTenantEpoch('globex', 1, COORD())).toBe(1);
-	});
-
-	it('no coordinator binding is StrongStateUnavailableError for a read and for a bump (never a number)', async () => {
-		await expect(getEmaTenantEpoch('acme-corp', 1, undefined)).rejects.toBeInstanceOf(StrongStateUnavailableError);
-		await expect(bumpEmaTenantEpoch('acme-corp', 1, undefined)).rejects.toBeInstanceOf(StrongStateUnavailableError);
-	});
-
-	describe('isEmaTokenLive', () => {
-		const sub = `ema:acme-corp:${'0'.repeat(32)}`;
-		const now = () => Math.floor(Date.now() / 1000);
-
-		it('needs the token tep to equal the coordinator version, whatever the KV mirror says', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100 }));
-			const live = (tep: unknown) => isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep }, now(), undefined, COORD());
-			expect(await live(100)).toBe(true);
-			await bumpEmaTenantEpoch('acme-corp', 100, COORD());
-			expect(await live(100)).toBe(false);
-			// The KV mirror still says 100 and the tenant is active: only the coordinator version decides.
-			expect((await getEmaTenant(env.SESSION_STORE, 'acme-corp'))!.token_epoch).toBe(100);
-			expect(await live(101)).toBe(true);
-			expect(await live(undefined)).toBe(false);
-			expect(await live('101')).toBe(false);
-		});
-
-		it('is a StrongStateUnavailableError (retryable 503) when the coordinator cannot answer an active tenant', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100 }));
-			await expect(
-				isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep: 100 }, now(), undefined, undefined),
-			).rejects.toBeInstanceOf(StrongStateUnavailableError);
-		});
-
-		it('an inactive tenant is simply not live, with no coordinator needed', async () => {
-			await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 100, enabled: false }));
-			expect(await isEmaTokenLive(env.SESSION_STORE, { sub, tier: 'enterprise', tep: 100 }, now(), undefined, undefined)).toBe(false);
-		});
-	});
-
-	it('hasRejectedIssuer matches the sha256 of the normalized issuer, and a missing record has no history', async () => {
-		const rec = tenant({ rejected_issuer_hashes: [await issuerHash('https://idp.example.com')] });
-		expect(await hasRejectedIssuer(rec, 'https://idp.example.com')).toBe(true);
-		expect(await hasRejectedIssuer(rec, 'https://other.example.com')).toBe(false);
-		expect(await hasRejectedIssuer(tenant(), 'https://idp.example.com')).toBe(false);
-		expect(await hasRejectedIssuer(null, 'https://idp.example.com')).toBe(false);
-	});
-
-	it('the record schema bounds rejected_issuer_hashes: lowercase sha256 hex, at most 16', () => {
-		const hash = 'a'.repeat(64);
-		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: [hash] })).success).toBe(true);
-		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: Array(17).fill(hash) })).success).toBe(false);
-		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['https://idp.example.com'] })).success).toBe(false);
-		expect(EmaTenantRecordSchema.safeParse(tenant({ rejected_issuer_hashes: ['A'.repeat(64)] })).success).toBe(false);
 	});
 });
