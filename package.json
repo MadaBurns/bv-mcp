@@ -36,6 +36,7 @@
 		"build": "npm -w packages/dns-checks run build && tsup",
 		"generate:tool-surface": "tsx scripts/generate-tool-surface.ts",
 		"check:ema": "bash scripts/verify-ema.sh \"$@\"",
+		"ema:approve": "bash scripts/ema-approve.sh \"$@\"",
 		"check:tool-surface": "tsx scripts/generate-tool-surface.ts --check",
 		"check:tool-schema-sync": "tsx scripts/check-tool-schema-sync.ts",
 		"generate:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts",
