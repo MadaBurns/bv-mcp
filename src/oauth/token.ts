@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, normalizeIssuer, tenantEpoch } from './ema-tenants';
+import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer, tenantEpoch } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -426,11 +426,11 @@ async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: 
 	}
 }
 
-/** The enabled, in-entitlement tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
+/** The active (enabled, approved, in-entitlement) tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
 async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
 	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
-	// Unknown, disabled and lapsed tenants are indistinguishable to the caller (same code, same text).
-	if (!tenant?.enabled || (tenant.entitlement_expires_at ?? Infinity) <= now) {
+	// Unknown, disabled, pending and lapsed tenants are indistinguishable to the caller (same code, same text).
+	if (!tenant || !isTenantActive(tenant, now)) {
 		throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
 	}
 	return tenant;

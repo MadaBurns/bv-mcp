@@ -1,5 +1,5 @@
 // Route tests for /internal/oauth/ema-tenants — the operator door that seeds the
-// per-tenant trusted-issuer allowlist. Gated by BV_MCP_OAUTH_MINT_KEY (no new secret).
+// per-tenant trusted-issuer allowlist. Gated by the operator-only BV_MCP_EMA_ADMIN_KEY.
 // Store semantics live in test/oauth/ema-tenants.spec.ts; this file owns the gate,
 // request validation, issuer discovery and response contract.
 
@@ -11,18 +11,18 @@ import { getEmaTenant, getEmaTenantByIssuer, putEmaTenant } from '../src/oauth/e
 import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import { clearKvPrefix } from './helpers/kv';
 
-const TEST_INTERNAL_KEY = 'ema-mint-capability-test-key-32-bytes-min';
+const TEST_INTERNAL_KEY = 'ema-admin-capability-test-key-32-bytes-min';
 const BASE = 'http://example.com/internal/oauth/ema-tenants';
 const CLAUDE_WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 // 32 zero bytes, base64 — a valid KV_ENVELOPE_KEY. The upsert route refuses to run without one while OAuth is on.
 const ENVELOPE_B64 = btoa(String.fromCharCode(...new Uint8Array(32)));
 const ENVELOPE_KEY = parseEnvelopeKey(ENVELOPE_B64)!;
 
-type TestEnv = typeof env & { BV_MCP_OAUTH_MINT_KEY?: string; KV_ENVELOPE_KEY?: string };
+type TestEnv = typeof env & { BV_MCP_EMA_ADMIN_KEY?: string; KV_ENVELOPE_KEY?: string };
 
 async function send(
 	req: Request,
-	customEnv: TestEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64 } as TestEnv,
+	customEnv: TestEnv = { ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64 } as TestEnv,
 ): Promise<Response> {
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, customEnv, ctx);
@@ -63,8 +63,8 @@ afterEach(async () => {
 });
 
 describe('/internal/oauth/ema-tenants gate', () => {
-	it('returns 503 when BV_MCP_OAUTH_MINT_KEY is not configured', async () => {
-		const res = await send(call('GET'), { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv);
+	it('returns 503 when BV_MCP_EMA_ADMIN_KEY is not configured', async () => {
+		const res = await send(call('GET'), { ...env, BV_MCP_EMA_ADMIN_KEY: undefined } as TestEnv);
 		expect(res.status).toBe(503);
 		expect(res.headers.get('cache-control')).toBe('no-store');
 	});
@@ -92,7 +92,7 @@ describe('/internal/oauth/ema-tenants gate', () => {
 	it('does not accept a different capability key (revoke key) as the bearer', async () => {
 		const customEnv = {
 			...env,
-			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
 			BV_MCP_OAUTH_REVOKE_KEY: 'revoke-capability-test-key-32-bytes-min',
 		} as TestEnv;
 		const res = await send(call('GET', '', undefined, { Authorization: 'Bearer revoke-capability-test-key-32-bytes-min' }), customEnv);
@@ -239,7 +239,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 	it('500 session_store_not_configured when SESSION_STORE is unbound', async () => {
 		const res = await send(call('PUT', '', upsertBody()), {
 			...env,
-			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
 			KV_ENVELOPE_KEY: ENVELOPE_B64,
 			SESSION_STORE: undefined,
 		} as unknown as TestEnv);
@@ -346,7 +346,7 @@ describe('PUT non-canonical issuer forms', () => {
 
 describe('PUT requires KV_ENVELOPE_KEY while OAuth is on', () => {
 	const withoutKey = (overrides: Record<string, unknown> = {}) =>
-		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: undefined, ...overrides }) as unknown as TestEnv;
+		({ ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: undefined, ...overrides }) as unknown as TestEnv;
 	const storedKeys = async () => (await env.SESSION_STORE!.list({ prefix: `${OAUTH_KV_PREFIX}ema-` })).keys;
 
 	it('409 envelope_key_required and nothing written when the key is unset', async () => {
@@ -388,7 +388,7 @@ describe('PUT reads the tenant key once', () => {
 			delete: kv.delete.bind(kv),
 			list: kv.list.bind(kv),
 		} as unknown as KVNamespace;
-		return { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: spy } as unknown as TestEnv;
+		return { ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: spy } as unknown as TestEnv;
 	}
 
 	it('an update PUT performs exactly one read of the tenant key', async () => {
@@ -436,7 +436,7 @@ describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
 		return { get: boom, put: boom, delete: boom, list: boom } as unknown as KVNamespace;
 	};
 	const failingEnv = () =>
-		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: failing() }) as unknown as TestEnv;
+		({ ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: failing() }) as unknown as TestEnv;
 
 	it.each([
 		['PUT', '', upsertBody()],
