@@ -220,6 +220,40 @@ describe('EMA tenant registry (contract A11)', () => {
 		expect(await writeEmaTenant(REGISTRY, 'missing-tenant', { op: 'reject' })).toEqual({ status: 'not_found' });
 	});
 
+	it('a self-serve write with expected_rev applies only at the current rev; expected_rev is never stored (SQ-473)', async () => {
+		const discovered = { issuer: 'https://idp.example.com', jwks_uri: 'https://idp.example.com/keys' };
+		const body = {
+			name: 'Acme',
+			issuer: 'https://idp.example.com',
+			enabled: true,
+			tier: 'enterprise' as const,
+			entitlement_expires_at: Math.floor(Date.now() / 1000) + 3600,
+		};
+		const id = 'web-acme-0000-0001';
+		// An absent record never matches a named revision, rev 0 included: nothing is created.
+		expect(await writeEmaTenant(REGISTRY, id, { op: 'self-serve-upsert', body: { ...body, expected_rev: 0 }, discovered })).toEqual({
+			status: 'ema_record_changed',
+		});
+		expect(await getEmaTenant(REGISTRY, id)).toBeNull();
+
+		const created = await record(writeEmaTenant(REGISTRY, id, { op: 'self-serve-upsert', body, discovered }));
+		const matched = await record(
+			writeEmaTenant(REGISTRY, id, { op: 'self-serve-upsert', body: { ...body, name: 'Matched', expected_rev: created.rev }, discovered }),
+		);
+		expect(matched).toMatchObject({ name: 'Matched', rev: (created.rev ?? 0) + 1 });
+		expect(matched).not.toHaveProperty('expected_rev');
+
+		// The previous rev is now stale: refused, and the stored record is untouched.
+		expect(
+			await writeEmaTenant(REGISTRY, id, {
+				op: 'self-serve-upsert',
+				body: { ...body, name: 'Stale', expected_rev: created.rev },
+				discovered,
+			}),
+		).toEqual({ status: 'ema_record_changed' });
+		expect(await getEmaTenant(REGISTRY, id)).toEqual(matched);
+	});
+
 	it('a self-serve write that skipped discovery on a record that has since changed is ema_record_changed (retryable)', async () => {
 		const body = {
 			name: 'Acme',

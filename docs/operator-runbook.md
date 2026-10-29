@@ -456,6 +456,12 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   `next_cursor` in the answer is the `?cursor=` of the next page), `GET
 /internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
   removes it (204). DELETE also releases the issuer even when the record can no longer be read.
+- Self-serve compare-and-set. `GET /internal/oauth/ema-self-serve/<tenant_id>` answers the record's
+  `rev`; a `PUT` may send it back as an optional `expected_rev` (non-negative integer, a precondition that
+  is never stored). The registry compares it to the current `rev` inside its transaction: a mismatch, or
+  an absent record, answers `409 ema_record_changed` and writes nothing. Without `expected_rev` the
+  PUT is last-write-wins as before, which is what the webhook paths want; a caller that read first and
+  must not overwrite a newer write (bv-web's entitlement sweep) sends it.
 - Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
   created `pending` and mints nothing until approved; an operator-seeded tenant without an
   `approval` field counts as approved.
