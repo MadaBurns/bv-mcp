@@ -104,17 +104,30 @@ print(json.dumps(module.scan_domain('session-1', 'example.com')))
 `);
 
 		expect(result.status, result.stderr).toBe(0);
-		expect(JSON.parse(result.stdout)).toEqual(['example.com', 85, 'B', { spf: 85, ssl: null }, 3, null]);
+		const parsed = JSON.parse(result.stdout) as unknown[];
+		expect(parsed.slice(0, 6)).toEqual(['example.com', 85, 'B', { spf: 85, ssl: null }, 3, null]);
+		// SQ-439: a seventh element carries per-scan metadata; a key the server did not send reads
+		// "absent", which the drift report keeps distinct from an abstained (null) category.
+		expect(parsed[6]).toEqual({
+			checkStatuses: 'absent',
+			inconclusiveCategories: 'absent',
+			evidenceInsufficient: 'absent',
+			latencyMs: expect.any(Number),
+		});
 	});
 
-	it('returns exactly the requested domain count when cycling defaults', () => {
+	it('never repeats a default domain when the requested count exceeds the defaults (SQ-439)', () => {
 		const result = runProbe(`${loadModule}
 import json
-print(json.dumps(module.load_domains(None, 21)))
+print(json.dumps([module.load_domains(None, 3), module.load_domains(None, 10_000), len(module.DEFAULT_DOMAINS)]))
 `);
 
 		expect(result.status, result.stderr).toBe(0);
-		expect(JSON.parse(result.stdout)).toHaveLength(21);
+		const [three, all, defaultCount] = JSON.parse(result.stdout) as [string[], string[], number];
+		expect(three).toHaveLength(3);
+		// A cycled list scored the same domain twice and counted it as two stable results.
+		expect(all).toHaveLength(defaultCount);
+		expect(new Set(all).size).toBe(all.length);
 	});
 
 	it('fails closed when an explicit domain file is malformed or empty', () => {
