@@ -65,6 +65,18 @@ const NO_AUTHORITATIVE_ANSWER_ERROR = 'raw_dns_probe_no_authoritative_answer';
  * never reach a Cloudflare-hosted zone: a permanent platform limit, NOT a transient no-contact
  * (#1131). */
 const CLOUDFLARE_NETWORK_UNREACHABLE_ERROR = 'raw_dns_probe_cloudflare_network_unreachable';
+/** Reported when the recursive NS lookup answered NXDOMAIN: the name does not exist, so there is no
+ * delegation to probe. A measured fact about the target, not a transient no-contact. */
+const NXDOMAIN_ERROR = 'raw_dns_probe_nxdomain';
+const RCODE_NXDOMAIN = 3;
+
+/** Thrown by a recursive lookup that got a definitive NXDOMAIN (rcode 3) answer. */
+export class NxdomainError extends Error {
+	constructor(name: string) {
+		super(`NXDOMAIN for ${name}`);
+		this.name = 'NxdomainError';
+	}
+}
 
 export type RecursiveNameLookup = RecursiveDnsQuery;
 
@@ -137,6 +149,7 @@ function uniqueSorted(values: string[]): string[] {
 
 async function defaultRecursiveQuery(name: string, type: RecordTypeName): Promise<string[]> {
 	const response = await queryDns(name, type, false, { timeoutMs: RECURSIVE_QUERY_TIMEOUT_MS, retries: 0 });
+	if (response.Status === RCODE_NXDOMAIN) throw new NxdomainError(name);
 	return (response.Answer ?? [])
 		.filter((answer) => answer.type === RecordType[type])
 		.map((answer) => answer.data.replace(/\.$/, '').toLowerCase());
@@ -180,12 +193,17 @@ const defaultOpenAxfrSocket: AxfrSocketFactory = async (pinnedAddress) => {
  * a known root server queried for zone '.', a bare host queried for its own SOA, or
  * no contact at all.
  */
-async function resolveTarget(hostname: string, recursiveQuery: RecursiveDnsQuery): Promise<ProbeTarget | undefined> {
+async function resolveTarget(
+	hostname: string,
+	recursiveQuery: RecursiveDnsQuery,
+): Promise<ProbeTarget | typeof NXDOMAIN_ERROR | undefined> {
 	let nsNames: string[] = [];
+	let nxdomain = false;
 	try {
 		nsNames = uniqueSorted(await recursiveQuery(hostname, 'NS'));
-	} catch {
-		// Fall through to the next target mode.
+	} catch (err) {
+		// Fall through to the next target mode; remember a definitive NXDOMAIN.
+		nxdomain = err instanceof NxdomainError;
 	}
 	if (nsNames.length > 0) {
 		return { zone: hostname, nameservers: nsNames.slice(0, MAX_NAMESERVERS), rootServerMode: false };
@@ -194,6 +212,9 @@ async function resolveTarget(hostname: string, recursiveQuery: RecursiveDnsQuery
 	if ((ROOT_SERVER_NAMES as readonly string[]).includes(hostname)) {
 		return { zone: '.', nameservers: [hostname], rootServerMode: true };
 	}
+
+	// A nonexistent name has no address either, so the host-address fallback cannot succeed.
+	if (nxdomain) return NXDOMAIN_ERROR;
 
 	try {
 		const [ipv4, ipv6] = await Promise.allSettled([recursiveQuery(hostname, 'A'), recursiveQuery(hostname, 'AAAA')]);
@@ -538,6 +559,9 @@ export async function probeAuthoritativeDns(
 	const deadline = Date.now() + budgetMs;
 
 	const target = await resolveTarget(normalizedHostname, recursiveQuery);
+	if (target === NXDOMAIN_ERROR) {
+		return { hostname: normalizedHostname, checkedAt, errors: [NXDOMAIN_ERROR] };
+	}
 	if (!target) {
 		return { hostname: normalizedHostname, checkedAt, errors: [NO_CONTACT_ERROR] };
 	}
