@@ -52,6 +52,8 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
+      - name: Offline chaos harness regressions (no production calls)
+        run: python3 -m unittest discover -s scripts/chaos -p 'test_*.py'
       # Builds packages/dns-checks as a side effect (its own `pretypecheck`
       # npm lifecycle hook) — required before the wasm-integration test below,
       # since vitest.config.mts imports src/workers/infra-probe at config-load

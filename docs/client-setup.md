@@ -538,12 +538,9 @@ If you are a developer troubleshooting how different MCP clients handle authenti
 python3 scripts/chaos/chaos-test-clients.py
 ```
 
-This test covers 9 of the 11 detected MCP client types (`claude_mobile`, `claude_connector` and `bv_load_test` are not exercised) across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
+This probe covers nine client profiles across session management, auth precedence, format negotiation, and transport edge cases. It requires an owner credential in `BV_API_KEY` and proves owner tier with a bounded tool call before running any suite. Missing credentials, transport failures, and lower tiers stop the run; there is no anonymous fallback.
 
-Expected assertion count:
-
-- Unauthenticated/free-tier run: 58 assertions.
-- Authenticated run with `BV_API_KEY`: 65 assertions.
+Default mode is acceptance: failures exit 1, and empty or quota-skipped coverage exits 2. `--diagnostic` allows partial coverage for investigation and labels it incomplete; it is not acceptance evidence. The client probe includes a concurrent burst and should only run with explicit authorization for the target. For bounded read-only release checks, use `chaos-fix-regression.py`. See [chaos harness validation](chaos-harness-validation.md) for the plan, exit semantics, and offline CI tests.
 
 ## Provider Detection Configuration
 

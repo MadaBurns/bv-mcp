@@ -31,8 +31,8 @@ Auth: tool calls use an authenticated session. The key comes from the env var
 BV_VERIFY_KEY, else BV_INTERNAL_DEV_KEY parsed from the main checkout's
 .dev.vars (found via `git rev-parse --path-format=absolute --git-common-dir`).
 The key is only ever sent in the Authorization header; it is never printed,
-placed in argv, or logged. Without a key the tool-call checks report SKIPPED,
-as does any -32029 quota reply.
+placed in argv, or logged. Every live run requires a successful owner-tier preflight. Quota replies report
+SKIPPED; strict acceptance returns 2 for missing or skipped required checks.
 
 Exit status: 0 = no FAIL, 1 = at least one FAIL, 2 = usage or prerequisite error.
 
@@ -261,6 +261,8 @@ def classify_rdap(responses):
         (names if name else empty).append("%s=%r" % (domain, name) if name else domain)
     if empty:
         return FAIL, "no registrar name for: %s" % ", ".join(empty)
+    if set(responses) != set(RDAP_DOMAINS):
+        return FAIL, "incomplete registrar domain coverage"
     return PASS, "registrar " + ", ".join(names)
 
 
@@ -277,11 +279,27 @@ def classify_sessions(samples):
         len(usable), n404, other, statistics.median(inits), max(inits))
     if notifs:
         detail += " notif_median=%dms notif_max=%dms" % (statistics.median(notifs), max(notifs))
-    return (FAIL if n404 or other else PASS), detail
+    if n404 or other:
+        return FAIL, detail
+    if len(usable) != len(samples):
+        return SKIPPED, detail + " quota_samples=%d" % (len(samples) - len(usable))
+    return PASS, detail
 
 
-def exit_code(results):
-    return 1 if any(r.verdict == FAIL for r in results) else 0
+REQUIRED_CHECKS = frozenset(("SQ-448", "SQ-449", "SQ-452", "SQ-447", "SQ-451", "SQ-453"))
+
+
+def exit_code(results, diagnostic=False):
+    if any(r.verdict == FAIL for r in results):
+        return 1
+    if not results or not any(r.verdict == PASS for r in results):
+        return 2
+    if not diagnostic:
+        passed = {r.check for r in results if r.verdict == PASS}
+        if not REQUIRED_CHECKS.issubset(passed) or any(
+                r.check in REQUIRED_CHECKS and r.verdict != PASS for r in results):
+            return 2
+    return 0
 
 
 def format_line(result):
@@ -297,7 +315,7 @@ def http_request(method, url, body=None, headers=None, timeout=HTTP_TIMEOUT):
         req.add_header(name, value)
     start = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.build_opener(_clients.NoRedirect()).open(req, timeout=timeout) as resp:
             status, hdrs, raw = resp.status, resp.headers, resp.read()
     except urllib.error.HTTPError as e:
         status, hdrs, raw = e.code, e.headers, e.read()
@@ -461,6 +479,8 @@ class Runner(object):
 def build_parser():
     p = argparse.ArgumentParser(
         description="Live regression probe for the 2026-10-29 chaos fixes (read-only; never trips the 429 limiter).")
+    p.add_argument("--diagnostic", action="store_true",
+                   help="allow partial coverage; never an acceptance result")
     p.add_argument("--host", default=DEFAULT_HOST,
                    help="base URL (default %(default)s; workers.dev host: " + WORKERS_DEV_HOST + ")")
     p.add_argument("--sessions", type=int, default=DEFAULT_SESSIONS,
@@ -471,16 +491,23 @@ def build_parser():
 def main(argv=None, key=None, emit=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not re.match(r"^https?://[^/\s]+/?$", args.host):
-        parser.error("--host must be an http(s) origin without a path, got %r" % args.host)
+    if not _clients.valid_owner_origin(args.host):
+        parser.error("--host must be a credential-free HTTPS origin without a path")
     if args.sessions < 1:
         parser.error("--sessions must be at least 1")
     if key is None:
         key = resolve_key()
     emit = emit or (lambda line: print(line, flush=True))
     emit("# host=%s key=%s sessions=%d" % (args.host.rstrip("/"), "present" if key else "absent", args.sessions))
+    ok, detail = _clients.verify_owner(args.host.rstrip("/"), key)
+    if not ok:
+        emit("FAIL owner preflight: " + detail)
+        return 1
     results = Runner(args.host.rstrip("/"), key, args.sessions, emit).run()
-    return exit_code(results)
+    code = exit_code(results, diagnostic=args.diagnostic)
+    if code == 2 or args.diagnostic:
+        emit("INCOMPLETE: diagnostic or unexercised coverage; not acceptance evidence")
+    return code
 
 
 if __name__ == "__main__":
