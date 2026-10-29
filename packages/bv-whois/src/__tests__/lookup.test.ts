@@ -351,8 +351,8 @@ describe('lookupRegistrar — registry omits registrar by policy (#931, .dk)', (
 	});
 
 	it('does NOT apply the policy rule to a TLD outside the allowlist (a parser miss is not registry policy)', async () => {
-		// EURid/DNS-Belgium-shaped block the parser cannot read, plus a date line.
-		const eurid = `Domain:      example.eu\nRegistered:  2015-01-01\nRegistrar:\n        Name: Some Registrar BV\n        Website: https://example.invalid\n`;
+		// EURid/DNS-Belgium-shaped block with no `Name:` line (nothing to read), plus a date line.
+		const eurid = `Domain:      example.eu\nRegistered:  2015-01-01\nRegistrar:\n        Website: https://example.invalid\n`;
 		const kv = makeKV();
 		const result = await lookupRegistrar('example.eu', {
 			kv: kv as never,
@@ -536,5 +536,76 @@ describe('lookupRegistrar — concrete failureReason on source=error (#931)', ()
 
 		expect(result.source).toBe('whois');
 		expect('failureReason' in result).toBe(false);
+	});
+});
+
+describe('lookupRegistrar — indented "Registrar:" block (.eu / .be)', () => {
+	const blockDeps = (tld: string, body: string): LookupDeps => ({
+		kv: makeKV() as never,
+		whoisQuery: vi.fn(async (server: string) => (server === 'whois.iana.org' ? `whois:        whois.nic.${tld}\n` : body)),
+	});
+
+	it('reads the first indented Name: of the block as the registrar, with the normal whois source', async () => {
+		const body = `Domain:      example.eu\nRegistrar:\n        Name: Invented Registrar BV\n        Website: https://example.invalid\n`;
+		const result = await lookupRegistrar('example.eu', blockDeps('eu', body));
+
+		expect(result).toMatchObject({ registrar: 'Invented Registrar BV', source: 'whois' });
+		expect('failureReason' in result).toBe(false);
+	});
+
+	it('stops at the end of the block and still classifies an empty block as unrecognised_response', async () => {
+		// `Name:` belongs to the NEXT block, so the Registrar block has no name.
+		const body = `Domain:      example.be\nRegistered:  2015-01-01\nRegistrar:\n        Website: https://example.invalid\n\nTechnical:\n        Name: Invented Contact\n`;
+		const result = await lookupRegistrar('example.be', blockDeps('be', body));
+
+		expect(result).toMatchObject({ registrar: null, source: 'error', failureReason: 'unrecognised_response' });
+	});
+
+	it('does not read a Name: that follows a non-indented line as part of the block', async () => {
+		const body = `Domain:      example.be\nRegistered:  2015-01-01\nRegistrar:\nFlags:       none\n        Name: Invented Contact\n`;
+		const result = await lookupRegistrar('example.be', blockDeps('be', body));
+
+		expect(result).toMatchObject({ registrar: null, source: 'error', failureReason: 'unrecognised_response' });
+	});
+
+	it('picks the Registrar block out of a response with other blocks around it', async () => {
+		const body = [
+			'Domain:      example.be',
+			'Status:      NOT AVAILABLE',
+			'',
+			'Registrant:',
+			'        Name: Invented Holder',
+			'',
+			'Registrar:',
+			'        Name: Invented Registrar NV',
+			'        Website: https://example.invalid',
+			'',
+			'Technical:',
+			'        Name: Invented Contact',
+			'',
+		].join('\n');
+		const result = await lookupRegistrar('example.be', blockDeps('be', body));
+
+		expect(result).toMatchObject({ registrar: 'Invented Registrar NV', source: 'whois' });
+	});
+
+	it('handles CRLF line endings', async () => {
+		const body = `Domain:      example.eu\r\nRegistrar:\r\n        Name: Invented Registrar BV\r\n        Website: https://example.invalid\r\n\r\nTechnical:\r\n        Name: Invented Contact\r\n`;
+		const result = await lookupRegistrar('example.eu', blockDeps('eu', body));
+
+		expect(result).toMatchObject({ registrar: 'Invented Registrar BV', source: 'whois' });
+	});
+
+	it('still reports .eu as an error, not policy-redacted, when the block yields nothing', async () => {
+		const result = await lookupRegistrar('example.eu', blockDeps('eu', `Domain:      example.eu\nRegistered:  2015-01-01\nRegistrar:\n`));
+
+		expect(result.source).toBe('error');
+	});
+
+	it('leaves the one-line form winning over a block (no regression for gTLD output)', async () => {
+		const body = `Registrar: One Line Registrar\nRegistrar:\n        Name: Block Registrar\n`;
+		const result = await lookupRegistrar('example.eu', blockDeps('eu', body));
+
+		expect(result.registrar).toBe('One Line Registrar');
 	});
 });

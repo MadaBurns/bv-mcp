@@ -116,6 +116,26 @@ const ALWAYS_REDACTED_TLDS = new Set<string>([
 const REGISTRAR_OMITTED_BY_POLICY_TLDS = new Set<string>(['dk']);
 
 /**
+ * Registrar name from the block form some registries use (EURid for .eu,
+ * DNS Belgium for .be): a non-indented `Registrar:` line with an empty value,
+ * then indented `Key: value` lines. The registrar is the first indented
+ * `Name:` value; the block ends at a blank line or the next non-indented line.
+ * Null when no block carries a non-empty `Name:`. The shared parser
+ * (`@blackveil/dns-checks/whois`) deliberately refuses sub-field lines as a
+ * registrar name, so this runs only where it found none.
+ */
+const REGISTRAR_BLOCK_RE = /^Registrar:[ \t]*\n((?:[ \t]+\S.*(?:\n|$))*)/gim;
+const BLOCK_NAME_RE = /^[ \t]+Name:[ \t]*(\S.*?)[ \t]*$/im;
+
+function registrarFromBlock(response: string): string | null {
+	for (const [, body] of response.replace(/\r/g, '').matchAll(REGISTRAR_BLOCK_RE)) {
+		const name = body.match(BLOCK_NAME_RE);
+		if (name) return name[1];
+	}
+	return null;
+}
+
+/**
  * Look up the registrar for a single domain via WHOIS.
  * Returns a structured result classifying the outcome — never throws.
  */
@@ -163,7 +183,8 @@ export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise
 	// boolean is a measurement either way.
 	const details = { ...dates, registrantPrivacy: parsed.registrantPrivacy };
 
-	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
+	const registrar = parsed.registrar ?? registrarFromBlock(response);
+	if (registrar) return { registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
 	// `redacted` fires on DENIC's disclosure notice AND on "not permitted" /
 	// "exceeded the limit" banners (parse.ts) — bodies with NO registrant record,
 	// so "no privacy marker" is not a measurement there either. Positive only.
