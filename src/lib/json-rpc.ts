@@ -25,7 +25,25 @@ export const JSON_RPC_ERRORS = {
 	UNAUTHORIZED: -32001,
 	RATE_LIMITED: -32029,
 	UPGRADE_REQUIRED: -32003,
+	/** MCP: resources/read for a URI the server does not serve. */
+	RESOURCE_NOT_FOUND: -32002,
 } as const;
+
+/**
+ * A request-level client error with a known JSON-RPC code (unknown resource URI, unknown prompt
+ * name). The MCP execute layer maps it to that code with HTTP 400, like other invalid-params
+ * rejections, instead of the 500 + -32603 reserved for unexpected failures. The message still goes
+ * through `sanitizeErrorMessage`, so it must start with an allowlisted prefix.
+ */
+export class JsonRpcClientError extends Error {
+	constructor(
+		readonly code: number,
+		message: string,
+	) {
+		super(message);
+		this.name = 'JsonRpcClientError';
+	}
+}
 
 /**
  * Build a JSON-RPC 2.0 error response object.

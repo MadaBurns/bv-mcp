@@ -1374,3 +1374,47 @@ describe('executeMcpRequest — eventId propagation', () => {
 		expect(result.eventId).toBe('42');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Unknown resource URI / prompt name are client errors, not 500 + -32603
+// ---------------------------------------------------------------------------
+
+describe('executeMcpRequest — unknown resource / prompt', () => {
+	// Earlier suites vi.doMock the dispatcher and route gates; these cases need the real ones.
+	beforeEach(() => {
+		vi.doUnmock('../src/mcp/dispatch');
+		vi.doUnmock('../src/mcp/route-gates');
+	});
+
+	it('resources/read with an unknown URI returns -32002 "Resource not found: <uri>" over HTTP 400', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'dns-security://guides/nope' } } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(5);
+		expect(payload.error.code).toBe(-32002);
+		expect(payload.error.message).toBe('Resource not found: dns-security://guides/nope');
+	});
+
+	it('prompts/get with an unknown name returns -32602 "Invalid prompt name: <name>" over HTTP 400', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 6, method: 'prompts/get', params: { name: 'no-such-prompt' } } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(6);
+		expect(payload.error.code).toBe(-32602);
+		expect(payload.error.message).toBe('Invalid prompt name: no-such-prompt');
+	});
+});
