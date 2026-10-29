@@ -272,7 +272,7 @@ async function createInitializeSession(options: DispatchMcpMethodOptions): Promi
 	// requests with the old session ID get a 404. Old sessions
 	// expire naturally via TTL (2 hours) and are cleaned up by
 	// periodic in-memory pruning + KV expirationTtl.
-	const sessionId = await createSession(options.sessionStore, options.analytics, options.waitUntil);
+	const sessionId = await createSession(options.sessionStore, options.analytics);
 	if (sessionId) {
 		auditSessionCreated(options.ip, sessionId);
 		// The client's DECLARED identity from the initialize handshake —
