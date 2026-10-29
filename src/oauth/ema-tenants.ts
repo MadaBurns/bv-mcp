@@ -8,14 +8,15 @@
  *   oauth:ema-issuer:<sha256hex(issuer)>      → tenant_id (plain; the key is a hash and the value is not sensitive)
  *
  * The issuer index is how the token grant answers "is this `iss` allowlisted?".
- * One issuer maps to exactly one tenant.
+ * One issuer maps to exactly one APPROVED tenant; a pending or rejected record is never indexed.
  */
 
-import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaTenantRecord } from '../schemas/ema';
+import { EMA_TENANT_ID_PATTERN, EmaTenantRecordSchema, type EmaApproval, type EmaTenantRecord } from '../schemas/ema';
 import { OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
 import { sha256Hex } from './jwks';
-import { StrongStateUnavailableError } from './storage';
+import { getEmaTenantEpoch, StrongStateUnavailableError } from './storage';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 const tenantKey = (tenantId: string) => `${OAUTH_KV_PREFIX}ema-tenant:${tenantId}`;
 const TENANT_PREFIX = `${OAUTH_KV_PREFIX}ema-tenant:`;
@@ -47,15 +48,116 @@ export function normalizeIssuer(iss: string): string {
 	return url.origin + url.pathname.replace(/\/+$/, '');
 }
 
+/*
+ * Shared (multi-tenant) issuers. One of these signs assertions for many unrelated organisations, so
+ * allowlisting it for one tenant would let users of ANY other org on that IdP mint tokens for this
+ * tenant: an issuer only identifies a tenant when the IdP is single-tenant (ID-JAG draft, section 6).
+ * The self-serve route refuses these; the operator route leaves the call to the operator.
+ */
+
+/** Hosts shared outright, whatever the path. */
+const SHARED_ISSUER_HOSTS = new Set([
+	'accounts.google.com',
+	'login.live.com',
+	'appleid.apple.com',
+	// The public Cross App Access playground: anyone can mint an assertion for any subject there.
+	'idp.xaa.dev',
+	// One issuer for the workflow tokens of every repository.
+	'token.actions.githubusercontent.com',
+	// One host for the tokens of every project.
+	'securetoken.google.com',
+	// One issuer for the CI job tokens of every project on the service.
+	'gitlab.com',
+]);
+
+/** Host suffixes shared outright: one login domain for many unrelated directories. */
+const SHARED_ISSUER_HOST_SUFFIXES = ['.b2clogin.com'];
+
+/** Microsoft Entra authority hosts. They also serve per-tenant issuers (`/<tenant guid>/v2.0`), which stay allowed. */
+const ENTRA_AUTHORITY_HOSTS = new Set([
+	'login.microsoftonline.com',
+	'login.microsoftonline.us',
+	'login.microsoftonline.de',
+	'login.partner.microsoftonline.cn',
+	'login.microsoft.com',
+	'login.windows.net',
+	'sts.windows.net',
+]);
+
+/** Entra first path segments that name every tenant at once, whatever follows them. */
+const ENTRA_MULTI_TENANT_SEGMENTS = new Set(['common', 'organizations', 'consumers', '{tenantid}']);
+
 /**
- * Read one tenant record, fail-closed. With an envelope key configured an unsealed
+ * The percent-decoded, lowercased first path segment once `//` runs collapse; null when there is none
+ * (a bare host), when it hides a slash (`%2f`), or when it does not decode: all of which a caller treats as shared.
+ */
+function firstPathSegment(pathname: string): string | null {
+	const segment = pathname.replace(/\/+/g, '/').split('/')[1] ?? '';
+	if (segment === '' || /%2f/i.test(segment)) return null;
+	try {
+		return decodeURIComponent(segment).toLowerCase();
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * True when a normalized issuer (see normalizeIssuer) is shared: a host in SHARED_ISSUER_HOSTS or under
+ * a SHARED_ISSUER_HOST_SUFFIXES domain (trailing dots ignored), or an Entra authority host whose first
+ * path segment is a multi-tenant alias, is missing, hides a slash or does not decode (all fail closed).
+ */
+export function isSharedIssuer(normalizedIssuer: string): boolean {
+	const url = new URL(normalizedIssuer);
+	const host = url.hostname.toLowerCase().replace(/\.+$/, '');
+	if (SHARED_ISSUER_HOSTS.has(host) || SHARED_ISSUER_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) return true;
+	if (!ENTRA_AUTHORITY_HOSTS.has(host)) return false;
+	const segment = firstPathSegment(url.pathname);
+	return segment === null || ENTRA_MULTI_TENANT_SEGMENTS.has(segment);
+}
+
+/**
+ * A record's approval. An explicit value wins; without one, a self-serve record is pending (it was
+ * never approved) and any other record is approved (operator-seeded before approval existed).
+ */
+export function effectiveApproval(rec: Pick<EmaTenantRecord, 'approval' | 'source'>): EmaApproval {
+	return rec.approval ?? (rec.source === 'self-serve' ? 'pending' : 'approved');
+}
+
+/**
+ * The one rule for whether a tenant may mint and back access tokens right now: enabled, approved and
+ * inside its entitlement. The token grant (resolveTrustedTenant) and per-request liveness
+ * (isEmaTokenLive) both use it, so a tenant failing it is refused exactly like an unknown one.
+ */
+export function isTenantActive(rec: EmaTenantRecord, nowSeconds: number): boolean {
+	return rec.enabled && effectiveApproval(rec) === 'approved' && (rec.entitlement_expires_at ?? Infinity) > nowSeconds;
+}
+
+/** Whether `record` may vouch for `issuer` in the issuer index: it lists the issuer and is approved. */
+function vouchesFor(record: EmaTenantRecord | null, issuer: string): record is EmaTenantRecord {
+	return record !== null && record.issuer === issuer && effectiveApproval(record) === 'approved';
+}
+
+/** A stored tenant record exists but cannot be honoured (wrong envelope key, corruption, planted plaintext). */
+export class EmaTenantUnreadableError extends Error {
+	constructor() {
+		super('Tenant record is unreadable');
+		this.name = 'EmaTenantUnreadableError';
+	}
+}
+
+/** Read one tenant record, fail-closed (see decodeRecord). Null when it is missing or cannot be honoured. */
+async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
+	const raw = await kv.get(tenantKey(tenantId));
+	return raw ? decodeRecord(raw, tenantId, kvEnvelopeKey) : null;
+}
+
+/**
+ * Decode one stored tenant record, fail-closed. With an envelope key configured an unsealed
  * (plaintext) record is treated as absent: the keyspace is sealed from birth, so a
  * plaintext value can only have been planted. The decoded `tenant_id` must equal the
  * key it was read from, so a valid blob copied under another key is not honoured.
  */
-async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
-	const raw = await kv.get(tenantKey(tenantId));
-	if (!raw) return null;
+async function decodeRecord(raw: string, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
 	try {
 		let json = raw;
 		if (kvEnvelopeKey) {
@@ -71,9 +173,23 @@ async function readRecord(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uin
 }
 
 /**
- * Upsert a tenant. The stored issuer is the normalized form. Throws
- * EmaTenantConflictError when another tenant already owns the issuer; moving a
- * tenant to a new issuer releases its old index entry.
+ * Read a tenant for a write that must not clobber what it cannot see: null only when nothing is
+ * stored under the id. A stored record that cannot be honoured throws EmaTenantUnreadableError
+ * instead of reading as absent.
+ */
+export async function getEmaTenantForWrite(kv: KVNamespace, tenantId: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
+	const raw = await kv.get(tenantKey(tenantId));
+	if (!raw) return null;
+	const record = await decodeRecord(raw, tenantId, kvEnvelopeKey);
+	if (!record) throw new EmaTenantUnreadableError();
+	return record;
+}
+
+/**
+ * Upsert a tenant. The stored issuer is the normalized form. Only an APPROVED tenant owns its
+ * issuer's index entry (the token grant's allowlist lookup): availability is checked, and
+ * EmaTenantConflictError thrown when another approved tenant holds the issuer, only then. A pending
+ * or rejected tenant neither claims nor blocks the issuer, so any number of them may name it.
  *
  * `existing` is the caller's already-read snapshot of this tenant (null = none): the old-issuer
  * release then works off that same snapshot, so an upsert reads the tenant key exactly once.
@@ -86,16 +202,29 @@ export async function putEmaTenant(
 	existing?: EmaTenantRecord | null,
 ): Promise<EmaTenantRecord> {
 	const stored: EmaTenantRecord = { ...rec, issuer: normalizeIssuer(rec.issuer) };
-	const newIndexKey = await issuerKey(stored.issuer);
-	await assertIssuerAvailable(kv, newIndexKey, stored, kvEnvelopeKey);
+	const indexKey = await issuerKey(stored.issuer);
+	if (effectiveApproval(stored) === 'approved') await assertIssuerAvailable(kv, indexKey, stored, kvEnvelopeKey);
 
 	const previous = existing === undefined ? await readRecord(kv, stored.tenant_id, kvEnvelopeKey) : existing;
 	const plaintext = JSON.stringify(stored);
 	await kv.put(tenantKey(stored.tenant_id), kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext);
-	await kv.put(newIndexKey, stored.tenant_id);
-
-	if (previous && previous.issuer !== stored.issuer) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
+	await syncIssuerIndex(kv, stored, indexKey, previous);
 	return stored;
+}
+
+/**
+ * Point the issuer index at `stored` when it is approved, and release the entry its previous version
+ * held once that no longer applies (the issuer moved, or the tenant left approval).
+ */
+async function syncIssuerIndex(
+	kv: KVNamespace,
+	stored: EmaTenantRecord,
+	indexKey: string,
+	previous: EmaTenantRecord | null,
+): Promise<void> {
+	const indexed = effectiveApproval(stored) === 'approved';
+	if (indexed) await kv.put(indexKey, stored.tenant_id);
+	if (previous && (previous.issuer !== stored.issuer || !indexed)) await releaseIssuerIndex(kv, previous.issuer, stored.tenant_id);
 }
 
 /** Throws EmaTenantConflictError when a different tenant genuinely holds the issuer behind `indexKey`. */
@@ -117,8 +246,7 @@ async function assertIssuerAvailable(
  * block another tenant from claiming it either.
  */
 async function ownsIssuer(kv: KVNamespace, tenantId: string, issuer: string, kvEnvelopeKey?: Uint8Array): Promise<boolean> {
-	const record = await readRecord(kv, tenantId, kvEnvelopeKey);
-	return record !== null && record.issuer === issuer;
+	return vouchesFor(await readRecord(kv, tenantId, kvEnvelopeKey), issuer);
 }
 
 /** Delete an issuer's index entry, but only while it still points at `tenantId`. */
@@ -131,7 +259,7 @@ export async function getEmaTenant(kv: KVNamespace, tenantId: string, kvEnvelope
 	return readRecord(kv, tenantId, kvEnvelopeKey);
 }
 
-/** Resolve an `iss` claim to its tenant. Null when the issuer is malformed, unregistered, or its record is unreadable. */
+/** Resolve an `iss` claim to its APPROVED tenant. Null when the issuer is malformed, unregistered or unapproved, or its record is unreadable. */
 export async function getEmaTenantByIssuer(kv: KVNamespace, issuer: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
 	let normalized: string;
 	try {
@@ -142,8 +270,8 @@ export async function getEmaTenantByIssuer(kv: KVNamespace, issuer: string, kvEn
 	const tenantId = await kv.get(await issuerKey(normalized));
 	if (!tenantId) return null;
 	const record = await readRecord(kv, tenantId, kvEnvelopeKey);
-	// A stale index entry must never vouch for an issuer the record no longer lists.
-	return record && record.issuer === normalized ? record : null;
+	// A stale index entry must never vouch for an issuer the record no longer lists, or no longer has approved.
+	return vouchesFor(record, normalized) ? record : null;
 }
 
 /**
@@ -172,11 +300,29 @@ export async function deleteEmaTenant(kv: KVNamespace, tenantId: string, kvEnvel
 export const EMA_SUBJECT_PREFIX = 'ema:';
 
 /**
- * The epoch an EMA access token must carry as `tep`. A record written before `token_epoch`
- * existed falls back to `created_at`; the two never collide (ms vs s) and only equality matters.
+ * The LEGACY epoch of a record: the seed of its coordinator version when none exists yet (see
+ * getEmaTenantEpoch). The mirror `token_epoch` wins; a record written before it existed falls back to
+ * `created_at`. Never an authority on its own: the coordinator version is.
  */
 export function tenantEpoch(rec: EmaTenantRecord): number {
 	return rec.token_epoch ?? rec.created_at;
+}
+
+/**
+ * The epoch an EMA access token must carry as `tep` right now: the tenant's strongly consistent
+ * coordinator version, seeded from the record on first access. Throws StrongStateUnavailableError when
+ * the coordinator cannot answer (a retryable 503, never a 401).
+ */
+export function currentTenantEpoch(rec: EmaTenantRecord, quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>): Promise<number> {
+	return getEmaTenantEpoch(rec.tenant_id, tenantEpoch(rec), quotaCoordinator);
+}
+
+/** sha256 (hex) of a normalized issuer: the form `rejected_issuer_hashes` holds. */
+export const issuerHash = (normalizedIssuer: string): Promise<string> => sha256Hex(normalizedIssuer);
+
+/** Whether the operator ever rejected `normalizedIssuer` for this tenant (a null record has no history). */
+export async function hasRejectedIssuer(rec: EmaTenantRecord | null, normalizedIssuer: string): Promise<boolean> {
+	return !!rec?.rejected_issuer_hashes?.includes(await issuerHash(normalizedIssuer));
 }
 
 /** The tenant_id of a well-formed `ema:<tenant_id>:<hash>` subject, else null. */
@@ -192,25 +338,26 @@ export interface EmaTokenClaims {
 	tep?: unknown;
 }
 
-function tenantBacksToken(rec: EmaTenantRecord, claims: EmaTokenClaims, nowSeconds: number): boolean {
-	return (
-		rec.enabled && (rec.entitlement_expires_at ?? Infinity) > nowSeconds && claims.tier === rec.tier && claims.tep === tenantEpoch(rec)
-	);
+/** The cheap half of liveness, decided from the KV record alone: active, on the token's tier, and the token has a `tep`. */
+function recordBacksToken(rec: EmaTenantRecord, claims: EmaTokenClaims, nowSeconds: number): boolean {
+	return isTenantActive(rec, nowSeconds) && claims.tier === rec.tier && typeof claims.tep === 'number';
 }
 
 /**
  * Tenant-wide revocation for an already-minted EMA access token, checked on every request: the
- * token stands only while its tenant record exists and is readable, enabled, inside its
- * entitlement, on the token's tier, and on the token's epoch (`tep`; a token without one fails).
- * Disabling, deleting, re-creating or lapsing a tenant therefore cuts its tokens off within KV
- * propagation (about a minute) instead of at their expiry. A store that cannot be read throws
- * StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
+ * token stands only while its tenant record exists and is readable, active (isTenantActive), on
+ * the token's tier, and its epoch (`tep`; a token without one fails) equals the tenant's CURRENT
+ * coordinator version. That version only moves forward, so a stale KV write can re-enable a tenant but
+ * can never revive a token a revocation killed. Disabling, deleting, re-creating or lapsing a tenant
+ * cuts its tokens off within KV propagation (about a minute) instead of at their expiry. A store that
+ * cannot be read throws StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
  */
 export async function isEmaTokenLive(
 	kv: KVNamespace,
 	claims: EmaTokenClaims,
 	nowSeconds: number,
 	kvEnvelopeKey?: Uint8Array,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<boolean> {
 	const tenantId = emaSubjectTenantId(claims.sub);
 	if (!tenantId) return false;
@@ -220,7 +367,8 @@ export async function isEmaTokenLive(
 	} catch {
 		throw new StrongStateUnavailableError('ema tenant liveness');
 	}
-	return rec !== null && tenantBacksToken(rec, claims, nowSeconds);
+	if (rec === null || !recordBacksToken(rec, claims, nowSeconds)) return false;
+	return claims.tep === (await currentTenantEpoch(rec, quotaCoordinator));
 }
 
 /** List up to 100 tenants, skipping unreadable records. */

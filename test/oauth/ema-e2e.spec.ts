@@ -5,6 +5,7 @@ import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { parseEnvelopeKey } from '../../src/lib/kv-envelope';
 import { getEmaTenant, putEmaTenant } from '../../src/oauth/ema-tenants';
 import { signJwt } from '../../src/oauth/jwt';
+import { bumpEmaTenantEpoch, getEmaTenantEpoch } from '../../src/oauth/storage';
 import { clearKvPrefix } from '../helpers/kv';
 
 // US-14 Enterprise Managed Auth, end to end through the real Worker:
@@ -24,6 +25,7 @@ const OTHER_JWKS_URI = 'https://globex.okta.com/oauth2/v1/keys';
 const WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const MINT_KEY = 'mint-capability-test-key-32-bytes-minimum';
 const REVOKE_KEY = 'revoke-capability-test-key-32-bytes-minimum';
+const ADMIN_KEY = 'ema-admin-capability-test-key-32-bytes-minimum';
 
 // 32 zero bytes, base64. The tenant upsert route refuses to run without KV_ENVELOPE_KEY while OAuth is on,
 // so tenant records are sealed here and the raw-KV helpers below go through the store (which opens/seals).
@@ -35,6 +37,7 @@ type TestEnv = typeof env & {
 	OAUTH_ISSUER?: string;
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	KV_ENVELOPE_KEY?: string;
 };
 const e2eEnv = {
@@ -43,6 +46,7 @@ const e2eEnv = {
 	OAUTH_ISSUER: ISSUER,
 	BV_MCP_OAUTH_MINT_KEY: MINT_KEY,
 	BV_MCP_OAUTH_REVOKE_KEY: REVOKE_KEY,
+	BV_MCP_EMA_ADMIN_KEY: ADMIN_KEY,
 	KV_ENVELOPE_KEY: ENVELOPE_B64,
 } as TestEnv;
 
@@ -176,7 +180,7 @@ async function signIdJag(key: IdpKey = idp, overrides: Record<string, unknown> =
 /** Operator upsert of an EMA tenant over the internal route; the jwks_uri comes from the IdP's discovery document. */
 async function seedTenant(overrides: Record<string, unknown> = {}): Promise<Response> {
 	return send(
-		internalRequest('PUT', '/oauth/ema-tenants', MINT_KEY, {
+		internalRequest('PUT', '/oauth/ema-tenants', ADMIN_KEY, {
 			tenant_id: 'acme-corp',
 			name: 'Acme Corp',
 			issuer: IDP_ISSUER,
@@ -331,6 +335,8 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 		expect(Number.isInteger(seeded.token_epoch)).toBe(true);
 		const token = await mintToken(await signIdJag());
 		expect(decodeClaims(token).tep).toBe(seeded.token_epoch);
+		// The KV mirror is the coordinator's version: that version, not the record, is what the token carries.
+		expect(decodeClaims(token).tep).toBe(await getEmaTenantEpoch('acme-corp', 1, env.QUOTA_COORDINATOR));
 		const before = await callPaidTool(token);
 		expect(before.status).toBe(200);
 
@@ -356,7 +362,7 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 		const before = await callPaidTool(token);
 		expect(before.status).toBe(200);
 
-		expect((await send(internalRequest('DELETE', '/oauth/ema-tenants/acme-corp', MINT_KEY, undefined))).status).toBe(204);
+		expect((await send(internalRequest('DELETE', '/oauth/ema-tenants/acme-corp', ADMIN_KEY, undefined))).status).toBe(204);
 		await expectCutOff(token, before.sessionId);
 
 		expect((await seedTenant()).status).toBe(200);
@@ -372,7 +378,7 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 		const before = await callPaidTool(token);
 		expect(before.status).toBe(200);
 
-		// Still enabled, so the epoch does not move: the entitlement check alone rejects.
+		// Still enabled: the lapsed entitlement rejects (and the earlier expiry moved the epoch too).
 		expect((await seedTenant({ entitlement_expires_at: now - 10 })).status).toBe(200);
 		await expectCutOff(token, before.sessionId);
 	});
@@ -406,6 +412,127 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 	});
 });
 
+describe('EMA self-serve tenants and operator approval', () => {
+	const TENANT = 'web-acme-corp-0001';
+	const NOT_ACCEPTED = { error: 'invalid_grant', error_description: 'Assertion not accepted' };
+
+	/** bv-web's settings save over the self-serve seam (mint key). */
+	function selfServe(overrides: Record<string, unknown> = {}): Promise<Response> {
+		return send(
+			internalRequest('PUT', `/oauth/ema-self-serve/${TENANT}`, MINT_KEY, {
+				name: 'Acme Corp',
+				issuer: IDP_ISSUER,
+				enabled: true,
+				tier: 'developer',
+				entitlement_expires_at: Math.floor(Date.now() / 1000) + 86_400,
+				...overrides,
+			}),
+		);
+	}
+
+	/** Operator approval with the reviewed snapshot (admin key). */
+	async function approve(): Promise<Response> {
+		const record = (await getEmaTenant(env.SESSION_STORE, TENANT, ENVELOPE_KEY))!;
+		const reviewed = { issuer: record.issuer, jwks_uri: record.jwks_uri, updated_at: record.updated_at };
+		return send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/approve`, ADMIN_KEY, reviewed));
+	}
+
+	async function expectCutOff(token: string, sessionId: string | undefined): Promise<void> {
+		expect((await send(mcpRequest(token, batchStatusCall, sessionId))).status).toBe(401);
+	}
+
+	it('a pending tenant is refused exactly like a disabled one; approval lets it mint at its tier', async () => {
+		expect((await selfServe()).status).toBe(200);
+		const pending = await exchange(await signIdJag());
+		expect(pending.status).toBe(400);
+		expect(await pending.json()).toEqual(NOT_ACCEPTED);
+
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		expect(decodeClaims(token).sub).toMatch(/^ema:web-acme-corp-0001:[0-9a-f]{32}$/);
+		const call = await callPaidTool(token);
+		expect(call.status).toBe(200);
+		expect(call.tier).toBe('developer');
+	});
+
+	it('an issuer change returns the tenant to pending and kills its tokens; re-approval does not revive them', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		const moved = await selfServe({ issuer: OTHER_IDP_ISSUER });
+		expect(((await moved.json()) as { approval: string }).approval).toBe('pending');
+		await expectCutOff(token, before.sessionId);
+		// Neither the old issuer (released) nor the new one (pending) mints.
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
+		expect(await (await exchange(await signIdJag(otherIdp))).json()).toEqual(NOT_ACCEPTED);
+
+		expect((await approve()).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+		expect((await callPaidTool(await mintToken(await signIdJag(otherIdp)))).status).toBe(200);
+	});
+
+	it('a routine same-issuer renewal keeps the approval and the live tokens', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		const renewed = await selfServe({ entitlement_expires_at: Math.floor(Date.now() / 1000) + 30 * 86_400 });
+		expect(((await renewed.json()) as { approval: string }).approval).toBe('approved');
+		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(200);
+	});
+
+	it('a revoke from bv-web lands while the IdP discovery document is gone: live tokens are cut off and nothing mints', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		delete documents[`${IDP_ISSUER}/.well-known/openid-configuration`];
+		const revoked = await selfServe({ enabled: false });
+		expect(revoked.status).toBe(200);
+		expect(((await revoked.json()) as { approval: string }).approval).toBe('approved');
+		await expectCutOff(token, before.sessionId);
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
+	});
+
+	it('a rejected tenant mints nothing, and a same-issuer re-save stays rejected', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		expect((await send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/reject`, ADMIN_KEY, undefined))).status).toBe(200);
+		await expectCutOff(token, undefined);
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
+		expect(((await (await selfServe({ name: 'Acme again' })).json()) as { approval: string }).approval).toBe('rejected');
+	});
+
+	it('pending is checked per request too: an issued token stops resolving while its tenant is pending', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+		// Same epoch, approval alone flipped, so only the approval check can reject.
+		const record = (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
+		await putEmaTenant(env.SESSION_STORE, { ...record, approval: 'pending' }, ENVELOPE_KEY);
+		await expectCutOff(token, before.sessionId);
+		await putEmaTenant(env.SESSION_STORE, { ...record, approval: 'approved' }, ENVELOPE_KEY);
+		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(200);
+	});
+
+	it('a legacy operator record with neither approval nor source still exchanges and resolves', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const { approval: _approval, source: _source, ...legacy } = (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
+		await putEmaTenant(env.SESSION_STORE, legacy, ENVELOPE_KEY);
+		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).not.toHaveProperty('source');
+		expect((await callPaidTool(await mintToken(await signIdJag()))).status).toBe(200);
+	});
+});
+
 describe('EMA tenant token epoch on the upsert route', () => {
 	const tenantKey = 'oauth:ema-tenant:acme-corp';
 
@@ -417,43 +544,182 @@ describe('EMA tenant token epoch on the upsert route', () => {
 		return (await storedRecord()).token_epoch;
 	}
 
-	/** Backdate the stored epoch so a later move is distinguishable from the create within one millisecond. */
-	async function setStoredEpoch(epoch: number): Promise<void> {
-		await putEmaTenant(env.SESSION_STORE, { ...(await storedRecord()), token_epoch: epoch }, ENVELOPE_KEY);
+	/** The authority: the coordinator version the KV record mirrors. */
+	const currentEpoch = () => getEmaTenantEpoch('acme-corp', 1, env.QUOTA_COORDINATOR);
+
+	/** Run a request with one worker binding swapped, restoring it afterwards. */
+	async function withBinding<T>(name: 'QUOTA_COORDINATOR' | 'SESSION_STORE', replacement: unknown, run: () => Promise<T>): Promise<T> {
+		const bindings = e2eEnv as unknown as Record<string, unknown>;
+		const original = bindings[name];
+		bindings[name] = replacement;
+		try {
+			return await run();
+		} finally {
+			bindings[name] = original;
+		}
 	}
 
-	it('sets the epoch on create, keeps it on an enabled update and on a re-enable, and moves it on enabled true -> false', async () => {
-		const before = Date.now();
-		expect((await seedTenant()).status).toBe(200);
-		const created = await storedEpoch();
-		expect(created).toBeTypeOf('number');
-		expect(created).toBeGreaterThanOrEqual(before);
+	/** A coordinator that fails ONLY the tenant-epoch calls of the given kinds, so the rest of the mint and the call still run. */
+	function coordinatorFailing(kinds: string[]): unknown {
+		return {
+			getByName: (name: string) => {
+				const stub = env.QUOTA_COORDINATOR.getByName(name);
+				return {
+					dispatch: async (request: { kind: string; coordinationKey?: string }) => {
+						if (kinds.includes(request.kind) && request.coordinationKey?.startsWith('oauth:ema-tenant-epoch:')) {
+							throw new Error('coordinator unavailable');
+						}
+						return stub.dispatch(request as never);
+					},
+				};
+			},
+		};
+	}
 
-		await setStoredEpoch(1);
+	it('settles the epoch in the coordinator: set on create, kept on an enabled update and a re-enable, bumped on enabled true -> false, mirrored in KV', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const created = await currentEpoch();
+		expect(created).toBeGreaterThan(1);
+		expect(await storedEpoch()).toBe(created);
+
 		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);
-		expect(await storedEpoch()).toBe(1);
+		expect(await currentEpoch()).toBe(created);
 
 		expect((await seedTenant({ enabled: false })).status).toBe(200);
-		const suspended = await storedEpoch();
-		expect(suspended).toBeGreaterThanOrEqual(before);
+		const suspended = await currentEpoch();
+		expect(suspended).toBeGreaterThan(created);
+		expect(await storedEpoch()).toBe(suspended);
 
-		await setStoredEpoch(2);
 		expect((await seedTenant({ enabled: false, name: 'Still suspended' })).status).toBe(200);
-		expect(await storedEpoch()).toBe(2);
+		expect(await currentEpoch()).toBe(suspended);
 		expect((await seedTenant({ enabled: true })).status).toBe(200);
-		expect(await storedEpoch()).toBe(2);
+		expect(await currentEpoch()).toBe(suspended);
 	});
 
-	it('keeps a legacy record (no token_epoch) on created_at across an enabled update', async () => {
+	it('moves the epoch when the entitlement moves earlier, and keeps it on a later one', async () => {
+		const now = Math.floor(Date.now() / 1000);
+		expect((await seedTenant({ entitlement_expires_at: now + 3600 })).status).toBe(200);
+		const created = await currentEpoch();
+		expect((await seedTenant({ entitlement_expires_at: now + 7200 })).status).toBe(200);
+		expect(await currentEpoch()).toBe(created);
+		expect((await seedTenant({ entitlement_expires_at: now + 1800 })).status).toBe(200);
+		expect(await currentEpoch()).toBeGreaterThan(created);
+	});
+
+	it('keeps a legacy record (no token_epoch, no coordinator version) on created_at across an enabled update', async () => {
 		expect((await seedTenant()).status).toBe(200);
 		const { token_epoch: _dropped, ...record } = await storedRecord();
 		await putEmaTenant(env.SESSION_STORE, record, ENVELOPE_KEY);
+		// A record from before the coordinator version existed: there is no version to read yet.
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 
 		expect((await seedTenant({ name: 'Acme Renamed' })).status).toBe(200);
 		expect(await storedEpoch()).toBeUndefined();
 		const token = await mintToken(await signIdJag());
 		expect(decodeClaims(token).tep).toBe(record.created_at);
 		expect((await callPaidTool(token)).status).toBe(200);
+	});
+
+	it('a stale KV write that restores the old epoch AND re-enables cannot revive a revoked token', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+		const stale = await storedRecord();
+
+		expect((await seedTenant({ enabled: false })).status).toBe(200);
+		// A read-modify-write that read the record before the revoke finishes now: enabled again, old mirror epoch.
+		await putEmaTenant(env.SESSION_STORE, stale, ENVELOPE_KEY);
+		expect(await storedEpoch()).toBe(stale.token_epoch);
+		expect((await storedRecord()).enabled).toBe(true);
+
+		const response = await send(mcpRequest(token, batchStatusCall, before.sessionId));
+		expect(response.status).toBe(401);
+		// A fresh exchange is stamped with the coordinator's current version and works.
+		const fresh = await mintToken(await signIdJag());
+		expect(decodeClaims(fresh).tep).toBe(await currentEpoch());
+		expect((await callPaidTool(fresh)).status).toBe(200);
+	});
+
+	it('a token minted under a legacy record stays valid until the first revoke, which kills it although no version existed', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const { token_epoch: _dropped, ...legacy } = await storedRecord();
+		await putEmaTenant(env.SESSION_STORE, legacy, ENVELOPE_KEY);
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
+		const forge = () =>
+			signJwt(
+				{
+					sub: `ema:acme-corp:${'0'.repeat(32)}`,
+					jti: crypto.randomUUID(),
+					tier: 'developer',
+					client_id: WEB_CLIENT_ID,
+					entitlementGeneration: 1,
+					tep: legacy.created_at,
+				},
+				{ secret: e2eEnv.OAUTH_SIGNING_SECRET!, ttlSeconds: 600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+			);
+		const before = await callPaidTool(await forge());
+		expect(before.status).toBe(200);
+
+		expect((await seedTenant({ enabled: false })).status).toBe(200);
+		expect((await seedTenant({ enabled: true })).status).toBe(200);
+		expect((await send(mcpRequest(await forge(), batchStatusCall, before.sessionId))).status).toBe(401);
+	});
+
+	it('an unreadable coordinator is a retryable 503 at mint, before the assertion is consumed (never a 401, never a token)', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const assertion = await signIdJag();
+		const outage = await withBinding('QUOTA_COORDINATOR', coordinatorFailing(['version-get']), () => exchange(assertion));
+		expect(outage.status).toBe(503);
+		expect((await callPaidTool(await mintToken(assertion))).status).toBe(200);
+	});
+
+	it('an unreadable coordinator is a 503 on a bearer request, never a 401 that would make the client re-exchange', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		const outage = await withBinding('QUOTA_COORDINATOR', coordinatorFailing(['version-get']), () =>
+			send(mcpRequest(token, batchStatusCall, before.sessionId)),
+		);
+		expect(outage.status).toBe(503);
+	});
+
+	it('a revoking write the coordinator cannot bump is a 503 and writes nothing to KV', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const before = await env.SESSION_STORE.get(tenantKey);
+		const outage = await withBinding('QUOTA_COORDINATOR', coordinatorFailing(['version-bump']), () => seedTenant({ enabled: false }));
+		expect(outage.status).toBe(503);
+		expect(await env.SESSION_STORE.get(tenantKey)).toBe(before);
+	});
+
+	it('bumps the coordinator BEFORE it writes the KV record', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const created = await currentEpoch();
+		let epochWhenKvWritten: number | undefined;
+		const kv = new Proxy(env.SESSION_STORE, {
+			get(target, prop) {
+				const value = Reflect.get(target, prop) as unknown;
+				if (prop === 'put') {
+					return async (key: string, ...rest: unknown[]) => {
+						if (key === tenantKey) epochWhenKvWritten = await currentEpoch();
+						return (target.put as (k: string, ...r: unknown[]) => Promise<void>)(key, ...rest);
+					};
+				}
+				return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+			},
+		});
+		expect((await withBinding('SESSION_STORE', kv, () => seedTenant({ enabled: false }))).status).toBe(200);
+		expect(epochWhenKvWritten).toBeGreaterThan(created);
+		expect(epochWhenKvWritten).toBe(await storedEpoch());
+	});
+
+	it('a direct bump kills tokens the KV record still vouches for (the coordinator is the authority)', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+		await bumpEmaTenantEpoch('acme-corp', 1, env.QUOTA_COORDINATOR);
+		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(401);
 	});
 
 	it('rejects a PUT body that tries to set token_epoch (server-managed)', async () => {

@@ -187,6 +187,8 @@ type BvMcpEnv = Env & {
 	/** Dedicated inbound capability for OAuth/trial grant issuance and subject revocation. */
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	/** Operator-only capability for /internal/oauth/ema-tenants* (seed, list, approve, reject). Never provisioned to bv-web. */
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	BV_MCP_TOOL_DELEGATION_KEY?: string;
 	BV_MCP_WATCH_CLEANUP_KEY?: string;
 	/** Dedicated outbound capability for the exact bv-web Brand Drift receiver. */

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { putEmaTenant } from '../../src/oauth/ema-tenants';
 import { newJti, signJwt } from '../../src/oauth/jwt';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { bumpEmaTenantEpoch } from '../../src/oauth/storage';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -126,16 +127,38 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 		['the tenant is disabled', { tep: EPOCH }, { enabled: false }],
 		['the tenant entitlement has passed', { tep: EPOCH }, { entitlement_expires_at: Math.floor(Date.now() / 1000) - 1 }],
 		['the token tier differs from the tenant tier', { tep: EPOCH }, { tier: 'enterprise' as const }],
+		['the tenant approval is pending', { tep: EPOCH }, { approval: 'pending' as const }],
+		['the tenant approval is rejected', { tep: EPOCH }, { approval: 'rejected' as const }],
+		['the tenant is self-serve with no approval recorded (reads as pending)', { tep: EPOCH }, { source: 'self-serve' as const }],
 	])('rejects an ema: bearer as unauthenticated (401, not 503) when %s', async (_label, claims, record) => {
 		await putEmaTenant(env.SESSION_STORE, tenant(record));
 		const { kv } = spyKv();
 		expect(await resolve(await mint(claims), kv)).toEqual({ authenticated: false });
 	});
 
+	it.each([
+		['explicitly approved', { approval: 'approved' as const }],
+		['an approved self-serve tenant', { approval: 'approved' as const, source: 'self-serve' as const }],
+		['a legacy record with neither approval nor source', {}],
+	])('resolves an ema: bearer on a tenant that is %s', async (_label, record) => {
+		await putEmaTenant(env.SESSION_STORE, tenant(record));
+		const { kv } = spyKv();
+		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
+	});
+
 	it('rejects an ema: bearer whose tenant record is missing', async () => {
 		await env.SESSION_STORE.delete(`${TENANT_PREFIX}acme-corp`);
 		const { kv } = spyKv();
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
+	});
+
+	it('judges the epoch by the coordinator version: once it moves, a token the KV record still vouches for is rejected', async () => {
+		const { kv } = spyKv();
+		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
+		expect(await bumpEmaTenantEpoch('acme-corp', EPOCH, env.QUOTA_COORDINATOR)).toBe(EPOCH + 1);
+		// The record is untouched (token_epoch is still EPOCH, enabled, same tier), yet the old token is dead.
+		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
+		expect((await resolve(await mint({ tep: EPOCH + 1 }), kv)).authenticated).toBe(true);
 	});
 
 	it('rejects a malformed ema: subject without reading any tenant record', async () => {
