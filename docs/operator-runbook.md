@@ -365,17 +365,26 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 > bv-web holds `BV_MCP_OAUTH_MINT_KEY` and reaches EMA only through the customer self-serve route
 > (`/internal/oauth/ema-self-serve/<tenant_id>`), which cannot approve anything.
 
-> **Prerequisite: set `KV_ENVELOPE_KEY` (and redeploy) BEFORE seeding the first tenant.**
-> Tenant records are sealed with that key, and a record stored without it is plaintext.
-> There is no plaintext fallback by design: once the key is set, a plaintext record reads
-> as absent. So a tenant seeded while the key is unset would vanish the moment the key
-> is added: its issuer index would be orphaned, every token issued for it would answer
-> 401 within about a minute, and a later re-PUT would quietly work and hide the cause.
-> To prevent that, while `ENABLE_OAUTH` is `true` and `KV_ENVELOPE_KEY` is unset (or does
-> not parse), the PUT answers `409 envelope_key_required` and writes nothing.
-> If the key is ever set or rotated after tenants exist, every tenant reads as absent:
-> re-PUT each one to reseal it, and confirm with `GET /internal/oauth/ema-tenants`
-> that they all list (see "Verify live", step 1).
+> **Storage: the EMA registry.** Tenant records, the approved-issuer index and each tenant's
+> epoch floor live in ONE QuotaCoordinator strong-state shard (fixed coordination key
+> `ema-registry`, keys under `strong:ema:` and `strong:version:ema-tenant-epoch:`, outside the
+> `quota:` prefix the cleanup alarm sweeps, so nothing expires them). Every read and write is one
+> Durable Object call that runs inside a storage transaction: a write is decided on the record as
+> it is now, never on a snapshot the Worker read earlier. Durable Object storage is encrypted at
+> rest and reachable only through this Worker's binding, so records are no longer sealed. That
+> one shard serves every EMA mint and every EMA bearer request (one call each); that is accepted
+> for current volume, so watch its latency if EMA traffic grows.
+>
+> **Records from before the registry are imported automatically.** A tenant written by an older
+> release sits in `SESSION_STORE` (`oauth:ema-tenant:<id>`, sealed with `KV_ENVELOPE_KEY`). The
+> first read of that tenant (a mint, a bearer request, an operator or self-serve call, or a
+> `GET /internal/oauth/ema-tenants` list) imports it into the registry with its token epoch, so
+> its live tokens keep working, and deletes the KV copy. The registry never reads KV again for an
+> id it knows, so a deleted tenant cannot come back from a stale copy. No operator step is needed.
+> `KV_ENVELOPE_KEY` now only matters for that import: a sealed legacy record with no key, or one
+> that does not open, is a 503 (never an absent tenant) until the key is set. While `ENABLE_OAUTH`
+> is `true` and the key is unset (or does not parse), the write routes still answer
+> `409 envelope_key_required`, so no write runs over a legacy record it cannot import.
 
     PUT /internal/oauth/ema-tenants
     Authorization: Bearer <BV_MCP_EMA_ADMIN_KEY>
@@ -398,9 +407,8 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   IP literals and internal hostnames are rejected (`400`) and nothing is stored.
 - `issuer` is stored normalized (https, lowercase host, all trailing slashes stripped,
   so `https://IDP.example.com/x//` and `https://idp.example.com/x/` are the same issuer).
-  One issuer belongs to one tenant: a second tenant claiming it gets `409 issuer_conflict`.
-  An index entry whose owning record is missing or unreadable (for example after a
-  `KV_ENVELOPE_KEY` rotation) is treated as free, so the issuer can be re-claimed.
+  One issuer belongs to one APPROVED tenant: approving or seeding a second tenant for it gets
+  `409 issuer_conflict`. An index entry whose owner is missing, unapproved or unreadable is free.
 - `allowed_client_ids` defaults to the Claude web CIMD client; `tier` is `developer`
   or `enterprise` (never `owner`); `entitlement_expires_at` is epoch seconds.
 - Re-PUT the same `tenant_id` to update (`created_at` is preserved). A PUT replaces
@@ -410,27 +418,23 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
   endpoint being reachable right now, and a failure leaves the tenant enabled. When
   in doubt, or when the IdP is down, `DELETE` is the kill switch (it needs no discovery).
 - Suspending (an `enabled` true→false PUT) or deleting a tenant also invalidates every
-  access token already issued for it, within about 60s (KV propagation): each `/mcp`
-  request with an EMA bearer re-reads the tenant record, and a token whose tenant is
-  missing, unreadable, disabled, past `entitlement_expires_at`, on another `tier`, or on
-  an older token epoch gets the normal 401 challenge. Re-enabling does NOT restore them,
-  because the tenant's token epoch has moved; a re-created tenant starts a new epoch too.
-  Claude recovers by exchanging a fresh assertion.
-- The token epoch's authority is a monotonic version in the QuotaCoordinator Durable Object
-  (key `ema-tenant-epoch:<tenant_id>`), not the KV record: KV has no compare-and-set, so a
-  stale read-modify-write could otherwise lower an epoch and revive revoked tokens. Every
-  revoking write (create, disable, an issuer or `jwks_uri` change, leaving approval, an
-  earlier `entitlement_expires_at`, any DELETE) bumps that version BEFORE it writes KV; mint
-  stamps the current version as `tep`; a bearer stands only while `tep` equals it. The
-  record's `token_epoch` (server-managed, never accepted in a PUT body) is only a mirror.
-  If the coordinator cannot answer, a mint or a bearer request answers 503 (retryable, never
-  a 401) and a revoking write aborts with 503 and writes nothing. A tenant stored before this
-  version existed seeds it from its `token_epoch` (else `created_at`) on first use, so its
-  tokens stay valid until something revokes them. A stale write can still re-enable a tenant
-  (the request that wrote it asked for that) but never revives a token an earlier revoke killed.
-- `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
-  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
-  also releases the issuer even when the record can no longer be read.
+  access token already issued for it, at once: each `/mcp` request with an EMA bearer reads the
+  tenant record from the registry, and a token whose tenant is missing, disabled, unapproved, past
+  `entitlement_expires_at`, on another `tier`, or on an older token epoch gets the normal 401
+  challenge. Claude recovers by exchanging a fresh assertion.
+- The token epoch is the record's `token_epoch` (server-managed, never accepted in a PUT body). It
+  only moves forward. Every revoking write (create, disable, an issuer or `jwks_uri` change, any
+  `tier` change, leaving approval, an earlier `entitlement_expires_at`) moves it inside the same
+  transaction that changes the record; a mint validates the assertion against one record and stamps
+  that record's epoch as `tep`. A token minted against the record before a revoke therefore carries
+  the old epoch and dies, and re-enabling, re-approving or a tier round trip never revives it. A
+  DELETE keeps the id's highest epoch as a floor, so a re-created tenant starts above it. If the
+  registry cannot answer, a mint or a bearer request answers 503 (retryable, never a 401) and a
+  write answers `503 ema_store_unavailable` and changes nothing.
+- `GET /internal/oauth/ema-tenants` lists one page (at most 100, in `tenant_id` order; a
+  `next_cursor` in the answer is the `?cursor=` of the next page), `GET
+  /internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
+  removes it (204). DELETE also releases the issuer even when the record can no longer be read.
 - Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
   created `pending` and mints nothing until approved; an operator-seeded tenant without an
   `approval` field counts as approved.
@@ -468,7 +472,7 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 
 Run after the Worker deploy, and again once a tenant is seeded:
 
-1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After ANY `KV_ENVELOPE_KEY` change (first set, rotation, removal), also run `GET /internal/oauth/ema-tenants` and confirm every seeded tenant is listed; a missing one is unreadable under the current key and needs a re-PUT.
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After ANY `KV_ENVELOPE_KEY` change (first set, rotation, removal) while legacy KV tenants may remain, also run `GET /internal/oauth/ema-tenants`, which imports every legacy tenant it can open, and confirm every seeded tenant is listed; a missing one could not be opened under the current key and needs the right key or a re-PUT.
 2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
 3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
 4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).

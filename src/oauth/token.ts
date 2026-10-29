@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { currentTenantEpoch, EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer } from './ema-tenants';
+import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer, tenantEpoch, type EmaRegistry } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -373,7 +373,7 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 /** What a validated ID-JAG authorizes: the tenant, the requesting client and the subject's digest. */
 interface AcceptedIdJag {
 	tenant: EmaTenantRecord;
-	/** The tenant's coordinator epoch read when the tenant was validated: the token's `tep`. A revoke after that read kills the token. */
+	/** The validated record's own epoch: the token's `tep`. Any revoke stored after that read moved the epoch, so it kills the token. */
 	tenantEpoch: number;
 	clientId: string;
 	subjectHash: string;
@@ -420,17 +420,21 @@ function decodeIdJagUnverified(assertion: string): Record<string, unknown> {
 }
 
 /** A tenant lookup that cannot be read is an outage (503), never an untrusted issuer. */
-async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
+async function lookupEmaTenant(registry: EmaRegistry, issuer: string): Promise<EmaTenantRecord | null> {
 	try {
-		return await getEmaTenantByIssuer(kv, issuer, kvEnvelopeKey);
+		return await getEmaTenantByIssuer(registry, issuer);
 	} catch {
 		throw new StrongStateUnavailableError('ema tenant lookup');
 	}
 }
 
-/** The active (enabled, approved, in-entitlement) tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
-async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
-	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
+/**
+ * The active (enabled, approved, in-entitlement) tenant that allowlists `iss`, read as ONE registry record:
+ * the assertion is validated against that record (jwks_uri, client allowlist, expiry) and the token stamped
+ * with its epoch. Looked up before the signature, so an unregistered issuer fails closed.
+ */
+async function resolveTrustedTenant(registry: EmaRegistry, iss: unknown, now: number): Promise<EmaTenantRecord> {
+	const tenant = typeof iss === 'string' ? await lookupEmaTenant(registry, iss) : null;
 	// Unknown, disabled, pending and lapsed tenants are indistinguishable to the caller (same code, same text).
 	if (!tenant || !isTenantActive(tenant, now)) {
 		throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
@@ -602,10 +606,8 @@ async function acceptIdJag(
 	const issuer = requireStrictIssuer(c.req.url, c.env.OAUTH_ISSUER);
 	const now = Math.floor(Date.now() / 1000);
 	const unverified = decodeIdJagUnverified(request.assertion);
-	const tenant = await resolveTrustedTenant(kv, unverified.iss, now, kvEnvelopeKey);
-	// Stamped with what was validated and read before the jti is consumed: an unreadable coordinator is a 503
-	// that leaves the assertion reusable, and a revoke landing after this read leaves the token stale (dead).
-	const tenantEpoch = await currentTenantEpoch(tenant, c.env.QUOTA_COORDINATOR);
+	// Read before the jti is consumed, so an unreadable registry is a 503 that leaves the assertion reusable.
+	const tenant = await resolveTrustedTenant({ coordinator: c.env.QUOTA_COORDINATOR, kv, kvEnvelopeKey }, unverified.iss, now);
 	await assertClientAllowed(kv, tenant, request.client_id, kvEnvelopeKey);
 	if (unverified.client_id !== request.client_id) throw new TokenEndpointError('invalid_grant', 'Assertion client_id does not match');
 	const claims = await verifyIdJagSignature(kv, tenant, request.assertion);
@@ -613,7 +615,7 @@ async function acceptIdJag(
 	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
 	const resourceGranted = assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
 	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
-	return { tenant, tenantEpoch, clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
+	return { tenant, tenantEpoch: tenantEpoch(tenant), clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
 }
 
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */

@@ -1,9 +1,10 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { putEmaTenant } from '../../src/oauth/ema-tenants';
+import { EMA_REGISTRY_KEY, effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey } from '../../src/oauth/ema-tenants';
 import { newJti, signJwt } from '../../src/oauth/jwt';
-import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
-import { bumpEmaTenantEpoch } from '../../src/oauth/storage';
+import { sha256Hex } from '../../src/oauth/jwks';
+import { parseEnvelopeKey, sealKv } from '../../src/lib/kv-envelope';
+import { resetQuotaCoordinatorState, securityStateShardNameForKey, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 
@@ -14,7 +15,6 @@ import { clearKvPrefix } from '../helpers/kv';
 const SECRET = 'a'.repeat(32);
 const ISSUER = 'https://example.com';
 const REQUEST_URL = `${ISSUER}/mcp`;
-const TENANT_PREFIX = 'oauth:ema-tenant:';
 const EMA_SUB = `ema:acme-corp:${'0'.repeat(32)}`;
 const EPOCH = 1_800_000_000_000;
 // 32 zero bytes, base64 — a valid KV_ENVELOPE_KEY shape.
@@ -36,21 +36,35 @@ function tenant(overrides: Partial<EmaTenantRecord> = {}): EmaTenantRecord {
 	};
 }
 
-/** SESSION_STORE pass-through that records every key read and can make tenant reads fail. */
-function spyKv(opts: { failTenantReads?: boolean } = {}): { kv: KVNamespace; tenantReads: () => string[] } {
-	const store = env.SESSION_STORE;
+/** QUOTA_COORDINATOR pass-through that records every EMA registry read (ema-get) and can make those reads fail. */
+function spyKv(opts: { failTenantReads?: boolean } = {}): {
+	kv: DurableObjectNamespace<QuotaCoordinator>;
+	tenantReads: () => string[];
+} {
 	const reads: string[] = [];
-	const kv = {
-		get: (key: string, options?: unknown) => {
-			reads.push(key);
-			if (opts.failTenantReads && key.startsWith(TENANT_PREFIX)) return Promise.reject(new Error('KV unavailable (SQ-435)'));
-			return store.get(key, options as KVNamespaceGetOptions<'text'>);
+	const coordinator = {
+		getByName: (name: string) => {
+			const stub = env.QUOTA_COORDINATOR.getByName(name);
+			return {
+				dispatch: async (request: { kind: string; tenantId?: string }) => {
+					if (request.kind === 'ema-get') {
+						reads.push(request.tenantId ?? '');
+						if (opts.failTenantReads) throw new Error('registry unavailable (SQ-435)');
+					}
+					return stub.dispatch(request as never);
+				},
+			};
 		},
-		put: store.put.bind(store),
-		delete: store.delete.bind(store),
-		list: store.list.bind(store),
-	} as unknown as KVNamespace;
-	return { kv, tenantReads: () => reads.filter((key) => key.startsWith(TENANT_PREFIX)) };
+	} as unknown as DurableObjectNamespace<QuotaCoordinator>;
+	return { kv: coordinator, tenantReads: () => reads };
+}
+
+/** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
+async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
+	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(securityStateShardNameForKey(EMA_REGISTRY_KEY)), async (_instance, state) => {
+		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
+	});
 }
 
 function mint(claims: Record<string, unknown>): Promise<string> {
@@ -60,15 +74,15 @@ function mint(claims: Record<string, unknown>): Promise<string> {
 	);
 }
 
-async function resolve(token: string, kv: KVNamespace, kvEnvelopeKey?: string) {
+async function resolve(token: string, coordinator: DurableObjectNamespace<QuotaCoordinator>, kvEnvelopeKey?: string) {
 	const { resolveTier } = await import('../../src/lib/tier-auth');
 	return resolveTier(
 		token,
 		{
 			OAUTH_SIGNING_SECRET: SECRET,
 			OAUTH_ISSUER: ISSUER,
-			SESSION_STORE: kv,
-			QUOTA_COORDINATOR: env.QUOTA_COORDINATOR,
+			SESSION_STORE: env.SESSION_STORE,
+			QUOTA_COORDINATOR: coordinator,
 			KV_ENVELOPE_KEY: kvEnvelopeKey,
 		},
 		undefined,
@@ -79,7 +93,7 @@ async function resolve(token: string, kv: KVNamespace, kvEnvelopeKey?: string) {
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
-	await putEmaTenant(env.SESSION_STORE, tenant());
+	await putRegistryRecord(tenant());
 });
 
 afterEach(async () => {
@@ -102,23 +116,28 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('developer');
 		expect(result.oauthTenantId).toBe(EMA_SUB);
-		expect(tenantReads()).toEqual([`${TENANT_PREFIX}acme-corp`]);
+		expect(tenantReads()).toEqual(['acme-corp']);
 	});
 
 	it('falls back to created_at as the epoch of a record written before token_epoch existed', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: undefined }));
+		await putRegistryRecord(tenant({ token_epoch: undefined }));
 		const { kv } = spyKv();
 		expect((await resolve(await mint({ tep: 1_700_000_000 }), kv)).authenticated).toBe(true);
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
 	});
 
-	it('reads a sealed tenant record when KV_ENVELOPE_KEY is set', async () => {
-		const { parseEnvelopeKey } = await import('../../src/lib/kv-envelope');
-		await putEmaTenant(env.SESSION_STORE, tenant(), parseEnvelopeKey(ENVELOPE_KEY_BASE64)!);
+	it('imports a sealed legacy KV tenant on first use: 503 while the envelope key is missing, then live once it is set', async () => {
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
+		const legacy = tenant();
+		await env.SESSION_STORE.put(`oauth:ema-tenant:${legacy.tenant_id}`, await sealKv(JSON.stringify(legacy), parseEnvelopeKey(ENVELOPE_KEY_BASE64)!));
+		await env.SESSION_STORE.put(`oauth:ema-issuer:${await sha256Hex(legacy.issuer)}`, legacy.tenant_id);
 		const { kv } = spyKv();
+		// A sealed record nobody can open is an outage, never an absent tenant.
+		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false, storageUnavailable: true });
 		expect((await resolve(await mint({ tep: EPOCH }), kv, ENVELOPE_KEY_BASE64)).authenticated).toBe(true);
-		// The same sealed record without the key cannot be read, so the token is rejected (fail closed).
-		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
+		expect(await env.SESSION_STORE.get(`oauth:ema-tenant:${legacy.tenant_id}`)).toBeNull();
+		// Imported: the registry answers from now on, with or without the key.
+		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
 	});
 
 	it.each([
@@ -131,7 +150,7 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 		['the tenant approval is rejected', { tep: EPOCH }, { approval: 'rejected' as const }],
 		['the tenant is self-serve with no approval recorded (reads as pending)', { tep: EPOCH }, { source: 'self-serve' as const }],
 	])('rejects an ema: bearer as unauthenticated (401, not 503) when %s', async (_label, claims, record) => {
-		await putEmaTenant(env.SESSION_STORE, tenant(record));
+		await putRegistryRecord(tenant(record));
 		const { kv } = spyKv();
 		expect(await resolve(await mint(claims), kv)).toEqual({ authenticated: false });
 	});
@@ -141,22 +160,22 @@ describe('resolveTier: EMA tenant-wide revocation', () => {
 		['an approved self-serve tenant', { approval: 'approved' as const, source: 'self-serve' as const }],
 		['a legacy record with neither approval nor source', {}],
 	])('resolves an ema: bearer on a tenant that is %s', async (_label, record) => {
-		await putEmaTenant(env.SESSION_STORE, tenant(record));
+		await putRegistryRecord(tenant(record));
 		const { kv } = spyKv();
 		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
 	});
 
 	it('rejects an ema: bearer whose tenant record is missing', async () => {
-		await env.SESSION_STORE.delete(`${TENANT_PREFIX}acme-corp`);
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 		const { kv } = spyKv();
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
 	});
 
-	it('judges the epoch by the coordinator version: once it moves, a token the KV record still vouches for is rejected', async () => {
+	it('judges the epoch by the registry record: once it moves, the old token is rejected and the new one resolves', async () => {
 		const { kv } = spyKv();
 		expect((await resolve(await mint({ tep: EPOCH }), kv)).authenticated).toBe(true);
-		expect(await bumpEmaTenantEpoch('acme-corp', EPOCH, env.QUOTA_COORDINATOR)).toBe(EPOCH + 1);
-		// The record is untouched (token_epoch is still EPOCH, enabled, same tier), yet the old token is dead.
+		await putRegistryRecord(tenant({ token_epoch: EPOCH + 1 }));
+		// Still enabled, approved and on the same tier, yet the old token is dead.
 		expect(await resolve(await mint({ tep: EPOCH }), kv)).toEqual({ authenticated: false });
 		expect((await resolve(await mint({ tep: EPOCH + 1 }), kv)).authenticated).toBe(true);
 	});
