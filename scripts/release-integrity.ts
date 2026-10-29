@@ -82,6 +82,8 @@ export interface DnsChecksIdentityInput {
 	gitUnavailable: boolean;
 }
 
+const DNS_CHECKS_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
 /** Shipping inputs; test exclusions mirror the package's declaration-build exclusion. */
 export function isDnsChecksIdentityPath(path: string): boolean {
 	if (path === 'scripts/ci/dns-checks-prepack.ts' || path === 'scripts/pack-integrity.ts') return true;
@@ -97,7 +99,7 @@ export function isDnsChecksIdentityPath(path: string): boolean {
 /** Fail closed when the package version's local tag does not identify the shipping inputs. */
 export function dnsChecksIdentityViolations(input: DnsChecksIdentityInput | undefined): string[] {
 	if (!input || input.gitUnavailable) return ['dns-checks source identity could not be verified with git'];
-	if (!input.version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)) {
+	if (!input.version || !DNS_CHECKS_VERSION_RE.test(input.version)) {
 		return ['dns-checks package version could not be established'];
 	}
 	const tag = `dns-checks-v${input.version}`;
@@ -107,6 +109,51 @@ export function dnsChecksIdentityViolations(input: DnsChecksIdentityInput | unde
 	return changed.length === 0 ? [] : [
 		`dns-checks ${input.version} shipping inputs differ from ${tag} (${input.tagCommit.slice(0, 12)}):`,
 		...changed.map((path) => `    ${path}`),
+	];
+}
+
+/**
+ * PR-time input for the dns-checks version-bump gate. Unlike deploy time, a
+ * missing `dns-checks-v<version>` tag is the NORMAL bumped-PR case (the tag is
+ * cut at release), and main legitimately carries unreleased package changes
+ * after a tag, so the comparison only runs when the PR itself touches a
+ * shipping input.
+ */
+export interface DnsChecksVersionBumpInput {
+	/** Paths changed by the PR (base..HEAD); null when the base ref could not be diffed. */
+	prChangedPaths: string[] | null;
+	/** 'absent' = git answered and the tag does not exist; 'unreadable' = git could not say. */
+	tagState: 'present' | 'absent' | 'unreadable';
+	/** HEAD-tree vs tag comparison; only consulted when the tag is present. */
+	identity: DnsChecksIdentityInput;
+}
+
+/** Block a PR that edits dns-checks shipping inputs while its version still names an existing, different tag. */
+export function dnsChecksVersionBumpViolations(input: DnsChecksVersionBumpInput): string[] {
+	if (!input.prChangedPaths) return ['dns-checks version-bump gate could not diff the PR against its base ref'];
+	if (!input.prChangedPaths.some(isDnsChecksIdentityPath)) return [];
+	return tagGateViolations(input);
+}
+
+/** The tag-dependent half: a PR is known to touch shipping inputs. An absent tag is a pass (new version, tagged at release). */
+function tagGateViolations(input: DnsChecksVersionBumpInput): string[] {
+	const precondition = tagGatePrecondition(input);
+	return precondition ?? withBumpRemedy(dnsChecksIdentityViolations(input.identity));
+}
+
+/** A verdict reached before any tag comparison, or undefined when the tag is present and must be compared. */
+function tagGatePrecondition(input: DnsChecksVersionBumpInput): string[] | undefined {
+	if (input.tagState === 'unreadable') return ['dns-checks version-bump gate could not read git tags; source identity is unverified'];
+	if (!input.identity.version || !DNS_CHECKS_VERSION_RE.test(input.identity.version)) return ['dns-checks package version could not be established'];
+	return input.tagState === 'absent' ? [] : undefined;
+}
+
+/** Append the remedy only when the comparison listed differing paths (indented lines). */
+function withBumpRemedy(violations: string[]): string[] {
+	if (!violations.some((line) => line.startsWith('    '))) return violations;
+	return [
+		...violations,
+		'Bump packages/dns-checks/package.json and PARITY_CORPUS_VERSION in packages/dns-checks/src/parity-fixtures.ts to the same new version (parity-corpus.contract.test.ts asserts they are equal).',
 	];
 }
 
