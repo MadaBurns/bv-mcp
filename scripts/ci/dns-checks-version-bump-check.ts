@@ -39,34 +39,53 @@ function splitZ(stdout: string): string[] {
 	return stdout.split('\0').filter(Boolean);
 }
 
-function readInput(baseRef: string | undefined): DnsChecksVersionBumpInput {
-	let version: string | null = null;
+function readPackageVersion(): string | null {
 	try {
-		version = versionFromJson(readFileSync(PACKAGE_PATH, 'utf8'));
-	} catch { /* unreadable → null → core reports it */ }
-	const identity: DnsChecksIdentityInput = { version, tagCommit: null, tagVersion: null, changedPaths: [], gitUnavailable: false };
+		return versionFromJson(readFileSync(PACKAGE_PATH, 'utf8'));
+	} catch {
+		return null; // unreadable → null → core reports it
+	}
+}
 
-	const diff = baseRef ? git(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', `${baseRef}...HEAD`]) : null;
-	const prChangedPaths = diff?.ok ? splitZ(diff.stdout) : null;
-	const base = { prChangedPaths, identity };
-	if (!version) return { ...base, tagState: 'absent' };
+function readPrChangedPaths(baseRef: string): string[] | null {
+	const diff = git(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', `${baseRef}...HEAD`]);
+	return diff.ok ? splitZ(diff.stdout) : null;
+}
 
+type TagRead = Pick<DnsChecksVersionBumpInput, 'tagState' | 'identity'>;
+
+function readTag(version: string, fallback: DnsChecksIdentityInput): TagRead {
 	const tag = `dns-checks-v${version}`;
 	const listed = git(['tag', '--list', tag]);
-	if (!listed.ok) return { ...base, tagState: 'unreadable' };
-	if (listed.stdout.trim() !== tag) return { ...base, tagState: 'absent' };
+	if (!listed.ok) return { tagState: 'unreadable', identity: fallback };
+	if (listed.stdout.trim() !== tag) return { tagState: 'absent', identity: fallback };
+	return compareWithTag(`refs/tags/${tag}`, version, fallback);
+}
 
-	const ref = `refs/tags/${tag}`;
+function compareWithTag(ref: string, version: string, fallback: DnsChecksIdentityInput): TagRead {
 	const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]);
 	const manifest = git(['show', `${ref}:${PACKAGE_PATH}`]);
 	// Both paths of a rename are reported: moving code into an excluded test dir is still a shipping deletion.
 	const changed = git(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', ref, 'HEAD', '--', ...IDENTITY_PATHS]);
-	if (!commit.ok || !manifest.ok || !changed.ok) return { ...base, tagState: 'unreadable' };
+	if (!commit.ok || !manifest.ok || !changed.ok) return { tagState: 'unreadable', identity: fallback };
 	return {
-		prChangedPaths,
 		tagState: 'present',
-		identity: { version, tagCommit: commit.stdout.trim(), tagVersion: versionFromJson(manifest.stdout), changedPaths: splitZ(changed.stdout), gitUnavailable: false },
+		identity: {
+			version,
+			tagCommit: commit.stdout.trim(),
+			tagVersion: versionFromJson(manifest.stdout),
+			changedPaths: splitZ(changed.stdout),
+			gitUnavailable: false,
+		},
 	};
+}
+
+function readInput(baseRef: string): DnsChecksVersionBumpInput {
+	const version = readPackageVersion();
+	const identity: DnsChecksIdentityInput = { version, tagCommit: null, tagVersion: null, changedPaths: [], gitUnavailable: false };
+	const prChangedPaths = readPrChangedPaths(baseRef);
+	if (!version) return { prChangedPaths, tagState: 'absent', identity };
+	return { prChangedPaths, ...readTag(version, identity) };
 }
 
 function main(): void {
