@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.104.3] - 2026-10-29
+
+Release-identity release for 3.104.2. `@blackveil/dns-checks` 1.61.1 (parity corpus 1.61.1) is cut because 3.104.2 changed its WHOIS parser (`packages/dns-checks/src/whois/parse.ts`, the `.eu`/`.be` registrar block) without a package version bump, so the deploy source-identity gate refused v3.104.2 against the `dns-checks-v1.61.0` tag. No code change beyond the version surfaces; behaviour is the 3.104.2 behaviour. Scoring model unchanged. The `bv-whois` and `bv-infra-probe` sidecars were already deployed from v3.104.2 and need no redeploy.
+
 ## [3.104.2] - 2026-10-29
 
 Fixes from a live chaos sweep of 3.104.1 (#1320). Takes effect with `npm run deploy:prod`, `npm run deploy:whois` and `npm run deploy:infra-probe`. No migration, no new secret, no scoring change.
