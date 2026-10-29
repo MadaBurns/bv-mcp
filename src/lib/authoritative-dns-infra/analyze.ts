@@ -199,6 +199,8 @@ export function isUnconfiguredLaneCode(code: unknown): code is string {
 const RAW_DNS_LANE_UNCONFIGURED = 'live_raw_dns_probe_not_configured';
 /** Reported by the lane when no session answered at all — transient/environmental. */
 const RAW_DNS_NO_CONTACT = 'raw_dns_probe_no_contact';
+/** Reported by the lane when the recursive NS lookup answered NXDOMAIN — the name does not exist. */
+const RAW_DNS_NXDOMAIN = 'raw_dns_probe_nxdomain';
 /** Reported by the lane when sessions answered but none proved authoritative (AA=1) for the
  * zone — usually DNS interception on the probe's network path, or a lame delegation. */
 const RAW_DNS_NO_AUTHORITATIVE_ANSWER = 'raw_dns_probe_no_authoritative_answer';
@@ -495,6 +497,7 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 			const errors = evidence.errors ?? [];
 			const noAuthoritativeAnswer = errors.includes(RAW_DNS_NO_AUTHORITATIVE_ANSWER);
 			const noContact = errors.includes(RAW_DNS_NO_CONTACT);
+			const nxdomain = errors.includes(RAW_DNS_NXDOMAIN);
 			const cloudflareUnreachable = errors.includes(RAW_DNS_CLOUDFLARE_NETWORK_UNREACHABLE);
 			let detail: string;
 			if (unconfigured.length > 0) {
@@ -505,6 +508,8 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 				const unprobed = cloudflareUnprobedNameservers(evidence);
 				const named = unprobed.length > 0 ? ` (${unprobed.join(', ')})` : '';
 				detail = `The nameservers for ${evidence.hostname}${named} are on Cloudflare's network, which this probe cannot reach: the Cloudflare Workers runtime it runs on blocks outbound TCP sockets to Cloudflare IP ranges by platform policy. Nothing about these nameservers was measured. This is a platform limitation, not a transient failure and not a problem with the domain — retrying returns the same result.`;
+			} else if (nxdomain) {
+				detail = `${evidence.hostname} does not resolve (NXDOMAIN), so its authoritative DNS infrastructure was not assessed. The name has no delegation to probe, so retrying will not change the result.`;
 			} else if (noAuthoritativeAnswer) {
 				detail = `The infra probe received responses from ${evidence.hostname}'s nameservers, but none was authoritative (AA=1) for the zone, which usually means DNS interception on the probe's network path or a lame delegation. This is transient and environmental, not a provisioning state — retrying, or a different vantage, may succeed.`;
 			} else if (noContact) {
