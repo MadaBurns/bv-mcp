@@ -401,7 +401,7 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 >
 > **Rollback and the deploy freeze.** The import never deletes or writes KV: the legacy copies stay
 > for one release so a rollback to the previous Worker finds them. Changes made after the deploy
-> live only in the registry and are lost by a rollback. Make no operator EMA edits while this
+> live only in the registry and are lost by a rollback: a tenant deleted, rejected or disabled after the deploy comes back ACTIVE from its retained KV copy, so re-apply those revocations by hand after any rollback. KV reads can lag about 60s, so an edit made just before the import may be missed. Make no operator EMA edits while this
 > release deploys (old isolates may still write KV), nor while a rollback is still possible. Delete
 > the legacy `oauth:ema-tenant:*` and `oauth:ema-issuer:*` keys in the release after.
 

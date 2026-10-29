@@ -1778,7 +1778,7 @@ internalRoutes.get('/oauth/ema-tenants/:tenant_id', async (c) => {
 
 /**
  * POST /internal/oauth/ema-tenants/:tenant_id/approve — the operator's one-time sign-off. Body: the
- * reviewed {issuer, jwks_uri, updated_at}, which must still match the record. Answers the full record.
+ * reviewed {issuer, jwks_uri, rev}, which must still match the record (compared inside the registry transaction). Answers the full record.
  */
 internalRoutes.post('/oauth/ema-tenants/:tenant_id/approve', requireEmaEnvelopeKey, async (c) => {
 	const target = emaItemTarget(c);
