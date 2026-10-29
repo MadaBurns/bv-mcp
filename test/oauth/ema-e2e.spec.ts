@@ -212,7 +212,11 @@ function decodeClaims(token: string): Record<string, unknown> {
 async function mintToken(assertion: string): Promise<string> {
 	const response = await exchange(assertion);
 	expect(response.status).toBe(200);
-	return ((await response.json()) as { access_token: string }).access_token;
+	const body = (await response.json()) as { access_token: string; resource?: string; scope?: string };
+	// The granted resource and scope are echoed; a jwt-bearer exchange never carries a refresh_token.
+	expect(body).toMatchObject({ resource: `${ISSUER}/mcp`, scope: 'mcp' });
+	expect(body).not.toHaveProperty('refresh_token');
+	return body.access_token;
 }
 
 /** Open an MCP session with the bearer and call a paid-only tool. */
