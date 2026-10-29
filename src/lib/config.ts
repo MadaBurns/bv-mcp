@@ -28,6 +28,8 @@ export const BLOCKED_SUFFIXES = [
 	'.home',
 	'.corp',
 	'.intranet',
+	'.home.arpa',
+	'.service.arpa',
 ];
 export const BLOCKED_HOSTS = ['localhost', 'localhost.localdomain'];
 export const BLOCKED_IP_PATTERNS = [
