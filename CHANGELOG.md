@@ -8,6 +8,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.104.4] - 2026-10-29
+
+Two fixes from a digital-twin adjudication of the 3.104.1 chaos-sweep observations (#1323). Ships the 3.104.2 and 3.104.3 changes too: 3.104.3 reached `main` but was never deployed. `@blackveil/dns-checks` stays 1.61.1. No migration, no new secret, no scoring change.
+
+### Changed
+
+- Scan targets `home.arpa` and `service.arpa` (the local-network names from RFC 8375 and RFC 9665) are now rejected as reserved, like `.home` and `.local`. Other `.arpa` names, including public `in-addr.arpa` reverse zones, are unchanged.
+
+### Fixed
+
+- A session created by `initialize` is now written to the session store before the response is sent, so the client's next request no longer intermittently answers 404 "session expired or terminated" when it lands on a different isolate (seen in production on 2026-10-25). A cold `initialize` may take longer, by up to about 1 s on a cold store write. A failed store write still degrades to the in-memory session and does not fail `initialize`.
+
 ## [3.104.3] - 2026-10-29
 
 Release-identity release for 3.104.2. `@blackveil/dns-checks` 1.61.1 (parity corpus 1.61.1) is cut because 3.104.2 changed its WHOIS parser (`packages/dns-checks/src/whois/parse.ts`, the `.eu`/`.be` registrar block) without a package version bump, so the deploy source-identity gate refused v3.104.2 against the `dns-checks-v1.61.0` tag. No code change beyond the version surfaces; behaviour is the 3.104.2 behaviour. Scoring model unchanged. The `bv-whois` and `bv-infra-probe` sidecars were already deployed from v3.104.2 and need no redeploy.
