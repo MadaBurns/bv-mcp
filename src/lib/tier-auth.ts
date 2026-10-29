@@ -151,9 +151,9 @@ function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined
 /**
  * Token-version check (FIND-13): a token whose `ver` claim is below the current per-subject
  * counter is stale; an absent `ver` is 1 (JWTs minted before the feature). For an `ema:`
- * subject the tenant-wide revocation check (isEmaTokenLive) runs concurrently with that read, so
- * an EMA bearer adds one parallel KV read and every other bearer adds no I/O. Throws
- * StrongStateUnavailableError when either store cannot be read.
+ * subject the tenant-wide revocation check (isEmaTokenLive: one read of the tenant record in the EMA
+ * registry shard) runs concurrently with that read, so an EMA bearer adds one parallel call
+ * and every other bearer adds no I/O. Throws StrongStateUnavailableError when a store cannot be read.
  */
 async function tokenVersionAndTenantCurrent(
 	kv: KVNamespace,
@@ -164,7 +164,11 @@ async function tokenVersionAndTenantCurrent(
 	const [storedVer, tenantLive] = await Promise.all([
 		getTokenVersion(kv, claims.sub, coordinator),
 		claims.sub.startsWith(EMA_SUBJECT_PREFIX)
-			? isEmaTokenLive(kv, claims, Math.floor(Date.now() / 1000), parseEnvelopeKey(kvEnvelopeKeyBase64) ?? undefined)
+			? isEmaTokenLive(
+					{ coordinator, kv, kvEnvelopeKey: parseEnvelopeKey(kvEnvelopeKeyBase64) ?? undefined },
+					claims,
+					Math.floor(Date.now() / 1000),
+				)
 			: true,
 	]);
 	const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
