@@ -26,6 +26,10 @@ import re
 import os
 import time
 import threading
+import argparse
+import urllib.request
+import urllib.error
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
@@ -96,17 +100,20 @@ def is_quota_skip(status, body_text):
         d = parse_mcp_body(body_text)
     except Exception:
         d = None
+    if isinstance(d, list):
+        return any(is_quota_skip(status, json.dumps(item)) for item in d)
     err = d.get("error") if isinstance(d, dict) else None
     code = err.get("code") if isinstance(err, dict) else None
-    if status != 429 and code != -32029:
+    if status not in (200, 429) or (status != 429 and code != -32029):
         return False
     msg = str(err.get("message", "")) if isinstance(err, dict) else str(body_text or "")
-    return any(m in msg.lower() for m in QUOTA_MARKERS)
+    return code == -32029 or any(m in msg.lower() for m in QUOTA_MARKERS)
 
 
 def record(name, passed, detail=""):
     last = getattr(_last, "value", None)
-    if not passed and last and is_quota_skip(*last):
+    if ((last and is_quota_skip(*last)) or "skipped" in name.lower()
+            or "rate-limited" in detail.lower() or "skipped" in detail.lower()):
         skipped_quota.append(name)
         print(f"  [SKIPPED-QUOTA] {name}")
         return
@@ -136,14 +143,17 @@ def curl_json(method, path, body=None, headers=None, include_headers=False,
         cmd.append("-D-")
     if method != "GET":
         cmd += ["-X", method]
-    if headers:
-        for h in headers:
-            cmd += ["-H", h]
     if body is not None:
         cmd += ["-d", json.dumps(body) if isinstance(body, (dict, list)) else body]
-    cmd.append(url)
+    # Feed headers and URL on stdin: bearer and query credentials never enter argv.
+    config = "url = " + json.dumps(url) + "\n"
+    config += "".join("header = " + json.dumps(h) + "\n" for h in (headers or []))
+    cmd += ["--config", "-"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        r = subprocess.run(cmd, input=config, capture_output=True, text=True, timeout=timeout + 5)
+        if r.returncode != 0:
+            _last.value = (0, "TRANSPORT_ERROR")
+            return 0, "TRANSPORT_ERROR", ""
         output = r.stdout.strip()
         if not output:
             _last.value = (0, "EMPTY_RESPONSE")
@@ -237,8 +247,11 @@ def tool_call(sid, ua, name, args, auth="none", params=None):
 
 def is_rate_limited(body_text):
     try:
-        d = json.loads(body_text)
-        msg = d.get("error", {}).get("message", "")
+        d = parse_mcp_body(body_text)
+        error = d.get("error", {})
+        if error.get("code") == -32029:
+            return True
+        msg = error.get("message", "")
         return any(w in msg.lower() for w in ("rate", "quota", "limit", "exceeded"))
     except Exception:
         return False
@@ -278,25 +291,79 @@ def query_key_ignored(status, body_text):
     return status == 200 and bool(d.get("result", {}).get("content"))
 
 
-def validate_key():
-    """Probe whether _RAW_API_KEY is accepted by the server."""
-    global API_KEY
-    if not _RAW_API_KEY:
-        return
-    ua = "chaos-clients/1.0"
-    cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-           "--connect-timeout", "10", "--max-time", "10",
-           "-X", "POST", f"{BASE}/mcp",
-           "-H", "Content-Type: application/json",
-           "-H", f"User-Agent: {ua}",
-           "-H", f"Authorization: Bearer {_RAW_API_KEY}",
-           "-d", json.dumps(jsonrpc("ping", {}, 1))]
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def valid_owner_origin(host):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if r.stdout.strip() != "401":
-            API_KEY = _RAW_API_KEY
+        url = urllib.parse.urlsplit(host)
+        return (url.scheme == "https" and bool(url.hostname) and not any(c.isspace() for c in host)
+                and url.username is None and url.password is None and url.path in ("", "/")
+                and not url.query and not url.fragment)
+    except ValueError:
+        return False
+
+
+def verify_owner(host, key):
+    """Bounded read-only preflight. Never downgrade to anonymous or follow redirects."""
+    if not valid_owner_origin(host):
+        return False, "credential-free HTTPS origin required"
+    if not key:
+        return False, "owner credential required"
+    opener = urllib.request.build_opener(NoRedirect())
+    headers = {"User-Agent": "bv-chaos-test/1.0", "Authorization": "Bearer " + key,
+               "Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream",
+               "MCP-Protocol-Version": "2025-06-18"}
+    sid = None
+
+    def request(method, payload=None):
+        req = urllib.request.Request(host.rstrip("/") + "/mcp", method=method,
+                                     data=json.dumps(payload).encode() if payload else None,
+                                     headers=headers)
+        with opener.open(req, timeout=15) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read().decode()
+
+    try:
+        status, hdrs, text = request("POST", jsonrpc("initialize", {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "chaos-owner-preflight", "version": "1.0"}}))
+        doc = parse_mcp_body(text)
+        sid = hdrs.get("mcp-session-id")
+        if status != 200 or not sid or not isinstance(doc, dict) or not isinstance(doc.get("result"), dict):
+            return False, "invalid initialize response"
+        headers["Mcp-Session-Id"] = sid
+        status, _, _ = request("POST", {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if status not in (200, 202, 204):
+            return False, "initialization notification failed"
+        status, hdrs, text = request("POST", jsonrpc("tools/call", {
+            "name": "check_ns", "arguments": {"domain": "example.com", "format": "compact"}}, 2))
+        doc = parse_mcp_body(text)
+        result = doc.get("result") if isinstance(doc, dict) else None
+        if status != 200 or hdrs.get("x-quota-tier") != "owner":
+            return False, "owner tier not verified"
+        if not isinstance(result, dict) or not result.get("content") or result.get("isError"):
+            return False, "invalid owner tool response"
+        return True, "owner tier verified"
     except Exception:
-        pass
+        return False, "owner preflight transport or protocol failure"
+    finally:
+        if sid:
+            try:
+                request("DELETE")
+            except Exception:
+                pass
+
+
+def validate_key():
+    global API_KEY
+    API_KEY = None
+    ok, detail = verify_owner(BASE, _RAW_API_KEY)
+    if ok:
+        API_KEY = _RAW_API_KEY
+    return ok, detail
 
 
 # ─── Section 1: Session lifecycle per client type ────────────────────────────
@@ -559,9 +626,10 @@ def test_concurrent_burst():
         """Create session + 3 tool calls for one client type."""
         ok = rate = fail = s5xx = 0
         auth_mode = "bearer" if API_KEY else "none"
-        sid, _ = create_session(ua, auth=auth_mode)
+        sid, init_status = create_session(ua, auth=auth_mode)
         if not sid:
-            return ok, rate + 1, fail, s5xx
+            return (ok, 1, fail, s5xx) if init_status == 429 else (
+                ok, rate, int(init_status < 500), int(init_status >= 500))
 
         calls = [
             ("check_spf",   {"domain": "cloudflare.com", "format": "compact"}),
@@ -607,10 +675,15 @@ def test_concurrent_burst():
             print(f"  {status_sym} {name:25s}  ok={ok}  rate={rate}  fail={fail}  5xx={s5xx}")
 
     elapsed = time.monotonic() - t_start
+    _last.value = None  # aggregate results must not inherit a prior request
+    if total_ratelimited:
+        skipped_quota.append("6. Concurrent burst quota-limited calls")
     total = total_ok + total_ratelimited + total_fail + total_5xx
+    record("6. Concurrent burst: successful calls exercised", total_ok >= len(CLIENT_TYPES),
+           f"{total_ok} successful calls; need at least {len(CLIENT_TYPES)}")
     record("6. Concurrent burst: no 5xx errors",    total_5xx == 0, f"{total_5xx} 5xx")
-    record("6. Concurrent burst: < 30% hard fails",
-           total_fail / max(total, 1) < 0.30,
+    record("6. Concurrent burst: no hard failures",
+           total_fail == 0,
            f"{total_fail}/{total} = {total_fail/max(total,1)*100:.0f}%")
 
     if latencies:
@@ -642,13 +715,14 @@ def test_legacy_sse_per_client():
         cmd = [
             "perl", "-e", "alarm 4; exec @ARGV", "--",
             "curl", "-s", "-N",
-            f"{BASE}/mcp/sse",
+            "--config", "-",
             "-H", "Accept: text/event-stream",
-            "-H", f"Authorization: Bearer {API_KEY}",
             "-H", f"User-Agent: {ua}",
         ]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            r = subprocess.run(cmd, input="url = " + json.dumps(BASE + "/mcp/sse") + "\nheader = "
+                               + json.dumps("Authorization: Bearer " + API_KEY) + "\n",
+                               capture_output=True, text=True, timeout=10)
             out = r.stdout
             has_event = "event:" in out or "data:" in out
             has_messages_url = "/mcp/messages?sessionId=" in out
@@ -862,9 +936,10 @@ def test_batch_jsonrpc():
         is_array = isinstance(d, list)
         record("10a. Batch [2] → array response", is_array, f"type={type(d).__name__}")
         if is_array:
-            ok_count = sum(1 for r in d if r.get("result", {}).get("content")
-                           or is_rate_limited(json.dumps(r)))
-            record("10b. Batch [2] → 2 results", len(d) == 2, f"got {len(d)}")
+            ok_count = sum(1 for r in d if isinstance(r, dict) and r.get("result", {}).get("content")
+                           and not r["result"].get("isError"))
+            record("10b. Batch [2] → 2 successful results",
+                   status == 200 and len(d) == 2 and ok_count == 2, f"got {len(d)}, valid={ok_count}")
     except Exception as e:
         record("10a. Batch [2] → array response", False, str(e))
 
@@ -910,6 +985,8 @@ def test_batch_jsonrpc():
             has_err = "error" in d3[0]
             record("10d. Batch with unknown method → error in result", has_err,
                    f"result={d3[0]}")
+        else:
+            record("10d. Batch with unknown method → error in result", False, "missing batch error response")
     except Exception as e:
         record("10d. Batch unknown method", False, str(e))
 
@@ -918,17 +995,28 @@ def test_batch_jsonrpc():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def main():
+def acceptance_exit(outcomes, skips, diagnostic=False):
+    if any(not ok for _, ok in outcomes):
+        return 1
+    if not outcomes or (skips and not diagnostic):
+        return 2
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Live client probes; verified owner access required.")
+    parser.add_argument("--diagnostic", action="store_true", help="report incomplete coverage without accepting it")
+    args = parser.parse_args(argv)
     print("=" * 65)
     print(" bv-mcp chaos test — all MCP client types — v2.1.17")
     print(f" Target: {BASE}/mcp")
     print("=" * 65)
 
-    validate_key()
-    if API_KEY:
-        print(f" Auth: BV_API_KEY loaded (authenticated, rate limits bypassed)")
-    else:
-        print(" Auth: none (free tier — some sections will be skipped or rate-limited)")
+    ok, detail = validate_key()
+    if not ok:
+        print("FAIL: " + detail)
+        return 1
+    print(" Auth: verified owner credential")
 
     grand_start = time.monotonic()
 
@@ -967,12 +1055,15 @@ def main():
 
     print("=" * 65)
 
-    if failed > 0:
+    code = acceptance_exit(results, skipped_quota, args.diagnostic)
+    if code == 1:
         print(f"\n✗ FAIL — {failed} test(s) failed")
-        sys.exit(1)
+    elif code == 2 or args.diagnostic:
+        print("INCOMPLETE: diagnostic or unexercised coverage; not acceptance evidence")
     else:
         print("\n✓ PASS")
+    return code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

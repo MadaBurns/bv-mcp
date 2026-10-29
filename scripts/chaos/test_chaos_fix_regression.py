@@ -6,6 +6,7 @@ import io
 import json
 import pathlib
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("chaos-fix-regression.py")
@@ -188,6 +189,9 @@ class RdapTest(unittest.TestCase):
         self.assertIn("EURid vzw", detail)
         self.assertIn("DNS BE vzw/asbl", detail)
 
+    def test_empty_rdap_coverage_fails(self):
+        self.assertEqual(M.classify_rdap({})[0], M.FAIL)
+
     def test_missing_or_empty_name_fails(self):
         responses = {
             "eurid.eu": (200, self.reply("Created: 2012-06-13. Source: whois.")),
@@ -226,18 +230,37 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(M.classify_sessions([self.sample(), failed_init])[0], M.FAIL)
 
     def test_quota_samples_are_excluded_and_all_quota_skips(self):
-        self.assertEqual(M.classify_sessions([self.sample(), self.sample(list_status=429, quota=True)])[0], M.PASS)
+        self.assertEqual(M.classify_sessions([self.sample(), self.sample(list_status=429, quota=True)])[0], M.SKIPPED)
         self.assertEqual(M.classify_sessions([self.sample(quota=True)])[0], M.SKIPPED)
 
 
 class ExitCodeAndCliTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(M._clients, "verify_owner", return_value=(True, "owner"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def results(self, *verdicts):
         return [M.Result(v, "SQ-%d" % i, "d") for i, v in enumerate(verdicts)]
 
     def test_exit_code_mapping(self):
-        self.assertEqual(M.exit_code(self.results(M.PASS, M.SKIPPED, M.NOT_EXERCISED)), 0)
+        self.assertEqual(M.exit_code(self.results(M.PASS, M.SKIPPED, M.NOT_EXERCISED)), 2)
         self.assertEqual(M.exit_code(self.results(M.PASS, M.FAIL)), 1)
-        self.assertEqual(M.exit_code([]), 0)
+        self.assertEqual(M.exit_code([]), 2)
+
+    def test_acceptance_requires_every_named_check_but_exempts_internal_and_429_paths(self):
+        complete = [M.Result(M.PASS, name, "ok") for name in M.REQUIRED_CHECKS]
+        complete.append(M.Result(M.NOT_EXERCISED, "SQ-450", "internal only"))
+        self.assertEqual(M.exit_code(complete), 0)
+        self.assertEqual(M.exit_code(complete[1:]), 2)
+        self.assertEqual(M.exit_code([M.Result(M.SKIPPED, name, "quota") for name in M.REQUIRED_CHECKS]), 2)
+        self.assertEqual(M.exit_code([M.Result(M.PASS, "SQ-448", "ok")], diagnostic=True), 0)
+        self.assertEqual(M.exit_code([], diagnostic=True), 2)
+
+    def test_owner_preflight_failure_does_not_run_probes(self):
+        with mock.patch.object(M._clients, "verify_owner", return_value=(False, "not owner")), mock.patch.object(M.Runner, "run") as run:
+            self.assertEqual(M.main([], key="synthetic", emit=lambda line: None), 1)
+            run.assert_not_called()
 
     def test_line_format(self):
         self.assertEqual(M.format_line(M.Result(M.PASS, "SQ-448", "HTTP 400")), "PASS  SQ-448  HTTP 400")
@@ -255,7 +278,7 @@ class ExitCodeAndCliTest(unittest.TestCase):
             for verdicts, expected in (((M.PASS,), 0), ((M.PASS, M.FAIL), 1)):
                 M.Runner.run = lambda self, v=verdicts: [M.Result(x, "SQ-0", "d") for x in v]
                 lines = []
-                self.assertEqual(M.main([], key="k", emit=lines.append), expected)
+                self.assertEqual(M.main(["--diagnostic"], key="k", emit=lines.append), expected)
                 self.assertIn("key=present", lines[0])
         finally:
             M.Runner.run = original
