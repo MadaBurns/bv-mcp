@@ -24,6 +24,7 @@ const OTHER_JWKS_URI = 'https://globex.okta.com/oauth2/v1/keys';
 const WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 const MINT_KEY = 'mint-capability-test-key-32-bytes-minimum';
 const REVOKE_KEY = 'revoke-capability-test-key-32-bytes-minimum';
+const ADMIN_KEY = 'ema-admin-capability-test-key-32-bytes-minimum';
 
 // 32 zero bytes, base64. The tenant upsert route refuses to run without KV_ENVELOPE_KEY while OAuth is on,
 // so tenant records are sealed here and the raw-KV helpers below go through the store (which opens/seals).
@@ -35,6 +36,7 @@ type TestEnv = typeof env & {
 	OAUTH_ISSUER?: string;
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_EMA_ADMIN_KEY?: string;
 	KV_ENVELOPE_KEY?: string;
 };
 const e2eEnv = {
@@ -43,6 +45,7 @@ const e2eEnv = {
 	OAUTH_ISSUER: ISSUER,
 	BV_MCP_OAUTH_MINT_KEY: MINT_KEY,
 	BV_MCP_OAUTH_REVOKE_KEY: REVOKE_KEY,
+	BV_MCP_EMA_ADMIN_KEY: ADMIN_KEY,
 	KV_ENVELOPE_KEY: ENVELOPE_B64,
 } as TestEnv;
 
@@ -176,7 +179,7 @@ async function signIdJag(key: IdpKey = idp, overrides: Record<string, unknown> =
 /** Operator upsert of an EMA tenant over the internal route; the jwks_uri comes from the IdP's discovery document. */
 async function seedTenant(overrides: Record<string, unknown> = {}): Promise<Response> {
 	return send(
-		internalRequest('PUT', '/oauth/ema-tenants', MINT_KEY, {
+		internalRequest('PUT', '/oauth/ema-tenants', ADMIN_KEY, {
 			tenant_id: 'acme-corp',
 			name: 'Acme Corp',
 			issuer: IDP_ISSUER,
@@ -352,7 +355,7 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 		const before = await callPaidTool(token);
 		expect(before.status).toBe(200);
 
-		expect((await send(internalRequest('DELETE', '/oauth/ema-tenants/acme-corp', MINT_KEY, undefined))).status).toBe(204);
+		expect((await send(internalRequest('DELETE', '/oauth/ema-tenants/acme-corp', ADMIN_KEY, undefined))).status).toBe(204);
 		await expectCutOff(token, before.sessionId);
 
 		expect((await seedTenant()).status).toBe(200);
@@ -399,6 +402,112 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 		expect((await callPaidTool(await forge({ tep: seeded.token_epoch }))).status).toBe(200);
 		await expectCutOff(await forge({ tep: seeded.token_epoch - 1 }), undefined);
 		await expectCutOff(await forge({}), undefined);
+	});
+});
+
+describe('EMA self-serve tenants and operator approval', () => {
+	const TENANT = 'web-acme';
+	const NOT_ACCEPTED = { error: 'invalid_grant', error_description: 'Assertion not accepted' };
+
+	/** bv-web's settings save over the self-serve seam (mint key). */
+	function selfServe(overrides: Record<string, unknown> = {}): Promise<Response> {
+		return send(
+			internalRequest('PUT', `/oauth/ema-self-serve/${TENANT}`, MINT_KEY, {
+				name: 'Acme Corp',
+				issuer: IDP_ISSUER,
+				enabled: true,
+				tier: 'developer',
+				entitlement_expires_at: Math.floor(Date.now() / 1000) + 86_400,
+				...overrides,
+			}),
+		);
+	}
+
+	/** Operator approval with the reviewed snapshot (admin key). */
+	async function approve(): Promise<Response> {
+		const record = (await getEmaTenant(env.SESSION_STORE, TENANT, ENVELOPE_KEY))!;
+		const reviewed = { issuer: record.issuer, jwks_uri: record.jwks_uri, updated_at: record.updated_at };
+		return send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/approve`, ADMIN_KEY, reviewed));
+	}
+
+	async function expectCutOff(token: string, sessionId: string | undefined): Promise<void> {
+		expect((await send(mcpRequest(token, batchStatusCall, sessionId))).status).toBe(401);
+	}
+
+	it('a pending tenant is refused exactly like a disabled one; approval lets it mint at its tier', async () => {
+		expect((await selfServe()).status).toBe(200);
+		const pending = await exchange(await signIdJag());
+		expect(pending.status).toBe(400);
+		expect(await pending.json()).toEqual(NOT_ACCEPTED);
+
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		expect(decodeClaims(token).sub).toMatch(/^ema:web-acme:[0-9a-f]{32}$/);
+		const call = await callPaidTool(token);
+		expect(call.status).toBe(200);
+		expect(call.tier).toBe('developer');
+	});
+
+	it('an issuer change returns the tenant to pending and kills its tokens; re-approval does not revive them', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		const moved = await selfServe({ issuer: OTHER_IDP_ISSUER });
+		expect(((await moved.json()) as { approval: string }).approval).toBe('pending');
+		await expectCutOff(token, before.sessionId);
+		// Neither the old issuer (released) nor the new one (pending) mints.
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
+		expect(await (await exchange(await signIdJag(otherIdp))).json()).toEqual(NOT_ACCEPTED);
+
+		expect((await approve()).status).toBe(200);
+		await expectCutOff(token, before.sessionId);
+		expect((await callPaidTool(await mintToken(await signIdJag(otherIdp)))).status).toBe(200);
+	});
+
+	it('a routine same-issuer renewal keeps the approval and the live tokens', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		const renewed = await selfServe({ entitlement_expires_at: Math.floor(Date.now() / 1000) + 30 * 86_400 });
+		expect(((await renewed.json()) as { approval: string }).approval).toBe('approved');
+		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(200);
+	});
+
+	it('a rejected tenant mints nothing, and a same-issuer re-save stays rejected', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		expect((await send(internalRequest('POST', `/oauth/ema-tenants/${TENANT}/reject`, ADMIN_KEY, undefined))).status).toBe(200);
+		await expectCutOff(token, undefined);
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
+		expect(((await (await selfServe({ name: 'Acme again' })).json()) as { approval: string }).approval).toBe('rejected');
+	});
+
+	it('pending is checked per request too: an issued token stops resolving while its tenant is pending', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+		// Same epoch, approval alone flipped, so only the approval check can reject.
+		const record = (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
+		await putEmaTenant(env.SESSION_STORE, { ...record, approval: 'pending' }, ENVELOPE_KEY);
+		await expectCutOff(token, before.sessionId);
+		await putEmaTenant(env.SESSION_STORE, { ...record, approval: 'approved' }, ENVELOPE_KEY);
+		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(200);
+	});
+
+	it('a legacy operator record with neither approval nor source still exchanges and resolves', async () => {
+		expect((await seedTenant()).status).toBe(200);
+		const { approval: _approval, source: _source, ...legacy } = (await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY))!;
+		await putEmaTenant(env.SESSION_STORE, legacy, ENVELOPE_KEY);
+		expect(await getEmaTenant(env.SESSION_STORE, 'acme-corp', ENVELOPE_KEY)).not.toHaveProperty('source');
+		expect((await callPaidTool(await mintToken(await signIdJag()))).status).toBe(200);
 	});
 });
 

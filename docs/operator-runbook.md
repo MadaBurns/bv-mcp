@@ -25,7 +25,7 @@ Prerequisites:
    (stale KV IDs → wrangler 422 on deploy).
 4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY,
    OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_MCP_OAUTH_MINT_KEY,
-   BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
+   BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_EMA_ADMIN_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
    BV_MCP_WATCH_CLEANUP_KEY,
    BV_MCP_M365_KEY, BV_MCP_BRAND_WEBHOOK_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
    BV_BROWSER_RENDERER_KEY, KV_ENVELOPE_KEY, MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
@@ -287,6 +287,7 @@ unset. Set up an external heartbeat:
 | `BV_WEB_INTERNAL_KEY`              | `npx wrangler secret put BV_WEB_INTERNAL_KEY`                                                        | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected                                                                                                                                      |
 | `BV_MCP_OAUTH_MINT_KEY`            | `npx wrangler secret put BV_MCP_OAUTH_MINT_KEY`                                                      | Same strong value on bv-mcp + bv-web-prod only; grants/trial issuance; never provision to ops                                                                                                                                 |
 | `BV_MCP_OAUTH_REVOKE_KEY`          | `npx wrangler secret put BV_MCP_OAUTH_REVOKE_KEY`                                                    | Same distinct strong value on bv-mcp + bv2-ops only; revocation cannot mint                                                                                                                                                   |
+| `BV_MCP_EMA_ADMIN_KEY`             | `npx wrangler secret put BV_MCP_EMA_ADMIN_KEY`                                                       | Operator-only, never on bv-web-prod; strong distinct 32+ byte value for the `/internal/oauth/ema-tenants*` routes (seed, list, approve, reject). Unset = those routes answer 503                                            |
 | `BV_MCP_TENANT_KEY`                | `npx wrangler secret put BV_MCP_TENANT_KEY`                                                          | Strong distinct 32+ byte key set only on the all-tenant orchestrator; prefer a fail-closed `TENANT_KEY_SCOPE` mapping. Without one, the key is intentionally global and every call must assert a narrowed `X-Tenant-Scope`    |
 | `BV_MCP_TOOL_DELEGATION_KEY`       | `npx wrangler secret put BV_MCP_TOOL_DELEGATION_KEY`                                                 | Same distinct strong value on bv-mcp + bv-web-prod only; Brand Watch register/list/delete with tenant context                                                                                                                 |
 | `BV_MCP_WATCH_CLEANUP_KEY`         | `npx wrangler secret put BV_MCP_WATCH_CLEANUP_KEY`                                                   | Separate value on bv-mcp + bv2-ops only; Brand Watch list/delete cleanup, never registration                                                                                                                                  |
@@ -356,7 +357,13 @@ makes one customer IdP issuer trusted. The grant refuses a token request from an
 unregistered issuer before it looks at the signature, so a well-signed assertion
 from the wrong IdP buys nothing. Tenants are seeded
 over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
-which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
+which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
+
+> **Prerequisite: provision `BV_MCP_EMA_ADMIN_KEY` BEFORE deploying the release that adds it.**
+> Every `/internal/oauth/ema-tenants*` route answers `503 internal_auth_not_configured` until it is
+> set. It must be a distinct value of at least 32 bytes and must never be given to bv-web-prod:
+> bv-web holds `BV_MCP_OAUTH_MINT_KEY` and reaches EMA only through the customer self-serve route
+> (`/internal/oauth/ema-self-serve/<tenant_id>`), which cannot approve anything.
 
 > **Prerequisite: set `KV_ENVELOPE_KEY` (and redeploy) BEFORE seeding the first tenant.**
 > Tenant records are sealed with that key, and a record stored without it is plaintext.
@@ -371,7 +378,7 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
 > that they all list (see "Verify live", step 1).
 
     PUT /internal/oauth/ema-tenants
-    Authorization: Bearer <BV_MCP_OAUTH_MINT_KEY>
+    Authorization: Bearer <BV_MCP_EMA_ADMIN_KEY>
     Content-Type: application/json
 
     {
@@ -413,6 +420,20 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
 - `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
   reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
   also releases the issuer even when the record can no longer be read.
+- Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
+  created `pending` and mints nothing until approved; an operator-seeded tenant without an
+  `approval` field counts as approved.
+
+      GET  /internal/oauth/ema-tenants?approval=pending        # also approved | rejected
+      POST /internal/oauth/ema-tenants/<tenant_id>/approve
+      {"issuer": "<issuer>", "jwks_uri": "<jwks_uri>", "updated_at": <updated_at>}
+      POST /internal/oauth/ema-tenants/<tenant_id>/reject
+
+  Copy the three approve fields from the record you reviewed; if the record changed since,
+  the approve answers `409 approval_stale` and you review again. Approving claims the issuer:
+  `409 issuer_conflict` means another approved tenant already holds it. Reject is sticky
+  until the customer moves to a different issuer. The self-serve route refuses shared
+  issuers (`isSharedIssuer` in `src/oauth/ema-tenants.ts`); the operator PUT does not check them.
 - When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
   key is treated as absent (the grant fails closed for that issuer, and the tenant's
   issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
