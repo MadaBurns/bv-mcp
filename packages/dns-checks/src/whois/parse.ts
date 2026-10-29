@@ -175,16 +175,16 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 				const nextRaw = lines[j].replace(/\r$/, '');
 				const next = nextRaw.replace(/^\s+/, '').replace(/\s+$/, '');
 				if (next.length === 0) continue;
-				// Reject continuation lines that look like a structured `Label:` or
-				// `Label: value` field (e.g. EURid's `Name: NETIM`, `Organization: ...`,
-				// `Website: ...`). These are sub-fields of a registrar block, not the
-				// registrar name itself. Emitting `Name: NETIM` verbatim as the
-				// registrar is the bug we observed against `anthropic.eu`. The
-				// fallback chain (registrarName / sponsoring / registrarOrganization /
-				// authorizedAgency) still scans the whole response and resolves the
-				// proper value when present elsewhere; when nothing else matches we
-				// correctly return null rather than a half-parsed string.
-				if (/^[A-Za-z][A-Za-z][\w .-]*:/.test(next)) break;
+				// A structured `Label: value` continuation (EURid .eu / DNS Belgium .be:
+				// indented `Name: NETIM`, `Website: ...`) is a sub-field of a registrar
+				// block, never the name itself; emitting `Name: NETIM` verbatim was the
+				// anthropic.eu bug. Read the block's Organization/Name VALUE instead.
+				// With neither (or a non-indented block) registrar stays null and the
+				// fallback chain (registrarName / sponsoring / ...) may still resolve it.
+				if (/^[A-Za-z][A-Za-z][\w .-]*:/.test(next)) {
+					registrar = registrarFromIndentedBlock(lines, j);
+					break;
+				}
 				registrar = stripNominetTag(next);
 				break;
 			}
@@ -253,6 +253,27 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
  */
 function stripNominetTag(value: string): string {
 	return value.replace(/\s*\[Tag\s*=\s*[^\]]*\]\s*$/i, '').trim();
+}
+
+/**
+ * Registrar from an indented `Label: value` block under a bare `Registrar:`
+ * line. `start` is the first non-empty continuation line. Only indented lines
+ * belong to the block (a blank or non-indented line ends it); Organization is
+ * preferred over Name, as in the sectioned branch. Null when neither has a value.
+ */
+function registrarFromIndentedBlock(lines: string[], start: number): string | null {
+	let organization: string | null = null;
+	let name: string | null = null;
+	for (let k = start; k < lines.length; k++) {
+		const raw = lines[k].replace(/\r$/, '');
+		if (!/^\s+\S/.test(raw)) break;
+		const field = raw.trim();
+		const orgMatch = field.match(/^Organization(?: Name)?\s*:\s*(.+?)\s*$/i);
+		if (orgMatch && !organization) organization = stripNominetTag(orgMatch[1]);
+		const nameMatch = field.match(/^Name\s*:\s*(.+?)\s*$/i);
+		if (nameMatch && !name) name = stripNominetTag(nameMatch[1]);
+	}
+	return organization ?? name;
 }
 
 /**
