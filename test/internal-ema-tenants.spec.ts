@@ -1,28 +1,38 @@
 // Route tests for /internal/oauth/ema-tenants — the operator door that seeds the
-// per-tenant trusted-issuer allowlist. Gated by BV_MCP_OAUTH_MINT_KEY (no new secret).
+// per-tenant trusted-issuer allowlist. Gated by the operator-only BV_MCP_EMA_ADMIN_KEY.
 // Store semantics live in test/oauth/ema-tenants.spec.ts; this file owns the gate,
 // request validation, issuer discovery and response contract.
 
-import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { env, createExecutionContext, runInDurableObject, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
-import { getEmaTenant, getEmaTenantByIssuer, putEmaTenant } from '../src/oauth/ema-tenants';
+import {
+	effectiveApproval,
+	emaIssuerStorageKey,
+	emaRecordStorageKey,
+	EMA_MIGRATED_STORAGE_KEY,
+	getEmaTenant,
+	getEmaTenantByIssuer,
+	type EmaRegistry,
+} from '../src/oauth/ema-tenants';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME, type QuotaCoordinator } from '../src/lib/quota-coordinator';
+import type { EmaTenantRecord } from '../src/schemas/ema';
 import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import { clearKvPrefix } from './helpers/kv';
 
-const TEST_INTERNAL_KEY = 'ema-mint-capability-test-key-32-bytes-min';
+const TEST_INTERNAL_KEY = 'ema-admin-capability-test-key-32-bytes-min';
 const BASE = 'http://example.com/internal/oauth/ema-tenants';
 const CLAUDE_WEB_CLIENT_ID = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
 // 32 zero bytes, base64 — a valid KV_ENVELOPE_KEY. The upsert route refuses to run without one while OAuth is on.
 const ENVELOPE_B64 = btoa(String.fromCharCode(...new Uint8Array(32)));
 const ENVELOPE_KEY = parseEnvelopeKey(ENVELOPE_B64)!;
 
-type TestEnv = typeof env & { BV_MCP_OAUTH_MINT_KEY?: string; KV_ENVELOPE_KEY?: string };
+type TestEnv = typeof env & { BV_MCP_EMA_ADMIN_KEY?: string; KV_ENVELOPE_KEY?: string };
 
 async function send(
 	req: Request,
-	customEnv: TestEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64 } as TestEnv,
+	customEnv: TestEnv = { ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64 } as TestEnv,
 ): Promise<Response> {
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, customEnv, ctx);
@@ -56,15 +66,17 @@ function discoveryResponse(doc: unknown, status = 200): Response {
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 afterEach(async () => {
 	vi.unstubAllGlobals();
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 describe('/internal/oauth/ema-tenants gate', () => {
-	it('returns 503 when BV_MCP_OAUTH_MINT_KEY is not configured', async () => {
-		const res = await send(call('GET'), { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv);
+	it('returns 503 when BV_MCP_EMA_ADMIN_KEY is not configured', async () => {
+		const res = await send(call('GET'), { ...env, BV_MCP_EMA_ADMIN_KEY: undefined } as TestEnv);
 		expect(res.status).toBe(503);
 		expect(res.headers.get('cache-control')).toBe('no-store');
 	});
@@ -92,7 +104,7 @@ describe('/internal/oauth/ema-tenants gate', () => {
 	it('does not accept a different capability key (revoke key) as the bearer', async () => {
 		const customEnv = {
 			...env,
-			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
 			BV_MCP_OAUTH_REVOKE_KEY: 'revoke-capability-test-key-32-bytes-min',
 		} as TestEnv;
 		const res = await send(call('GET', '', undefined, { Authorization: 'Bearer revoke-capability-test-key-32-bytes-min' }), customEnv);
@@ -121,7 +133,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 		// Explicit jwks_uri means no discovery fetch at all.
 		expect(fetchSpy).not.toHaveBeenCalled();
 		// The allowlist lookup the token grant will use now resolves the issuer.
-		const resolved = await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default/', ENVELOPE_KEY);
+		const resolved = await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default/');
 		expect(resolved?.tenant_id).toBe('acme-corp');
 	});
 
@@ -166,7 +178,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 		const res = await send(call('PUT', '', upsertBody({ jwks_uri: undefined })));
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default')).toBeNull();
 	});
 
 	it('discovery network failure -> 400 issuer_discovery_failed', async () => {
@@ -180,10 +192,9 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 
 	it('preserves created_at on update and bumps updated_at', async () => {
 		await send(call('PUT', '', upsertBody()));
-		const kv = env.SESSION_STORE!;
-		const first = (await getEmaTenant(kv, 'acme-corp', ENVELOPE_KEY))!;
+		const first = (await getEmaTenant(REGISTRY, 'acme-corp'))!;
 		// Backdate so the update is distinguishable from the create within the same second.
-		await putEmaTenant(kv, { ...first, created_at: 1_000, updated_at: 1_000 }, ENVELOPE_KEY);
+		await putRegistryRecord({ ...first, created_at: 1_000, updated_at: 1_000 });
 		const res = await send(call('PUT', '', upsertBody({ name: 'Acme Renamed', enabled: false })));
 		expect(res.status).toBe(200);
 		const updated = (await res.json()) as { created_at: number; updated_at: number; name: string; enabled: boolean };
@@ -239,7 +250,7 @@ describe('PUT /internal/oauth/ema-tenants', () => {
 	it('500 session_store_not_configured when SESSION_STORE is unbound', async () => {
 		const res = await send(call('PUT', '', upsertBody()), {
 			...env,
-			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
 			KV_ENVELOPE_KEY: ENVELOPE_B64,
 			SESSION_STORE: undefined,
 		} as unknown as TestEnv);
@@ -274,8 +285,8 @@ describe('GET / DELETE /internal/oauth/ema-tenants', () => {
 		expect(del.status).toBe(204);
 		expect(del.headers.get('cache-control')).toBe('no-store');
 		expect((await send(call('GET', '/acme-corp'))).status).toBe(404);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp-b.example.com', ENVELOPE_KEY))?.tenant_id).toBe('beta-corp');
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default')).toBeNull();
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp-b.example.com'))?.tenant_id).toBe('beta-corp');
 	});
 
 	it('404 not_found for an unknown or malformed tenant_id', async () => {
@@ -305,7 +316,7 @@ describe('PUT jwks_uri outbound validation', () => {
 		const json = JSON.stringify(await res.json());
 		expect(json.startsWith('{"error":"Invalid jwks_uri')).toBe(true);
 		expect(json).not.toContain('pw@');
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default')).toBeNull();
 	});
 
 	it.each([
@@ -317,7 +328,7 @@ describe('PUT jwks_uri outbound validation', () => {
 		const res = await send(call('PUT', '', upsertBody({ jwks_uri: undefined })));
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default')).toBeNull();
 	});
 });
 
@@ -332,7 +343,7 @@ describe('PUT non-canonical issuer forms', () => {
 		expect(res.status).toBe(200);
 		expect(((await res.json()) as { issuer: string }).issuer).toBe('https://idp.example.com/x');
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/x', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/x'))?.tenant_id).toBe('acme-corp');
 	});
 
 	it('single-slash and double-slash spellings are the SAME issuer: re-PUT by the owner succeeds, another tenant gets 409', async () => {
@@ -346,21 +357,21 @@ describe('PUT non-canonical issuer forms', () => {
 
 describe('PUT requires KV_ENVELOPE_KEY while OAuth is on', () => {
 	const withoutKey = (overrides: Record<string, unknown> = {}) =>
-		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: undefined, ...overrides }) as unknown as TestEnv;
-	const storedKeys = async () => (await env.SESSION_STORE!.list({ prefix: `${OAUTH_KV_PREFIX}ema-` })).keys;
+		({ ...env, BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: undefined, ...overrides }) as unknown as TestEnv;
+	const stored = () => getEmaTenant(REGISTRY, 'acme-corp');
 
 	it('409 envelope_key_required and nothing written when the key is unset', async () => {
 		const res = await send(call('PUT', '', upsertBody()), withoutKey());
 		expect(res.status).toBe(409);
 		expect(res.headers.get('cache-control')).toBe('no-store');
 		expect(await res.json()).toEqual({ error: 'envelope_key_required' });
-		expect(await storedKeys()).toEqual([]);
+		expect(await stored()).toBeNull();
 	});
 
 	it('409s the same for an unparseable key (it would be ignored, so the record would be stored in plaintext)', async () => {
 		const res = await send(call('PUT', '', upsertBody()), withoutKey({ KV_ENVELOPE_KEY: 'not-a-valid-key' }));
 		expect(res.status).toBe(409);
-		expect(await storedKeys()).toEqual([]);
+		expect(await stored()).toBeNull();
 	});
 
 	it('does not apply when OAuth is off (the grant is unreachable, nothing can strand)', async () => {
@@ -373,70 +384,74 @@ describe('PUT requires KV_ENVELOPE_KEY while OAuth is on', () => {
 	});
 });
 
-describe('PUT reads the tenant key once', () => {
-	const tenantKey = `${OAUTH_KV_PREFIX}ema-tenant:acme-corp`;
-
-	/** SESSION_STORE wrapper that counts gets of one key; every other operation passes straight through. */
-	function countingEnv(counts: { reads: number }): TestEnv {
-		const kv = env.SESSION_STORE!;
-		const spy = {
-			get: (key: string, ...rest: unknown[]) => {
-				if (key === tenantKey) counts.reads++;
-				return (kv.get as (...args: unknown[]) => Promise<unknown>)(key, ...rest);
+describe('PUT is one registry read and one registry write', () => {
+	/** QUOTA_COORDINATOR wrapper that counts the EMA registry requests by kind; everything passes straight through. */
+	function countingEnv(counts: Record<string, number>): TestEnv {
+		const coordinator = {
+			getByName: (name: string) => {
+				const stub = env.QUOTA_COORDINATOR.getByName(name);
+				return {
+					dispatch: (request: { kind: string }) => {
+						if (request.kind.startsWith('ema-')) counts[request.kind] = (counts[request.kind] ?? 0) + 1;
+						return stub.dispatch(request as never);
+					},
+				};
 			},
-			put: kv.put.bind(kv),
-			delete: kv.delete.bind(kv),
-			list: kv.list.bind(kv),
-		} as unknown as KVNamespace;
-		return { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: spy } as unknown as TestEnv;
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
+		return {
+			...env,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
+			KV_ENVELOPE_KEY: ENVELOPE_B64,
+			QUOTA_COORDINATOR: coordinator,
+		} as unknown as TestEnv;
 	}
 
-	it('an update PUT performs exactly one read of the tenant key', async () => {
+	it('an update PUT is ONE registry write, decided on the fresh record (no separate read)', async () => {
 		expect((await send(call('PUT', '', upsertBody()))).status).toBe(200);
-		const counts = { reads: 0 };
-		const res = await send(call('PUT', '', upsertBody({ name: 'Acme Renamed' })), countingEnv(counts));
-		expect(res.status).toBe(200);
-		expect(counts.reads).toBe(1);
+		const counts: Record<string, number> = {};
+		expect((await send(call('PUT', '', upsertBody({ name: 'Acme Renamed' })), countingEnv(counts))).status).toBe(200);
+		expect(counts).toEqual({ 'ema-write': 1 });
 	});
 
-	it('a create PUT performs exactly one read of the tenant key', async () => {
-		const counts = { reads: 0 };
+	it('the first PUT on an unmigrated registry is refused unserved, runs the one-time import, then writes once', async () => {
+		const counts: Record<string, number> = {};
 		expect((await send(call('PUT', '', upsertBody()), countingEnv(counts))).status).toBe(200);
-		expect(counts.reads).toBe(1);
+		expect(counts).toEqual({ 'ema-write': 2, 'ema-migrate': 1 });
 	});
 
-	it('an issuer move still releases the old index entry from that single read', async () => {
+	it('an issuer move releases the old index entry inside the same write', async () => {
 		expect((await send(call('PUT', '', upsertBody()))).status).toBe(200);
-		const counts = { reads: 0 };
 		const moved = upsertBody({ issuer: 'https://idp-new.example.com', jwks_uri: 'https://idp-new.example.com/keys' });
-		expect((await send(call('PUT', '', moved), countingEnv(counts))).status).toBe(200);
-		expect(counts.reads).toBe(1);
-		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY)).toBeNull();
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp-new.example.com', ENVELOPE_KEY))?.tenant_id).toBe('acme-corp');
+		expect((await send(call('PUT', '', moved))).status).toBe(200);
+		expect(await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default')).toBeNull();
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp-new.example.com'))?.tenant_id).toBe('acme-corp');
 	});
 });
 
 describe('PUT over an orphaned issuer index', () => {
 	it('lets another tenant claim an issuer whose index points at a missing record', async () => {
 		await send(call('PUT', '', upsertBody()));
-		await env.SESSION_STORE!.delete(`${OAUTH_KV_PREFIX}ema-tenant:acme-corp`);
+		await runInDurableObject(registryShard(), (_instance, state) => state.storage.delete(emaRecordStorageKey('acme-corp')));
 		const res = await send(call('PUT', '', upsertBody({ tenant_id: 'other-corp' })));
 		expect(res.status).toBe(200);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, 'https://idp.example.com/oauth2/default', ENVELOPE_KEY))?.tenant_id).toBe(
-			'other-corp',
-		);
+		expect((await getEmaTenantByIssuer(REGISTRY, 'https://idp.example.com/oauth2/default'))?.tenant_id).toBe('other-corp');
 	});
 });
 
-describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
-	const failing = () => {
-		const boom = async () => {
-			throw new Error('KV unavailable');
-		};
-		return { get: boom, put: boom, delete: boom, list: boom } as unknown as KVNamespace;
+describe('registry or SESSION_STORE failure -> 503 ema_store_unavailable', () => {
+	const boom = async () => {
+		throw new Error('store unavailable');
 	};
+	const failingKv = () => ({ get: boom, put: boom, delete: boom, list: boom }) as unknown as KVNamespace;
+	const failingCoordinator = () => ({ getByName: () => ({ dispatch: boom }) }) as unknown as DurableObjectNamespace<QuotaCoordinator>;
 	const failingEnv = () =>
-		({ ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY, KV_ENVELOPE_KEY: ENVELOPE_B64, SESSION_STORE: failing() }) as unknown as TestEnv;
+		({
+			...env,
+			BV_MCP_EMA_ADMIN_KEY: TEST_INTERNAL_KEY,
+			KV_ENVELOPE_KEY: ENVELOPE_B64,
+			SESSION_STORE: failingKv(),
+			QUOTA_COORDINATOR: failingCoordinator(),
+		}) as unknown as TestEnv;
 
 	it.each([
 		['PUT', '', upsertBody()],
@@ -451,3 +466,17 @@ describe('SESSION_STORE failure -> 503 ema_store_unavailable', () => {
 		expect(await res.json()).toEqual({ error: 'ema_store_unavailable' });
 	});
 });
+
+/** The registry as the Worker sees it (coordinator + the legacy-import KV and envelope key). */
+const REGISTRY: EmaRegistry = { coordinator: env.QUOTA_COORDINATOR, kv: env.SESSION_STORE, kvEnvelopeKey: ENVELOPE_KEY };
+
+const registryShard = () => env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME);
+
+/** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
+async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
+	await runInDurableObject(registryShard(), async (_instance, state) => {
+		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
+		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
+	});
+}

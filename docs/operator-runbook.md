@@ -25,7 +25,7 @@ Prerequisites:
    (stale KV IDs → wrangler 422 on deploy).
 4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY,
    OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_MCP_OAUTH_MINT_KEY,
-   BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
+   BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_EMA_ADMIN_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
    BV_MCP_WATCH_CLEANUP_KEY,
    BV_MCP_M365_KEY, BV_MCP_BRAND_WEBHOOK_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
    BV_BROWSER_RENDERER_KEY, KV_ENVELOPE_KEY, MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
@@ -287,6 +287,7 @@ unset. Set up an external heartbeat:
 | `BV_WEB_INTERNAL_KEY`              | `npx wrangler secret put BV_WEB_INTERNAL_KEY`                                                        | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected                                                                                                                                      |
 | `BV_MCP_OAUTH_MINT_KEY`            | `npx wrangler secret put BV_MCP_OAUTH_MINT_KEY`                                                      | Same strong value on bv-mcp + bv-web-prod only; grants/trial issuance; never provision to ops                                                                                                                                 |
 | `BV_MCP_OAUTH_REVOKE_KEY`          | `npx wrangler secret put BV_MCP_OAUTH_REVOKE_KEY`                                                    | Same distinct strong value on bv-mcp + bv2-ops only; revocation cannot mint                                                                                                                                                   |
+| `BV_MCP_EMA_ADMIN_KEY`             | `npx wrangler secret put BV_MCP_EMA_ADMIN_KEY`                                                       | Operator-only, never on bv-web-prod; strong distinct 32+ byte value for the `/internal/oauth/ema-tenants*` routes (seed, list, approve, reject). Unset = those routes answer 503                                            |
 | `BV_MCP_TENANT_KEY`                | `npx wrangler secret put BV_MCP_TENANT_KEY`                                                          | Strong distinct 32+ byte key set only on the all-tenant orchestrator; prefer a fail-closed `TENANT_KEY_SCOPE` mapping. Without one, the key is intentionally global and every call must assert a narrowed `X-Tenant-Scope`    |
 | `BV_MCP_TOOL_DELEGATION_KEY`       | `npx wrangler secret put BV_MCP_TOOL_DELEGATION_KEY`                                                 | Same distinct strong value on bv-mcp + bv-web-prod only; Brand Watch register/list/delete with tenant context                                                                                                                 |
 | `BV_MCP_WATCH_CLEANUP_KEY`         | `npx wrangler secret put BV_MCP_WATCH_CLEANUP_KEY`                                                   | Separate value on bv-mcp + bv2-ops only; Brand Watch list/delete cleanup, never registration                                                                                                                                  |
@@ -356,22 +357,56 @@ makes one customer IdP issuer trusted. The grant refuses a token request from an
 unregistered issuer before it looks at the signature, so a well-signed assertion
 from the wrong IdP buys nothing. Tenants are seeded
 over the service binding (no `cf-connecting-ip`), through `/internal/oauth/ema-tenants`,
-which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new secret.
+which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 
-> **Prerequisite: set `KV_ENVELOPE_KEY` (and redeploy) BEFORE seeding the first tenant.**
-> Tenant records are sealed with that key, and a record stored without it is plaintext.
-> There is no plaintext fallback by design: once the key is set, a plaintext record reads
-> as absent. So a tenant seeded while the key is unset would vanish the moment the key
-> is added: its issuer index would be orphaned, every token issued for it would answer
-> 401 within about a minute, and a later re-PUT would quietly work and hide the cause.
-> To prevent that, while `ENABLE_OAUTH` is `true` and `KV_ENVELOPE_KEY` is unset (or does
-> not parse), the PUT answers `409 envelope_key_required` and writes nothing.
-> If the key is ever set or rotated after tenants exist, every tenant reads as absent:
-> re-PUT each one to reseal it, and confirm with `GET /internal/oauth/ema-tenants`
-> that they all list (see "Verify live", step 1).
+> **Prerequisite: provision `BV_MCP_EMA_ADMIN_KEY` BEFORE deploying the release that adds it.**
+> Every `/internal/oauth/ema-tenants*` route answers `503 internal_auth_not_configured` until it is
+> set. It must be a distinct value of at least 32 bytes and must never be given to bv-web-prod:
+> bv-web holds `BV_MCP_OAUTH_MINT_KEY` and reaches EMA only through the customer self-serve route
+> (`/internal/oauth/ema-self-serve/<tenant_id>`), which cannot approve anything.
+
+> **Storage: the EMA registry.** Tenant records, the approved-issuer index and each tenant's
+> floor (the highest token epoch and revision the id ever had) live in ONE dedicated
+> QuotaCoordinator Durable Object instance named `ema-registry` (not a shared security shard),
+> under `ema:` keys, outside the `quota:` prefix the cleanup alarm sweeps, so nothing expires
+> them. Every read and write is one Durable Object call that runs inside a storage transaction: a
+> write is decided on the record as it is now, never on a snapshot the Worker read earlier. The
+> coordinator's full reset (`resetQuotaCoordinatorState`) deletes every tenant; it is a test helper
+> only, and an audit test fails if any production module calls it.
+>
+> **Plaintext at rest.** Records are no longer sealed with `KV_ENVELOPE_KEY`. The platform encrypts
+> Durable Object storage at rest and only this Worker's binding can call the registry, but account
+> members whose Cloudflare role lets them browse Durable Object storage in the dashboard (Data
+> Studio) can read the records: tenant ids and names, issuers, `jwks_uri`, client ids, tiers and
+> entitlement dates. None of these is key material or a token. Keep that access to operators.
+>
+> **Throughput.** That one instance serves every EMA mint and every EMA bearer request (one call
+> each). A single Durable Object handles roughly 1,000 requests a second; that is accepted for
+> current volume, so watch its latency and errors if EMA traffic grows. The mint's per-(IP, issuer)
+> limit (120 a minute) and per-IP ceiling (600 a minute) run before any registry call. Nothing
+> caches a registry answer; if a cache is ever added, it may only hold a dead verdict, never a live one.
+>
+> **The one-time import of older records.** A tenant written by an older release sits in
+> `SESSION_STORE` (`oauth:ema-tenant:<id>`, sealed with `KV_ENVELOPE_KEY`). Until the registry has
+> imported them it serves nothing: the first EMA call of any kind after the deploy reads EVERY
+> legacy tenant and imports them all in one transaction, then sets the `ema:migrated` marker. Each
+> keeps its token epoch, so its live tokens keep working; where two approved records list one
+> issuer, the one the old KV issuer index named keeps it. After the marker KV is never read again.
+> No operator step is needed. If any legacy record cannot be read (a sealed record while
+> `KV_ENVELOPE_KEY` is unset or wrong, a record that does not parse, more than 500 records),
+> nothing is imported and EVERY EMA call answers 503 until it is fixed: restore the key that sealed
+> them, or delete the broken `oauth:ema-tenant:<id>` key, and the next call imports. `KV_ENVELOPE_KEY`
+> now only matters for that import. While `ENABLE_OAUTH` is `true` and the key is unset (or does not
+> parse), the write routes still answer `409 envelope_key_required`.
+>
+> **Rollback and the deploy freeze.** The import never deletes or writes KV: the legacy copies stay
+> for one release so a rollback to the previous Worker finds them. Changes made after the deploy
+> live only in the registry and are lost by a rollback: a tenant deleted, rejected or disabled after the deploy comes back ACTIVE from its retained KV copy, so re-apply those revocations by hand after any rollback. KV reads can lag about 60s, so an edit made just before the import may be missed. Make no operator EMA edits while this
+> release deploys (old isolates may still write KV), nor while a rollback is still possible. Delete
+> the legacy `oauth:ema-tenant:*` and `oauth:ema-issuer:*` keys in the release after.
 
     PUT /internal/oauth/ema-tenants
-    Authorization: Bearer <BV_MCP_OAUTH_MINT_KEY>
+    Authorization: Bearer <BV_MCP_EMA_ADMIN_KEY>
     Content-Type: application/json
 
     {
@@ -391,9 +426,8 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   IP literals and internal hostnames are rejected (`400`) and nothing is stored.
 - `issuer` is stored normalized (https, lowercase host, all trailing slashes stripped,
   so `https://IDP.example.com/x//` and `https://idp.example.com/x/` are the same issuer).
-  One issuer belongs to one tenant: a second tenant claiming it gets `409 issuer_conflict`.
-  An index entry whose owning record is missing or unreadable (for example after a
-  `KV_ENVELOPE_KEY` rotation) is treated as free, so the issuer can be re-claimed.
+  One issuer belongs to one APPROVED tenant: approving or seeding a second tenant for it gets
+  `409 issuer_conflict`. An index entry whose owner is missing, unapproved or unreadable is free.
 - `allowed_client_ids` defaults to the Claude web CIMD client; `tier` is `developer`
   or `enterprise` (never `owner`); `entitlement_expires_at` is epoch seconds.
 - Re-PUT the same `tenant_id` to update (`created_at` is preserved). A PUT replaces
@@ -403,20 +437,53 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
   endpoint being reachable right now, and a failure leaves the tenant enabled. When
   in doubt, or when the IdP is down, `DELETE` is the kill switch (it needs no discovery).
 - Suspending (an `enabled` true→false PUT) or deleting a tenant also invalidates every
-  access token already issued for it, within about 60s (KV propagation): each `/mcp`
-  request with an EMA bearer re-reads the tenant record, and a token whose tenant is
-  missing, unreadable, disabled, past `entitlement_expires_at`, on another `tier`, or on
-  an older token epoch gets the normal 401 challenge. Re-enabling does NOT restore them,
-  because the record's `token_epoch` (server-managed epoch ms, set on create and on each
-  suspend, never accepted in the PUT body) has moved; a re-created tenant starts a new
-  epoch too. Claude recovers by exchanging a fresh assertion.
-- `GET /internal/oauth/ema-tenants` lists, `GET /internal/oauth/ema-tenants/<tenant_id>`
-  reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>` removes it (204). DELETE
-  also releases the issuer even when the record can no longer be read.
-- When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
-  key is treated as absent (the grant fails closed for that issuer, and the tenant's
-  issued tokens stop resolving). After a key rotation, re-PUT each tenant to reseal it;
-  the re-PUT counts as a create, so it starts a new token epoch.
+  access token already issued for it, at once: each `/mcp` request with an EMA bearer reads the
+  tenant record from the registry, and a token whose tenant is missing, disabled, unapproved, past
+  `entitlement_expires_at`, on another `tier`, or on an older token epoch gets the normal 401
+  challenge. Claude recovers by exchanging a fresh assertion.
+- The token epoch is the record's `token_epoch` (server-managed, never accepted in a PUT body). It
+  only moves forward. Every revoking write (create, disable, an issuer or `jwks_uri` change, any
+  `tier` change, removing an `allowed_client_ids` entry, leaving approval, an earlier
+  `entitlement_expires_at`) moves it inside the same
+  transaction that changes the record; a mint validates the assertion against one record and stamps
+  that record's epoch as `tep`. A token minted against the record before a revoke therefore carries
+  the old epoch and dies, and re-enabling, re-approving or a tier round trip never revives it. A
+  DELETE moves the id's floor one past its last epoch, so a re-created tenant starts above every
+  token the id ever minted. If the
+  registry cannot answer, a mint or a bearer request answers 503 (retryable, never a 401) and a
+  write answers `503 ema_store_unavailable` and changes nothing.
+- `GET /internal/oauth/ema-tenants` lists one page (at most 100, in `tenant_id` order; a
+  `next_cursor` in the answer is the `?cursor=` of the next page), `GET
+/internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
+  removes it (204). DELETE also releases the issuer even when the record can no longer be read.
+- Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
+  created `pending` and mints nothing until approved; an operator-seeded tenant without an
+  `approval` field counts as approved.
+
+      GET  /internal/oauth/ema-tenants?approval=pending        # also approved | rejected
+      POST /internal/oauth/ema-tenants/<tenant_id>/approve
+      {"issuer": "<issuer>", "jwks_uri": "<jwks_uri>", "rev": <rev>}
+      POST /internal/oauth/ema-tenants/<tenant_id>/reject
+
+  Copy the three approve fields from the record you reviewed (`GET .../<tenant_id>` shows `rev`,
+  which every write raises); if the record changed since, even within the same second, the
+  approve answers `409 approval_stale` and you review again. Approving claims the issuer:
+  `409 issuer_conflict` means another approved tenant already holds it. A reject is a ban
+  on that issuer for that tenant: the customer's own DELETE of a rejected tenant leaves a
+  disabled, lapsed tombstone that stays `rejected` (still `204`), so deleting and re-saving
+  the same issuer does not start over. The record keeps `rejected_issuer_hashes` (sha256 of
+  each issuer you rejected for that tenant, newest last, at most 16): saving any of them
+  again stays `rejected` even after the customer moved to another issuer in between, and
+  the tombstone is kept while the list is non-empty. A different issuer starts `pending`.
+  It ends when you approve that issuer (it leaves the list) or you
+  `DELETE /internal/oauth/ema-tenants/<tenant_id>` with the admin key, which removes the
+  record, its history and its issuer outright. The self-serve DELETE, like the PUT, answers
+  `409 envelope_key_required` while OAuth is on and `KV_ENVELOPE_KEY` is unset. The self-serve route refuses shared
+  issuers (`isSharedIssuer` in `src/oauth/ema-tenants.ts`); the operator PUT does not check them.
+
+- `KV_ENVELOPE_KEY` no longer seals tenant records. Before the one-time import has run,
+  changing or removing it makes the import fail (every EMA call 503) until the key that
+  sealed the legacy records is back; once the import has run it no longer affects EMA.
 - A tenant whose exchanges answer `503 temporarily_unavailable` ("Issuer signing keys are
   unavailable") has a stored `jwks_uri` that cannot be fetched right now: the IdP is down, the
   URL is blocked by the outbound fetch policy, or the response is not a usable key set. Each
@@ -427,7 +494,7 @@ which is gated by the existing `BV_MCP_OAUTH_MINT_KEY` bearer. There is no new s
 
 Run after the Worker deploy, and again once a tenant is seeded:
 
-1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After ANY `KV_ENVELOPE_KEY` change (first set, rotation, removal), also run `GET /internal/oauth/ema-tenants` and confirm every seeded tenant is listed; a missing one is unreadable under the current key and needs a re-PUT.
+1. `npm run check:ema` (`scripts/verify-ema.sh`; default base is production, `--base <url>` for another). It checks the authorization-server metadata (jwt-bearer grant, the ID-JAG grant profile, CIMD support, auth method `none`, PKCE S256), the protected-resource metadata, the unauthenticated paid-tool 401 challenge, and that a junk assertion gets `invalid_grant`. Every check must print PASS; `unsupported_grant_type` on the probe means the grant is not deployed. After the first deploy of the registry release, also run `GET /internal/oauth/ema-tenants` once: it runs the one-time import if no call has yet, and must list every tenant seeded before. A `503 ema_store_unavailable` means a legacy record could not be read (see "The one-time import of older records" above).
 2. With a real assertion, `npm run check:ema -- --assertion <file>` exchanges it and prints the error code or `expires_in`/scope and the token length only. The tenant for its issuer must already be seeded.
 3. Email mcp-review@anthropic.com to flag the directory listing for Enterprise Managed Auth. Send it only after step 1 is green.
 4. In the directory listing, add the guide URL (`docs/enterprise-managed-auth.md` in this repository, or its published copy).

@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, normalizeIssuer, tenantEpoch } from './ema-tenants';
+import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer, tenantEpoch, type EmaRegistry } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -190,6 +190,8 @@ export interface MintAccessTokenOptions {
 	/** EMA only: the tenant epoch, minted as the `tep` claim. Absent for every other grant (no claim). */
 	tenantEpoch?: number;
 	scope: string;
+	/** jwt-bearer only: echo the granted resource (`${issuer}/mcp`) in the response (RFC 8707 style). Absent for every other grant. */
+	echoResource?: boolean;
 }
 
 /**
@@ -224,7 +226,8 @@ export async function mintAccessToken(
 			},
 			{ secret, ttlSeconds, issuer, audience: `${issuer}/mcp` },
 		);
-		return c.json({ access_token: token, token_type: 'Bearer', expires_in: ttlSeconds, scope: opts.scope }, 200, {
+		const resource = opts.echoResource ? { resource: `${issuer}/mcp` } : {};
+		return c.json({ access_token: token, token_type: 'Bearer', expires_in: ttlSeconds, scope: opts.scope, ...resource }, 200, {
 			'Cache-Control': 'no-store',
 			Pragma: 'no-cache',
 		});
@@ -370,8 +373,12 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 /** What a validated ID-JAG authorizes: the tenant, the requesting client and the subject's digest. */
 interface AcceptedIdJag {
 	tenant: EmaTenantRecord;
+	/** The validated record's own epoch: the token's `tep`. Any revoke stored after that read moved the epoch, so it kills the token. */
+	tenantEpoch: number;
 	clientId: string;
 	subjectHash: string;
+	/** A resource was requested or claimed (and validated), so the response echoes it. */
+	resourceGranted: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -413,19 +420,23 @@ function decodeIdJagUnverified(assertion: string): Record<string, unknown> {
 }
 
 /** A tenant lookup that cannot be read is an outage (503), never an untrusted issuer. */
-async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord | null> {
+async function lookupEmaTenant(registry: EmaRegistry, issuer: string): Promise<EmaTenantRecord | null> {
 	try {
-		return await getEmaTenantByIssuer(kv, issuer, kvEnvelopeKey);
+		return await getEmaTenantByIssuer(registry, issuer);
 	} catch {
 		throw new StrongStateUnavailableError('ema tenant lookup');
 	}
 }
 
-/** The enabled, in-entitlement tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
-async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
-	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
-	// Unknown, disabled and lapsed tenants are indistinguishable to the caller (same code, same text).
-	if (!tenant?.enabled || (tenant.entitlement_expires_at ?? Infinity) <= now) {
+/**
+ * The active (enabled, approved, in-entitlement) tenant that allowlists `iss`, read as ONE registry record:
+ * the assertion is validated against that record (jwks_uri, client allowlist, expiry) and the token stamped
+ * with its epoch. Looked up before the signature, so an unregistered issuer fails closed.
+ */
+async function resolveTrustedTenant(registry: EmaRegistry, iss: unknown, now: number): Promise<EmaTenantRecord> {
+	const tenant = typeof iss === 'string' ? await lookupEmaTenant(registry, iss) : null;
+	// Unknown, disabled, pending and lapsed tenants are indistinguishable to the caller (same code, same text).
+	if (!tenant || !isTenantActive(tenant, now)) {
 		throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
 	}
 	return tenant;
@@ -492,6 +503,11 @@ function singleValueEquals(value: unknown, expected: string): boolean {
 	return single === expected;
 }
 
+/** A string, or a one-element array holding one, naming `mcpResource` with or without ONE trailing slash. */
+function namesMcpResource(value: unknown, mcpResource: string): boolean {
+	return singleValueEquals(value, mcpResource) || singleValueEquals(value, `${mcpResource}/`);
+}
+
 function isBoundedString(value: unknown): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= ID_JAG_MAX_CLAIM_LENGTH;
 }
@@ -502,6 +518,14 @@ function isTimeWindowValid(exp: unknown, iat: unknown, now: number): exp is numb
 	const [expiresAt, issuedAt] = [exp as number, iat as number];
 	const fresh = expiresAt > now - OAUTH_JWT_CLOCK_SKEW_SECONDS && issuedAt <= now + OAUTH_JWT_CLOCK_SKEW_SECONDS;
 	return fresh && expiresAt - issuedAt <= ID_JAG_MAX_LIFETIME_SECONDS;
+}
+
+/** `nbf`, when present, must be an integer not later than now (+skew); absent is fine. */
+function assertNotBefore(nbf: unknown, now: number): void {
+	if (nbf === undefined) return;
+	if (!Number.isSafeInteger(nbf) || (nbf as number) > now + OAUTH_JWT_CLOCK_SKEW_SECONDS) {
+		throw new TokenEndpointError('invalid_grant', 'Assertion is expired or not yet valid');
+	}
 }
 
 /** The normalized form of an `iss` claim, or null when it is not a usable issuer URL. */
@@ -543,15 +567,20 @@ export function validateIdJagClaims(
 	const { aud, exp, iat, sub, jti } = claims;
 	if (!singleValueEquals(aud, expected.audience)) throw new TokenEndpointError('invalid_grant', 'Assertion audience is not this server');
 	if (!isTimeWindowValid(exp, iat, now)) throw new TokenEndpointError('invalid_grant', 'Assertion is expired or not yet valid');
+	assertNotBefore(claims.nbf, now);
 	if (!isBoundedString(sub) || !isBoundedString(jti)) throw new TokenEndpointError('invalid_grant', 'Assertion sub or jti is invalid');
 	return { sub, jti, exp };
 }
 
-/** A `resource` (request parameter or assertion claim), when present, must name this server's MCP endpoint. */
-function assertResourceBinding(requested: string | undefined, claimed: unknown, mcpResource: string): void {
-	const requestOk = requested === undefined || requested === mcpResource;
-	const claimOk = claimed === undefined || singleValueEquals(claimed, mcpResource);
+/**
+ * A `resource` (request parameter or assertion claim), when present, must name this server's MCP
+ * endpoint, with or without one trailing slash. Returns whether either was present (granted).
+ */
+function assertResourceBinding(requested: string | undefined, claimed: unknown, mcpResource: string): boolean {
+	const requestOk = requested === undefined || namesMcpResource(requested, mcpResource);
+	const claimOk = claimed === undefined || namesMcpResource(claimed, mcpResource);
 	if (!requestOk || !claimOk) throw new TokenEndpointError('invalid_target', 'Requested resource is not served by this server');
+	return requested !== undefined || claimed !== undefined;
 }
 
 /** One-time use of each assertion: the issuer-scoped jti is claimed until 30s after it expires. */
@@ -577,15 +606,16 @@ async function acceptIdJag(
 	const issuer = requireStrictIssuer(c.req.url, c.env.OAUTH_ISSUER);
 	const now = Math.floor(Date.now() / 1000);
 	const unverified = decodeIdJagUnverified(request.assertion);
-	const tenant = await resolveTrustedTenant(kv, unverified.iss, now, kvEnvelopeKey);
+	// Read before the jti is consumed, so an unreadable registry is a 503 that leaves the assertion reusable.
+	const tenant = await resolveTrustedTenant({ coordinator: c.env.QUOTA_COORDINATOR, kv, kvEnvelopeKey }, unverified.iss, now);
 	await assertClientAllowed(kv, tenant, request.client_id, kvEnvelopeKey);
 	if (unverified.client_id !== request.client_id) throw new TokenEndpointError('invalid_grant', 'Assertion client_id does not match');
 	const claims = await verifyIdJagSignature(kv, tenant, request.assertion);
 	const expected: IdJagExpectation = { audience: issuer, tenantIssuer: tenant.issuer, clientId: request.client_id };
 	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
-	assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
+	const resourceGranted = assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
 	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
-	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub) };
+	return { tenant, tenantEpoch: tenantEpoch(tenant), clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
 }
 
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
@@ -638,7 +668,7 @@ async function handleJwtBearerGrant(
 	} catch (error) {
 		return tokenErrorResponse(c, error, NO_STORE);
 	}
-	const { tenant, clientId, subjectHash } = grant;
+	const { tenant, tenantEpoch, clientId, subjectHash, resourceGranted } = grant;
 	const response = await mintAccessToken(
 		c,
 		c.env,
@@ -648,8 +678,9 @@ async function handleJwtBearerGrant(
 			clientId,
 			entitlementGeneration: 1,
 			entitlementExpiresAt: tenant.entitlement_expires_at,
-			tenantEpoch: tenantEpoch(tenant),
+			tenantEpoch,
 			scope: ID_JAG_GRANTED_SCOPE,
+			echoResource: resourceGranted,
 		},
 		NO_STORE,
 	);

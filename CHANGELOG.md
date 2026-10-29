@@ -8,6 +8,35 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.105.0] - 2026-10-30
+
+Enterprise Managed Auth tenants move to strongly consistent storage, with a self-serve route for the web dashboard and an operator approval step. `@blackveil/dns-checks` stays 1.61.1. Scoring model unchanged. No new secret (`BV_MCP_EMA_ADMIN_KEY` and `BV_MCP_OAUTH_MINT_KEY` were provisioned on 2026-10-29). **One-way data step:** on the first EMA call after deploy, every legacy KV tenant is imported into the registry once; KV copies are kept, read-never, for rollback (see Operator notes).
+
+### Added
+
+- Self-serve EMA tenant route for the web dashboard (`/internal/oauth/ema-self-serve/:tenant_id`, `BV_MCP_OAUTH_MINT_KEY`). A new or re-keyed tenant waits for a one-time operator approval; an issuer shared by more than one customer is refused.
+- Operator approve and reject routes (`/internal/oauth/ema-tenants/:tenant_id/approve|reject`, `BV_MCP_EMA_ADMIN_KEY`). Approve compares the reviewed `{issuer, jwks_uri, rev}` with the record, so a change made after review cannot be approved by accident.
+- `npm run ema:approve` (`scripts/ema-approve.sh`): prints the exact approve or reject request after checking the issuer, the JWKS host and live key thumbprints. It never sends the request and never reads the admin key.
+- The operator tenant list accepts `?cursor=` and returns `next_cursor`.
+
+### Changed
+
+- EMA tenant records and the issuer index live in a dedicated Durable Object instance (`ema-registry`) instead of KV. Every approval, epoch, issuer-ownership and reject decision runs inside one storage transaction, so stale reads can no longer revive a revoked tenant or let two tenants claim one issuer.
+- Any revoking change (suspend, delete, reject, re-key, tier change, removing an allowed client id) invalidates that tenant's issued tokens immediately; it used to wait up to about 60 s for KV propagation.
+- jwt-bearer grant: the assertion's `nbf` is enforced, a trailing slash on `resource` is tolerated, and the granted `resource` is echoed in the token response.
+- The customer guide (`docs/enterprise-managed-auth.md`) covers the dashboard flow.
+
+### Fixed
+
+- `/internal/tools/*`: an empty, short or aliased optional capability key (`BV_MCP_TOOL_DELEGATION_KEY`, `BV_MCP_WATCH_CLEANUP_KEY`) now disables only itself instead of answering 503 to every caller. It still never authenticates.
+- `scripts/verify-release.sh` skips or authenticates when the anonymous daily quota is spent.
+
+### Operator notes
+
+- Make no EMA tenant edits while this release deploys or while a rollback is still possible. A rollback restores the KV copies from import time, so a tenant deleted, rejected or disabled after the deploy comes back active and must be re-revoked by hand (runbook §8a).
+- Any EMA registry failure answers 503, never 401. A host without a `QUOTA_COORDINATOR` binding answers 503 for every EMA call.
+- CI gained a PR-time gate that fails a change to `@blackveil/dns-checks` shipping inputs when the package version still names an existing tag with different contents.
+
 ## [3.104.4] - 2026-10-29
 
 Two fixes from a digital-twin adjudication of the 3.104.1 chaos-sweep observations (#1323). Ships the 3.104.2 and 3.104.3 changes too: 3.104.3 reached `main` but was never deployed. `@blackveil/dns-checks` stays 1.61.1. No migration, no new secret, no scoring change.
