@@ -25,27 +25,42 @@ users to BlackVeil DNS Security on their behalf.
 BlackVeil never sees your users' IdP passwords. It trusts only assertions signed
 by the issuer you register with us.
 
-## 2. Before you start
+## 2. Register your issuer in the BlackVeil dashboard
 
-Send BlackVeil two things, through the [contact form](https://blackveilsecurity.com/contact):
+An owner of your BlackVeil account does this on the MCP Enterprise plan:
 
-| What                | Example                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Your IdP issuer URL | `https://<your-org>.okta.com` or a custom authorization server such as `https://<your-org>.okta.com/oauth2/default` |
-| Your plan or tier   | Claude Team, Claude Enterprise, or the BlackVeil tier you have agreed with us                                       |
+1. Open the BlackVeil dashboard, then **Settings > Enterprise Managed Auth**.
+2. Enter your IdP issuer. It must be the exact `issuer` value from your IdP's
+   `<issuer>/.well-known/openid-configuration` document, and it must use
+   `https`. For Okta this is the org issuer, `https://<your-org>.okta.com`.
+   BlackVeil compares it after lower-casing the host and dropping one trailing
+   slash, so those two differences do not matter.
+3. Save. The status shows **Pending** until BlackVeil approves the issuer once.
+   Until then, token exchanges fail with `invalid_grant`.
+4. After approval, you turn the connection on or off yourself from the same
+   card. **Disabling always works**, even when your IdP is down or unreachable.
 
-The issuer URL must be the exact `issuer` value from your IdP's
-`<issuer>/.well-known/openid-configuration` document. It must use `https`. BlackVeil compares it after normalizing the host to lower
-case and dropping one trailing slash, so those two differences do not matter.
+Rules to know:
 
-BlackVeil registers your issuer as a trusted tenant and replies to confirm that
-the tenant is enabled. Do not continue to the next sections until you have that
-confirmation. Until then, token exchanges fail with `invalid_grant`.
+- **Changing the issuer** submits it for review again, and the status returns to
+  Pending.
+- **A rejected issuer stays rejected.** Enter a different issuer to submit a new
+  request.
+- **Shared multi-tenant issuers are refused** with `issuer_not_allowed`. Use an
+  issuer that belongs to your organization alone.
+- If BlackVeil cannot read your IdP's discovery document, the dashboard reports
+  `issuer_discovery_failed`; check that the issuer URL is public and correct.
+
+If you cannot use the dashboard, send your issuer URL and plan through the
+[contact form](https://blackveilsecurity.com/contact) and we will register it
+for you.
 
 ## 3. Values to enter in Okta
 
-In the Okta Admin Console, use the Cross App Access (XAA) settings. Menu names
-can vary slightly between Okta releases.
+Okta has no Okta Integration Network app for BlackVeil. Create a custom OIDC
+app for it, and enable Cross App Access under **Machine assignments**. Free
+Okta Integrator orgs include this feature. Menu names can vary slightly between
+Okta releases.
 
 ### Resource app (BlackVeil DNS Security)
 
@@ -58,8 +73,9 @@ enter:
 | Audience   | `https://dns-mcp.blackveilsecurity.com` |
 | Scope      | `mcp`                                   |
 
-Enter the URLs exactly as shown, with no trailing slash. The audience is
-BlackVeil's authorization server identifier, not the token endpoint address.
+Enter the issuer and audience exactly as shown, with no trailing slash. The
+audience is BlackVeil's authorization server identifier, not the token endpoint
+address. For the resource, BlackVeil tolerates one trailing slash.
 
 ### AI agent (Claude)
 
@@ -124,7 +140,7 @@ BlackVeil checks each exchange in this order and stops at the first failure:
 
 1. The request is well formed (grant type, assertion, client ID).
 2. The assertion header says `typ: oauth-id-jag+jwt`.
-3. The assertion's issuer is an enabled, unexpired BlackVeil tenant.
+3. The assertion's issuer is an approved, enabled, unexpired BlackVeil tenant.
 4. Claude's client ID is allowed for that tenant and can be fetched.
 5. The client ID inside the assertion matches the request.
 6. The signature verifies against your IdP's published signing keys.
@@ -137,12 +153,14 @@ BlackVeil checks each exchange in this order and stops at the first failure:
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `unsupported_grant_type`                                                               | The request's `grant_type` is missing or is not the JWT bearer grant.                                                                                                                                                                                                                                                                                                                                                     | Check that Managed authorization is selected in Claude.                                                                  |
 | `invalid_request` (HTTP 400)                                                           | The request was malformed: `assertion` or `client_id` missing, an assertion over 8192 characters, or a body that is not form-encoded.                                                                                                                                                                                                                                                                                     | Check the request your caller sends. In Claude this points at a client or proxy fault, so contact us.                    |
-| `invalid_grant`                                                                        | The assertion was rejected. Typical reasons: the header `typ` is not `oauth-id-jag+jwt`; your issuer is not a trusted, enabled tenant, or its entitlement has ended; the signature could not be verified against your IdP's keys; the assertion is expired or dated in the future (check the IdP clock); the audience does not match; the assertion was already used; the client ID inside it does not match the request. | Confirm your issuer URL with BlackVeil, check the Audience value (section 3), and retry. Do not replay an old assertion. |
+| `invalid_grant`                                                                        | The assertion was rejected. Typical reasons: the header `typ` is not `oauth-id-jag+jwt`; your issuer is not approved and enabled (still Pending, rejected or disabled), or its entitlement has ended; the signature could not be verified against your IdP's keys; the assertion is expired or dated in the future (check the IdP clock); the audience does not match; the assertion was already used; the client ID inside it does not match the request. | Check the status in Settings > Enterprise Managed Auth, check the Audience value (section 3), and retry. Do not replay an old assertion. |
 | `invalid_client`                                                                       | Claude's client ID is not allowed for your tenant, or its published details could not be fetched or validated.                                                                                                                                                                                                                                                                                                            | Ask BlackVeil to confirm the allowed client ID is `https://claude.ai/oauth/mcp-oauth-client-metadata`.                   |
 | `invalid_target`                                                                       | The `resource` in the request or in the assertion is not the MCP server.                                                                                                                                                                                                                                                                                                                                                  | Set Resource to `https://dns-mcp.blackveilsecurity.com/mcp` in Okta.                                                     |
 | HTTP 429                                                                               | Too many token requests from one address in a minute: more than 120 exchanges for your issuer, or more than 600 token requests of any kind.                                                                                                                                                                                                                                                                               | Wait a minute and retry. Contact us if it persists.                                                                      |
 | HTTP 503, `temporarily_unavailable`, description `Issuer signing keys are unavailable` | BlackVeil could not fetch your IdP's published signing keys: the IdP did not answer, or its keys URL returned an error or something that is not a usable key set.                                                                                                                                                                                                                                                         | Check that your IdP is up and its keys URL is publicly reachable, then retry. Contact us if it persists.                 |
 | HTTP 503, `temporarily_unavailable`, any other description                             | BlackVeil could not read its authorization state. Nothing about your setup is wrong.                                                                                                                                                                                                                                                                                                                                      | Retry shortly. Contact us if it persists.                                                                                |
+| `issuer_not_allowed` (dashboard)                                                       | The issuer you entered is a shared multi-tenant issuer, or is otherwise not permitted.                                                                                                                                                                                                                                                                                                                                    | Use an issuer that belongs to your organization alone.                                                                   |
+| Status **Rejected** (dashboard)                                                        | BlackVeil declined this issuer. A rejected issuer stays rejected.                                                                                                                                                                                                                                                                                                                                                         | Enter a different issuer to resubmit, or contact us.                                                                     |
 | **Run test fails but SSO works**                                                       | Almost always an Audience mismatch.                                                                                                                                                                                                                                                                                                                                                                                       | Check that Audience is `https://dns-mcp.blackveilsecurity.com` with **no trailing slash**.                               |
 
 ## 7. Testing without a Claude organization
@@ -154,7 +172,7 @@ requesting app. Point it at BlackVeil's authorization server:
 - Resource: `https://dns-mcp.blackveilsecurity.com/mcp`
 - Scope: `mcp`
 
-Your issuer must be registered with BlackVeil first (section 2).
+Your issuer must be registered and approved first (section 2).
 
 A successful exchange returns JSON like this (token shortened):
 
