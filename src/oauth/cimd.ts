@@ -127,6 +127,8 @@ export interface ResolveClientOptions {
 	ip?: string;
 	/** Strongly consistent counter backing the limit; without it the KV window fallback is used. */
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
+	/** The request's `waitUntil`, so the limiter's KV mirror write does not delay the response. */
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 /**
@@ -136,7 +138,7 @@ export interface ResolveClientOptions {
 async function fetchBlocked(kv: KVNamespace, urlHash: string, options: ResolveClientOptions): Promise<boolean> {
 	if (await hasCimdFetchFailure(kv, urlHash)) return true;
 	if (options.ip === undefined) return false;
-	return (await consumeCimdFetchRateLimit(kv, options.ip, options.quotaCoordinator)).exceeded;
+	return (await consumeCimdFetchRateLimit(kv, options.ip, options.quotaCoordinator, options.waitUntil)).exceeded;
 }
 
 /**

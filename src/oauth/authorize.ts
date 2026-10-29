@@ -15,7 +15,7 @@ import {
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
 import { readBoundedText } from '../lib/request-body';
-import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
+import { consumeOAuthRateLimit, requestWaitUntil, type OAuthRateLimitResult } from './rate-limit';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import { resolveIssuerStrict } from './discovery';
 
@@ -142,6 +142,7 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, {
 			ip: resolveClientIpFromRequestHeaders(c.req.raw.headers),
 			quotaCoordinator: c.env.QUOTA_COORDINATOR,
+			waitUntil: requestWaitUntil(c),
 		});
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
@@ -173,10 +174,12 @@ async function consentRateLimit(
 	kv: KVNamespace,
 	ip: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<OAuthRateLimitResult> {
 	return consumeOAuthRateLimit({
 		kv,
 		quotaCoordinator,
+		waitUntil,
 		coordinationScope: 'consent',
 		kvKey: `${OAUTH_KV_PREFIX}consent-rl:${ip}`,
 		principal: ip,
@@ -209,7 +212,7 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
-	const consentRate = await consentRateLimit(kv, ip, c.env.QUOTA_COORDINATOR);
+	const consentRate = await consentRateLimit(kv, ip, c.env.QUOTA_COORDINATOR, requestWaitUntil(c));
 	if (consentRate.unavailable) {
 		return new Response('Authorization rate-limit state unavailable', {
 			status: 503,
@@ -248,7 +251,11 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 
 	let client;
 	try {
-		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, { ip, quotaCoordinator: c.env.QUOTA_COORDINATOR });
+		client = await resolveClient(kv, parsed.client_id, kvEnvelopeKey, {
+			ip,
+			quotaCoordinator: c.env.QUOTA_COORDINATOR,
+			waitUntil: requestWaitUntil(c),
+		});
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
 			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });

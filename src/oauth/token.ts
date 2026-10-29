@@ -22,7 +22,7 @@ import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
 import { logEvent } from '../lib/log';
 import { readBoundedText } from '../lib/request-body';
-import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
+import { consumeOAuthRateLimit, requestWaitUntil, type OAuthRateLimitResult } from './rate-limit';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 // Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
@@ -78,10 +78,11 @@ class TokenEndpointError extends Error {
  * namespaces the KV key and coordinator scope: `token` is the shared per-IP bucket, `token-ceiling`
  * the per-IP ceiling, `jwtb-iss` the jwt-bearer (IP, issuer) bucket.
  */
-function tokenRateLimit(env: AppEnv['Bindings'], label: string, principal: string, limit: number): Promise<OAuthRateLimitResult> {
+function tokenRateLimit(c: Context<AppEnv>, label: string, principal: string, limit: number): Promise<OAuthRateLimitResult> {
 	return consumeOAuthRateLimit({
-		kv: env.SESSION_STORE!,
-		quotaCoordinator: env.QUOTA_COORDINATOR,
+		kv: c.env.SESSION_STORE!,
+		quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		waitUntil: requestWaitUntil(c),
 		coordinationScope: label,
 		kvKey: `${OAUTH_KV_PREFIX}${label}-rl:${principal}`,
 		principal,
@@ -268,12 +269,12 @@ function hasOwnBucket(form: TokenForm, ip: string): boolean {
  */
 async function readRateLimitedTokenForm(c: Context<AppEnv>, ip: string): Promise<TokenForm | Response> {
 	if (ip !== 'unknown') {
-		const ceiling = rateLimitResponse(c, await tokenRateLimit(c.env, 'token-ceiling', ip, TOKEN_IP_CEILING));
+		const ceiling = rateLimitResponse(c, await tokenRateLimit(c, 'token-ceiling', ip, TOKEN_IP_CEILING));
 		if (ceiling) return ceiling;
 	}
 	const form = await readTokenForm(c.req.raw);
 	if (hasOwnBucket(form, ip)) return form;
-	return rateLimitResponse(c, await tokenRateLimit(c.env, 'token', ip, TOKEN_RATE_LIMIT)) ?? form;
+	return rateLimitResponse(c, await tokenRateLimit(c, 'token', ip, TOKEN_RATE_LIMIT)) ?? form;
 }
 
 /**
@@ -600,7 +601,7 @@ function claimedIssuerBucket(assertion: string | undefined): string {
  */
 async function consumeJwtBearerIssuerLimit(c: Context<AppEnv>, assertion: string | undefined, ip: string): Promise<Response | null> {
 	const bucket = await sha256Hex(`${ip}|${claimedIssuerBucket(assertion)}`);
-	return rateLimitResponse(c, await tokenRateLimit(c.env, 'jwtb-iss', bucket, JWT_BEARER_ISSUER_RATE_LIMIT));
+	return rateLimitResponse(c, await tokenRateLimit(c, 'jwtb-iss', bucket, JWT_BEARER_ISSUER_RATE_LIMIT));
 }
 
 /** Host of a URL-shaped (CIMD) client_id for logs; an opaque DCR id is not logged. */
