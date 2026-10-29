@@ -8,6 +8,23 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.104.2] - 2026-10-29
+
+Fixes from a live chaos sweep of 3.104.1 (#1320). Takes effect with `npm run deploy:prod`, `npm run deploy:whois` and `npm run deploy:infra-probe`. No migration, no new secret, no scoring change.
+
+### Changed
+
+- `POST /oauth/token` (and the root `/token` alias) now sends `Cache-Control: no-store` on every response, as RFC 6749 section 5.1 asks of a token endpoint. The 415 (wrong content type), 413 (oversize body), 429 and `unsupported_grant_type` responses previously carried no cache header. The 429 from the token rate limiter also now carries `Retry-After` with the seconds left in its window. Bodies and status codes are unchanged.
+- The OAuth endpoint rate limiters no longer hold the response for their KV mirror write. With the quota coordinator bound, each limiter call made three serial platform round trips: a KV read that seeds the coordinator, the coordinator call, and a KV write that only mirrors the count. The response does not need the write, and the write cannot change the verdict, so it now runs after the response. That removes one of the three round trips from every `POST /oauth/token` limiter (two per request), the consent limiter on `POST /oauth/authorize`, and the CIMD cache-miss limiter on `/oauth/authorize`. Live timings before the change were about 0.9 to 1.5 s for one limiter call and 1.6 to 3.1 s for two. Limits, windows and fail-closed behaviour are unchanged. The self-host KV-only fallback still waits for its write, because there the write is the count.
+- Chaos harnesses (`scripts/chaos/`): `chaos-test-clients.py`, `chaos-test-v210.py` and `score-stability-test.py` accept JSON and Streamable HTTP SSE bodies, expect current behaviour (405 for a GET without `Accept`, 404 for an unknown session, unknown arguments rejected, anonymous batch cap 4), and report quota refusals as skipped rather than failed. The score-stability harness no longer cycles the default domain list to reach `--count`, which had scored one domain twice as two stable results, and records each scan's check statuses and latency. Test tooling only.
+
+### Fixed
+
+- `resources/read` for an unknown URI now answers JSON-RPC `-32002` ("Resource not found: <uri>") and `prompts/get` for an unknown name answers `-32602` ("Invalid prompt name: <name>"), both over HTTP 400 like other invalid-params rejections, instead of HTTP 500 with the generic `-32603`. The handlers throw a typed `JsonRpcClientError` that `executeMcpRequest` maps, rather than matching on the message.
+- WHOIS registrar parsing: `.eu` and `.be` registrars now resolve. Those registries print the registrar as a block, a bare `Registrar:` line followed by indented `Organization:` or `Name:` lines, which the shared parser (`@blackveil/dns-checks` whois) refused, so every lookup came back as `unrecognised_response`. The parser now reads that block's value (Organization preferred), stopping at a blank or non-indented line; a block with neither field still yields no registrar, and `.eu` and `.be` are not added to any policy-redaction list. The parser is shared, so this corrects both `rdap_lookup` on the main Worker and the `bv-whois` shim. It takes effect with `npm run deploy:prod` and `npm run deploy:whois` (SQ-446, SQ-451).
+- `check_authoritative_dns_infra`: a nonexistent (NXDOMAIN) domain now abstains with "does not resolve (NXDOMAIN), so its authoritative DNS infrastructure was not assessed" instead of the transient "retrying may succeed" wording. It is still an abstention (excluded from scoring, no missing control, no score change); a real no-contact case with a delegation keeps the retry wording.
+  The NXDOMAIN detection runs in the infra-probe sidecar, so it takes effect with `npm run deploy:infra-probe` as well as `npm run deploy:prod`.
+
 ## [3.104.1] - 2026-10-28
 
 Hardening from the post-merge security review of the Enterprise Managed Auth release (#1318). No new secret; `KV_ENVELOPE_KEY` is now required before a tenant can be seeded.
