@@ -132,6 +132,11 @@ export interface DnsChecksVersionBumpInput {
 export function dnsChecksVersionBumpViolations(input: DnsChecksVersionBumpInput): string[] {
 	if (!input.prChangedPaths) return ['dns-checks version-bump gate could not diff the PR against its base ref'];
 	if (!input.prChangedPaths.some(isDnsChecksIdentityPath)) return [];
+	return tagGateViolations(input);
+}
+
+/** The tag-dependent half: a PR is known to touch shipping inputs. An absent tag is a pass (new version, tagged at release). */
+function tagGateViolations(input: DnsChecksVersionBumpInput): string[] {
 	if (input.tagState === 'unreadable') return ['dns-checks version-bump gate could not read git tags; source identity is unverified'];
 	if (!input.identity.version || !DNS_CHECKS_VERSION_RE.test(input.identity.version)) return ['dns-checks package version could not be established'];
 	if (input.tagState === 'absent') return [];
