@@ -2,13 +2,10 @@
 
 Guidance for Claude Code working in this repo.
 
-**This file is deliberately lean.** It loads unconditionally in every session, so
-it carries orientation, the gotchas that bite during tasks that never mention
-the topic, and pointers. Depth lives in the repo skills (`.claude/skills/`),
-which load on description match — see the routing table at the bottom. Before
-adding a paragraph here, check the size (`wc -c CLAUDE.md`) and ask whether a
-skill is the right home; it usually is. Trimmed 2026-09-11 from 28,897 B
-(~7.2k tokens/session) back to pointers.
+**This file is deliberately lean — keep it under 200 lines** (`wc -l
+CLAUDE.md`). It carries orientation, the gotchas that bite during unrelated
+tasks, and pointers; depth lives in `.claude/skills/` (routing table at the
+bottom). Trimmed 2026-09-11 and again 2026-10-26.
 
 ## What is this?
 
@@ -51,19 +48,14 @@ git config core.hooksPath .githooks         # One-time hook setup
 scripts/worktree-setup.sh                   # New worktree: verify Node 22, npm ci, build dns-checks
 ```
 
-⚠️ **Never symlink `node_modules`** into a new worktree — use
-`scripts/worktree-setup.sh` (or plain `npm ci`). A symlink resolves the
-`@blackveil/dns-checks` workspace package to the OTHER checkout's tree, so your
-tests silently validate code you did not write (how #576 reached `main`). A
-pre-commit gate + a CI job now block staged/tracked symlinks. Incident detail:
-**`bv-mcp-operations`**.
+⚠️ **Never symlink `node_modules`** into a new worktree — it resolves
+`@blackveil/dns-checks` to the OTHER checkout, so tests validate code you did
+not write (#576). Use `scripts/worktree-setup.sh`. **`bv-mcp-operations`**.
 
 ## Tech
 
-- **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web only)
-- **Framework**: Hono v4 · **TypeScript**: strict, ES2024, Bundler resolution, `isolatedModules`
-- **Testing**: Vitest + `@cloudflare/vitest-plugin` (tests run inside the Workers runtime)
-- **Tooling Node**: 22+ (Wrangler 4.x hard-fails on <22)
+- **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web only) · **Framework**: Hono v4 · **TypeScript**: strict, ES2024, Bundler, `isolatedModules`
+- **Testing**: Vitest + `@cloudflare/vitest-plugin`, inside the Workers runtime · **Tooling Node**: 22+ (Wrangler 4.x hard-fails on <22)
 - **Formatter**: Prettier (tabs, single quotes, semi, 140 width) · **Package mgr**: npm
 
 ## Architecture
@@ -77,21 +69,9 @@ sidecar Worker for the RDAP fallback path, deployed via `npm run deploy:whois`.
 `src/stdio.ts` (CLI), `src/internal.ts` (service binding), `src/scheduled.ts`
 (cron).
 
-```
-src/mcp/         — Protocol: execute, dispatch, request parsing, route gates
-src/schemas/     — Zod: primitives, tool-args + TOOL_SCHEMA_MAP, tool-definitions, json-rpc, internal, dns, session, auth
-src/handlers/    — tools/list+call, resources, prompts, tool-args/-formatters
-src/tools/       — check-*, scan-domain, scan/ helpers, discover-subdomains, map-*, analyze-drift, etc.
-src/oauth/       — OAuth 2.1 issuer (discovery, register, authorize, token, JWT, KV storage)
-src/tenants/     — Multi-tenant subsystem (production-live)
-src/lib/         — scoring (model/engine/config), context-profiles, adaptive-weights, dns, sanitize, safe-fetch,
-                   cache, session, rate-limiter, json-rpc, auth, analytics, client-detection, fuzzing-*, log,
-                   db/schema (Drizzle)
-test/            — Flat by source file. Pyramid layer = filename suffix (.spec.ts, .integration.test.ts,
-                   .audit.test.ts, .contract.test.ts, .chaos.test.ts). Subdirs include helpers/, schemas/,
-                   oauth/, audits/, contracts/, chaos/, tenants/, tools/, lib/
-packages/dns-checks/  — Runtime-agnostic core: scoring/ + checks/ + schemas/
-```
+Directory map (`src/mcp`, `schemas`, `handlers`, `tools`, `oauth`, `tenants`,
+`lib`, `test/`) and the four request flows (Streamable HTTP, SSE, stdio,
+internal binding): **`bv-mcp-operations`** § Source layout and request flow.
 
 **Layering — where new code goes**: `packages/dns-checks/` is the
 runtime-agnostic core with no Cloudflare deps; put logic there if it could run
@@ -100,19 +80,9 @@ features (KV, DO, bindings) and depends on `@blackveil/dns-checks` via npm —
 **keep backward compat**. Both publish together via the manual `npm publish`
 path (currently gated off — #719).
 
-**Request flow**:
-
-- **Streamable HTTP**: `POST /mcp → Origin → Auth → Body → JSON-RPC validate → mcp/execute → handlers/tools → src/tools/check-* → lib/dns → DoH (empty → bv-dns ∥ Google, raced)`
-- **SSE**: `GET /mcp` opens the notification stream (gate details in **`bv-mcp-security-surface`**)
-- **Stdio**: `stdin → src/stdio → mcp/execute → handlers/tools → stdout`
-- **Internal binding**: `POST /internal/tools/{call,batch} → guard (reject public) → handlers/tools → JSON (no MCP framing)`
-
-**Operator-only tool families**: 11 recon tools call bv-recon via the `BV_RECON`
-binding and fail soft to `unprovisioned` on BSL self-hosts; 4 M365
-`identity_secops` tools are `INTERNAL_ONLY_TOOLS`. ⚠️ The internal-only gate
-short-circuits BEFORE tier branching and shadows the `AUTH_REQUIRED_TOOLS` 401
-path — deleting their `TOOL_DEFS` entries would delete the auth gate and the
-seam contracts derived from them. Both families: **`bv-mcp-operations`**.
+**Operator-only tool families** (11 `BV_RECON` recon tools; 4 M365
+`INTERNAL_ONLY_TOOLS`): ⚠️ never delete their `TOOL_DEFS` entries — the auth
+gate and seam contracts are derived from them. **`bv-mcp-operations`**.
 
 `scan_domain` runs 19 categories in parallel, 15s scan / 8s per check, 5-min
 cache. Orchestration, post-processing and the maturity ladder:
@@ -128,43 +98,25 @@ corpus measurements and the weight-change checklist: **`bv-mcp-scoring`**.
 Five traps restated here because they bite during tasks that never mention
 scoring:
 
-- ⚠️ **Measuring DNSSEC across a corpus: test `dnssec > 60`, NEVER `> 0`.** An
-  unsigned zone sits at exactly 60 (fixed `penaltyOverride: 40`, not a zeroing)
-  — `> 0` reports ~95–100% adoption against a true single-digit rate. Read
-  `recordPresent`/`controlPresent` instead.
-- ⚠️ **`missingControl` = "we MEASURED and the control is absent"; `inconclusive`
-  + `errorKind` = "the probe never reached the origin".** Never both on one
-  finding — recording a blocked or cut probe as absence zeroes a category nobody
-  measured.
-- ⚠️ **`SCORING_CONFIG.coreWeights` is INERT on the scan path** (it parses,
-  validates, and changes no score — it was live in prod undetected for months).
-  Express overrides as `profileWeights.<profile>`. Any weight change re-grades
-  every customer: an operator decision.
+- ⚠️ **DNSSEC across a corpus: test `dnssec > 60`, NEVER `> 0`** — an unsigned
+  zone sits at exactly 60, so `> 0` reports ~95–100% adoption.
+- ⚠️ **`missingControl` = measured and absent; `inconclusive` + `errorKind` =
+  the probe never reached the origin.** Never both on one finding.
+- ⚠️ **`SCORING_CONFIG.coreWeights` is INERT on the scan path** — use
+  `profileWeights.<profile>`. Any weight change re-grades every customer.
 - ⚠️ **`passed` = `score >= 50 && !hasMissingControl`** — "did not penalize",
-  NOT "control exists". Four surfaces have misread it as a verdict (#705 #706
-  #725 #809).
-- ⚠️ **Grades come in TWO scales by role**: the canonical 9-band `scoreToGrade`
-  is internal; customer-facing is the 6-band NIST scale via the ONE chokepoint
-  `displayGradeFor` (`src/lib/ungraded-display.ts`), which returns `null` for
+  NOT "control exists" (misread four times: #705 #706 #725 #809).
+- ⚠️ **Customer-facing grades go through `displayGradeFor`**
+  (`src/lib/ungraded-display.ts`, 6-band NIST), which returns `null` for
   ungraded scans — never fabricate an F.
 
 ## Conventions, checks and security
 
-Two skills carry what used to live here; load the matching one before editing:
-
-- **`bv-mcp-check-conventions`** — writing or changing a check: `createFinding`
-  / `buildCheckResult`, the abstention shape (`checkStatus`, not
-  `missingControl`), per-check fetch budgets (⚠️ a correctness change, not a
-  latency one), bounded parallelism for serial-DoH cost (⚠️ `spf`/`ns`/`caa` are
-  NOT candidates — DFS order is load-bearing on scored findings), caching and
-  mutating-tool dedup, `scan_domain` post-processing, and the false-positive
-  downgrades.
-- **`bv-mcp-security-surface`** — SSRF and `safeFetch`, the six auth tiers and
-  the owner IP gate, rate limits and quotas, paid-only gating, sessions, the
-  `/internal/*` capability keys, OAuth plan→tier mapping, the client-visible
-  error **allowlist** (a new error must start with an allowlisted prefix or it
-  vanishes into a generic fallback), and the two protocol-version channels with
-  opposite postures.
+Load **`bv-mcp-check-conventions`** before writing or changing a check, and
+**`bv-mcp-security-surface`** before touching SSRF, auth, quotas or error text.
+Two traps from them: a per-check fetch-budget change is a correctness change,
+not a latency one; and a new client-visible error must start with an
+allowlisted prefix or it vanishes into a generic fallback.
 
 Two conventions kept here because they cause confusing CI failures far from the
 edit:
@@ -188,29 +140,16 @@ annotated checklist: **`bv-mcp-add-tool`**.
 
 Patterns, DNS mocking, mock isolation, cache clearing, known flakes, wall-clock
 budgets in specs, and the Analytics-Engine string-assertion trap:
-**`bv-mcp-testing`**.
-
-- Tests run **inside the Workers runtime**.
-- **Dynamic imports are required** inside test fns for mock isolation:
-  `const { checkSpf } = await import('../src/tools/check-spf');`
+**`bv-mcp-testing`**. **Dynamic imports are required** inside test fns for mock
+isolation: `const { checkSpf } = await import('../src/tools/check-spf');`
 
 ### Pre-commit (`.githooks/pre-commit`)
 
-Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
-`.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`);
-(2) generated files (even with `git add -f`); (3) staged symlinks
-(default-deny); (4) Gitleaks; (5) the repo-safety scanner (same as the required
-`File hygiene check` CI gate). `--no-verify` only for reviewed false positives.
-
-- ⚠️ **A four-part dotted standards citation trips BOTH secret scanners**
-  (`N.N.N.N` scans as an IPv4). Reword to a spaced form (`§4.2.2 subsection 1`);
-  do NOT widen the configs or `--no-verify`. Leave an in-file comment so nobody
-  "tidies" it back.
-- ⚠️ **40-hex action pins scan as phone numbers** — resolved by the
-  `^\.github/workflows/` path allowlist in `.gitleaks.toml`'s `phone-number`
-  rule. `--no-verify` buys nothing: `Secret & PII scan` is required CI, so the
-  PR blocks at merge instead. Do not quote offending digit-runs in prose — that
-  re-trips the rule in whatever file you write.
+Five gates: blocked paths, generated files, staged symlinks, Gitleaks, and the
+repo-safety scanner. `--no-verify` only for reviewed false positives. ⚠️ A
+four-part dotted standards citation and 40-hex action pins trip the secret
+scanners — reword, never widen the configs. The gate list and both traps:
+**`bv-mcp-operations`** § Pre-commit gates.
 
 ## CI/CD & Deploy
 
@@ -219,27 +158,12 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
   `fast-checks`, `typecheck-tests`, `dogfood-scan`) is
   advisory — a green-but-`BLOCKED` PR waits on one of the four.
 - **Branch protection (SETTLED 2026-08-23)**: those four + `strict=true`, **NO
-  required reviews** (deliberate — solo maintainer), `enforce_admins=true`,
-  `required_conversation_resolution=true`, no force pushes. ⚠️ `PUT
-  .../protection` is FULL-REPLACE — re-apply the whole canonical object, never a
-  fragment. `mergeStateStatus: UNSTABLE` is mergeable once the required four pass.
-- ⚠️ **`build-and-test` is reported by TWO workflows**: `ci.yml` (the real
-  suite) and `ci-docs.yml` (docs-only PRs, which `ci.yml`'s `paths-ignore`
-  skips). Their path lists are exact complements — keep them that way. Both must
-  pass on a mixed PR; GitHub has no "or" semantics for a required name.
-- **`build-and-test` in `ci.yml` is a same-name aggregator, not the test runner
-  itself** — `preflight` (lint, `check:bindings`, the scoring-contract gate,
-  the Rust/WASM build, and `test/wasm-integration.test.ts`, the only spec that
-  needs the built WASM) and `test-shard` (a 3-way `matrix.shard` fanning out
-  the rest of the suite via `vitest --shard`) run in parallel; `build-and-test`
-  `needs: [preflight, test-shard]` with `if: always()` and fails unless both
-  report `success` (a skipped/cancelled dependency must not read as passing).
-  The job id and `name:` must stay `build-and-test` — that's the literal string
-  branch protection requires. `test-shard` deletes `test/wasm-integration.test.ts`
-  from its checkout before running: vitest's `--exclude` CLI flag has no effect
-  on the `workers` project in `vitest.config.mts`, since that project sets its
-  own literal `test.exclude` array which fully overrides any CLI-supplied
-  exclude for file discovery.
+  required reviews** (deliberate — solo maintainer), `enforce_admins=true`. ⚠️
+  `PUT .../protection` is FULL-REPLACE — re-apply the whole canonical object.
+- ⚠️ **`build-and-test` is reported by TWO workflows** (`ci.yml` and
+  `ci-docs.yml`, exact path complements — keep them that way), and in `ci.yml`
+  it is a same-name aggregator over `preflight` + `test-shard`; the job id and
+  `name:` must stay `build-and-test`. Detail: **`bv-mcp-operations`**.
 - **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative
   path. `deploy-prod.yml` is dispatch-only and disarmed by default. ⚠️
   `deploy:prod` deploys the MCP Worker ONLY — the three sidecars ship via `npm run
