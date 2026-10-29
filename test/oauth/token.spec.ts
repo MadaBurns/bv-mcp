@@ -509,6 +509,28 @@ describe('POST /oauth/token', () => {
 		const payload = (await limited.json()) as Record<string, unknown>;
 		expect(payload.error).toBe('invalid_request');
 		expect(payload.error_description).toBe('Too many token requests');
+		expect(limited.headers.get('Cache-Control')).toBe('no-store');
+		expect(limited.headers.get('Retry-After')).toMatch(/^[1-9]\d*$/);
+	});
+
+	it('sends Cache-Control: no-store on 415, 413 and unsupported_grant_type responses', async () => {
+		const ip = { 'cf-connecting-ip': uniqueRateLimitIp() };
+		const wrongType = await SELF.fetch('https://example.com/oauth/token', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...ip },
+			body: '{}',
+		});
+		expect(wrongType.status).toBe(415);
+		expect(wrongType.headers.get('Cache-Control')).toBe('no-store');
+
+		const oversize = await postToken(new URLSearchParams({ grant_type: 'authorization_code', pad: 'x'.repeat(20_000) }));
+		expect(oversize.status).toBe(413);
+		expect(oversize.headers.get('Cache-Control')).toBe('no-store');
+
+		const badGrant = await postToken(new URLSearchParams({ grant_type: 'password' }));
+		expect(badGrant.status).toBe(400);
+		expect(((await badGrant.json()) as Record<string, unknown>).error).toBe('unsupported_grant_type');
+		expect(badGrant.headers.get('Cache-Control')).toBe('no-store');
 	});
 
 	it('admits exactly 30 token requests from a concurrent same-IP burst', async () => {

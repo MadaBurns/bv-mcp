@@ -94,11 +94,14 @@ function tokenRateLimit(env: AppEnv['Bindings'], label: string, principal: strin
 function rateLimitResponse(c: Context<AppEnv>, verdict: OAuthRateLimitResult): Response | null {
 	if (verdict.unavailable) {
 		return c.json({ error: 'temporarily_unavailable', error_description: 'Token rate-limit state is unavailable' }, 503, {
-			'Cache-Control': 'no-store',
 			'Retry-After': String(verdict.retryAfterSeconds),
 		});
 	}
-	if (verdict.exceeded) return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
+	if (verdict.exceeded) {
+		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429, {
+			'Retry-After': String(verdict.retryAfterSeconds),
+		});
+	}
 	return null;
 }
 
@@ -292,6 +295,8 @@ async function readRateLimitedTokenForm(c: Context<AppEnv>, ip: string): Promise
  * recognizable scope claim for downstream Bearer-path policy decisions (Phase 8).
  */
 export async function handleToken(c: Context<AppEnv>): Promise<Response> {
+	// Every response from this endpoint (any grant, any status) is uncacheable; set once on the context.
+	c.header('Cache-Control', NO_STORE['Cache-Control']);
 	const env = c.env;
 	const kv = env.SESSION_STORE!;
 	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
