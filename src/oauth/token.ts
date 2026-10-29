@@ -7,7 +7,7 @@ import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailable
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
 import { resolveClient } from './cimd';
-import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, normalizeIssuer, tenantEpoch } from './ema-tenants';
+import { currentTenantEpoch, EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
 	MAX_REQUEST_BODY_BYTES,
@@ -373,6 +373,8 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 /** What a validated ID-JAG authorizes: the tenant, the requesting client and the subject's digest. */
 interface AcceptedIdJag {
 	tenant: EmaTenantRecord;
+	/** The tenant's coordinator epoch read when the tenant was validated: the token's `tep`. A revoke after that read kills the token. */
+	tenantEpoch: number;
 	clientId: string;
 	subjectHash: string;
 	/** A resource was requested or claimed (and validated), so the response echoes it. */
@@ -426,11 +428,11 @@ async function lookupEmaTenant(kv: KVNamespace, issuer: string, kvEnvelopeKey?: 
 	}
 }
 
-/** The enabled, in-entitlement tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
+/** The active (enabled, approved, in-entitlement) tenant that allowlists `iss`. Looked up before the signature, so an unregistered issuer fails closed. */
 async function resolveTrustedTenant(kv: KVNamespace, iss: unknown, now: number, kvEnvelopeKey?: Uint8Array): Promise<EmaTenantRecord> {
 	const tenant = typeof iss === 'string' ? await lookupEmaTenant(kv, iss, kvEnvelopeKey) : null;
-	// Unknown, disabled and lapsed tenants are indistinguishable to the caller (same code, same text).
-	if (!tenant?.enabled || (tenant.entitlement_expires_at ?? Infinity) <= now) {
+	// Unknown, disabled, pending and lapsed tenants are indistinguishable to the caller (same code, same text).
+	if (!tenant || !isTenantActive(tenant, now)) {
 		throw new TokenEndpointError('invalid_grant', TENANT_NOT_ACCEPTED);
 	}
 	return tenant;
@@ -601,6 +603,9 @@ async function acceptIdJag(
 	const now = Math.floor(Date.now() / 1000);
 	const unverified = decodeIdJagUnverified(request.assertion);
 	const tenant = await resolveTrustedTenant(kv, unverified.iss, now, kvEnvelopeKey);
+	// Stamped with what was validated and read before the jti is consumed: an unreadable coordinator is a 503
+	// that leaves the assertion reusable, and a revoke landing after this read leaves the token stale (dead).
+	const tenantEpoch = await currentTenantEpoch(tenant, c.env.QUOTA_COORDINATOR);
 	await assertClientAllowed(kv, tenant, request.client_id, kvEnvelopeKey);
 	if (unverified.client_id !== request.client_id) throw new TokenEndpointError('invalid_grant', 'Assertion client_id does not match');
 	const claims = await verifyIdJagSignature(kv, tenant, request.assertion);
@@ -608,7 +613,7 @@ async function acceptIdJag(
 	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
 	const resourceGranted = assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
 	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
-	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
+	return { tenant, tenantEpoch, clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
 }
 
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
@@ -661,7 +666,7 @@ async function handleJwtBearerGrant(
 	} catch (error) {
 		return tokenErrorResponse(c, error, NO_STORE);
 	}
-	const { tenant, clientId, subjectHash, resourceGranted } = grant;
+	const { tenant, tenantEpoch, clientId, subjectHash, resourceGranted } = grant;
 	const response = await mintAccessToken(
 		c,
 		c.env,
@@ -671,7 +676,7 @@ async function handleJwtBearerGrant(
 			clientId,
 			entitlementGeneration: 1,
 			entitlementExpiresAt: tenant.entitlement_expires_at,
-			tenantEpoch: tenantEpoch(tenant),
+			tenantEpoch,
 			scope: ID_JAG_GRANTED_SCOPE,
 			echoResource: resourceGranted,
 		},

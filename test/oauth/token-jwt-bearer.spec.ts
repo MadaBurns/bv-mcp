@@ -6,6 +6,7 @@ import { MAX_REQUEST_BODY_BYTES, OAUTH_JWT_TTL_SECONDS } from '../../src/lib/con
 import { putEmaTenant } from '../../src/oauth/ema-tenants';
 import { sha256Hex } from '../../src/oauth/jwks';
 import { verifyJwt } from '../../src/oauth/jwt';
+import { bumpEmaTenantEpoch } from '../../src/oauth/storage';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
 import { pinRateLimitWindow } from '../helpers/rate-limit-window';
@@ -244,13 +245,21 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(JSON.stringify(claims)).not.toContain('alice@acme.example');
 	});
 
-	it('mints the tenant epoch as tep: token_epoch when set, created_at for a record written before it existed', async () => {
-		const legacy = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
-		expect(decodePayload(legacy.access_token).tep).toBe(1_700_000_000);
+	it('mints the tenant epoch as tep: the coordinator version, seeded from token_epoch when set and created_at for a record written before it existed', async () => {
+		const mintTep = async () => {
+			const minted = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
+			return decodePayload(minted.access_token).tep;
+		};
+		expect(await mintTep()).toBe(1_700_000_000);
 
+		// A record with a mirror epoch but no coordinator version yet seeds the version from the mirror...
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }));
-		const current = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
-		expect(decodePayload(current.access_token).tep).toBe(1_800_000_000_123);
+		expect(await mintTep()).toBe(1_800_000_000_123);
+
+		// ...and from then on the version moves on its own: the mirror in KV is no longer read for the stamp.
+		expect(await bumpEmaTenantEpoch('acme-corp', 1_800_000_000_123, env.QUOTA_COORDINATOR)).toBe(1_800_000_000_124);
+		expect(await mintTep()).toBe(1_800_000_000_124);
 	});
 
 	it('logs one structured issuance line without the raw subject or email', async () => {
