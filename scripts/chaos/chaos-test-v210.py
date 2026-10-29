@@ -411,10 +411,11 @@ def test_legacy_sse():
         except Exception as e:
             record("2a. GET /mcp/sse → SSE stream with endpoint", False, str(e))
 
-        # GET /mcp/sse without Accept → 406
+        # GET /mcp/sse with no Accept header → 405 + Allow (since 3.29.2; curl's
+        # default */* would open the stream, so send an empty Accept explicitly)
         status, body, _ = curl_json("GET", "/mcp/sse",
-                                    headers=[f"Authorization: Bearer {API_KEY}"])
-        record("2b. GET /mcp/sse no Accept → 406", status == 406, f"got {status}")
+                                    headers=[f"Authorization: Bearer {API_KEY}", "Accept:"])
+        record("2b. GET /mcp/sse no Accept → 405", status == 405, f"got {status}")
 
     # POST /mcp/messages without sessionId → 400
     status, body, _ = curl_json(
