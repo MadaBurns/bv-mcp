@@ -1,10 +1,9 @@
-import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { env, runInDurableObject, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
-import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { resetQuotaCoordinatorState, EMA_REGISTRY_INSTANCE_NAME, type QuotaCoordinator } from '../../src/lib/quota-coordinator';
 import { MAX_REQUEST_BODY_BYTES, OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
-import { putEmaTenant } from '../../src/oauth/ema-tenants';
-import { sha256Hex } from '../../src/oauth/jwks';
+import { effectiveApproval, emaIssuerStorageKey, emaRecordStorageKey, EMA_MIGRATED_STORAGE_KEY } from '../../src/oauth/ema-tenants';
 import { verifyJwt } from '../../src/oauth/jwt';
 import type { EmaTenantRecord } from '../../src/schemas/ema';
 import { clearKvPrefix } from '../helpers/kv';
@@ -208,7 +207,7 @@ beforeEach(async () => {
 	served = { jwksKeys: [signer.publicJwk], jwksStatus: 200, otherKeys: [], cimdStatus: 200 };
 	jwksFetches = 0;
 	stubNetwork();
-	await putEmaTenant(env.SESSION_STORE, tenant());
+	await putRegistryRecord(tenant());
 });
 
 afterEach(async () => {
@@ -244,13 +243,18 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(JSON.stringify(claims)).not.toContain('alice@acme.example');
 	});
 
-	it('mints the tenant epoch as tep: token_epoch when set, created_at for a record written before it existed', async () => {
-		const legacy = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
-		expect(decodePayload(legacy.access_token).tep).toBe(1_700_000_000);
+	it('mints the registry record epoch as tep: token_epoch when set, created_at for a record written before it existed', async () => {
+		const mintTep = async () => {
+			const minted = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
+			return decodePayload(minted.access_token).tep;
+		};
+		expect(await mintTep()).toBe(1_700_000_000);
 
-		await putEmaTenant(env.SESSION_STORE, tenant({ token_epoch: 1_800_000_000_123 }));
-		const current = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
-		expect(decodePayload(current.access_token).tep).toBe(1_800_000_000_123);
+		// The record's own epoch, whatever it is: no other epoch source is read.
+		await putRegistryRecord(tenant({ token_epoch: 1_800_000_000_123 }));
+		expect(await mintTep()).toBe(1_800_000_000_123);
+		await putRegistryRecord(tenant({ token_epoch: 1_800_000_000_124 }));
+		expect(await mintTep()).toBe(1_800_000_000_124);
 	});
 
 	it('logs one structured issuance line without the raw subject or email', async () => {
@@ -288,7 +292,7 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	});
 
 	it('clamps the token lifetime to the tenant entitlement', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ entitlement_expires_at: nowSeconds() + 600 }));
+		await putRegistryRecord(tenant({ entitlement_expires_at: nowSeconds() + 600 }));
 		const response = await postToken(grantParams(await signIdJag(signer)));
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { expires_in: number };
@@ -297,7 +301,7 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	});
 
 	it('mints the developer tier for a developer tenant (never owner)', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ tier: 'developer' }));
+		await putRegistryRecord(tenant({ tier: 'developer' }));
 		const body = (await (await postToken(grantParams(await signIdJag(signer)))).json()) as { access_token: string };
 		expect(decodePayload(body.access_token).tier).toBe('developer');
 	});
@@ -348,13 +352,13 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	});
 
 	it('rejects an assertion from a disabled tenant', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ enabled: false }));
+		await putRegistryRecord(tenant({ enabled: false }));
 		const body = await expectError(await postToken(grantParams(await signIdJag(signer))), 400, 'invalid_grant');
 		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
 	});
 
 	it('rejects an assertion once the tenant entitlement has expired', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ entitlement_expires_at: nowSeconds() - 10 }));
+		await putRegistryRecord(tenant({ entitlement_expires_at: nowSeconds() - 10 }));
 		const body = await expectError(await postToken(grantParams(await signIdJag(signer))), 400, 'invalid_grant');
 		expect(body.error_description).toBe(TENANT_NOT_ACCEPTED);
 	});
@@ -362,7 +366,9 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	it('rejects an issuer whose index entry points at a record that no longer lists it, with the same wording', async () => {
 		// A stale index entry (issuer re-pointed at another tenant record) must not vouch for the issuer.
 		const stale = 'https://stale.okta.com';
-		await env.SESSION_STORE.put(`oauth:ema-issuer:${await sha256Hex(stale)}`, 'acme-corp');
+		await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), (_instance, state) =>
+			state.storage.put(emaIssuerStorageKey(stale), 'acme-corp'),
+		);
 		const body = await expectError(
 			await postToken(grantParams(await signIdJag(signer, idJagClaims({ iss: stale })))),
 			400,
@@ -383,7 +389,7 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 	});
 
 	it('rejects an assertion issued to a different client_id', async () => {
-		await putEmaTenant(env.SESSION_STORE, tenant({ allowed_client_ids: [WEB_CLIENT_ID, CODE_CLIENT_ID] }));
+		await putRegistryRecord(tenant({ allowed_client_ids: [WEB_CLIENT_ID, CODE_CLIENT_ID] }));
 		const assertion = await signIdJag(signer, idJagClaims({ client_id: CODE_CLIENT_ID }));
 		await expectError(await postToken(grantParams(assertion)), 400, 'invalid_grant');
 	});
@@ -563,18 +569,18 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(((await response.json()) as Record<string, unknown>).error).toBe('temporarily_unavailable');
 	});
 
-	it('fails closed with 503 when the tenant store cannot be read', async () => {
-		const store = env.SESSION_STORE;
-		// Only the issuer-index read fails; every other KV call reaches the real binding.
-		const failingStore = new Proxy(store, {
-			get(target, prop) {
-				const value: unknown = Reflect.get(target, prop);
-				if (prop !== 'get' || typeof value !== 'function') return typeof value === 'function' ? value.bind(target) : value;
-				return (key: string, ...rest: unknown[]) =>
-					key.startsWith('oauth:ema-issuer:') ? Promise.reject(new Error('kv outage')) : value.call(target, key, ...rest);
+	it('fails closed with 503 when the tenant registry cannot be read', async () => {
+		// Only the registry's issuer resolution fails; every other coordinator call reaches the real binding.
+		const failing = {
+			getByName: (name: string) => {
+				const stub = env.QUOTA_COORDINATOR.getByName(name);
+				return {
+					dispatch: (request: { kind: string }) =>
+						request.kind === 'ema-resolve-issuer' ? Promise.reject(new Error('registry outage')) : stub.dispatch(request as never),
+				};
 			},
-		});
-		const response = await postToken(grantParams(await signIdJag(signer)), { ...grantEnv, SESSION_STORE: failingStore } as TestEnv);
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
+		const response = await postToken(grantParams(await signIdJag(signer)), { ...grantEnv, QUOTA_COORDINATOR: failing } as TestEnv);
 		expect(response.status).toBe(503);
 		expect(((await response.json()) as Record<string, unknown>).error).toBe('temporarily_unavailable');
 	});
@@ -618,7 +624,7 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 
 		// A second issuer from the SAME IP is unaffected.
 		const other = await makeSigner('g1');
-		await putEmaTenant(env.SESSION_STORE, tenant({ tenant_id: 'globex', issuer: OTHER_IDP_ISSUER, jwks_uri: OTHER_JWKS_URI }));
+		await putRegistryRecord(tenant({ tenant_id: 'globex', issuer: OTHER_IDP_ISSUER, jwks_uri: OTHER_JWKS_URI }));
 		served.otherKeys = [other.publicJwk];
 		const accepted = await postToken(grantParams(await signIdJag(other, idJagClaims({ iss: OTHER_IDP_ISSUER }))), grantEnv, ip);
 		expect(accepted.status).toBe(200);
@@ -739,3 +745,12 @@ describe('validateIdJagClaims (verified payload re-checks the routing claims)', 
 		}
 	});
 });
+
+/** Overwrite one record directly in the registry shard (with its issuer index entry), bypassing every write rule. */
+async function putRegistryRecord(rec: EmaTenantRecord): Promise<void> {
+	await runInDurableObject(env.QUOTA_COORDINATOR.getByName(EMA_REGISTRY_INSTANCE_NAME), async (_instance, state) => {
+		await state.storage.put(emaRecordStorageKey(rec.tenant_id), rec);
+		await state.storage.put(EMA_MIGRATED_STORAGE_KEY, { at: 0, imported: 0 });
+		if (effectiveApproval(rec) === 'approved') await state.storage.put(emaIssuerStorageKey(rec.issuer), rec.tenant_id);
+	});
+}

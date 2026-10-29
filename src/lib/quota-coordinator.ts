@@ -3,6 +3,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import { readBoundedText } from './request-body';
+import {
+	emaRegistryPayloadError,
+	runEmaRegistryTransaction,
+	type EmaRegistryRequest,
+	type EmaRegistryResponse,
+} from '../oauth/ema-tenants';
 
 const COORDINATOR_NAME = 'global-quota-coordinator';
 const CLEANUP_ALARM_INTERVAL_MS = 15 * 60 * 1000;
@@ -55,6 +61,23 @@ const SHARD_PREFIX = 'quota-shard-';
  */
 const SECURITY_STATE_SHARD_COUNT = 32;
 const SECURITY_STATE_SHARD_PREFIX = 'security-state-shard-';
+
+/**
+ * The ONE dedicated instance that holds the EMA tenant registry (oauth/ema-tenants.ts): every `ema-*` kind
+ * routes here and nowhere else, never to a shared security shard. Frozen like the shard names above: renaming
+ * it strands every tenant. Exported for test assertions.
+ */
+export const EMA_REGISTRY_INSTANCE_NAME = 'ema-registry';
+
+/** The `ema-*` kinds: routed to EMA_REGISTRY_INSTANCE_NAME, each run in one storage transaction there. */
+const EMA_REGISTRY_KINDS: ReadonlySet<string> = new Set<EmaRegistryRequest['kind']>([
+	'ema-get',
+	'ema-list',
+	'ema-resolve-issuer',
+	'ema-write',
+	'ema-delete',
+	'ema-migrate',
+]);
 
 /**
  * ADAM non-negotiable #4: the shard key is NOT the raw attacker-known IP. We salt
@@ -382,7 +405,9 @@ export type QuotaCoordinatorRequest =
 	  }
 	| {
 			kind: 'reset';
-	  };
+	  }
+	/** The EMA tenant registry (ema-tenants.ts): one fixed security shard, every request one storage transaction. */
+	| EmaRegistryRequest;
 
 export type QuotaCoordinatorResponse =
 	| RateLimitResult
@@ -399,6 +424,7 @@ export type QuotaCoordinatorResponse =
 	| IdempotencyCompleteResult
 	| IdempotencyReleaseResult
 	| EvaluateResponse
+	| EmaRegistryResponse
 	| undefined;
 
 /** Kinds that hold authorization/idempotency state, routed by `coordinationKey` on the frozen security shards. */
@@ -469,6 +495,8 @@ function quotaShardKeyFor(field: 'ip' | 'principalId' | 'shardKey', payload: Quo
  * `resetQuotaCoordinatorState`'s shard sweep — see below.)
  */
 function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardRouting): string {
+	// The EMA registry is one dedicated instance: its kinds never fan out and never share a security shard.
+	if (EMA_REGISTRY_KINDS.has(payload.kind)) return EMA_REGISTRY_INSTANCE_NAME;
 	// Authorization/idempotency state always uses the frozen security sharding
 	// scheme. It must not follow the independently controlled quota flag/salt.
 	if (isSecurityStatePayload(payload)) return securityStateShardNameForKey(payload.coordinationKey);
@@ -777,6 +805,14 @@ export async function releaseIdempotentRequestWithCoordinator(
 	});
 }
 
+/** One EMA tenant registry request (see ema-tenants.ts); always routed to the registry's fixed security shard. */
+export function emaRegistryRequest(
+	payload: EmaRegistryRequest,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<EmaRegistryResponse | undefined> {
+	return callCoordinator<EmaRegistryResponse>(namespace, payload);
+}
+
 /**
  * Thrown when a real DO `evaluate` round trip returned a 2xx body that we cannot
  * parse into the expected `{ results: EvaluateResult[] }` shape (LINUS MUST-FIX #1:
@@ -896,26 +932,30 @@ export async function resetQuotaCoordinatorShards(namespace?: DurableObjectNames
 	await Promise.all(shardResets);
 }
 
-/** Test/full-wipe helper for the frozen strong-state shards. Never use for a quota rotation. */
+/** Best-effort reset of one named instance (test/full-wipe helpers only). */
+function resetCoordinatorInstance(namespace: DurableObjectNamespace<QuotaCoordinator>, name: string): Promise<unknown> {
+	const stub = namespace.getByName(name);
+	const rpcDispatch = (stub as unknown as { dispatch?: (request: QuotaCoordinatorRequest) => Promise<QuotaCoordinatorResponse> }).dispatch;
+	return (
+		typeof rpcDispatch === 'function'
+			? stub.dispatch({ kind: 'reset' })
+			: stub.fetch('https://quota.internal/', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ kind: 'reset' }),
+				})
+	).catch(() => undefined);
+}
+
+/**
+ * Test/full-wipe helper for the frozen strong-state shards and the EMA registry instance. Never use for a
+ * quota rotation, and never from production code: it deletes every EMA tenant (an audit pins that no
+ * src/ module calls the reset helpers).
+ */
 async function resetSecurityStateShards(namespace?: DurableObjectNamespace<QuotaCoordinator>): Promise<void> {
 	if (!namespace) return;
-	const resets: Promise<unknown>[] = [];
-	for (let i = 0; i < SECURITY_STATE_SHARD_COUNT; i++) {
-		const stub = namespace.getByName(`${SECURITY_STATE_SHARD_PREFIX}${i}`);
-		const rpcDispatch = (stub as unknown as { dispatch?: (request: QuotaCoordinatorRequest) => Promise<QuotaCoordinatorResponse> })
-			.dispatch;
-		resets.push(
-			(typeof rpcDispatch === 'function'
-				? stub.dispatch({ kind: 'reset' })
-				: stub.fetch('https://quota.internal/', {
-						method: 'POST',
-						headers: { 'content-type': 'application/json' },
-						body: JSON.stringify({ kind: 'reset' }),
-					})
-			).catch(() => undefined),
-		);
-	}
-	await Promise.all(resets);
+	const names = Array.from({ length: SECURITY_STATE_SHARD_COUNT }, (_, i) => `${SECURITY_STATE_SHARD_PREFIX}${i}`);
+	await Promise.all([...names, EMA_REGISTRY_INSTANCE_NAME].map((name) => resetCoordinatorInstance(namespace, name)));
 }
 
 /**
@@ -1038,6 +1078,12 @@ const VALID_KINDS = new Set<string>([
 	'idempotency-begin',
 	'idempotency-complete',
 	'idempotency-release',
+	'ema-get',
+	'ema-list',
+	'ema-resolve-issuer',
+	'ema-write',
+	'ema-delete',
+	'ema-migrate',
 	'evaluate',
 	'reset',
 ]);
@@ -1130,6 +1176,7 @@ const QUOTA_FIELD_VALIDATORS: readonly QuotaFieldValidator[] = [
 	safeIntegerField('expiresAt', 1, 'Invalid expiresAt: must be a positive safe integer'),
 	sha256HexField('requestHash'),
 	validateResultField,
+	emaRegistryPayloadError,
 ];
 
 /** Validate the per-field invariants on a single object (shared by top-level + evaluate sub-checks). */
@@ -1202,6 +1249,12 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		'idempotency-begin': ['coordinationKey', 'requestHash', 'expiresAt'],
 		'idempotency-complete': ['coordinationKey', 'requestHash', 'result'],
 		'idempotency-release': ['coordinationKey', 'requestHash'],
+		'ema-get': ['tenantId'],
+		'ema-list': ['limit'],
+		'ema-resolve-issuer': ['issuer'],
+		'ema-write': ['tenantId', 'write'],
+		'ema-delete': ['tenantId', 'mode'],
+		'ema-migrate': ['records'],
 	};
 	const missing = requireFields(...(requiredByKind[kind as QuotaCoordinatorRequest['kind']] ?? []));
 	if (missing) return { valid: false, error: `Invalid ${kind}: missing ${missing}` };
@@ -1743,6 +1796,15 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	/**
+	 * Every EMA registry kind runs inside ONE storage transaction on the registry instance, so a write applies
+	 * its rules to the fresh record and a read sees one consistent record. The keys live under `ema:`,
+	 * outside the KEY_PREFIX the cleanup alarm lists, so they never expire.
+	 */
+	private handleEmaRegistry(payload: EmaRegistryRequest): Promise<EmaRegistryResponse> {
+		return runEmaRegistryTransaction(this.ctx.storage, payload);
+	}
+
 	private async handleReset(): Promise<undefined> {
 		await this.ctx.storage.deleteAll();
 		await this.ctx.storage.deleteAlarm();
@@ -1776,6 +1838,12 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		'idempotency-begin': (self, payload) => self.handleIdempotencyBegin(payload),
 		'idempotency-complete': (self, payload) => self.handleIdempotencyComplete(payload),
 		'idempotency-release': (self, payload) => self.handleIdempotencyRelease(payload),
+		'ema-get': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-list': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-resolve-issuer': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-write': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-delete': (self, payload) => self.handleEmaRegistry(payload),
+		'ema-migrate': (self, payload) => self.handleEmaRegistry(payload),
 		evaluate: (self, payload) => self.handleEvaluate(payload),
 		reset: (self) => self.handleReset(),
 	};
