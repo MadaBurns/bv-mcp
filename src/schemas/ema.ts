@@ -23,6 +23,12 @@ const HttpsUrlSchema = z
 export const EMA_TENANT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,47}$/;
 
 /**
+ * A self-serve tenant id: `web-` plus the bv-web tenant id (a UUID there), at least 8 characters of it so a
+ * short guessable suffix cannot name a tenant. The whole id still fits EMA_TENANT_ID_PATTERN (48 characters).
+ */
+export const EMA_SELF_SERVE_TENANT_ID_PATTERN = /^web-[a-z0-9-]{8,44}$/;
+
+/**
  * Operator sign-off on a tenant. Only an approved tenant mints, owns its issuer, or backs tokens it
  * issued earlier. 'rejected' is sticky: only a self-serve move to another issuer returns it to pending.
  */

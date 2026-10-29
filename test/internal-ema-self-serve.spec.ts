@@ -8,7 +8,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 import { OAUTH_KV_PREFIX } from '../src/lib/config';
-import { getEmaTenant, getEmaTenantByIssuer, putEmaTenant } from '../src/oauth/ema-tenants';
+import { getEmaTenant, getEmaTenantByIssuer, isTenantActive, putEmaTenant } from '../src/oauth/ema-tenants';
 import { parseEnvelopeKey } from '../src/lib/kv-envelope';
 import type { EmaTenantRecord } from '../src/schemas/ema';
 import { clearKvPrefix } from './helpers/kv';
@@ -16,7 +16,7 @@ import { clearKvPrefix } from './helpers/kv';
 const MINT_KEY = 'ema-mint-capability-test-key-32-bytes-min';
 const ADMIN_KEY = 'ema-admin-capability-test-key-32-bytes-min';
 const ORIGIN = 'http://example.com/internal/oauth';
-const TENANT_ID = 'web-acme';
+const TENANT_ID = 'web-acme-corp-0001';
 const ISSUER = 'https://idp.acme.example.com';
 const JWKS_URI = 'https://idp.acme.example.com/keys';
 const OTHER_ISSUER = 'https://idp-new.acme.example.com';
@@ -69,6 +69,8 @@ function selfServeBody(overrides: Record<string, unknown> = {}) {
 
 const putSelfServe = (overrides: Record<string, unknown> = {}, tenantId = TENANT_ID) =>
 	send(call('PUT', selfServePath(tenantId), selfServeBody(overrides)));
+
+const sendSelfServe = (method: 'GET' | 'DELETE', tenantId = TENANT_ID) => send(call(method, selfServePath(tenantId)));
 
 /** Operator upsert with an explicit jwks_uri (no discovery). */
 const putOperator = (overrides: Record<string, unknown> = {}) =>
@@ -273,6 +275,9 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		'https://token.actions.githubusercontent.com',
 		'https://securetoken.google.com/a-project',
 		'https://contoso.b2clogin.com/a-tenant/v2.0',
+		'https://gitlab.com',
+		'https://login.microsoftonline.com',
+		'https://login.microsoftonline.com/%2Fcommon/v2.0',
 	])('400 issuer_not_allowed for the shared issuer %s, before any network call', async (issuer) => {
 		const res = await putSelfServe({ issuer });
 		expect(res.status).toBe(400);
@@ -296,6 +301,18 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 			expect(((await res.json()) as { error: string }).error.startsWith('Invalid tenant_id')).toBe(true);
 		}
 		expect(fetches).toEqual([]);
+	});
+
+	it('needs at least 8 characters after web- (7 is a 400 on every self-serve verb, 8 is accepted)', async () => {
+		for (const attempt of [
+			() => putSelfServe({}, 'web-1234567'),
+			() => sendSelfServe('GET', 'web-1234567'),
+			() => sendSelfServe('DELETE', 'web-1234567'),
+		]) {
+			expect((await attempt()).status).toBe(400);
+		}
+		expect(await stored('web-1234567')).toBeNull();
+		expect((await putSelfServe({}, 'web-12345678')).status).toBe(200);
 	});
 
 	it('409 envelope_key_required and nothing written while OAuth is on without KV_ENVELOPE_KEY', async () => {
@@ -370,6 +387,9 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual({ error: 'tenant_managed_by_operator' });
 		expect(await stored()).toEqual(operatorRecord);
+		// Refused before discovery: an issuer that publishes nothing still answers 409, and nothing was fetched.
+		expect((await putSelfServe({ issuer: 'https://unknown-idp.example' })).status).toBe(409);
+		expect(fetches).toEqual([]);
 
 		const { source: _dropped, ...legacy } = operatorRecord!;
 		await putEmaTenant(env.SESSION_STORE!, legacy, ENVELOPE_KEY);
@@ -379,8 +399,8 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 
 	it('never answers issuer_conflict: pending claimants may share an issuer, even one an approved tenant holds', async () => {
 		expect((await putOperator({ issuer: ISSUER, jwks_uri: JWKS_URI })).status).toBe(200);
-		expect((await putSelfServe({}, 'web-first')).status).toBe(200);
-		expect((await putSelfServe({}, 'web-second')).status).toBe(200);
+		expect((await putSelfServe({}, 'web-first-tenant')).status).toBe(200);
+		expect((await putSelfServe({}, 'web-second-tenant')).status).toBe(200);
 		// The approved operator tenant still owns the issuer.
 		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))?.tenant_id).toBe('acme-operator');
 	});
@@ -392,6 +412,98 @@ describe('PUT /internal/oauth/ema-self-serve/:tenant_id', () => {
 		expect(res.status).toBe(503);
 		expect(await res.json()).toEqual({ error: 'ema_store_unavailable' });
 		expect(await env.SESSION_STORE!.get(key)).toBe('not-a-sealed-record');
+		// Refused before discovery.
+		expect(fetches).toEqual([]);
+	});
+});
+
+describe('a PUT that only lowers privilege needs no discovery (a revoke must land while the IdP is down)', () => {
+	/** An approved, backdated tenant, then the issuer's discovery document disappears. */
+	async function approvedWithDiscoveryGone(overrides: Record<string, unknown> = {}): Promise<EmaTenantRecord> {
+		await putSelfServe(overrides);
+		expect((await approve()).status).toBe(200);
+		const before = await backdate();
+		delete discovery[ISSUER];
+		fetches.length = 0;
+		return before;
+	}
+	const active = async () => isTenantActive((await stored())!, nowSeconds());
+
+	it('enabled true -> false keeps the approval and the stored jwks_uri, moves the epoch, and is inactive at token exchange', async () => {
+		await approvedWithDiscoveryGone();
+		expect(await active()).toBe(true);
+		const res = await putSelfServe({ enabled: false });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ enabled: false, approval: 'approved' });
+		expect(fetches).toEqual([]);
+		const record = (await stored())!;
+		expect(record.jwks_uri).toBe(JWKS_URI);
+		expect(record.token_epoch).toBeGreaterThan(1);
+		expect(await active()).toBe(false);
+		// The token path resolves the tenant by issuer, then refuses it as inactive.
+		expect(isTenantActive((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))!, nowSeconds())).toBe(false);
+	});
+
+	it('a past entitlement_expires_at is stored the same way and lapses the tenant', async () => {
+		await approvedWithDiscoveryGone();
+		const res = await putSelfServe({ entitlement_expires_at: nowSeconds() - DAY });
+		expect(res.status).toBe(200);
+		expect(fetches).toEqual([]);
+		expect((await stored())!.jwks_uri).toBe(JWKS_URI);
+		expect(await active()).toBe(false);
+	});
+
+	it('an earlier (still future) expiry is lowering too, and repeating a revoke is idempotent', async () => {
+		await approvedWithDiscoveryGone();
+		const soon = nowSeconds() + DAY;
+		expect((await putSelfServe({ entitlement_expires_at: soon })).status).toBe(200);
+		expect(await active()).toBe(true);
+		expect((await putSelfServe({ enabled: false, entitlement_expires_at: soon })).status).toBe(200);
+		expect((await putSelfServe({ enabled: false, entitlement_expires_at: soon })).status).toBe(200);
+		expect(fetches).toEqual([]);
+		expect(await active()).toBe(false);
+	});
+
+	it('a re-enable still needs discovery: 400 issuer_discovery_failed, and the tenant stays disabled', async () => {
+		await approvedWithDiscoveryGone();
+		expect((await putSelfServe({ enabled: false })).status).toBe(200);
+		const res = await putSelfServe({ enabled: true });
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
+		expect((await stored())!.enabled).toBe(false);
+	});
+
+	it.each([
+		['a tier increase', { tier: 'enterprise' }, 'developer'],
+		['an expiry extension', { entitlement_expires_at: nowSeconds() + 60 * DAY }, 'enterprise'],
+		['a renewal that changes nothing', {}, 'enterprise'],
+		['a different issuer, even while disabling', { enabled: false, issuer: OTHER_ISSUER }, 'enterprise'],
+	])('%s still needs discovery', async (_label, change, tier) => {
+		const before = await approvedWithDiscoveryGone({ tier });
+		delete discovery[OTHER_ISSUER];
+		const res = await putSelfServe(change);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: 'issuer_discovery_failed' });
+		expect(fetches.length).toBeGreaterThan(0);
+		expect(await stored()).toEqual(before);
+	});
+
+	it('creating a tenant still needs discovery', async () => {
+		delete discovery[ISSUER];
+		const res = await putSelfServe({ enabled: false });
+		expect(res.status).toBe(400);
+		expect(await stored()).toBeNull();
+	});
+
+	it('moved keys re-pend through discovery even on a write that would otherwise be lowering', async () => {
+		await approvedWithDiscoveryGone();
+		discovery[ISSUER] = 'https://idp.acme.example.com/rotated-keys';
+		// A renewal at the same expiry is not lowering, so it rediscovers and the changed keys re-pend.
+		expect(
+			((await (await putSelfServe({ entitlement_expires_at: (await stored())!.entitlement_expires_at })).json()) as { approval: string })
+				.approval,
+		).toBe('pending');
+		expect((await stored())!.jwks_uri).toBe('https://idp.acme.example.com/rotated-keys');
 	});
 });
 
@@ -426,6 +538,38 @@ describe('DELETE /internal/oauth/ema-self-serve/:tenant_id', () => {
 		expect(await stored()).toBeNull();
 		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
 		expect((await send(call('DELETE', selfServePath()))).status).toBe(204);
+	});
+
+	it('a rejected tenant keeps a tombstone: 204, disabled and lapsed, still rejected, and the ban survives a re-create on the same issuer', async () => {
+		await putSelfServe();
+		expect((await approve()).status).toBe(200);
+		expect((await reject()).status).toBe(200);
+		await backdate();
+
+		const res = await sendSelfServe('DELETE');
+		expect(res.status).toBe(204);
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		const tombstone = (await stored())!;
+		expect(tombstone).toMatchObject({ enabled: false, approval: 'rejected', issuer: ISSUER, source: 'self-serve' });
+		expect(tombstone.entitlement_expires_at).toBeLessThanOrEqual(nowSeconds());
+		expect(tombstone.token_epoch).toBeGreaterThan(1);
+		expect(await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY)).toBeNull();
+		expect(await (await sendSelfServe('GET')).json()).toMatchObject({ approval: 'rejected', enabled: false });
+
+		// Idempotent, and the same issuer stays rejected whatever the body says; another issuer starts over.
+		expect((await sendSelfServe('DELETE')).status).toBe(204);
+		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('rejected');
+		expect(((await (await putSelfServe({ issuer: OTHER_ISSUER })).json()) as { approval: string }).approval).toBe('pending');
+	});
+
+	it("the operator's own DELETE removes a rejected tenant (and its tombstone) completely", async () => {
+		await putSelfServe();
+		expect((await reject()).status).toBe(200);
+		expect((await sendSelfServe('DELETE')).status).toBe(204);
+		expect(await stored()).not.toBeNull();
+		expect((await send(call('DELETE', `/ema-tenants/${TENANT_ID}`))).status).toBe(204);
+		expect(await stored()).toBeNull();
+		expect(((await (await putSelfServe()).json()) as { approval: string }).approval).toBe('pending');
 	});
 
 	it('409 tenant_managed_by_operator on an operator-seeded tenant, which survives', async () => {
@@ -496,17 +640,17 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 	});
 
 	it('409 issuer_conflict when another APPROVED tenant holds the issuer; approving after it leaves works', async () => {
-		await putSelfServe({}, 'web-first');
-		await putSelfServe({}, 'web-second');
-		expect((await approve('web-first')).status).toBe(200);
-		const res = await approve('web-second');
+		await putSelfServe({}, 'web-first-tenant');
+		await putSelfServe({}, 'web-second-tenant');
+		expect((await approve('web-first-tenant')).status).toBe(200);
+		const res = await approve('web-second-tenant');
 		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual({ error: 'issuer_conflict' });
-		expect((await stored('web-second'))!.approval).toBe('pending');
+		expect((await stored('web-second-tenant'))!.approval).toBe('pending');
 
-		expect((await reject('web-first')).status).toBe(200);
-		expect((await approve('web-second')).status).toBe(200);
-		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))?.tenant_id).toBe('web-second');
+		expect((await reject('web-first-tenant')).status).toBe(200);
+		expect((await approve('web-second-tenant')).status).toBe(200);
+		expect((await getEmaTenantByIssuer(env.SESSION_STORE!, ISSUER, ENVELOPE_KEY))?.tenant_id).toBe('web-second-tenant');
 	});
 
 	it('reject is sticky, releases the issuer, and moves the epoch of an approved tenant', async () => {
@@ -541,11 +685,11 @@ describe('POST /internal/oauth/ema-tenants/:tenant_id/approve and /reject', () =
 describe('GET /internal/oauth/ema-tenants?approval=', () => {
 	beforeEach(async () => {
 		await putSelfServe();
-		await putSelfServe({ issuer: OTHER_ISSUER }, 'web-beta');
-		await approve('web-beta');
+		await putSelfServe({ issuer: OTHER_ISSUER }, 'web-beta-tenant');
+		await approve('web-beta-tenant');
 		discovery['https://idp-c.acme.example.com'] = 'https://idp-c.acme.example.com/keys';
-		await putSelfServe({ issuer: 'https://idp-c.acme.example.com' }, 'web-gamma');
-		await reject('web-gamma');
+		await putSelfServe({ issuer: 'https://idp-c.acme.example.com' }, 'web-gamma-tenant');
+		await reject('web-gamma-tenant');
 		await putOperator();
 	});
 
@@ -558,8 +702,8 @@ describe('GET /internal/oauth/ema-tenants?approval=', () => {
 
 	it('filters to the review queue, the approved set (records without approval count as approved) and the rejected set', async () => {
 		expect(await listed('?approval=pending')).toEqual({ ids: [TENANT_ID], total: 1 });
-		expect(await listed('?approval=approved')).toEqual({ ids: ['acme-operator', 'web-beta'], total: 2 });
-		expect(await listed('?approval=rejected')).toEqual({ ids: ['web-gamma'], total: 1 });
+		expect(await listed('?approval=approved')).toEqual({ ids: ['acme-operator', 'web-beta-tenant'], total: 2 });
+		expect(await listed('?approval=rejected')).toEqual({ ids: ['web-gamma-tenant'], total: 1 });
 		expect((await listed('')).total).toBe(4);
 	});
 
@@ -650,8 +794,8 @@ describe('ema_tenant_mutation log line', () => {
 		const spy = vi.spyOn(console, 'log');
 		await putSelfServe();
 		expect(mutationDetails(spy)).toEqual([]);
-		await send(call('DELETE', selfServePath('web-nobody')));
-		expect(mutationDetails(spy)).toEqual([{ tenant_id: 'web-nobody', action: 'delete' }]);
+		await send(call('DELETE', selfServePath('web-nobody-here')));
+		expect(mutationDetails(spy)).toEqual([{ tenant_id: 'web-nobody-here', action: 'delete' }]);
 	});
 });
 

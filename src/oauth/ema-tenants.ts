@@ -65,6 +65,8 @@ const SHARED_ISSUER_HOSTS = new Set([
 	'token.actions.githubusercontent.com',
 	// One host for the tokens of every project.
 	'securetoken.google.com',
+	// One issuer for the CI job tokens of every project on the service.
+	'gitlab.com',
 ]);
 
 /** Host suffixes shared outright: one login domain for many unrelated directories. */
@@ -84,9 +86,13 @@ const ENTRA_AUTHORITY_HOSTS = new Set([
 /** Entra first path segments that name every tenant at once, whatever follows them. */
 const ENTRA_MULTI_TENANT_SEGMENTS = new Set(['common', 'organizations', 'consumers', '{tenantid}']);
 
-/** The percent-decoded, lowercased first path segment once `//` runs collapse; null when it does not decode. */
+/**
+ * The percent-decoded, lowercased first path segment once `//` runs collapse; null when there is none
+ * (a bare host), when it hides a slash (`%2f`), or when it does not decode: all of which a caller treats as shared.
+ */
 function firstPathSegment(pathname: string): string | null {
 	const segment = pathname.replace(/\/+/g, '/').split('/')[1] ?? '';
+	if (segment === '' || /%2f/i.test(segment)) return null;
 	try {
 		return decodeURIComponent(segment).toLowerCase();
 	} catch {
@@ -97,7 +103,7 @@ function firstPathSegment(pathname: string): string | null {
 /**
  * True when a normalized issuer (see normalizeIssuer) is shared: a host in SHARED_ISSUER_HOSTS or under
  * a SHARED_ISSUER_HOST_SUFFIXES domain (trailing dots ignored), or an Entra authority host whose first
- * path segment is a multi-tenant alias (or does not decode, which fails closed).
+ * path segment is a multi-tenant alias, is missing, hides a slash or does not decode (all fail closed).
  */
 export function isSharedIssuer(normalizedIssuer: string): boolean {
 	const url = new URL(normalizedIssuer);

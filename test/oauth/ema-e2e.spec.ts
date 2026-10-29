@@ -410,7 +410,7 @@ describe('Enterprise Managed Auth tenant-wide revocation', () => {
 });
 
 describe('EMA self-serve tenants and operator approval', () => {
-	const TENANT = 'web-acme';
+	const TENANT = 'web-acme-corp-0001';
 	const NOT_ACCEPTED = { error: 'invalid_grant', error_description: 'Assertion not accepted' };
 
 	/** bv-web's settings save over the self-serve seam (mint key). */
@@ -446,7 +446,7 @@ describe('EMA self-serve tenants and operator approval', () => {
 
 		expect((await approve()).status).toBe(200);
 		const token = await mintToken(await signIdJag());
-		expect(decodeClaims(token).sub).toMatch(/^ema:web-acme:[0-9a-f]{32}$/);
+		expect(decodeClaims(token).sub).toMatch(/^ema:web-acme-corp-0001:[0-9a-f]{32}$/);
 		const call = await callPaidTool(token);
 		expect(call.status).toBe(200);
 		expect(call.tier).toBe('developer');
@@ -481,6 +481,21 @@ describe('EMA self-serve tenants and operator approval', () => {
 		const renewed = await selfServe({ entitlement_expires_at: Math.floor(Date.now() / 1000) + 30 * 86_400 });
 		expect(((await renewed.json()) as { approval: string }).approval).toBe('approved');
 		expect((await send(mcpRequest(token, batchStatusCall, before.sessionId))).status).toBe(200);
+	});
+
+	it('a revoke from bv-web lands while the IdP discovery document is gone: live tokens are cut off and nothing mints', async () => {
+		expect((await selfServe()).status).toBe(200);
+		expect((await approve()).status).toBe(200);
+		const token = await mintToken(await signIdJag());
+		const before = await callPaidTool(token);
+		expect(before.status).toBe(200);
+
+		delete documents[`${IDP_ISSUER}/.well-known/openid-configuration`];
+		const revoked = await selfServe({ enabled: false });
+		expect(revoked.status).toBe(200);
+		expect(((await revoked.json()) as { approval: string }).approval).toBe('approved');
+		await expectCutOff(token, before.sessionId);
+		expect(await (await exchange(await signIdJag())).json()).toEqual(NOT_ACCEPTED);
 	});
 
 	it('a rejected tenant mints nothing, and a same-issuer re-save stays rejected', async () => {

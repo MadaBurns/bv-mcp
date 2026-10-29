@@ -371,6 +371,13 @@ describe('isSharedIssuer', () => {
 		'https://login.microsoftonline.com/common/oauth2/anything/else',
 		'https://login.microsoftonline.com./common/v2.0',
 		'https://login.microsoftonline.com/%zz/v2.0',
+		// A bare authority host names no tenant; an encoded slash hides where the first segment ends.
+		'https://login.microsoftonline.com',
+		'https://login.windows.net/',
+		'https://login.microsoftonline.com/%2Fcommon/v2.0',
+		'https://login.microsoftonline.com/a%2fb/v2.0',
+		'https://gitlab.com',
+		'https://gitlab.com/some-group',
 		'https://accounts.google.com',
 		'https://accounts.google.com./',
 		'https://login.live.com',
@@ -391,6 +398,7 @@ describe('isSharedIssuer', () => {
 		'https://acme.okta.com/oauth2/default',
 		'https://idp.example.com/common',
 		'https://b2clogin.com.evil.example',
+		'https://gitlab.acme.example.com',
 		'https://google.com',
 		'https://xaa.dev',
 	])('allows the per-tenant or unrelated issuer %s', (issuer) => {

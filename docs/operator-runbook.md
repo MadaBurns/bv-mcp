@@ -431,8 +431,12 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 
   Copy the three approve fields from the record you reviewed; if the record changed since,
   the approve answers `409 approval_stale` and you review again. Approving claims the issuer:
-  `409 issuer_conflict` means another approved tenant already holds it. Reject is sticky
-  until the customer moves to a different issuer. The self-serve route refuses shared
+  `409 issuer_conflict` means another approved tenant already holds it. A reject is a ban
+  on that issuer for that tenant: the customer's own DELETE of a rejected tenant leaves a
+  disabled, lapsed tombstone that stays `rejected` (still `204`), so deleting and re-saving
+  the same issuer does not start over. It ends only when the customer saves a different
+  issuer (back to `pending`) or you `DELETE /internal/oauth/ema-tenants/<tenant_id>` with
+  the admin key, which removes the record outright. The self-serve route refuses shared
   issuers (`isSharedIssuer` in `src/oauth/ema-tenants.ts`); the operator PUT does not check them.
 - When `KV_ENVELOPE_KEY` is set, a tenant record that is not sealed with the current
   key is treated as absent (the grant fails closed for that issuer, and the tenant's
