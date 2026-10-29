@@ -102,7 +102,9 @@ describe('handlePromptsGet', () => {
 	});
 
 	it('throws for unknown prompt name', () => {
-		expect(() => handlePromptsGet({ name: 'nonexistent' })).toThrow('Invalid prompt name');
+		expect(() => handlePromptsGet({ name: 'nonexistent' })).toThrow(
+			expect.objectContaining({ name: 'JsonRpcClientError', code: -32602, message: 'Invalid prompt name: nonexistent' }),
+		);
 	});
 
 	it('throws when name parameter is missing', () => {

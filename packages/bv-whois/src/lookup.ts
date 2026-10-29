@@ -163,7 +163,8 @@ export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise
 	// boolean is a measurement either way.
 	const details = { ...dates, registrantPrivacy: parsed.registrantPrivacy };
 
-	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
+	const registrar = parsed.registrar;
+	if (registrar) return { registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
 	// `redacted` fires on DENIC's disclosure notice AND on "not permitted" /
 	// "exceeded the limit" banners (parse.ts) — bodies with NO registrant record,
 	// so "no privacy marker" is not a measurement there either. Positive only.
