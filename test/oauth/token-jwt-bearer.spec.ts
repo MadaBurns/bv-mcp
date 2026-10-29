@@ -225,7 +225,13 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toContain('no-store');
 		const body = (await response.json()) as Record<string, unknown>;
-		expect(body).toEqual({ access_token: expect.any(String), token_type: 'Bearer', expires_in: OAUTH_JWT_TTL_SECONDS, scope: 'mcp' });
+		expect(body).toEqual({
+			access_token: expect.any(String),
+			token_type: 'Bearer',
+			expires_in: OAUTH_JWT_TTL_SECONDS,
+			scope: 'mcp',
+			resource: MCP_RESOURCE,
+		});
 		expect(body).not.toHaveProperty('refresh_token');
 
 		const claims = await verifyJwt(body.access_token as string, { secret: TEST_SIGNING_SECRET, issuer: ISSUER, audience: MCP_RESOURCE });
@@ -481,6 +487,64 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 			400,
 			'invalid_target',
 		);
+	});
+
+	it('accepts the MCP resource with one trailing slash in the request parameter, and echoes the canonical form', async () => {
+		const response = await postToken(grantParams(await signIdJag(signer), { resource: `${MCP_RESOURCE}/` }));
+		expect(response.status).toBe(200);
+		expect(((await response.json()) as Record<string, unknown>).resource).toBe(MCP_RESOURCE);
+	});
+
+	it('accepts the MCP resource with one trailing slash in the claim (string or one-element array)', async () => {
+		for (const resource of [`${MCP_RESOURCE}/`, [MCP_RESOURCE], [`${MCP_RESOURCE}/`]]) {
+			const response = await postToken(grantParams(await signIdJag(signer, idJagClaims({ resource }))));
+			expect(response.status, JSON.stringify(resource)).toBe(200);
+			expect(((await response.json()) as Record<string, unknown>).resource).toBe(MCP_RESOURCE);
+		}
+	});
+
+	it('rejects /mcpx and a double trailing slash in the request parameter and the claim with invalid_target', async () => {
+		for (const bad of [`${MCP_RESOURCE}x`, `${MCP_RESOURCE}//`, `${MCP_RESOURCE}/x`]) {
+			await expectError(await postToken(grantParams(await signIdJag(signer), { resource: bad })), 400, 'invalid_target');
+			await expectError(await postToken(grantParams(await signIdJag(signer, idJagClaims({ resource: bad })))), 400, 'invalid_target');
+		}
+	});
+
+	it('echoes no resource when none was requested or claimed, and never a refresh_token', async () => {
+		const response = await postToken(grantParams(await signIdJag(signer, idJagClaims({ resource: undefined }))));
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as Record<string, unknown>;
+		expect(body).not.toHaveProperty('resource');
+		expect(body).not.toHaveProperty('refresh_token');
+		expect(body.scope).toBe('mcp');
+	});
+
+	it('echoes the resource when only the request parameter names it', async () => {
+		const response = await postToken(
+			grantParams(await signIdJag(signer, idJagClaims({ resource: undefined })), { resource: MCP_RESOURCE }),
+		);
+		expect(response.status).toBe(200);
+		expect(((await response.json()) as Record<string, unknown>).resource).toBe(MCP_RESOURCE);
+	});
+
+	it('rejects a nbf in the future beyond the clock skew, with the shared expired-or-not-yet-valid wording', async () => {
+		const now = nowSeconds();
+		const body = await expectError(
+			await postToken(grantParams(await signIdJag(signer, idJagClaims({ nbf: now + 600 })))),
+			400,
+			'invalid_grant',
+		);
+		expect(body.error_description).toBe('Assertion is expired or not yet valid');
+	});
+
+	it('accepts a nbf in the past or at now, and rejects a non-integer nbf', async () => {
+		const now = nowSeconds();
+		for (const nbf of [now - 60, now]) {
+			expect((await postToken(grantParams(await signIdJag(signer, idJagClaims({ nbf }))))).status, `nbf=${nbf}`).toBe(200);
+		}
+		for (const nbf of [`${now}`, now - 0.5, null]) {
+			await expectError(await postToken(grantParams(await signIdJag(signer, idJagClaims({ nbf })))), 400, 'invalid_grant');
+		}
 	});
 
 	it('rejects a replayed assertion (one-time jti)', async () => {

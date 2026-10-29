@@ -190,6 +190,8 @@ export interface MintAccessTokenOptions {
 	/** EMA only: the tenant epoch, minted as the `tep` claim. Absent for every other grant (no claim). */
 	tenantEpoch?: number;
 	scope: string;
+	/** jwt-bearer only: echo the granted resource (`${issuer}/mcp`) in the response (RFC 8707 style). Absent for every other grant. */
+	echoResource?: boolean;
 }
 
 /**
@@ -224,7 +226,8 @@ export async function mintAccessToken(
 			},
 			{ secret, ttlSeconds, issuer, audience: `${issuer}/mcp` },
 		);
-		return c.json({ access_token: token, token_type: 'Bearer', expires_in: ttlSeconds, scope: opts.scope }, 200, {
+		const resource = opts.echoResource ? { resource: `${issuer}/mcp` } : {};
+		return c.json({ access_token: token, token_type: 'Bearer', expires_in: ttlSeconds, scope: opts.scope, ...resource }, 200, {
 			'Cache-Control': 'no-store',
 			Pragma: 'no-cache',
 		});
@@ -372,6 +375,8 @@ interface AcceptedIdJag {
 	tenant: EmaTenantRecord;
 	clientId: string;
 	subjectHash: string;
+	/** A resource was requested or claimed (and validated), so the response echoes it. */
+	resourceGranted: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -492,6 +497,11 @@ function singleValueEquals(value: unknown, expected: string): boolean {
 	return single === expected;
 }
 
+/** A string, or a one-element array holding one, naming `mcpResource` with or without ONE trailing slash. */
+function namesMcpResource(value: unknown, mcpResource: string): boolean {
+	return singleValueEquals(value, mcpResource) || singleValueEquals(value, `${mcpResource}/`);
+}
+
 function isBoundedString(value: unknown): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= ID_JAG_MAX_CLAIM_LENGTH;
 }
@@ -502,6 +512,14 @@ function isTimeWindowValid(exp: unknown, iat: unknown, now: number): exp is numb
 	const [expiresAt, issuedAt] = [exp as number, iat as number];
 	const fresh = expiresAt > now - OAUTH_JWT_CLOCK_SKEW_SECONDS && issuedAt <= now + OAUTH_JWT_CLOCK_SKEW_SECONDS;
 	return fresh && expiresAt - issuedAt <= ID_JAG_MAX_LIFETIME_SECONDS;
+}
+
+/** `nbf`, when present, must be an integer not later than now (+skew); absent is fine. */
+function assertNotBefore(nbf: unknown, now: number): void {
+	if (nbf === undefined) return;
+	if (!Number.isSafeInteger(nbf) || (nbf as number) > now + OAUTH_JWT_CLOCK_SKEW_SECONDS) {
+		throw new TokenEndpointError('invalid_grant', 'Assertion is expired or not yet valid');
+	}
 }
 
 /** The normalized form of an `iss` claim, or null when it is not a usable issuer URL. */
@@ -543,15 +561,20 @@ export function validateIdJagClaims(
 	const { aud, exp, iat, sub, jti } = claims;
 	if (!singleValueEquals(aud, expected.audience)) throw new TokenEndpointError('invalid_grant', 'Assertion audience is not this server');
 	if (!isTimeWindowValid(exp, iat, now)) throw new TokenEndpointError('invalid_grant', 'Assertion is expired or not yet valid');
+	assertNotBefore(claims.nbf, now);
 	if (!isBoundedString(sub) || !isBoundedString(jti)) throw new TokenEndpointError('invalid_grant', 'Assertion sub or jti is invalid');
 	return { sub, jti, exp };
 }
 
-/** A `resource` (request parameter or assertion claim), when present, must name this server's MCP endpoint. */
-function assertResourceBinding(requested: string | undefined, claimed: unknown, mcpResource: string): void {
-	const requestOk = requested === undefined || requested === mcpResource;
-	const claimOk = claimed === undefined || singleValueEquals(claimed, mcpResource);
+/**
+ * A `resource` (request parameter or assertion claim), when present, must name this server's MCP
+ * endpoint, with or without one trailing slash. Returns whether either was present (granted).
+ */
+function assertResourceBinding(requested: string | undefined, claimed: unknown, mcpResource: string): boolean {
+	const requestOk = requested === undefined || namesMcpResource(requested, mcpResource);
+	const claimOk = claimed === undefined || namesMcpResource(claimed, mcpResource);
 	if (!requestOk || !claimOk) throw new TokenEndpointError('invalid_target', 'Requested resource is not served by this server');
+	return requested !== undefined || claimed !== undefined;
 }
 
 /** One-time use of each assertion: the issuer-scoped jti is claimed until 30s after it expires. */
@@ -583,9 +606,9 @@ async function acceptIdJag(
 	const claims = await verifyIdJagSignature(kv, tenant, request.assertion);
 	const expected: IdJagExpectation = { audience: issuer, tenantIssuer: tenant.issuer, clientId: request.client_id };
 	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
-	assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
+	const resourceGranted = assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
 	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
-	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub) };
+	return { tenant, clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
 }
 
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
@@ -638,7 +661,7 @@ async function handleJwtBearerGrant(
 	} catch (error) {
 		return tokenErrorResponse(c, error, NO_STORE);
 	}
-	const { tenant, clientId, subjectHash } = grant;
+	const { tenant, clientId, subjectHash, resourceGranted } = grant;
 	const response = await mintAccessToken(
 		c,
 		c.env,
@@ -650,6 +673,7 @@ async function handleJwtBearerGrant(
 			entitlementExpiresAt: tenant.entitlement_expires_at,
 			tenantEpoch: tenantEpoch(tenant),
 			scope: ID_JAG_GRANTED_SCOPE,
+			echoResource: resourceGranted,
 		},
 		NO_STORE,
 	);
