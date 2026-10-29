@@ -103,7 +103,11 @@ import type { QuotaCoordinator } from './lib/quota-coordinator';
 import { computeStrongIdempotencyKeys, STRONG_IDEMPOTENCY_TTL_SECONDS } from './lib/request-dedup';
 import { deriveCanonicalTenantPrincipal } from './lib/auth-principal';
 import { adoptAnonymousBrandAuditWatchInternal, reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
-import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './lib/security-capabilities';
+import {
+	isStrongDistinctSecurityCapability,
+	securityCapabilityCollision,
+	type McpSecurityCriticalSecretKey,
+} from './lib/security-capabilities';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -564,6 +568,37 @@ internalRoutes.use('*', async (c, next) => {
 	return next();
 });
 
+type OptionalDedicatedCapability = 'BV_MCP_TOOL_DELEGATION_KEY' | 'BV_MCP_WATCH_CLEANUP_KEY';
+
+/**
+ * Optional dedicated capabilities of the lenient gate. A defined-but-invalid one (empty,
+ * under 32 bytes, or aliasing another critical secret) disables only itself; it must never
+ * 503 callers presenting a valid primary credential.
+ */
+const isOptionalDedicatedCapability = (name: string): name is OptionalDedicatedCapability =>
+	name === 'BV_MCP_TOOL_DELEGATION_KEY' || name === 'BV_MCP_WATCH_CLEANUP_KEY';
+
+const warnedOptionalCapabilities = new Set<OptionalDedicatedCapability>();
+
+/** Log once per isolate when a defined optional capability is unusable. Names the key and reason, never the value. */
+function warnOptionalCapabilityDisabledOnce(env: InternalEnv, name: OptionalDedicatedCapability): void {
+	const value = env[name];
+	if (value === undefined || warnedOptionalCapabilities.has(name) || dedicatedCapability(env, name) !== null) return;
+	warnedOptionalCapabilities.add(name);
+	const collidesWith = securityCapabilityCollision(env, name);
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'internal_auth',
+		result: 'optional_capability_disabled',
+		details: {
+			key: name,
+			reason: collidesWith ? 'aliased' : value.length === 0 ? 'empty' : 'too_short',
+			collidesWith: collidesWith ?? undefined,
+		},
+	});
+}
+
 /**
  * Defense-in-depth bearer gate for /tools/*, /analytics/*, and /tenants/*.
  *
@@ -611,20 +646,14 @@ const internalLenientAuthGate = (
 			.map((name) => ({ name, key: c.env[name] }))
 			.filter(
 				(entry): entry is { name: (typeof acceptedKeys)[number]; key: string } => typeof entry.key === 'string' && entry.key.length > 0,
-			);
-		// Tenant delegation is higher trust than the fleet/mobile/tool credentials.
-		// Weak or reused configuration is a deployment error, never an auth match:
-		// otherwise a holder of the colliding lower-trust secret inherits tenant
-		// assertion authority merely by adding headers.
-		if (acceptedKeys.includes('BV_MCP_TOOL_DELEGATION_KEY') && c.env.BV_MCP_TOOL_DELEGATION_KEY !== undefined) {
-			if (!dedicatedCapability(c.env, 'BV_MCP_TOOL_DELEGATION_KEY')) {
-				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
-			}
-		}
-		if (acceptedKeys.includes('BV_MCP_WATCH_CLEANUP_KEY') && c.env.BV_MCP_WATCH_CLEANUP_KEY !== undefined) {
-			if (!dedicatedCapability(c.env, 'BV_MCP_WATCH_CLEANUP_KEY')) {
-				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
-			}
+			)
+			// Tenant delegation is higher trust than the fleet/mobile credentials. A weak or
+			// reused optional capability is never an auth match (otherwise a holder of the
+			// colliding lower-trust secret inherits tenant assertion authority), but it
+			// disables only that capability: the primary credentials keep working.
+			.filter((entry) => !isOptionalDedicatedCapability(entry.name) || dedicatedCapability(c.env, entry.name) !== null);
+		for (const name of acceptedKeys) {
+			if (isOptionalDedicatedCapability(name)) warnOptionalCapabilityDisabledOnce(c.env, name);
 		}
 		if (expected.length === 0) {
 			// Misconfig: gate is active but no key configured for this route group — fail closed.
