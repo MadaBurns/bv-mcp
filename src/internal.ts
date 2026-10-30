@@ -1706,7 +1706,7 @@ async function upsertSelfServeEmaTenant(
 	if (!matchesExpectedRev(existing, body.expected_rev)) return { status: 'ema_record_changed' };
 	if (existing && lowersPrivilegeOnly(existing, body)) {
 		const lowered = await writeEmaTenant(registry, tenantId, { op: 'self-serve-upsert', body });
-		if (lowered.status !== 'ema_record_changed') return lowered;
+		if (lowered.status !== 'ema_record_changed' || body.expected_rev !== undefined) return lowered;
 	}
 	const discovered = await selfServeJwksUri(body.issuer);
 	if ('error' in discovered) return { status: discovered.error };
@@ -1853,18 +1853,32 @@ internalRoutes.delete('/oauth/ema-tenants/:tenant_id', async (c) => {
  * {name, issuer, enabled, tier, entitlement_expires_at}. Shared issuers are refused, jwks_uri is always
  * discovered (except on a write that only lowers privilege, which reuses the stored one: see
  * lowersPrivilegeOnly), and a new tenant, a moved issuer or changed keys wait for operator approval
- * (upsertSelfServeEmaTenant). Answers the redacted view.
+ * (upsertSelfServeEmaTenant). An optional If-Match carries the single strong revision ETag from GET,
+ * enforced as expected_rev inside the registry transaction. Answers the redacted view and its ETag.
  */
 internalRoutes.put('/oauth/ema-self-serve/:tenant_id', requireEmaEnvelopeKey, async (c) => {
 	const target = selfServeTarget(c);
 	if (target instanceof Response) return target;
 	const parsed = await readEmaBody(c.req.raw, EmaSelfServeUpsertRequestSchema);
 	if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status, EMA_NO_STORE);
+	const ifMatch = c.req.header('If-Match');
+	if (ifMatch !== undefined) {
+		const rev = /^"(0|[1-9]\d*)"$/.test(ifMatch) ? Number(ifMatch.slice(1, -1)) : NaN;
+		if (!Number.isSafeInteger(rev)) {
+			return c.json({ error: 'Invalid If-Match: expected a single strong revision ETag' }, 400, EMA_NO_STORE);
+		}
+		if (parsed.body.expected_rev !== undefined && parsed.body.expected_rev !== rev) {
+			return c.json({ error: 'Invalid If-Match: conflicts with expected_rev' }, 400, EMA_NO_STORE);
+		}
+		parsed.body.expected_rev = rev;
+	}
 	try {
 		const result = await upsertSelfServeEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId, parsed.body);
 		if (result.status !== 'ok') return emaRouteError(c, result.status);
 		logEmaTenantMutation(target.tenantId, 'upsert', result.record);
-		return result.record ? c.json(emaSelfServeView(result.record), 200, EMA_NO_STORE) : emaStoreError(c);
+		return result.record
+			? c.json(emaSelfServeView(result.record), 200, { ...EMA_NO_STORE, ETag: `"${result.record.rev ?? 0}"` })
+			: emaStoreError(c);
 	} catch {
 		return emaStoreError(c);
 	}
@@ -1877,7 +1891,7 @@ internalRoutes.get('/oauth/ema-self-serve/:tenant_id', async (c) => {
 	try {
 		const tenant = await getEmaTenant(emaRegistryOf(c.env, target.kv), target.tenantId);
 		if (tenant?.source !== 'self-serve') return c.json({ error: 'not_found' }, 404, EMA_NO_STORE);
-		return c.json(emaSelfServeView(tenant), 200, EMA_NO_STORE);
+		return c.json(emaSelfServeView(tenant), 200, { ...EMA_NO_STORE, ETag: `"${tenant.rev ?? 0}"` });
 	} catch {
 		return emaStoreError(c);
 	}

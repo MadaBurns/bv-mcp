@@ -802,6 +802,106 @@ describe('PUT expected_rev: the optional compare-and-set inside the registry tra
 	});
 });
 
+describe('self-serve ETag / If-Match precondition', () => {
+	const readEtag = async () => {
+		const res = await sendSelfServe('GET');
+		expect(res.status).toBe(200);
+		const { rev } = (await res.json()) as { rev: number };
+		expect(res.headers.get('etag')).toBe(`"${rev}"`);
+		return res.headers.get('etag')!;
+	};
+	const conditionalPut = (etag: string, overrides: Record<string, unknown> = {}) =>
+		send(call('PUT', selfServePath(), selfServeBody(overrides), { 'If-Match': etag }));
+
+	it('an unchanged record can be disabled without discovery; PUT returns the new ETag', async () => {
+		await putSelfServe();
+		await approve();
+		const etag = await readEtag();
+		discovery = {};
+		fetches.length = 0;
+		const res = await conditionalPut(etag, { enabled: false });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ enabled: false, approval: 'approved' });
+		expect(res.headers.get('etag')).not.toBe(etag);
+		expect(res.headers.get('etag')).toBe(await readEtag());
+		expect(fetches).toEqual([]);
+	});
+
+	it('a lapse sweep cannot overwrite a renewal after its GET, including the renewed tier and expiry', async () => {
+		const expiry = nowSeconds() + DAY;
+		await putSelfServe({ tier: 'developer', entitlement_expires_at: expiry });
+		await approve();
+		const etag = await readEtag();
+		expect((await putSelfServe({ entitlement_expires_at: expiry + 30 * DAY })).status).toBe(200);
+		const renewed = await stored();
+		fetches.length = 0;
+		const res = await conditionalPut(etag, { enabled: false, tier: 'developer', entitlement_expires_at: expiry });
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		expect(await stored()).toEqual(renewed);
+		expect(fetches).toEqual([]);
+	});
+
+	it('checks the revision inside the transaction even when the record changes after the initial read', async () => {
+		await putSelfServe();
+		const etag = await readEtag();
+		const held = holdDiscovery();
+		const pending = conditionalPut(etag, { name: 'Stale write' });
+		try {
+			await vi.waitFor(() => expect(held.started()).toBeGreaterThan(0));
+			const before = (await stored())!;
+			await putRegistryRecord({ ...before, name: 'Concurrent renewal', rev: before.rev! + 1 });
+		} finally {
+			held.release();
+		}
+		const renewed = await stored();
+		const res = await pending;
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect(await stored()).toEqual(renewed);
+	});
+
+	it('a deleted and recreated record does not reuse an old ETag', async () => {
+		await putSelfServe();
+		const etag = await readEtag();
+		await sendSelfServe('DELETE');
+		await putSelfServe();
+		const recreated = await stored();
+		expect(await readEtag()).not.toBe(etag);
+		expect((await conditionalPut(etag, { enabled: false })).status).toBe(409);
+		expect(await stored()).toEqual(recreated);
+	});
+
+	it('a conditional PUT cannot create an absent record', async () => {
+		const res = await conditionalPut('"0"');
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({ error: 'ema_record_changed' });
+		expect(await stored()).toBeNull();
+		expect(fetches).toEqual([]);
+	});
+
+	it.each(['', '1', 'W/"1"', '*', '"1", "2"', '"-1"', '"1.5"', '"9007199254740992"'])(
+		'rejects unsupported or invalid If-Match %j without writing',
+		async (etag) => {
+			const res = await conditionalPut(etag);
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({ error: 'Invalid If-Match: expected a single strong revision ETag' });
+			expect(await stored()).toBeNull();
+			expect(fetches).toEqual([]);
+		},
+	);
+
+	it('accepts an agreeing expected_rev and rejects a conflicting one', async () => {
+		await putSelfServe();
+		const etag = await readEtag();
+		const rev = (await stored())!.rev!;
+		expect((await conditionalPut(etag, { expected_rev: rev + 1 })).status).toBe(400);
+		expect((await stored())!.rev).toBe(rev);
+		expect((await conditionalPut(etag, { expected_rev: rev, enabled: false })).status).toBe(200);
+	});
+});
+
 describe('GET /internal/oauth/ema-self-serve/:tenant_id', () => {
 	it('answers the redacted view of a self-serve tenant', async () => {
 		await putSelfServe();
