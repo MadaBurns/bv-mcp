@@ -127,6 +127,10 @@ export type {
 export { parseCaaParameters, MAX_CAA_ISSUERS, MAX_CAA_TOKEN_LENGTH, TRUNCATION_MARKER } from './checks/caa-analysis';
 export type { CaaParameters } from './checks/caa-analysis';
 
+// cert_posture (NON-SCORING): host-injected certificate vs expiry / key strength / CAA-allowed CAs.
+export { checkCertPosture, effectiveCaaIssuers, identifyIssuingCa, CA_PROFILES } from './checks';
+export type { CheckCertPostureOptions, EffectiveCaa, CaProfile } from './checks';
+
 // RFC 7505 null-MX classification, shared with Worker-side consumers (map_supply_chain)
 // so a null MX is never re-parsed — and mis-rendered as a provider — outside check_mx.
 // `isLoopbackMxRecord` rides alongside for the same reason (#944): a `0 localhost.`
