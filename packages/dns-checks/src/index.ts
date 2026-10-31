@@ -87,6 +87,7 @@ export {
 	checkSubdomainTakeover,
 	checkSubdomailing,
 	checkHTTPSecurity,
+	checkWebContent,
 	HTTP_SECURITY_MAX_REDIRECT_HOPS,
 	// Analysis utilities
 	parseDmarcTags,
@@ -117,6 +118,7 @@ export type {
 	TlsaVerificationContext,
 	TlsaVerification,
 	CheckDaneHttpsOptions,
+	CheckWebContentOptions,
 } from './checks';
 
 // RFC 8657 CAA parameter parsing (`accounturi` / `validationmethods`). Sourced
