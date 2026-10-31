@@ -244,6 +244,15 @@ the same tool, roles swapped:
 In-app levers if spend spikes: `GLOBAL_DAILY_TOOL_LIMIT` env var (wired — `parseGlobalDailyLimit()` in `src/lib/config.ts` clamps it to [10000, 5000000] and `src/mcp/execute.ts` honours it at every `tools/call`; overriding it needs a redeploy since it is a `vars` entry, not a secret), per-tool `FREE_TOOL_DAILY_LIMITS` (a code constant — code change + deploy), `SCAN_TIMEOUT_MS` (env var, clamped [5000, 30000]). Queue-heavy features degrade to `unprovisioned` if their
 bindings are removed from the overlay — the blunt but immediate kill switch.
 
+`WEB_POSTURE_ENABLED` (env var, default on; only the literal `"false"` turns it off) controls
+`scan_domain`'s non-scoring web posture section (US-16): web content, CSP quality, HSTS preload,
+HTTP redirects, security.txt and certificate posture. The section never changes a score or grade,
+but on a scan that misses the cache it makes its own outbound requests: one homepage GET per host,
+the redirect walks, hstspreload.org, `/.well-known/security.txt` and one `BV_CERTSTREAM` `/cert-meta`
+read. It runs inside every `scanDomain` call, including `batch_scan`, `compare_domains` and the
+badge route. Setting it to `"false"` stops those requests and drops the section, even from cached
+results. It is a `vars` entry, so changing it needs a redeploy.
+
 ## 5. Queue dead-lettering (decision record + optional setup)
 
 - `MCP_ANALYTICS_QUEUE`: **deliberately no DLQ** — messages carry raw IP

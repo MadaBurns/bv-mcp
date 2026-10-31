@@ -159,6 +159,8 @@ export interface DispatchMcpMethodOptions {
 	cacheTtlSeconds?: number;
 	scanTimeoutMs?: number;
 	perCheckTimeoutMs?: number;
+	/** `WEB_POSTURE_ENABLED` kill switch for scan_domain's non-scoring web posture section. */
+	webPostureEnabled?: boolean;
 	/** Custom secondary DoH endpoint URL (bv-dns). */
 	secondaryDohEndpoint?: string;
 	/** Auth token for custom secondary DoH. */
@@ -343,6 +345,7 @@ function buildToolsCallRuntimeOptions(options: DispatchMcpMethodOptions): NonNul
 		cacheTtlSeconds: options.cacheTtlSeconds,
 		scanTimeoutMs: options.scanTimeoutMs,
 		perCheckTimeoutMs: options.perCheckTimeoutMs,
+		webPostureEnabled: options.webPostureEnabled,
 		secondaryDoh: options.secondaryDohEndpoint ? { endpoint: options.secondaryDohEndpoint, token: options.secondaryDohToken } : undefined,
 		country: options.country,
 		clientType: options.clientType,

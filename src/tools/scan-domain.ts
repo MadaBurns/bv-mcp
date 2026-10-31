@@ -65,6 +65,7 @@ import { checkAuthoritativeDnsInfra } from './check-authoritative-dns-infra';
 import { checkRootServerSet } from './check-root-server-set';
 import { applyScanPostProcessing, mxDeclaresNoInboundMail } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
+import { applyWebPostureSwitch, attachWebPosture, startScanWebPosture, type WebPostureSection } from './scan/web-posture';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
@@ -297,6 +298,17 @@ export interface ScanDomainResult {
 	 * cache entries written before this field existed.
 	 */
 	scoringConfigHash?: string;
+	/**
+	 * NON-SCORING web posture section (US-16 T10): web content, CSP quality, HSTS preload, HTTP
+	 * redirect chain, security.txt and certificate posture. Kept OUT of `checks`, so nothing here
+	 * reaches `score`, the grade, the category scores, the finding counts or the evidence ratio.
+	 *
+	 * Absent when `WEB_POSTURE_ENABLED` is "false" (the kill switch also strips it from a cache
+	 * hit), on the non-resolving / DNS-broken short-circuits, on the `authoritative_dns_infra`
+	 * profile, and on cache entries written before this field existed. Cached with the result, so
+	 * a cache hit replays the section measured with the score; `force_refresh` re-runs both.
+	 */
+	webPosture?: WebPostureSection;
 }
 
 /**
@@ -585,7 +597,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			// carrying THAT fingerprint. `?? scoringConfigHash` only covers cache entries
 			// written before this field existed (bounded by the 5-min TTL and the
 			// deploy-versioned cache key).
-			return { ...cached, cached: true, scoringConfigHash: cached.scoringConfigHash ?? scoringConfigHash };
+			return applyWebPostureSwitch(
+				{ ...cached, cached: true, scoringConfigHash: cached.scoringConfigHash ?? scoringConfigHash },
+				runtimeOptions,
+			);
 		}
 	}
 
@@ -724,6 +739,19 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
+
+	// US-16 T10: the six NON-SCORING web posture checks start here, alongside the scored fan-out,
+	// on their own deadline (the scored raw-fetch checks' fetch budget, so they never outrun them).
+	// They are deliberately NOT in CHECK_DISPATCH and never join `checkResults`; the settled section
+	// is attached beside the scored result just before caching. See src/tools/scan/web-posture.ts.
+	const webPosturePromise = startScanWebPosture(domain, runtimeOptions, {
+		scanDns,
+		robotsMemo,
+		signal: scanSignal,
+		perCheckTimeoutMs: timeoutBudget.perCheckTimeoutMs,
+		infraProfile: isAuthoritativeInfraProfile,
+		kv,
+	});
 
 	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile
 		? [
@@ -1168,8 +1196,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	}
 
 	// Stamp the effective-config fingerprint BEFORE caching, so a cache hit replays the
-	// hash the result was actually scored under (see the cache-read branch above).
-	result = { ...result, scoringConfigHash };
+	// hash the result was actually scored under (see the cache-read branch above). The
+	// non-scoring web posture section is attached here too, so it is cached with the result.
+	result = await attachWebPosture({ ...result, scoringConfigHash }, webPosturePromise);
 
 	// Cache the result (use configurable TTL if provided) — but ONLY when it is a real,
 	// gradeable measurement. An ungraded result (score.overall === null, arising from
