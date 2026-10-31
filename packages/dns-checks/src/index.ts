@@ -88,6 +88,7 @@ export {
 	checkSubdomailing,
 	checkHTTPSecurity,
 	checkWebContent,
+	checkHstsPreload,
 	HTTP_SECURITY_MAX_REDIRECT_HOPS,
 	// Analysis utilities
 	parseDmarcTags,
@@ -101,6 +102,7 @@ export {
 	isTransientDanePinReason,
 	parseCaaRecord,
 	analyzeSecurityHeaders,
+	assessPreloadEligibility,
 	// Shared helpers for the non-scoring web checks (one capped GET per host, HTML refs)
 	fetchPageCapped,
 	extractHtmlRefs,
@@ -119,6 +121,10 @@ export type {
 	TlsaVerification,
 	CheckDaneHttpsOptions,
 	CheckWebContentOptions,
+	CheckHstsPreloadOptions,
+	PreloadEligibility,
+	PreloadMembership,
+	PreloadStatus,
 } from './checks';
 
 // RFC 8657 CAA parameter parsing (`accounturi` / `validationmethods`). Sourced

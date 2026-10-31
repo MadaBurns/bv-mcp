@@ -27,6 +27,8 @@ export { checkSubdomailing } from './check-subdomailing';
 export { checkHTTPSecurity, MAX_REDIRECT_HOPS as HTTP_SECURITY_MAX_REDIRECT_HOPS } from './check-http-security';
 export { checkWebContent } from './check-web-content';
 export type { CheckWebContentOptions } from './check-web-content';
+export { checkHstsPreload } from './check-hsts-preload';
+export type { CheckHstsPreloadOptions } from './check-hsts-preload';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
@@ -56,6 +58,8 @@ export type {
 } from './dane-analysis';
 export type { CheckDaneHttpsOptions } from './check-dane-https';
 export { analyzeSecurityHeaders } from './http-security-analysis';
+export { assessPreloadEligibility } from './hsts-preload-analysis';
+export type { PreloadEligibility, PreloadMembership, PreloadStatus } from './hsts-preload-analysis';
 export { estimateTxtRrsetBytes } from './spf-analysis';
 
 // ── Shared helpers for the non-scoring web checks ────────────────────────────
