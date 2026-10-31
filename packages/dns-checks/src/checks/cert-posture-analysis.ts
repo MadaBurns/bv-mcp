@@ -110,7 +110,7 @@ export const CA_PROFILES: readonly CaProfile[] = [
 		name: 'SSL.com',
 		caaDomains: ['ssl.com'],
 		orgNeedles: ['sslcorp', 'sslcom'],
-		cnPatterns: [/ssl\.com/i],
+		cnPatterns: [/^SSL\.com\b/i],
 	},
 	{
 		id: 'entrust',

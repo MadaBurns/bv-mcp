@@ -35,7 +35,7 @@ export interface SecurityTxtObservation {
 
 const PGP_HEADER = '-----BEGIN PGP SIGNED MESSAGE-----';
 const PGP_SIGNATURE = '-----BEGIN PGP SIGNATURE-----';
-const FIELD_LINE = /^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$/;
+const FIELD_LINE = /^([A-Za-z][A-Za-z-]*):(.*)$/;
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:\S/i;
 const HTML_BODY = /<!doctype\s+html|<html[\s>]/i;
 

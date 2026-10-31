@@ -279,6 +279,7 @@ describe('identifyIssuingCa / parseIssuerDn', () => {
 		['C=BE, O=GlobalSign nv-sa, CN=GlobalSign Atlas R3 DV TLS CA 2024 Q1', 'globalsign'],
 		['C=US, O=Amazon, CN=Amazon RSA 2048 M02', 'amazon'],
 		['C=US, O=SSL Corp, CN=SSL.com TLS RSA CA', 'ssl-com'],
+		['CN=SSL.com RSA SSL subCA', 'ssl-com'],
 		['C=US, O=Entrust, Inc., CN=Entrust OV TLS Issuing RSA CA 1', 'entrust'],
 		['C=NO, O=Buypass AS-983163327, CN=Buypass Class 2 CA 5', 'buypass'],
 		['C=US, O=GoDaddy.com, Inc., CN=Go Daddy Secure Certificate Authority - G2', 'godaddy'],
@@ -287,7 +288,7 @@ describe('identifyIssuingCa / parseIssuerDn', () => {
 		expect(identifyIssuingCa(issuer)?.id).toBe(id);
 	});
 
-	it.each([[null], [''], ['C=XX, O=Acme Private PKI, CN=Acme Issuing CA 7'], ['garbage']])(
+	it.each([[null], [''], ['C=XX, O=Acme Private PKI, CN=Acme Issuing CA 7'], ['CN=Not SSL.com Issuing CA'], ['garbage']])(
 		'%s → null (unknown, never a guess)',
 		(issuer) => {
 			expect(identifyIssuingCa(issuer)).toBeNull();

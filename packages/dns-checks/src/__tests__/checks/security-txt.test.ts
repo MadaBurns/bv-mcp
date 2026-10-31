@@ -108,4 +108,12 @@ describe('parseSecurityTxt', () => {
 		expect(p.expiresAt).toBeNull();
 		expect(p.signed).toBe(false);
 	});
+
+	it('trims tabs and spaces after the colon, and a tab-flooded line parses in linear time', () => {
+		expect(parseSecurityTxt('Contact:\t \tmailto:a@example.com').contacts).toEqual(['mailto:a@example.com']);
+		const started = performance.now();
+		const p = parseSecurityTxt(`A:${'\t'.repeat(50_000)}x`);
+		expect(performance.now() - started).toBeLessThan(250);
+		expect(p.contacts).toEqual([]);
+	});
 });
