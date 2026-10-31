@@ -114,6 +114,8 @@ export interface ExecuteMcpRequestOptions {
 	cacheTtlSeconds?: number;
 	scanTimeoutMs?: number;
 	perCheckTimeoutMs?: number;
+	/** `WEB_POSTURE_ENABLED` kill switch for scan_domain's non-scoring web posture section. */
+	webPostureEnabled?: boolean;
 	/** Custom secondary DoH endpoint URL (bv-dns). */
 	secondaryDohEndpoint?: string;
 	/** Auth token for custom secondary DoH. */
@@ -1488,6 +1490,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			cacheTtlSeconds: options.cacheTtlSeconds,
 			scanTimeoutMs: options.scanTimeoutMs,
 			perCheckTimeoutMs: options.perCheckTimeoutMs,
+			webPostureEnabled: options.webPostureEnabled,
 			secondaryDohEndpoint: options.secondaryDohEndpoint,
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
@@ -1610,6 +1613,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			cacheTtlSeconds: options.cacheTtlSeconds,
 			scanTimeoutMs: options.scanTimeoutMs,
 			perCheckTimeoutMs: options.perCheckTimeoutMs,
+			webPostureEnabled: options.webPostureEnabled,
 			secondaryDohEndpoint: options.secondaryDohEndpoint,
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,

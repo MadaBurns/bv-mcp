@@ -59,6 +59,7 @@ import {
 } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
+import { parseWebPostureEnabled } from './tools/scan/web-posture';
 import { gradeBadge, errorBadge } from './lib/badge';
 import { computeScanEvidence } from './lib/scoring';
 import { displayGradeFor } from './lib/ungraded-display';
@@ -213,6 +214,11 @@ type BvMcpEnv = Env & {
 	CACHE_TTL_SECONDS?: string;
 	SCAN_TIMEOUT_MS?: string;
 	PER_CHECK_TIMEOUT_MS?: string;
+	/**
+	 * Kill switch for scan_domain's NON-SCORING web posture section (US-16 T10). Default on;
+	 * "false" omits the section entirely. Parsed by `parseWebPostureEnabled`.
+	 */
+	WEB_POSTURE_ENABLED?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
@@ -869,6 +875,7 @@ app.get('/badge/:domain', async (c) => {
 			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+			webPostureEnabled: parseWebPostureEnabled(c.env.WEB_POSTURE_ENABLED),
 		});
 		// The badge shows the SAME customer-facing letter as the scan report — the NIST
 		// 6-band `displayGradeFor`, not the engine's internal 9-band `score.grade`. Reading
@@ -1038,6 +1045,7 @@ app.post('/mcp', async (c) => {
 					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 					scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 					perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+					webPostureEnabled: parseWebPostureEnabled(c.env.WEB_POSTURE_ENABLED),
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
@@ -1156,6 +1164,7 @@ app.post('/mcp', async (c) => {
 		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 		scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 		perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+		webPostureEnabled: parseWebPostureEnabled(c.env.WEB_POSTURE_ENABLED),
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
@@ -1375,6 +1384,7 @@ app.post('/mcp/messages', async (c) => {
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 				scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 				perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+				webPostureEnabled: parseWebPostureEnabled(c.env.WEB_POSTURE_ENABLED),
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
@@ -1953,6 +1963,7 @@ export default {
 							scoringConfig: parseScoringConfigCached(env.SCORING_CONFIG),
 							scanTimeoutMs: parseScanTimeout(env.SCAN_TIMEOUT_MS),
 							perCheckTimeoutMs: parsePerCheckTimeout(env.PER_CHECK_TIMEOUT_MS),
+							webPostureEnabled: parseWebPostureEnabled(env.WEB_POSTURE_ENABLED),
 							secondaryDoh: env.BV_DOH_ENDPOINT ? { endpoint: env.BV_DOH_ENDPOINT, token: env.BV_DOH_TOKEN } : undefined,
 							infraProbe: env.BV_INFRA_PROBE,
 							profileAccumulator: env.PROFILE_ACCUMULATOR,
@@ -2004,6 +2015,7 @@ export default {
 						scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
 						scanTimeoutMs: parseScanTimeout(queueEnv.SCAN_TIMEOUT_MS),
 						perCheckTimeoutMs: parsePerCheckTimeout(queueEnv.PER_CHECK_TIMEOUT_MS),
+						webPostureEnabled: parseWebPostureEnabled(queueEnv.WEB_POSTURE_ENABLED),
 						secondaryDoh: queueEnv.BV_DOH_ENDPOINT ? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN } : undefined,
 						whoisBinding: queueEnv.BV_WHOIS,
 						infraProbe: queueEnv.BV_INFRA_PROBE,

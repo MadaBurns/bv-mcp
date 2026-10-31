@@ -290,6 +290,8 @@ interface ToolRuntimeOptions {
 	scanTimeoutMs?: number;
 	/** Per-check wall-clock budget in milliseconds. Threaded to scanDomain. */
 	perCheckTimeoutMs?: number;
+	/** `WEB_POSTURE_ENABLED` kill switch for scan_domain's non-scoring web posture section. Threaded to scanDomain. */
+	webPostureEnabled?: boolean;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to dnsOptions for individual checks. */
 	secondaryDoh?: SecondaryDohConfig;
 	country?: string;
@@ -1611,6 +1613,7 @@ export async function handleToolsCall(
 					});
 					const structured = buildStructuredScanResult(result, {
 						scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
+						includeWebPosture: true,
 					});
 					return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
 				}
@@ -1629,6 +1632,7 @@ export async function handleToolsCall(
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
 							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
+							webPostureEnabled: runtimeOptions?.webPostureEnabled,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 						},
@@ -1717,6 +1721,7 @@ export async function handleToolsCall(
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
 							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
+							webPostureEnabled: runtimeOptions?.webPostureEnabled,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 							...(forceRefresh && { forceRefresh }),
