@@ -128,7 +128,41 @@ export type CheckCategory =
 	| 'subdomailing'
 	| 'brand_discovery'
 	| 'authoritative_dns_infra'
-	| 'dnskey_strength';
+	| 'dnskey_strength'
+	// NON-SCORING categories — see NON_SCORING_CATEGORIES below.
+	| 'web_content'
+	| 'csp_quality'
+	| 'hsts_preload'
+	| 'http_redirect'
+	| 'security_txt'
+	| 'cert_posture';
+
+/**
+ * Categories whose results are reported but NEVER scored.
+ *
+ * A weight of 0 is not enough on its own to keep a category out of the score. A result
+ * still reaches the verified-critical penalty, the summary counts, the evidence
+ * attempted/completed ratio and profile detection, and a 'hardening' category ignores
+ * weight entirely. So `computeScanScore`, `detectDomainContext` and `computeScanEvidence`
+ * drop these results before any other use. A non-scoring result therefore produces
+ * output identical to the same call without it.
+ *
+ * Every member stays in the 'protective' tier with weight 0 in every table, as a second
+ * line of defence.
+ */
+export const NON_SCORING_CATEGORIES: ReadonlySet<CheckCategory> = new Set<CheckCategory>([
+	'web_content',
+	'csp_quality',
+	'hsts_preload',
+	'http_redirect',
+	'security_txt',
+	'cert_posture',
+]);
+
+/** True when a result's category feeds the score, i.e. is not in {@link NON_SCORING_CATEGORIES}. */
+export function isScoringResult(result: { category: CheckCategory }): boolean {
+	return !NON_SCORING_CATEGORIES.has(result.category);
+}
 
 /** Three-tier classification for check categories: core (critical baseline), protective (active risk mitigation), hardening (advanced posture). */
 export type CategoryTier = 'core' | 'protective' | 'hardening';
@@ -162,6 +196,14 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	brand_discovery: 'hardening',
 	authoritative_dns_infra: 'core',
 	dnskey_strength: 'hardening',
+	// Non-scoring: 'protective', NEVER 'hardening'. The hardening tier is binary pass/fail and
+	// ignores weight, so a weight-0 hardening category would still move the score.
+	web_content: 'protective',
+	csp_quality: 'protective',
+	hsts_preload: 'protective',
+	http_redirect: 'protective',
+	security_txt: 'protective',
+	cert_posture: 'protective',
 };
 
 export interface Finding {
@@ -245,7 +287,8 @@ export interface CheckResult {
  * judge for itself how much of the scan actually ran, whether or not a grade was
  * produced.
  *
- * - `attempted` — number of `CheckResult`s handed to the scorer.
+ * - `attempted` — number of `CheckResult`s handed to the scorer, not counting
+ *   non-scoring ones (`NON_SCORING_CATEGORIES`).
  * - `completed` — those whose `checkStatus` is `'completed'`, or ABSENT (an absent
  *   status means the same thing; only the degraded paths set it explicitly).
  * - `ratio`     — `completed / attempted`, and `0` when `attempted === 0`.
@@ -344,6 +387,12 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	brand_discovery: 0,
 	authoritative_dns_infra: 0.2,
 	dnskey_strength: 0,
+	web_content: 0,
+	csp_quality: 0,
+	hsts_preload: 0,
+	http_redirect: 0,
+	security_txt: 0,
+	cert_posture: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */

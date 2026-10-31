@@ -25,7 +25,7 @@ export type {
 	ZoneDelegationStatus,
 	ZoneContext,
 } from './types';
-export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS } from './types';
+export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS, NON_SCORING_CATEGORIES } from './types';
 
 // The nullable-`ScanScore` narrowing guard. Exported from the PACKAGE ROOT as well
 // as from `./scoring`: the breaking change (`overall`/`grade` became nullable) is
@@ -100,8 +100,15 @@ export {
 	isTransientDanePinReason,
 	parseCaaRecord,
 	analyzeSecurityHeaders,
+	// Shared helpers for the non-scoring web checks (one capped GET per host, HTML refs)
+	fetchPageCapped,
+	extractHtmlRefs,
 } from './checks';
 export type {
+	CappedPage,
+	PageFetchOptions,
+	HtmlRef,
+	HtmlRefs,
 	CaaRecord,
 	TlsaRecord,
 	ServedCertificate,
