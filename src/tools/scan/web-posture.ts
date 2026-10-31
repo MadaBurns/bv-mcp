@@ -4,20 +4,27 @@
  * The NON-SCORING "web posture" section of `scan_domain` (US-16 T10).
  *
  * Runs the six `NON_SCORING_CATEGORIES` checks from `@blackveil/dns-checks` (web content, CSP
- * quality, HSTS preload, HTTP redirect chain, security.txt, certificate posture) concurrently with
- * the scored fan-out and returns them as a separate section. They are deliberately NOT in
+ * quality, HSTS preload, HTTP redirect chain, security.txt, certificate posture) next to the scored
+ * fan-out and returns them as a separate section. They are deliberately NOT in
  * `CHECK_DISPATCH` / `SCAN_CATEGORIES`: their results never enter `ScanDomainResult.checks`, so
  * they cannot reach the score, the grade, the category scores, the finding counts or the evidence
  * ratio. (The package filters these categories out of every scoring entry point as well; keeping
  * them out of the scored array is the first line, not the only one.)
  *
- * Bounded and fail-soft by construction:
+ * It must never delay or fail the scored result (SQ-487):
+ *  - Opt-in. Only a caller that passes `webPosture: true` runs it, and only the scan_domain tool
+ *    handler does. Every other `scanDomain` caller would discard it, so it makes no requests for them.
+ *  - It starts after the scored fan-out has been dispatched, and at most
+ *    {@link WEB_POSTURE_MAX_CONCURRENT_FETCHES} of its fetches are in flight at once. A Worker opens
+ *    at most 6 connections at a time, so a hung web host cannot queue the scored checks behind it.
+ *  - Once the scored result is ready it waits at most {@link WEB_POSTURE_GRACE_MS}. A check still
+ *    running then is reported as not assessed (`notAssessedReason: 'deadline'`). It keeps running in
+ *    the background, so a completed result still fills the per-check cache for the next scan.
  *  - One overall deadline ({@link webPostureDeadlineMs}: 8 s, clamped to the fetch budget the scored
- *    raw-fetch checks already self-bound to). A check still running at the deadline is reported as
- *    not assessed (`checkStatus: 'timeout'`), and the deadline aborts its in-flight subrequests.
+ *    raw-fetch checks already self-bound to) ends that background run. A check still running at the
+ *    deadline is not assessed (`checkStatus: 'timeout'`), and the deadline aborts its subrequests.
  *  - Completed results use the scored checks' per-check cache; not-assessed ones are re-measured.
- *  - `runWebPosture` never rejects: a thrown check becomes a not-assessed result, so this section
- *    can never fail the scored result.
+ *  - Nothing here rejects: a thrown check becomes a not-assessed result.
  *  - One GET per host: the apex and www homepages are fetched once and handed to `web_content`,
  *    `csp_quality` and `hsts_preload` as `pages`.
  */
@@ -46,10 +53,17 @@ import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/res
 import { isoOrUndefined, OWNED_INDEX_MAX_STALENESS_MS, parseOwnedIndexCoverage } from '../../lib/ct-coverage';
 import { buildCheckCacheKey, runWithCache } from '../../lib/cache';
 import { fetchBudgetFor } from '../../lib/fetch-budget';
+import { Semaphore } from '../../lib/semaphore';
 import type { ScanRuntimeOptions } from './post-processing';
 
 /** Overall wall-clock for the whole section (ticket SQ-484). The caller clamps it to the per-check budget. */
 export const WEB_POSTURE_DEADLINE_MS = 8_000;
+
+/** How long the scored result waits for the section once the score is ready (SQ-487). */
+export const WEB_POSTURE_GRACE_MS = 750;
+
+/** Most section fetches in flight at once (SQ-487). Workers allow 6 open connections; the scored checks keep the rest. */
+export const WEB_POSTURE_MAX_CONCURRENT_FETCHES = 2;
 
 /** The six non-scoring categories, in the order the section reports them. */
 export const WEB_POSTURE_CATEGORIES = [
@@ -100,6 +114,17 @@ export function parseWebPostureEnabled(raw: string | undefined): boolean {
 	return raw?.trim().toLowerCase() !== 'false';
 }
 
+/** The scan options that decide whether the section runs. `webPosture` is the scan_domain tool's opt-in. */
+export type WebPostureRequest = Pick<ScanRuntimeOptions, 'webPostureEnabled' | 'profile'> & { webPosture?: boolean };
+
+/**
+ * The caller asked for the section (`webPosture: true`), the kill switch is on, and the profile is
+ * not the DNS-infrastructure one (which scans name servers only, so it has no web checks).
+ */
+export function wantsWebPosture(request: WebPostureRequest | undefined): boolean {
+	return request?.webPosture === true && request.webPostureEnabled !== false && request.profile !== 'authoritative_dns_infra';
+}
+
 // ─── Fetch routing ───────────────────────────────────────────────────────────
 
 function parseRequestUrl(input: RequestInfo | URL): URL | null {
@@ -140,6 +165,22 @@ export function createWebPostureFetch(domain: string, signal?: AbortSignal, robo
 	const base = withAbortSignal(routed, signal);
 	const gated = withRobotsGate(withRobotsFetchMemo(base, robotsMemo));
 	return (url, init) => (isFirstParty(parseRequestUrl(url)) ? gated(url, init) : base(url, init));
+}
+
+/**
+ * Let at most `limit` calls of `fetchFn` run at once; the rest wait in order. A waiting call is
+ * dropped (rejects) when `signal` aborts.
+ *
+ * This wraps the whole routed fetch, robots gate included. A first-party call fetches robots.txt and
+ * then the page inside one slot, one after the other. The slot is freed when the response arrives;
+ * the checks read the (size-capped) body after that. The shared robots.txt memo sits beneath this
+ * limit, so a scored check that reuses a robots.txt fetch the section started never waits here.
+ *
+ * @internal Exported for the concurrency regression.
+ */
+export function limitConcurrentFetches(fetchFn: FetchFunction, limit: number, signal?: AbortSignal): FetchFunction {
+	const slots = new Semaphore(limit);
+	return (url, init) => slots.run(() => fetchFn(url, init), signal);
 }
 
 // ─── Shared homepage GETs ────────────────────────────────────────────────────
@@ -285,10 +326,16 @@ function buildRunners(
 	};
 }
 
-function notAssessedResult(category: WebPostureCategory, status: 'timeout' | 'error', detail: string): CheckResult {
+function notAssessedResult(
+	category: WebPostureCategory,
+	status: 'timeout' | 'error',
+	detail: string,
+	extraMetadata: Record<string, unknown> = {},
+): CheckResult {
 	const finding = createFinding(category, `${category.toUpperCase()} not assessed`, 'info', detail, {
 		notAssessed: true,
 		confidence: 'heuristic',
+		...extraMetadata,
 	});
 	return { category, findings: [finding], score: 0, passed: false, partial: true, checkStatus: status };
 }
@@ -333,27 +380,41 @@ async function settleCheck(
 	}
 }
 
+/** A started section. No promise here ever rejects. */
+export interface WebPostureRun {
+	/** Each check's result as it settles, in {@link WEB_POSTURE_CATEGORIES} order. */
+	checks: { category: WebPostureCategory; result: Promise<CheckResult> }[];
+	/** The whole section, settled by the section deadline at the latest. */
+	section: Promise<WebPostureSection>;
+}
+
 /**
- * Run the six non-scoring checks for `domain`. Never rejects; every category is always present,
- * either measured or explicitly not assessed.
+ * Start the six non-scoring checks for `domain`. Every category is always present, either measured
+ * or explicitly not assessed.
  */
-export async function runWebPosture(domain: string, options: WebPostureOptions = {}): Promise<WebPostureSection> {
+export function startWebPosture(domain: string, options: WebPostureOptions = {}): WebPostureRun {
 	const deadlineMs = options.deadlineMs ?? WEB_POSTURE_DEADLINE_MS;
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(new DOMException('web posture deadline', 'TimeoutError')), deadlineMs);
 	const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
-	const runners = buildRunners(domain, createWebPostureFetch(domain, signal, options.robotsMemo), signal, options);
+	const fetchFn = limitConcurrentFetches(
+		createWebPostureFetch(domain, signal, options.robotsMemo),
+		WEB_POSTURE_MAX_CONCURRENT_FETCHES,
+		signal,
+	);
+	const runners = buildRunners(domain, fetchFn, signal, options);
 	const cutoff = whenAborted(signal);
-	try {
-		const settled = WEB_POSTURE_CATEGORIES.map((category) =>
-			settleCheck(category, cachedRunner(domain, category, runners[category], options), cutoff, deadlineMs),
-		);
-		return { nonScoring: true, results: await Promise.all(settled) };
-	} finally {
+	const checks = WEB_POSTURE_CATEGORIES.map((category) => ({
+		category,
+		result: settleCheck(category, cachedRunner(domain, category, runners[category], options), cutoff, deadlineMs),
+	}));
+	const section = Promise.all(checks.map((check) => check.result)).then((results): WebPostureSection => {
 		clearTimeout(timer);
 		// Every check has settled; cancel whatever a timed-out check left in flight.
 		deadline.abort();
-	}
+		return { nonScoring: true, results };
+	});
+	return { checks, section };
 }
 
 // ─── scan_domain integration ─────────────────────────────────────────────────
@@ -365,8 +426,6 @@ export interface ScanWebPostureContext {
 	signal: AbortSignal;
 	/** The scan's per-check budget; the section's deadline is the fetch share of it. */
 	perCheckTimeoutMs: number;
-	/** The `authoritative_dns_infra` profile scans name-server infrastructure only, so it runs no web checks. */
-	infraProfile: boolean;
 	/** The scan's KV namespace, for the per-check result cache. */
 	kv?: KVNamespace;
 }
@@ -382,18 +441,19 @@ export function webPostureDeadlineMs(perCheckTimeoutMs: number): number {
 }
 
 /**
- * Launch the section for a resolving domain, concurrently with the scored fan-out. Undefined when
- * the `WEB_POSTURE_ENABLED` kill switch is off or the profile is the DNS-infrastructure one.
+ * Launch the section for a resolving domain, once the scored fan-out has been dispatched. Undefined
+ * unless {@link wantsWebPosture}: the caller did not opt in, the kill switch is off, or the profile
+ * is the DNS-infrastructure one.
  */
 export function startScanWebPosture(
 	domain: string,
 	runtimeOptions:
-		| Pick<ScanRuntimeOptions, 'webPostureEnabled' | 'certstream' | 'certstreamAuthToken' | 'cacheTtlSeconds' | 'forceRefresh'>
+		| (WebPostureRequest & Pick<ScanRuntimeOptions, 'certstream' | 'certstreamAuthToken' | 'cacheTtlSeconds' | 'forceRefresh'>)
 		| undefined,
 	scan: ScanWebPostureContext,
-): Promise<WebPostureSection> | undefined {
-	if (runtimeOptions?.webPostureEnabled === false || scan.infraProfile) return undefined;
-	return runWebPosture(domain, {
+): WebPostureRun | undefined {
+	if (!wantsWebPosture(runtimeOptions)) return undefined;
+	return startWebPosture(domain, {
 		dnsOptions: scan.scanDns,
 		signal: scan.signal,
 		robotsMemo: scan.robotsMemo,
@@ -406,26 +466,63 @@ export function startScanWebPosture(
 	});
 }
 
-/** Attach the settled section. `runWebPosture` never rejects; the catch keeps the scored result safe regardless. */
+function deadlineResult(category: WebPostureCategory, graceMs: number): CheckResult {
+	return notAssessedResult(
+		category,
+		'timeout',
+		`Still running ${graceMs / 1000}s after the score was ready. The score is never held back for this section.`,
+		{ notAssessedReason: 'deadline' },
+	);
+}
+
+async function settleWithinGrace(check: WebPostureRun['checks'][number], grace: Promise<null>, graceMs: number): Promise<CheckResult> {
+	return (await Promise.race([check.result, grace])) ?? deadlineResult(check.category, graceMs);
+}
+
+/**
+ * Attach the section to the scored result, waiting at most `graceMs` from now (the moment the
+ * scored result is ready). A check not finished by then is reported as not assessed with reason
+ * "deadline". The run itself is handed to `waitUntil`, so those checks still finish and a completed
+ * result fills the per-check cache for the next scan. Nothing here can fail the scored result.
+ */
 export async function attachWebPosture<T extends object>(
 	result: T,
-	pending: Promise<WebPostureSection> | undefined,
+	run: WebPostureRun | undefined,
+	waitUntil?: (promise: Promise<unknown>) => void,
+	graceMs: number = WEB_POSTURE_GRACE_MS,
 ): Promise<T & { webPosture?: WebPostureSection }> {
-	if (pending === undefined) return result;
+	if (run === undefined) return result;
+	waitUntil?.(run.section);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const grace = new Promise<null>((resolve) => {
+		timer = setTimeout(() => resolve(null), graceMs);
+	});
 	try {
-		return { ...result, webPosture: await pending };
+		const results = await Promise.all(run.checks.map((check) => settleWithinGrace(check, grace, graceMs)));
+		return { ...result, webPosture: { nonScoring: true, results } };
 	} catch {
 		return result;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
-/** The kill switch omits the section entirely, including from a result cached while it was on. */
-export function applyWebPostureSwitch<T extends { webPosture?: WebPostureSection }>(
-	result: T,
-	runtimeOptions: Pick<ScanRuntimeOptions, 'webPostureEnabled'> | undefined,
-): T {
-	if (runtimeOptions?.webPostureEnabled !== false || result.webPosture === undefined) return result;
+/**
+ * Only a caller that wants the section (see {@link wantsWebPosture}) gets one. Everyone else has it
+ * removed, including from a cached result written while the kill switch was on or by scan_domain.
+ */
+export function applyWebPostureSwitch<T extends { webPosture?: WebPostureSection }>(result: T, request: WebPostureRequest | undefined): T {
+	if (wantsWebPosture(request) || result.webPosture === undefined) return result;
 	const withoutSection = { ...result };
 	delete withoutSection.webPosture;
 	return withoutSection;
+}
+
+/**
+ * A cached scan can answer this caller unless the caller wants the section and the cached result
+ * has none, because a caller that skipped the section wrote it. That caller rescans: the scored
+ * checks come from the per-check cache, and the new result, section included, replaces the entry.
+ */
+export function canReplayCachedScan(cached: { webPosture?: WebPostureSection }, request: WebPostureRequest | undefined): boolean {
+	return cached.webPosture !== undefined || !wantsWebPosture(request);
 }

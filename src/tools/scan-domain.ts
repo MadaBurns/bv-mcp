@@ -65,7 +65,13 @@ import { checkAuthoritativeDnsInfra } from './check-authoritative-dns-infra';
 import { checkRootServerSet } from './check-root-server-set';
 import { applyScanPostProcessing, mxDeclaresNoInboundMail } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
-import { applyWebPostureSwitch, attachWebPosture, startScanWebPosture, type WebPostureSection } from './scan/web-posture';
+import {
+	applyWebPostureSwitch,
+	attachWebPosture,
+	canReplayCachedScan,
+	startScanWebPosture,
+	type WebPostureSection,
+} from './scan/web-posture';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
@@ -303,12 +309,23 @@ export interface ScanDomainResult {
 	 * redirect chain, security.txt and certificate posture. Kept OUT of `checks`, so nothing here
 	 * reaches `score`, the grade, the category scores, the finding counts or the evidence ratio.
 	 *
-	 * Absent when `WEB_POSTURE_ENABLED` is "false" (the kill switch also strips it from a cache
-	 * hit), on the non-resolving / DNS-broken short-circuits, on the `authoritative_dns_infra`
-	 * profile, and on cache entries written before this field existed. Cached with the result, so
-	 * a cache hit replays the section measured with the score; `force_refresh` re-runs both.
+	 * Present only when the caller passed `webPosture: true` (the scan_domain tool does; no other
+	 * caller does) and `WEB_POSTURE_ENABLED` is not "false". A cache hit strips it for any other
+	 * caller. Also absent on the non-resolving / DNS-broken short-circuits and on the
+	 * `authoritative_dns_infra` profile. Cached with the result, so a cache hit replays the section
+	 * attached with the score; `force_refresh` re-runs both. A check that had not finished 750 ms
+	 * after the score was ready reads as not assessed (`notAssessedReason: 'deadline'`).
 	 */
 	webPosture?: WebPostureSection;
+}
+
+/** `scanDomain` options: the scan runtime options plus the scan_domain tool's web posture opt-in. */
+export interface ScanDomainOptions extends ScanRuntimeOptions {
+	/**
+	 * Run the NON-SCORING web posture section (US-16). Default off: only the scan_domain tool
+	 * handler sets it, because every other caller discards the section (SQ-487).
+	 */
+	webPosture?: boolean;
 }
 
 /**
@@ -566,7 +583,7 @@ function activeProbesAllowedForScan(runtimeOptions?: ScanRuntimeOptions): boolea
  * @param kv - Optional KV namespace for persistent scan result caching
  * @returns Full scan result with score, individual check results, and metadata
  */
-export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
+export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanDomainOptions): Promise<ScanDomainResult> {
 	if (runtimeOptions?.signal?.aborted) throw runtimeOptions.signal.reason ?? new Error('scan_aborted');
 	const scanStartTime = Date.now();
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
@@ -591,7 +608,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	if (!runtimeOptions?.forceRefresh) {
 		const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
 		if (runtimeOptions?.signal?.aborted) throw runtimeOptions.signal.reason ?? new Error('scan_aborted');
-		if (cached) {
+		// A scan_domain call does not replay an entry another tool cached without the web posture
+		// section; it rescans (scored checks from the per-check cache) and re-caches with the section.
+		if (cached && canReplayCachedScan(cached, runtimeOptions)) {
 			// Deliberately NOT re-stamped with the current hash: a cached result's score
 			// was computed under the config in force when it was written, so it must keep
 			// carrying THAT fingerprint. `?? scoringConfigHash` only covers cache entries
@@ -740,19 +759,6 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
-	// US-16 T10: the six NON-SCORING web posture checks start here, alongside the scored fan-out,
-	// on their own deadline (the scored raw-fetch checks' fetch budget, so they never outrun them).
-	// They are deliberately NOT in CHECK_DISPATCH and never join `checkResults`; the settled section
-	// is attached beside the scored result just before caching. See src/tools/scan/web-posture.ts.
-	const webPosturePromise = startScanWebPosture(domain, runtimeOptions, {
-		scanDns,
-		robotsMemo,
-		signal: scanSignal,
-		perCheckTimeoutMs: timeoutBudget.perCheckTimeoutMs,
-		infraProfile: isAuthoritativeInfraProfile,
-		kv,
-	});
-
 	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile
 		? [
 				Promise.all([
@@ -806,6 +812,19 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					forceRefresh,
 				);
 			});
+
+	// US-16 T10: the six NON-SCORING web posture checks, only when the caller opted in (the
+	// scan_domain tool). SQ-487: they start only now, after the scored fan-out has been dispatched,
+	// and hold at most 2 connections, so they cannot queue scored requests behind a hung web host.
+	// They are deliberately NOT in CHECK_DISPATCH and never join `checkResults`; the section is
+	// attached beside the scored result just before caching. See src/tools/scan/web-posture.ts.
+	const webPostureRun = startScanWebPosture(domain, runtimeOptions, {
+		scanDns,
+		robotsMemo,
+		signal: scanSignal,
+		perCheckTimeoutMs: timeoutBudget.perCheckTimeoutMs,
+		kv,
+	});
 
 	let timedOut = false;
 	let scanTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -1198,7 +1217,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Stamp the effective-config fingerprint BEFORE caching, so a cache hit replays the
 	// hash the result was actually scored under (see the cache-read branch above). The
 	// non-scoring web posture section is attached here too, so it is cached with the result.
-	result = await attachWebPosture({ ...result, scoringConfigHash }, webPosturePromise);
+	// SQ-487: the scored result is ready now and waits at most WEB_POSTURE_GRACE_MS for it; a check
+	// still running reads as not assessed ("deadline") and finishes under waitUntil.
+	result = await attachWebPosture({ ...result, scoringConfigHash }, webPostureRun, runtimeOptions?.waitUntil);
 
 	// Cache the result (use configurable TTL if provided) — but ONLY when it is a real,
 	// gradeable measurement. An ungraded result (score.overall === null, arising from

@@ -1573,7 +1573,9 @@ export async function handleToolsCall(
 				case 'scan_domain': {
 					const profile = extractScanProfile(validatedArgs);
 					const forceRefresh = extractForceRefresh(validatedArgs);
-					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
+					// `webPosture: true`: scan_domain is the only caller that renders the non-scoring web
+					// posture section, so it is the only one that runs it (SQ-487).
+					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }), webPosture: true };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					// Orchestrator counterpart to the TOOL_REGISTRY path's resultCapture.
 					// Callers persisting a scan (tenant queue consumer / scan routes) read
@@ -1632,7 +1634,6 @@ export async function handleToolsCall(
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
 							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
-							webPostureEnabled: runtimeOptions?.webPostureEnabled,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 						},
@@ -1721,7 +1722,6 @@ export async function handleToolsCall(
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
 							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
-							webPostureEnabled: runtimeOptions?.webPostureEnabled,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 							...(forceRefresh && { forceRefresh }),

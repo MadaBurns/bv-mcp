@@ -249,8 +249,11 @@ bindings are removed from the overlay — the blunt but immediate kill switch.
 HTTP redirects, security.txt and certificate posture. The section never changes a score or grade,
 but on a scan that misses the cache it makes its own outbound requests: one homepage GET per host,
 the redirect walks, hstspreload.org, `/.well-known/security.txt` and one `BV_CERTSTREAM` `/cert-meta`
-read. It runs inside every `scanDomain` call, including `batch_scan`, `compare_domains` and the
-badge route. Setting it to `"false"` stops those requests and drops the section, even from cached
+read. Only the `scan_domain` tool runs it. `batch_scan`, `compare_domains`, `compare_baseline`, the
+other tools that scan internally, and the badge route make none of these requests. At most 2 of
+them are open at once, and they start after the scored checks. The score never waits more than
+750 ms for the section: a check still running then is shown as not assessed and finishes in the
+background. Setting it to `"false"` stops those requests and drops the section, even from cached
 results. It is a `vars` entry, so changing it needs a redeploy.
 
 ## 5. Queue dead-lettering (decision record + optional setup)

@@ -8,6 +8,10 @@
  * counts and evidence must be identical, while the "on" run carries web posture findings that
  * would have moved the score had they been scored.
  *
+ * SQ-487: the section is opt-in (`webPosture: true`, passed only by the scan_domain tool), starts
+ * after the scored fan-out, holds at most 2 fetches at once, and never holds the scored result more
+ * than WEB_POSTURE_GRACE_MS past scored completion.
+ *
  * Only modules that exist without this change are imported statically, so reverting the source
  * fails these tests on their assertions rather than at collection.
  */
@@ -15,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupFetchMock, txtResponse, nsResponse, caaResponse, dnssecResponse, createDohResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
+import { INFLIGHT_CLEANUP_MS } from '../src/lib/config';
 import { buildCheckResult, createFinding } from '../src/lib/scoring';
 import type { CheckResult } from '../src/lib/scoring';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
@@ -77,12 +82,15 @@ interface SiteOptions {
 	hang?: boolean;
 	/** Location for the plain-HTTP redirect (default: the same URL over https). */
 	httpRedirectTo?: string;
+	/** Requests only the section makes (www host, hstspreload.org, security.txt) never settle, even when aborted. */
+	sectionOnlyNeverAnswers?: boolean;
 }
 
 function installSite(options: SiteOptions = {}) {
 	const mock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
 		const url = urlOf(input);
 		if (url.includes('cloudflare-dns.com') || url.includes('dns.google')) return Promise.resolve(dohAnswer(url));
+		if (options.sectionOnlyNeverAnswers && isSectionOnlyRequest(url)) return new Promise<Response>(() => {});
 		const { hostname, pathname, protocol } = new URL(url);
 		if (options.hang && (hostname === DOMAIN || hostname === `www.${DOMAIN}`)) {
 			return hangUntilAborted(init?.signal ?? (input instanceof Request ? input.signal : undefined));
@@ -141,6 +149,25 @@ async function scan(options: Record<string, unknown> = {}): Promise<ScanDomainRe
 	return scanDomain(DOMAIN, undefined, { forceRefresh: true, ...options });
 }
 
+/** A scan that opts in to the section, as the scan_domain tool handler does. */
+function scanWithSection(options: Record<string, unknown> = {}): Promise<ScanDomainResult> {
+	return scan({ webPosture: true, ...options });
+}
+
+/**
+ * URLs only the web posture section requests: the www homepage GET, hstspreload.org and
+ * security.txt. (The scored subdomain_takeover check does probe the www host, but as
+ * `https://www.example.com` with no path, so that exact homepage URL stays section-only.)
+ */
+function isSectionOnlyRequest(url: string): boolean {
+	const { hostname, pathname } = new URL(url);
+	return url === `https://www.${DOMAIN}/` || hostname === 'hstspreload.org' || pathname === '/.well-known/security.txt';
+}
+
+function isDohRequest(url: string): boolean {
+	return url.includes('cloudflare-dns.com') || url.includes('dns.google');
+}
+
 /** Everything the score is made of: these must not move when the web posture section runs. */
 async function scoredView(result: ScanDomainResult) {
 	const { buildStructuredScanResult } = await import('../src/tools/scan-domain');
@@ -165,10 +192,10 @@ describe('scan_domain webPosture — negative control: non-scoring holds end to 
 		const mock = installSite();
 		const apexGets = () => mock.mock.calls.filter(([input]) => urlOf(input) === 'https://example.com/').length;
 		const certstream = certstreamBinding(certMetaRow());
-		const on = await scan({ certstream, webPostureEnabled: true });
+		const on = await scan({ certstream, webPosture: true, webPostureEnabled: true });
 		const onApexGets = apexGets();
 		IN_MEMORY_CACHE.clear();
-		const off = await scan({ certstream, webPostureEnabled: false });
+		const off = await scan({ certstream, webPosture: true, webPostureEnabled: false });
 		const offApexGets = apexGets() - onApexGets;
 
 		// One shared homepage GET serves web_content, csp_quality and hsts_preload. The other two
@@ -200,9 +227,9 @@ describe('scan_domain webPosture — negative control: non-scoring holds end to 
 	it('a hanging homepage leaves the scored result unchanged and marks the web checks not assessed', async () => {
 		installSite({ hang: true });
 		const budget = { scanTimeoutMs: 6_000, perCheckTimeoutMs: 1_000 };
-		const on = await scan({ ...budget, webPostureEnabled: true });
+		const on = await scan({ ...budget, webPosture: true, webPostureEnabled: true });
 		IN_MEMORY_CACHE.clear();
-		const off = await scan({ ...budget, webPostureEnabled: false });
+		const off = await scan({ ...budget, webPosture: true, webPostureEnabled: false });
 
 		expect(await scoredView(on)).toEqual(await scoredView(off));
 		expect(on.webPosture?.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
@@ -211,16 +238,182 @@ describe('scan_domain webPosture — negative control: non-scoring holds end to 
 			expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
 			expect(result.findings.some((f) => f.metadata?.notAssessed === true)).toBe(true);
 		}
-		// The homepage-dependent checks were cut off by the section deadline (fetchBudgetFor(1000) = 1000 ms).
+		// The homepage-dependent checks were cut off, by the section deadline (fetchBudgetFor(1000) =
+		// 1000 ms) or by the grace after the score was ready, whichever came first.
 		expect(webResult(on, 'web_content')?.checkStatus).toBe('timeout');
 		expect(webResult(on, 'http_redirect')?.checkStatus).toBe('timeout');
+	});
+});
+
+/** The real setTimeout, captured before any test fakes timers. */
+const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+
+function realTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		realSetTimeout(resolve, 0);
+	});
+}
+
+/**
+ * Drive `promise` under fake timers: give every chain that is not waiting on a timer a few real
+ * turns to run, then advance fake time by `stepMs`, until it settles. Returns the fake clock reading
+ * at the moment it settled.
+ */
+async function settleUnderFakeTime<T>(promise: Promise<T>, stepMs: number, limitMs = 20_000): Promise<{ value: T; settledAt: number }> {
+	let settledAt: number | undefined;
+	const tracked = promise.then((value) => {
+		settledAt = Date.now();
+		return value;
+	});
+	const start = Date.now();
+	while (settledAt === undefined && Date.now() - start < limitMs) {
+		for (let turn = 0; turn < 3 && settledAt === undefined; turn++) await realTurn();
+		if (settledAt === undefined) await vi.advanceTimersByTimeAsync(stepMs);
+	}
+	return { value: await tracked, settledAt: settledAt ?? Number.NaN };
+}
+
+describe('scan_domain webPosture — never delays or starves the scored result (SQ-487)', () => {
+	afterEach(() => vi.useRealTimers());
+
+	it('a section host that never answers holds the result at most WEB_POSTURE_GRACE_MS past scored completion', async () => {
+		installSite({ sectionOnlyNeverAnswers: true });
+		const { WEB_POSTURE_GRACE_MS } = await import('../src/tools/scan/web-posture');
+		const off = await scan();
+		IN_MEMORY_CACHE.clear();
+
+		const STEP_MS = 10;
+		let scoredAt: number | undefined;
+		// scanDomain emits this once the scored fan-out has settled: the scored-completion anchor.
+		const analytics = {
+			emitDohPrimarySummary: () => {
+				scoredAt = Date.now();
+			},
+		};
+		vi.useFakeTimers();
+		const startedAt = Date.now();
+		const { value: on, settledAt } = await settleUnderFakeTime(scanWithSection({ analytics }), STEP_MS);
+		const timing = { scoredMs: (scoredAt ?? Number.NaN) - startedAt, resolvedMs: settledAt - startedAt };
+		console.info('[SQ-487 latency]', JSON.stringify({ ...timing, graceMs: WEB_POSTURE_GRACE_MS }));
+
+		// The checks left running hold per-check in-flight entries that never settle (their fetches
+		// ignore aborts). Let fake time pass their cleanup so later tests on this domain cannot join them.
+		await vi.advanceTimersByTimeAsync(INFLIGHT_CLEANUP_MS + 1_000);
+
+		// Before SQ-487 the result waited for the section's own deadline: 7250 ms at the default budget.
+		expect(timing.resolvedMs - timing.scoredMs).toBeLessThanOrEqual(WEB_POSTURE_GRACE_MS + 10 * STEP_MS);
+		expect(await scoredView(on)).toEqual(await scoredView(off));
+		expect(on.webPosture?.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
+		for (const category of ['web_content', 'csp_quality', 'hsts_preload']) {
+			const result = webResult(on, category);
+			expect(result?.checkStatus, category).toBe('timeout');
+			expect(
+				result?.findings.some((f) => f.metadata?.notAssessed === true && f.metadata?.notAssessedReason === 'deadline'),
+				category,
+			).toBe(true);
+			expect(
+				result?.findings.every((f) => f.severity === 'info'),
+				category,
+			).toBe(true);
+		}
+	});
+
+	it('never has more than WEB_POSTURE_MAX_CONCURRENT_FETCHES section fetches in flight', async () => {
+		const site = installSite();
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let sectionFetches = 0;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			if (isDohRequest(urlOf(input))) return site(input, init);
+			sectionFetches++;
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				return await site(input, init);
+			} finally {
+				inFlight--;
+			}
+		}) as typeof fetch;
+		const { startWebPosture, WEB_POSTURE_MAX_CONCURRENT_FETCHES } = await import('../src/tools/scan/web-posture');
+
+		const section = await startWebPosture(DOMAIN).section;
+		console.info('[SQ-487 concurrency]', JSON.stringify({ sectionFetches, maxInFlight }));
+
+		expect(section.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
+		expect(sectionFetches).toBeGreaterThan(WEB_POSTURE_MAX_CONCURRENT_FETCHES);
+		expect(maxInFlight).toBe(WEB_POSTURE_MAX_CONCURRENT_FETCHES);
+	});
+
+	it('runs only for a caller that opts in: without webPosture: true a scan makes zero section requests', async () => {
+		const mock = installSite();
+		const sectionRequests = () => mock.mock.calls.filter(([input]) => isSectionOnlyRequest(urlOf(input))).length;
+		const plain = await scan();
+		const withoutOptIn = sectionRequests();
+		IN_MEMORY_CACHE.clear();
+		const optedIn = await scanWithSection();
+		const withOptIn = sectionRequests() - withoutOptIn;
+		console.info('[SQ-487 caller control]', JSON.stringify({ withoutOptIn, withOptIn }));
+
+		expect(plain.webPosture).toBeUndefined();
+		expect(withoutOptIn).toBe(0);
+		// Negative control: the same scan with the opt-in does make section requests.
+		expect(withOptIn).toBeGreaterThan(0);
+		expect(optedIn.webPosture?.results).toHaveLength(6);
+		expect(await scoredView(plain)).toEqual(await scoredView(optedIn));
+	});
+
+	it('at the tool boundary only scan_domain runs it: batch_scan makes zero section requests', async () => {
+		const mock = installSite();
+		const count = (predicate: (url: string) => boolean) => mock.mock.calls.filter(([input]) => predicate(urlOf(input))).length;
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const batch = (await handleToolsCall({ name: 'batch_scan', arguments: { domains: [DOMAIN], force_refresh: true } }, undefined, {})) as {
+			isError?: boolean;
+		};
+		const batchSection = count(isSectionOnlyRequest);
+		const batchDns = count(isDohRequest);
+		IN_MEMORY_CACHE.clear();
+		await handleToolsCall({ name: 'scan_domain', arguments: { domain: DOMAIN, force_refresh: true } }, undefined, {});
+		const scanDomainSection = count(isSectionOnlyRequest) - batchSection;
+		console.info('[SQ-487 tool boundary]', JSON.stringify({ batchScan: batchSection, scanDomain: scanDomainSection }));
+
+		// batch_scan really scanned (its scored checks made DNS queries), yet made no section request.
+		expect(batch.isError).toBeFalsy();
+		expect(batchDns).toBeGreaterThan(0);
+		expect(batchSection).toBe(0);
+		expect(scanDomainSection).toBeGreaterThan(0);
+	});
+
+	it('scan_domain rescans rather than replay an entry cached without the section; other callers never get one', async () => {
+		installSite();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		// e.g. compare_baseline: no opt-in, so the cached entry has no section.
+		const plain = await scanDomain(DOMAIN, undefined, {});
+		expect(plain.webPosture).toBeUndefined();
+
+		const optedIn = await scanDomain(DOMAIN, undefined, { webPosture: true });
+		expect(optedIn.cached).toBe(false);
+		expect(optedIn.webPosture?.results).toHaveLength(6);
+		expect(optedIn.score).toEqual(plain.score);
+
+		const hit = await scanDomain(DOMAIN, undefined, { webPosture: true });
+		expect(hit.cached).toBe(true);
+		expect(hit.webPosture).toEqual(optedIn.webPosture);
+
+		// The entry now carries the section, but a caller that did not opt in has it stripped.
+		const other = await scanDomain(DOMAIN, undefined, {});
+		expect(other.cached).toBe(true);
+		expect(other.webPosture).toBeUndefined();
+		expect(other.score).toEqual(optedIn.score);
 	});
 });
 
 describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta', () => {
 	it('maps a CN-only issuer ("R11") to Let\'s Encrypt and compares it with CAA', async () => {
 		installSite();
-		const result = await scan({ certstream: certstreamBinding(certMetaRow()) });
+		const result = await scanWithSection({ certstream: certstreamBinding(certMetaRow()) });
 		const cert = webResult(result, 'cert_posture');
 		expect(cert?.checkStatus ?? 'completed').toBe('completed');
 		const caa = cert?.findings.find((f) => f.metadata?.caaOutcome !== undefined);
@@ -232,7 +425,7 @@ describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta'
 
 	it('an unmapped CN stays not assessed, never an unauthorised-CA mismatch', async () => {
 		installSite();
-		const result = await scan({ certstream: certstreamBinding(certMetaRow({ issuer: 'Example Private Issuing CA 7' })) });
+		const result = await scanWithSection({ certstream: certstreamBinding(certMetaRow({ issuer: 'Example Private Issuing CA 7' })) });
 		const findings = webResult(result, 'cert_posture')?.findings ?? [];
 		const caa = findings.find((f) => f.metadata?.caaOutcome !== undefined);
 		expect(caa?.metadata?.caaOutcome).toBe('unmapped');
@@ -251,7 +444,7 @@ describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta'
 			keyBits: null,
 			sigAlg: null,
 		});
-		const cert = webResult(await scan({ certstream: certstreamBinding(noRow) }), 'cert_posture');
+		const cert = webResult(await scanWithSection({ certstream: certstreamBinding(noRow) }), 'cert_posture');
 		expect(cert?.checkStatus).toBe('error');
 		expect(cert?.findings.every((f) => f.metadata?.notAssessed === true)).toBe(true);
 	});
@@ -259,14 +452,14 @@ describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta'
 	it('a stale index answer is not assessed (a renewal it has not seen must not read as expiring)', async () => {
 		installSite();
 		const stale = certMetaRow({ coverage: { ...(certMetaRow().coverage as object), freshThrough: isoFromNow(-2 * DAY_MS) } });
-		const cert = webResult(await scan({ certstream: certstreamBinding(stale) }), 'cert_posture');
+		const cert = webResult(await scanWithSection({ certstream: certstreamBinding(stale) }), 'cert_posture');
 		expect(cert?.checkStatus).toBe('error');
 		expect(cert?.findings.every((f) => f.metadata?.notAssessed === true)).toBe(true);
 	});
 
 	it('without the binding cert_posture abstains', async () => {
 		installSite();
-		const cert = webResult(await scan(), 'cert_posture');
+		const cert = webResult(await scanWithSection(), 'cert_posture');
 		expect(cert?.checkStatus).toBe('error');
 		expect(cert?.findings.every((f) => f.metadata?.notAssessed === true)).toBe(true);
 	});
@@ -275,7 +468,7 @@ describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta'
 describe('scan_domain webPosture — fetch routing', () => {
 	it('fetches plain HTTP to the scanned host raw but refuses a plain-HTTP hop to a foreign host', async () => {
 		const mock = installSite({ httpRedirectTo: 'http://evil.example.net/landing' });
-		const result = await scan();
+		const result = await scanWithSection();
 		const fetched = mock.mock.calls.map(([input]) => urlOf(input));
 		expect(fetched).toContain('http://example.com/');
 		expect(fetched.some((url) => url.startsWith('http://evil.example.net'))).toBe(false);
@@ -291,23 +484,23 @@ describe('scan_domain webPosture — cache, force_refresh and the kill switch', 
 		const homepageGets = () => mock.mock.calls.filter(([input]) => urlOf(input) === 'https://www.example.com/').length;
 		const { scanDomain } = await import('../src/tools/scan-domain');
 
-		const first = await scanDomain(DOMAIN, undefined, {});
+		const first = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(first.cached).toBe(false);
 		expect(first.webPosture?.results).toHaveLength(6);
 		const getsAfterFirst = homepageGets();
 		expect(getsAfterFirst).toBeGreaterThan(0);
 
-		const hit = await scanDomain(DOMAIN, undefined, {});
+		const hit = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(hit.cached).toBe(true);
 		expect(hit.webPosture).toEqual(first.webPosture);
 		expect(homepageGets()).toBe(getsAfterFirst);
 
-		const switchedOff = await scanDomain(DOMAIN, undefined, { webPostureEnabled: false });
+		const switchedOff = await scanDomain(DOMAIN, undefined, { webPosture: true, webPostureEnabled: false });
 		expect(switchedOff.cached).toBe(true);
 		expect(switchedOff.webPosture).toBeUndefined();
 		expect(switchedOff.score).toEqual(first.score);
 
-		const refreshed = await scanDomain(DOMAIN, undefined, { forceRefresh: true });
+		const refreshed = await scanDomain(DOMAIN, undefined, { webPosture: true, forceRefresh: true });
 		expect(refreshed.cached).toBe(false);
 		expect(refreshed.webPosture?.results).toHaveLength(6);
 		expect(homepageGets()).toBe(2 * getsAfterFirst);
@@ -315,7 +508,7 @@ describe('scan_domain webPosture — cache, force_refresh and the kill switch', 
 
 	it('the kill switch omits the section and makes no web posture requests', async () => {
 		const mock = installSite();
-		const result = await scan({ webPostureEnabled: false, certstream: certstreamBinding(certMetaRow()) });
+		const result = await scanWithSection({ webPostureEnabled: false, certstream: certstreamBinding(certMetaRow()) });
 		expect(result.webPosture).toBeUndefined();
 		const fetched = mock.mock.calls.map(([input]) => urlOf(input));
 		expect(fetched.some((url) => url.includes('hstspreload.org'))).toBe(false);
