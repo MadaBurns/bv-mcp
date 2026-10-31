@@ -469,11 +469,16 @@ which is gated by the operator-only `BV_MCP_EMA_ADMIN_KEY` bearer.
 /internal/oauth/ema-tenants/<tenant_id>` reads one, `DELETE /internal/oauth/ema-tenants/<tenant_id>`
   removes it (204). DELETE also releases the issuer even when the record can no longer be read.
 - Self-serve compare-and-set. `GET /internal/oauth/ema-self-serve/<tenant_id>` answers the record's
-  `rev`; a `PUT` may send it back as an optional `expected_rev` (non-negative integer, a precondition that
-  is never stored). The registry compares it to the current `rev` inside its transaction: a mismatch, or
-  an absent record, answers `409 ema_record_changed` and writes nothing. Without `expected_rev` the
-  PUT is last-write-wins as before, which is what the webhook paths want; a caller that read first and
-  must not overwrite a newer write (bv-web's entitlement sweep) sends it.
+  `rev` and an `ETag` header (for example `"7"`). A conditional `PUT` sends that header value back as
+  `If-Match: "7"`. Only a single strong revision ETag is supported; weak tags, lists, wildcards and
+  malformed values answer 400. Alternatively, the body may carry `expected_rev` (a non-negative integer,
+  never stored); if both are supplied they must agree, otherwise the PUT answers 400.
+  The registry compares the revision inside its transaction: a mismatch, or an absent record, answers
+  `409 ema_record_changed` and writes nothing. Successful PUTs also return the new `ETag`.
+  Without either precondition the PUT is last-write-wins as before (settings saves and event refreshes).
+  bv-web's entitlement lapse sweep should copy the GET's `ETag` into its disabling PUT's `If-Match` and
+  treat `409 ema_record_changed` as “record changed meanwhile, nothing to do”; that caller adoption is
+  tracked separately in bv-web-prod after release.
 - Approval queue (all with the `BV_MCP_EMA_ADMIN_KEY` bearer). A self-serve tenant is
   created `pending` and mints nothing until approved; an operator-seeded tenant without an
   `approval` field counts as approved.
