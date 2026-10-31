@@ -85,17 +85,29 @@ function maxAgeProblem(maxAge: number | null): string | null {
  */
 export function assessPreloadEligibility(hstsHeader: string | null, context: { redirectsToHttps: boolean | null }): PreloadEligibility {
 	const { redirectsToHttps } = context;
-	const maxAge = hstsHeader === null ? null : parseMaxAge(hstsHeader);
-	const includeSubDomains = hstsHeader !== null && INCLUDE_SUBDOMAINS_PATTERN.test(hstsHeader);
-	const preload = hstsHeader !== null && PRELOAD_PATTERN.test(hstsHeader);
-	const missing = [
-		hstsHeader === null ? 'a Strict-Transport-Security header' : maxAgeProblem(maxAge),
-		hstsHeader !== null && !includeSubDomains ? 'the includeSubDomains directive' : null,
-		hstsHeader !== null && !preload ? 'the preload directive' : null,
-		redirectsToHttps === false ? 'an HTTP-to-HTTPS redirect on the same host' : null,
-	].filter((requirement): requirement is string => requirement !== null);
-	const eligible = missing.length > 0 ? false : redirectsToHttps === null ? null : true;
-	return { headerPresent: hstsHeader !== null, maxAge, includeSubDomains, preload, redirectsToHttps, missing, eligible };
+	const redirectMissing = redirectsToHttps === false ? ['an HTTP-to-HTTPS redirect on the same host'] : [];
+	if (hstsHeader === null) {
+		const missing = ['a Strict-Transport-Security header', ...redirectMissing];
+		return { headerPresent: false, maxAge: null, includeSubDomains: false, preload: false, redirectsToHttps, missing, eligible: false };
+	}
+	const maxAge = parseMaxAge(hstsHeader);
+	const includeSubDomains = INCLUDE_SUBDOMAINS_PATTERN.test(hstsHeader);
+	const preload = PRELOAD_PATTERN.test(hstsHeader);
+	const missing = [...headerMissing(maxAge, includeSubDomains, preload), ...redirectMissing];
+	return { headerPresent: true, maxAge, includeSubDomains, preload, redirectsToHttps, missing, eligible: eligibleFrom(missing, redirectsToHttps) };
+}
+
+/** Requirements an HSTS header present on the apex still fails. */
+function headerMissing(maxAge: number | null, includeSubDomains: boolean, preload: boolean): string[] {
+	return [maxAgeProblem(maxAge), includeSubDomains ? null : 'the includeSubDomains directive', preload ? null : 'the preload directive'].filter(
+		(requirement): requirement is string => requirement !== null,
+	);
+}
+
+/** `false` when any requirement fails; `null` when none does but the redirect was not measured. */
+function eligibleFrom(missing: string[], redirectsToHttps: boolean | null): boolean | null {
+	if (missing.length > 0) return false;
+	return redirectsToHttps === null ? null : true;
 }
 
 /** Read the apex's own HSTS header, or say why it is unknown. A blocked answer without the header says nothing about HSTS. */
