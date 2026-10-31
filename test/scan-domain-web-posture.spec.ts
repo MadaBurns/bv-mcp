@@ -277,10 +277,13 @@ describe('scan_domain webPosture — never delays or starves the scored result (
 	afterEach(() => vi.useRealTimers());
 
 	it('a section host that never answers holds the result at most WEB_POSTURE_GRACE_MS past scored completion', async () => {
-		installSite({ sectionOnlyNeverAnswers: true });
 		const { WEB_POSTURE_GRACE_MS } = await import('../src/tools/scan/web-posture');
+		// The scored reference runs against the answering site: scored checks never request the
+		// section-only URLs, so their results match, and nothing is left hanging under real timers.
+		installSite();
 		const off = await scan();
 		IN_MEMORY_CACHE.clear();
+		installSite({ sectionOnlyNeverAnswers: true });
 
 		const STEP_MS = 10;
 		let scoredAt: number | undefined;
