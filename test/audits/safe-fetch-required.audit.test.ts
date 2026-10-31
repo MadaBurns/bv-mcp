@@ -157,6 +157,10 @@ const ALLOWLIST: Readonly<Record<string, AllowlistEntry>> = {
 		count: 1,
 		why: 'First-party: fingerprint-probes a subdomain the check itself enumerated under the already-validated scanned domain, not an externally supplied redirect target.',
 	},
+	'src/tools/scan/web-posture.ts': {
+		count: 1,
+		why: "US-16 T10 web posture routing, check-ssl's firstParty rule narrowed further: only a plain-HTTP (`http:`) request whose host is the already-validated scanned apex or its www host skips safeFetch (which is https-only). https to those hosts, hstspreload.org, and every redirect target go through safeFetch, so an http: hop to a foreign host is refused.",
+	},
 	'src/tools/discover-subdomains.ts': {
 		count: 2,
 		why: 'crt.sh and api.certspotter.com certificate-transparency queries against fixed hosts; the scanned domain travels in the query string, never as the hostname.',

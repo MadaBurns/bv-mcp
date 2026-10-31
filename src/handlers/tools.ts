@@ -290,6 +290,8 @@ interface ToolRuntimeOptions {
 	scanTimeoutMs?: number;
 	/** Per-check wall-clock budget in milliseconds. Threaded to scanDomain. */
 	perCheckTimeoutMs?: number;
+	/** `WEB_POSTURE_ENABLED` kill switch for scan_domain's non-scoring web posture section. Threaded to scanDomain. */
+	webPostureEnabled?: boolean;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to dnsOptions for individual checks. */
 	secondaryDoh?: SecondaryDohConfig;
 	country?: string;
@@ -1571,7 +1573,9 @@ export async function handleToolsCall(
 				case 'scan_domain': {
 					const profile = extractScanProfile(validatedArgs);
 					const forceRefresh = extractForceRefresh(validatedArgs);
-					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
+					// `webPosture: true`: scan_domain is the only caller that renders the non-scoring web
+					// posture section, so it is the only one that runs it (SQ-487).
+					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }), webPosture: true };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					// Orchestrator counterpart to the TOOL_REGISTRY path's resultCapture.
 					// Callers persisting a scan (tenant queue consumer / scan routes) read
@@ -1611,6 +1615,7 @@ export async function handleToolsCall(
 					});
 					const structured = buildStructuredScanResult(result, {
 						scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
+						includeWebPosture: true,
 					});
 					return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
 				}

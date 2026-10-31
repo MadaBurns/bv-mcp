@@ -796,8 +796,17 @@
  *   or below-quorum measurements (intelligence-only categories), and `check_subdomain_takeover` stamps its
  *   sweep denominator. No weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
  *   profile-detection rule changed.
+ * - 1.41.0 — MTA-STS `*.` wildcard matches exactly ONE label (RFC 8461 §4.1; Sidequest SQ-483, US-16;
+ *   dns-checks 1.62.0). SCORE-BEARING, direction DOWN: a policy `mx: *.example.com` no longer covers a
+ *   multi-label MX such as `a.b.example.com`, so that MX raises the existing HIGH "MTA-STS policy does
+ *   not cover MX host" finding. Domains whose wildcard only covered multi-label MX hosts lose that
+ *   coverage; domains with single-label coverage are unchanged. The same release adds six NON-SCORING
+ *   categories (`web_content`, `csp_quality`, `hsts_preload`, `http_redirect`, `security_txt`,
+ *   `cert_posture`) behind the NON_SCORING_CATEGORIES engine filter; they carry zero weight and a result
+ *   in one is byte-identical to its absence in the score. No weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.40.0';
+export const SCORING_MODEL_VERSION = '1.41.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

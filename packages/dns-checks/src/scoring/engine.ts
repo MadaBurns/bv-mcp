@@ -10,6 +10,7 @@ import {
 	findingsIndicatePartialEnforcement,
 	type ScanScore,
 } from './model';
+import { isScoringResult } from '../types';
 import type { DomainContext } from './profiles';
 import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
@@ -67,6 +68,13 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	brand_discovery: { importance: 0 },
 	authoritative_dns_infra: { importance: 0 },
 	dnskey_strength: { importance: 1 },
+	// Non-scoring categories (NON_SCORING_CATEGORIES).
+	web_content: { importance: 0 },
+	csp_quality: { importance: 0 },
+	hsts_preload: { importance: 0 },
+	http_redirect: { importance: 0 },
+	security_txt: { importance: 0 },
+	cert_posture: { importance: 0 },
 };
 
 /**
@@ -392,11 +400,17 @@ export interface ScanScoreOptions {
 }
 
 export function computeScanScore(
-	results: CheckResult[],
+	submittedResults: CheckResult[],
 	context?: DomainContext,
 	config?: ScoringConfig,
 	options?: ScanScoreOptions,
 ): ScanScore {
+	// Non-scoring categories (NON_SCORING_CATEGORIES) are dropped before ANY use, so a
+	// non-scoring result yields output identical to its absence. Weight 0 alone would still
+	// leak it into the verified-critical penalty, the summary counts, the evidence ratio and
+	// the zero-results / resolution gates below.
+	const results = submittedResults.filter(isScoringResult);
+
 	// Only categories that produced a conclusive result appear here. A category that was NEVER
 	// run (absent from `results`) is "not measured", NOT a perfect 100 — seeding it to 100 both
 	// showed a misleading phantom score (a never-run category read as clean) and, via the generic
@@ -575,6 +589,8 @@ export function computeProfileAwareScanScore(
 	results: CheckResult[],
 	options: { profile?: DomainContext['profile'] | 'auto'; config?: ScoringConfig; resolution?: DomainResolutionSignal } = {},
 ): ProfileAwareScanScore {
+	// Non-scoring results need no filter here: detectDomainContext and computeScanScore each
+	// drop them at their own entry, which also covers callers that reach those two directly.
 	const detectedContext = detectDomainContext(results);
 	const explicitProfile = options.profile && options.profile !== 'auto' ? options.profile : null;
 	const context: DomainContext = explicitProfile

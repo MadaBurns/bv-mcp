@@ -8,8 +8,9 @@
  * Licensed under BUSL-1.1
  */
 
-import type { Finding } from '../types';
+import type { DNSQueryFunction, Finding } from '../types';
 import { createFinding } from '../check-utils';
+import { isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 
 /** Parsed CAA record with flags, tag, and value */
 export interface CaaRecord {
@@ -546,4 +547,109 @@ export function getCaaDnssecPairingFinding(dnssecAuthenticated: boolean, ownerNa
 		`The CAA RRset at ${ownerName} was returned without DNSSEC authentication, so the zone resolves as "Insecure". CA/Browser Forum TLS BR §4.2.2 subsection 1.3 requires CAs to validate CAA lookups with DNSSEC, but permits treating a lookup failure as permission to issue once the domain is confirmed Insecure per RFC 4035 §4.3. An on-path or cache-poisoning attacker can therefore strip this CAA policy and a CA is still permitted to issue. Signing the zone is what turns CAA from advisory into a control CAs must honour.`,
 		{ caaDnssecAuthenticated: false, caaEnforceable: false },
 	);
+}
+
+// ─── Effective CAA issuer set (RFC 8659 climb) ────────────────────────────────
+
+/** Hard cap on ancestor hops during the climb — mirrors the zone-apex walk bound in check-caa. */
+const MAX_EFFECTIVE_CAA_CLIMB_DEPTH = 8;
+
+/** Distinct issuer domains retained for matching. A cap hit is flagged, never silent. */
+export const MAX_EFFECTIVE_CAA_ISSUERS = 32;
+
+/** The CAA RRset that governs issuance for a name, reduced to what an issuer comparison needs. */
+export interface EffectiveCaa {
+	/** Owner name whose CAA RRset governs issuance; null when no RRset was found. */
+	foundAt: string | null;
+	/** Distinct `issue` issuer-domain-names (lowercased, trailing dot stripped, per-token clamped). */
+	issuers: string[];
+	/** True when the RRset named more than {@link MAX_EFFECTIVE_CAA_ISSUERS} distinct issuers. */
+	issuersTruncated: boolean;
+	/** True when the governing RRset carries at least one `issue` property (RFC 8659 §4.2). */
+	hasIssueTag: boolean;
+	/** True when every `issue` property is the explicit no-issuance form (`issue ";"`). */
+	noIssuance: boolean;
+	/**
+	 * True when a name on the climb could not be read (throw, SERVFAIL, REFUSED) before the
+	 * governing RRset was found, or when nothing was found AND some name was unreadable. The
+	 * answer is then a failed measurement, not a statement about the zone.
+	 */
+	inconclusive: boolean;
+}
+
+/** Candidate owner names, nearest first, never a bare single-label TLD (unless the input is one). */
+function caaClimbNames(domain: string, floor?: string): string[] {
+	const names: string[] = [];
+	let current = domain.toLowerCase().replace(/\.$/, '');
+	for (let i = 0; i <= MAX_EFFECTIVE_CAA_CLIMB_DEPTH; i += 1) {
+		names.push(current);
+		if (current === floor) break;
+		const dot = current.indexOf('.');
+		if (dot === -1) break;
+		const parent = current.slice(dot + 1);
+		if (!parent.includes('.')) break;
+		current = parent;
+	}
+	return names;
+}
+
+/** Reduce a governing RRset to its `issue` grant set. */
+function summarizeIssueGrants(records: CaaRecord[]): Pick<EffectiveCaa, 'issuers' | 'issuersTruncated' | 'hasIssueTag' | 'noIssuance'> {
+	const issueRecords = records.filter((record) => record.tag === 'issue');
+	// A `Set` dedupes in O(1): the RRset is attacker-authored and unbounded in length.
+	const distinct = new Set(
+		issueRecords
+			.map((record) => clampToken(parseCaaParameters(record.value).issuerDomain.replace(/\.$/, '')))
+			.filter((issuer) => issuer !== ''),
+	);
+	return {
+		issuers: [...distinct].slice(0, MAX_EFFECTIVE_CAA_ISSUERS),
+		issuersTruncated: distinct.size > MAX_EFFECTIVE_CAA_ISSUERS,
+		hasIssueTag: issueRecords.length > 0,
+		noIssuance: issueRecords.length > 0 && distinct.size === 0,
+	};
+}
+
+/** One CAA lookup: the parsed records, and whether the answer was a failed measurement (throw, SERVFAIL, REFUSED). */
+async function readCaaLevel(
+	name: string,
+	queryDNS: DNSQueryFunction,
+	timeout: number,
+): Promise<{ records: CaaRecord[]; unreadable: boolean }> {
+	try {
+		const outcome = await queryWithRcode(queryDNS, name, 'CAA', timeout);
+		const records = outcome.records.map(parseCaaRecord).filter((record): record is CaaRecord => record !== null);
+		return { records, unreadable: records.length === 0 && isInconclusiveRcode(outcome.rcode) };
+	} catch {
+		return { records: [], unreadable: true };
+	}
+}
+
+/**
+ * The set of CAs a domain's CAA policy authorises to issue for it, via the RFC 8659
+ * tree climb: the nearest name (the domain itself, then each parent, never a bare TLD)
+ * that publishes any CAA record governs; the climb stops there.
+ *
+ * Reads the `issue` property only. `issuewild` governs wildcard names, which a
+ * single-certificate comparison against the apex cannot assume.
+ *
+ * Fail-honest: a name that cannot be read (a throw, SERVFAIL, REFUSED) before the governing
+ * RRset is found makes the answer `inconclusive` — a closer, unread RRset might override
+ * the one found. This is a standalone climb; it does NOT change `checkCAA`'s scored behaviour.
+ *
+ * @param floor - Optional registrable domain the climb must not cross (PSL-aware callers).
+ */
+export async function effectiveCaaIssuers(
+	domain: string,
+	queryDNS: DNSQueryFunction,
+	options?: { timeout?: number; floor?: string },
+): Promise<EffectiveCaa> {
+	const timeout = options?.timeout ?? 5000;
+	let unanswered = false;
+	for (const name of caaClimbNames(domain, options?.floor?.toLowerCase())) {
+		const level = await readCaaLevel(name, queryDNS, timeout);
+		if (level.records.length > 0) return { foundAt: name, ...summarizeIssueGrants(level.records), inconclusive: unanswered };
+		unanswered ||= level.unreadable;
+	}
+	return { foundAt: null, issuers: [], issuersTruncated: false, hasIssueTag: false, noIssuance: false, inconclusive: unanswered };
 }

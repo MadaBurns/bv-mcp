@@ -25,6 +25,18 @@ export { checkSVCBHTTPS } from './check-svcb-https';
 export { checkSubdomainTakeover } from './check-subdomain-takeover';
 export { checkSubdomailing } from './check-subdomailing';
 export { checkHTTPSecurity, MAX_REDIRECT_HOPS as HTTP_SECURITY_MAX_REDIRECT_HOPS } from './check-http-security';
+export { checkWebContent } from './check-web-content';
+export type { CheckWebContentOptions } from './check-web-content';
+export { checkHstsPreload } from './check-hsts-preload';
+export type { CheckHstsPreloadOptions } from './check-hsts-preload';
+export { checkHttpRedirect } from './check-http-redirect';
+export type { CheckHttpRedirectOptions } from './check-http-redirect';
+export { checkSecurityTxt } from './check-security-txt';
+export type { CheckSecurityTxtOptions } from './check-security-txt';
+export { parseSecurityTxt } from './security-txt-analysis';
+export type { ParsedSecurityTxt } from './security-txt-analysis';
+export { checkCspQuality, CSP_QUALITY_MAX_FINDINGS } from './check-csp-quality';
+export type { CheckCspQualityOptions } from './check-csp-quality';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
@@ -37,7 +49,13 @@ export {
 	isTransientDanePinReason,
 } from './dane-analysis';
 export type { CaaRecord } from './caa-analysis';
-export { parseCaaRecord } from './caa-analysis';
+export { parseCaaRecord, effectiveCaaIssuers } from './caa-analysis';
+export type { EffectiveCaa } from './caa-analysis';
+// cert_posture (NON-SCORING): host-injected certificate vs expiry / key strength / CAA-allowed CAs
+export { checkCertPosture } from './check-cert-posture';
+export type { CheckCertPostureOptions } from './check-cert-posture';
+export { identifyIssuingCa, CA_PROFILES } from './cert-posture-analysis';
+export type { CaProfile } from './cert-posture-analysis';
 export type {
 	TlsaRecord,
 	ServedCertificate,
@@ -48,4 +66,16 @@ export type {
 } from './dane-analysis';
 export type { CheckDaneHttpsOptions } from './check-dane-https';
 export { analyzeSecurityHeaders } from './http-security-analysis';
+export { assessPreloadEligibility } from './hsts-preload-analysis';
+export type { PreloadEligibility, PreloadMembership, PreloadStatus } from './hsts-preload-analysis';
 export { estimateTxtRrsetBytes } from './spf-analysis';
+
+// ── Shared helpers for the non-scoring web checks ────────────────────────────
+export { fetchPageCapped } from './page-fetch';
+export type { CappedPage, PageFetchOptions } from './page-fetch';
+export { extractHtmlRefs } from './html-refs';
+export type { HtmlRef, HtmlRefs } from './html-refs';
+
+// ── CSP evaluator (pure; backs csp_quality) ──────────────────────────────────
+export { parseCsp, evaluateCsp } from './csp-evaluator';
+export type { CspIssue, CspRule, CspDelivery, EvaluateCspOptions } from './csp-evaluator';

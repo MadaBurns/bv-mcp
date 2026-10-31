@@ -18,6 +18,7 @@
  */
 
 import type { CheckCategory, CheckResult } from '../types';
+import { isScoringResult } from '../types';
 import { isCheckMeasured } from './evidence';
 
 export type DomainProfile = 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'authoritative_dns_infra';
@@ -78,6 +79,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		brand_discovery: { importance: 0 },
 		authoritative_dns_infra: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 	enterprise_mail: {
 		// Core
@@ -111,6 +119,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		brand_discovery: { importance: 0 },
 		authoritative_dns_infra: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 	non_mail: {
 		// Core
@@ -143,6 +158,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		brand_discovery: { importance: 0 },
 		authoritative_dns_infra: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 	web_only: {
 		// Core
@@ -185,6 +207,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		brand_discovery: { importance: 0 },
 		authoritative_dns_infra: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 	minimal: {
 		// Core
@@ -217,6 +246,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		brand_discovery: { importance: 0 },
 		authoritative_dns_infra: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 	authoritative_dns_infra: {
 		// Core
@@ -249,6 +285,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 10 },
 		brand_discovery: { importance: 0 },
 		dnskey_strength: { importance: 0 },
+		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
+		web_content: { importance: 0 },
+		csp_quality: { importance: 0 },
+		hsts_preload: { importance: 0 },
+		http_redirect: { importance: 0 },
+		security_txt: { importance: 0 },
+		cert_posture: { importance: 0 },
 	},
 };
 
@@ -302,7 +345,10 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	// `measuredChecks`, for exactly this reason ("the measurement failure selected the
 	// weight table that then graded the domain"). It was simply never applied to the
 	// `controlPresent` reads. One filter now governs both, so they cannot drift again.
-	const measuredChecks = results.filter((r) => isCheckMeasured(r.checkStatus));
+	//
+	// The same filter drops non-scoring results (NON_SCORING_CATEGORIES): a failing one would
+	// otherwise raise the failure ratio below and could flip the domain to `minimal`.
+	const measuredChecks = results.filter((r) => isScoringResult(r) && isCheckMeasured(r.checkStatus));
 
 	const mxResult = measuredChecks.find((r) => r.category === 'mx');
 	const sslResult = measuredChecks.find((r) => r.category === 'ssl');

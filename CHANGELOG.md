@@ -8,6 +8,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+Axis: dns-checks 1.62.0 (release prep only; tag and `dns-checks-release.yml` dispatch are operator-gated). `SCORING_MODEL_VERSION` 1.40.0 to 1.41.0.
+
+### Added
+
+- Six NON-SCORING categories in `@blackveil/dns-checks`: `web_content`, `csp_quality`, `hsts_preload`, `http_redirect`, `security_txt`, `cert_posture` (`checkWebContent`, `checkCspQuality`, `checkHstsPreload`, `checkHttpRedirect`, `checkSecurityTxt`, `checkCertPosture`: expiry, key strength, CAA vs issuer, DANE TLSA vs logged certificate). They carry weight 0 in the protective tier and are listed in `NON_SCORING_CATEGORIES`; `computeScanScore`, `detectDomainContext` and `computeScanEvidence` drop them, so a non-scoring result is byte-identical to its absence in the score, findings and evidence.
+- `fetchPageCapped` (capped GET, manual HTTPS-only redirects, truncated body prefix) and `extractHtmlRefs` (pure string tokenizer) exported from the package root.
+- `scan_domain` shows a "Not graded: web posture" section and a structured `webPosture: {nonScoring: true, results}`. Kill switch `WEB_POSTURE_ENABLED` (default on); `cert_posture` reads `BV_CERTSTREAM /cert-meta` only. `batch_scan` and `compare_domains` omit it. Measured: the section on and off scored the same (78/B).
+
+### Changed
+
+- **Scoring change:** the MTA-STS `*.` MX pattern now matches exactly one label (RFC 8461 section 4.1). An MX host that is no longer covered raises the existing HIGH "MTA-STS policy does not cover MX host" finding, so scores can go DOWN for domains whose wildcard only covered multi-label MX hosts. Domains with single-label coverage are unchanged. `SCORING_MODEL_VERSION` is 1.41.0.
+
 ## [3.106.0] - 2026-10-30
 
 ### Added
