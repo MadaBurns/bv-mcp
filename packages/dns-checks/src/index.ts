@@ -89,6 +89,7 @@ export {
 	checkHTTPSecurity,
 	checkWebContent,
 	checkHstsPreload,
+	checkHttpRedirect,
 	HTTP_SECURITY_MAX_REDIRECT_HOPS,
 	// Analysis utilities
 	parseDmarcTags,
@@ -122,6 +123,7 @@ export type {
 	CheckDaneHttpsOptions,
 	CheckWebContentOptions,
 	CheckHstsPreloadOptions,
+	CheckHttpRedirectOptions,
 	PreloadEligibility,
 	PreloadMembership,
 	PreloadStatus,

@@ -29,6 +29,8 @@ export { checkWebContent } from './check-web-content';
 export type { CheckWebContentOptions } from './check-web-content';
 export { checkHstsPreload } from './check-hsts-preload';
 export type { CheckHstsPreloadOptions } from './check-hsts-preload';
+export { checkHttpRedirect } from './check-http-redirect';
+export type { CheckHttpRedirectOptions } from './check-http-redirect';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
