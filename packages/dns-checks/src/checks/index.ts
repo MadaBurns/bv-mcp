@@ -37,7 +37,13 @@ export {
 	isTransientDanePinReason,
 } from './dane-analysis';
 export type { CaaRecord } from './caa-analysis';
-export { parseCaaRecord } from './caa-analysis';
+export { parseCaaRecord, effectiveCaaIssuers } from './caa-analysis';
+export type { EffectiveCaa } from './caa-analysis';
+// cert_posture (NON-SCORING): host-injected certificate vs expiry / key strength / CAA-allowed CAs
+export { checkCertPosture } from './check-cert-posture';
+export type { CheckCertPostureOptions } from './check-cert-posture';
+export { identifyIssuingCa, CA_PROFILES } from './cert-posture-analysis';
+export type { CaProfile } from './cert-posture-analysis';
 export type {
 	TlsaRecord,
 	ServedCertificate,
