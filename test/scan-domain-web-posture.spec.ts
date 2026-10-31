@@ -301,7 +301,10 @@ describe('scan_domain webPosture — never delays or starves the scored result (
 		await vi.advanceTimersByTimeAsync(INFLIGHT_CLEANUP_MS + 1_000);
 
 		// Before SQ-487 the result waited for the section's own deadline: 7250 ms at the default budget.
-		expect(timing.resolvedMs - timing.scoredMs).toBeLessThanOrEqual(WEB_POSTURE_GRACE_MS + 10 * STEP_MS);
+		// The bound is the ticket's 750 ms literal, so it measures the timing even without the constant.
+		const CONTRACT_GRACE_MS = 750;
+		expect(timing.resolvedMs - timing.scoredMs).toBeLessThanOrEqual(CONTRACT_GRACE_MS + 10 * STEP_MS);
+		expect(WEB_POSTURE_GRACE_MS).toBe(CONTRACT_GRACE_MS);
 		expect(await scoredView(on)).toEqual(await scoredView(off));
 		expect(on.webPosture?.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
 		for (const category of ['web_content', 'csp_quality', 'hsts_preload']) {
