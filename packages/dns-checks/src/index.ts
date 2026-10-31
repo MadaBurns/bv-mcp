@@ -103,8 +103,18 @@ export {
 	// Shared helpers for the non-scoring web checks (one capped GET per host, HTML refs)
 	fetchPageCapped,
 	extractHtmlRefs,
+	// csp_quality (non-scoring)
+	checkCspQuality,
+	CSP_QUALITY_MAX_FINDINGS,
+	parseCsp,
+	evaluateCsp,
 } from './checks';
 export type {
+	CheckCspQualityOptions,
+	CspIssue,
+	CspRule,
+	CspDelivery,
+	EvaluateCspOptions,
 	CappedPage,
 	PageFetchOptions,
 	HtmlRef,

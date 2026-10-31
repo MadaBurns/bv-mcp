@@ -25,6 +25,8 @@ export { checkSVCBHTTPS } from './check-svcb-https';
 export { checkSubdomainTakeover } from './check-subdomain-takeover';
 export { checkSubdomailing } from './check-subdomailing';
 export { checkHTTPSecurity, MAX_REDIRECT_HOPS as HTTP_SECURITY_MAX_REDIRECT_HOPS } from './check-http-security';
+export { checkCspQuality, CSP_QUALITY_MAX_FINDINGS } from './check-csp-quality';
+export type { CheckCspQualityOptions } from './check-csp-quality';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
@@ -55,3 +57,7 @@ export { fetchPageCapped } from './page-fetch';
 export type { CappedPage, PageFetchOptions } from './page-fetch';
 export { extractHtmlRefs } from './html-refs';
 export type { HtmlRef, HtmlRefs } from './html-refs';
+
+// ── CSP evaluator (pure; backs csp_quality) ──────────────────────────────────
+export { parseCsp, evaluateCsp } from './csp-evaluator';
+export type { CspIssue, CspRule, CspDelivery, EvaluateCspOptions } from './csp-evaluator';
