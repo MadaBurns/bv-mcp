@@ -31,6 +31,8 @@ export { checkHstsPreload } from './check-hsts-preload';
 export type { CheckHstsPreloadOptions } from './check-hsts-preload';
 export { checkHttpRedirect } from './check-http-redirect';
 export type { CheckHttpRedirectOptions } from './check-http-redirect';
+export { checkCspQuality, CSP_QUALITY_MAX_FINDINGS } from './check-csp-quality';
+export type { CheckCspQualityOptions } from './check-csp-quality';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
@@ -69,3 +71,7 @@ export { fetchPageCapped } from './page-fetch';
 export type { CappedPage, PageFetchOptions } from './page-fetch';
 export { extractHtmlRefs } from './html-refs';
 export type { HtmlRef, HtmlRefs } from './html-refs';
+
+// ── CSP evaluator (pure; backs csp_quality) ──────────────────────────────────
+export { parseCsp, evaluateCsp } from './csp-evaluator';
+export type { CspIssue, CspRule, CspDelivery, EvaluateCspOptions } from './csp-evaluator';
