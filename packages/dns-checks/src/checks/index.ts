@@ -31,6 +31,10 @@ export { checkHstsPreload } from './check-hsts-preload';
 export type { CheckHstsPreloadOptions } from './check-hsts-preload';
 export { checkHttpRedirect } from './check-http-redirect';
 export type { CheckHttpRedirectOptions } from './check-http-redirect';
+export { checkSecurityTxt } from './check-security-txt';
+export type { CheckSecurityTxtOptions } from './check-security-txt';
+export { parseSecurityTxt } from './security-txt-analysis';
+export type { ParsedSecurityTxt } from './security-txt-analysis';
 export { checkCspQuality, CSP_QUALITY_MAX_FINDINGS } from './check-csp-quality';
 export type { CheckCspQualityOptions } from './check-csp-quality';
 
