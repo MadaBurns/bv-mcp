@@ -334,8 +334,8 @@ describe('checkCspQuality', () => {
 
 	it('never declares a present-but-weak policy a missing control (so category zeroing cannot fire on prose)', async () => {
 		const result = await run({ apex: page({ csp: "script-src * 'unsafe-inline'" }), www: null });
-		const weak = result.findings.filter((f) => f.metadata?.rule !== 'no-csp' && f.metadata?.rule !== undefined);
-		expect(weak.length).toBeGreaterThan(0);
-		for (const f of weak) expect(f.metadata?.missingControl).toBe(false);
+		const weak = result.findings.filter((f) => f.metadata?.rule === 'wildcard-source' || f.metadata?.rule === 'unsafe-inline');
+		expect(weak.map((f) => f.metadata?.rule).sort()).toEqual(['unsafe-inline', 'wildcard-source']);
+		for (const f of result.findings) expect(f.metadata?.missingControl).toBe(false);
 	});
 });
