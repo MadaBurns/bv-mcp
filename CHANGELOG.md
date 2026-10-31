@@ -8,9 +8,13 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
-Axis: dns-checks 1.62.0 (release prep only; tag and `dns-checks-release.yml` dispatch are operator-gated). `SCORING_MODEL_VERSION` 1.40.0 to 1.41.0.
+## [3.107.0] - 2026-10-31
+
+Axis: dns-checks 1.62.0. `SCORING_MODEL_VERSION` (scoring model) 1.40.0 to 1.41.0.
 
 ### Added
+
+- `GET /internal/oauth/ema-self-serve/:tenant_id` returns the record revision as a strong `ETag`; `PUT` accepts it back as `If-Match` (an alternative to the body's `expected_rev`, checked inside the registry transaction). A stale revision answers `409 ema_record_changed` and writes nothing, so a lapse sweep can no longer overwrite a concurrent renewal (#1335, #1336). Malformed, weak, list or wildcard `If-Match` values answer 400.
 
 - Six NON-SCORING categories in `@blackveil/dns-checks`: `web_content`, `csp_quality`, `hsts_preload`, `http_redirect`, `security_txt`, `cert_posture` (`checkWebContent`, `checkCspQuality`, `checkHstsPreload`, `checkHttpRedirect`, `checkSecurityTxt`, `checkCertPosture`: expiry, key strength, CAA vs issuer, DANE TLSA vs logged certificate). They carry weight 0 in the protective tier and are listed in `NON_SCORING_CATEGORIES`; `computeScanScore`, `detectDomainContext` and `computeScanEvidence` drop them, so a non-scoring result is byte-identical to its absence in the score, findings and evidence.
 - `fetchPageCapped` (capped GET, manual HTTPS-only redirects, truncated body prefix) and `extractHtmlRefs` (pure string tokenizer) exported from the package root.
