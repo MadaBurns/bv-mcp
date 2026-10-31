@@ -59,6 +59,8 @@ The scoring registry includes the `authoritative_dns_infra` category used by the
 | HTTP Security | `checkHTTPSecurity` | — |
 | Subdomailing | `checkSubdomailing` | — |
 
+The scored check count is unchanged. Version 1.62.0 adds six non-scoring checks (`checkWebContent`, `checkCspQuality`, `checkHstsPreload`, `checkHttpRedirect`, `checkSecurityTxt`, `checkCertPosture`). They carry zero weight and are filtered out of `computeScanScore`, so they never change a score or grade.
+
 The MCP server package layers additional worker-only tools on top of this library, including `check_authoritative_dns_infra` and `check_root_server_set`.
 
 ## License

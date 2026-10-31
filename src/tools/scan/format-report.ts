@@ -10,6 +10,8 @@ import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scori
 import { DNS_CHECKS_PACKAGE_VERSION } from '../../lib/dns-checks-version';
 import { displayGradeFor, formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 import { isSatisfiedControl } from '../../lib/control-presence';
+import { formatWebPostureSection, structuredWebPosture } from './format-web-posture';
+import type { WebPostureSection } from './web-posture';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
 // them without importing the scan orchestrator. Re-exported here because this is
@@ -166,6 +168,13 @@ export interface StructuredScanResult {
 	 * additive-optional, so tolerant downstream parsers are unaffected.
 	 */
 	resolves?: boolean | 'broken';
+	/**
+	 * NON-SCORING web posture section (US-16 T10). `nonScoring` is always true: nothing in it
+	 * feeds `score`, `grade`, `categoryScores`, `findingCounts` or `evidence`. Present only when the
+	 * caller opts in via `ScanResultEnrichment.includeWebPosture` (scan_domain) and the scan ran the
+	 * section; additive-optional.
+	 */
+	webPosture?: WebPostureSection;
 }
 
 /**
@@ -277,6 +286,8 @@ export interface ScanResultEnrichment {
 	 * stamped onto the result itself, and only then to the `'default'` marker.
 	 */
 	scoringConfigHash?: string;
+	/** Emit the non-scoring `webPosture` section when the scan carries one (scan_domain opts in). */
+	includeWebPosture?: boolean;
 }
 
 /** Build a machine-readable structured result from a scan. */
@@ -465,6 +476,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// Additive-optional: only emit `resolves` when known (omit otherwise so
 		// tolerant downstream parsers see the same shape they always have).
 		...(result.resolves !== undefined ? { resolves: result.resolves } : {}),
+		...structuredWebPosture(result.webPosture, enrichment),
 	};
 }
 
@@ -652,6 +664,9 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 			lines.push(`  [-${effect.penalty}] ${effect.narrative}`);
 		}
 	}
+
+	// US-16 T10: the NON-SCORING web posture section, after everything that was graded.
+	lines.push(...formatWebPostureSection(result.webPosture, format));
 
 	if (result.cached) {
 		lines.push('');

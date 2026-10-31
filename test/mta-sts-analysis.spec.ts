@@ -42,7 +42,7 @@ describe('mta-sts-analysis', () => {
 	it('matches exact and wildcard mx patterns', () => {
 		expect(extractPolicyMxPatterns('mx: *.example.com\nmx: mail.example.net')).toEqual(['*.example.com', 'mail.example.net']);
 		expect(matchesMxPattern('mail1.example.com', '*.example.com')).toBe(true);
-		expect(matchesMxPattern('example.com', '*.example.com')).toBe(true);
+		expect(matchesMxPattern('example.com', '*.example.com')).toBe(false);
 		expect(matchesMxPattern('mail.example.net', 'mail.example.net')).toBe(true);
 		expect(matchesMxPattern('mail.other.com', '*.example.com')).toBe(false);
 	});

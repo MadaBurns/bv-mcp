@@ -126,7 +126,8 @@ export function defineScoringModelSuite(s: ScoringModule): void {
 
 	describe('CATEGORY_TIERS', () => {
 		it('classifies all categories into tiers', () => {
-			expect(Object.keys(CATEGORY_TIERS)).toHaveLength(27);
+			// 27 scored + 6 non-scoring (NON_SCORING_CATEGORIES).
+			expect(Object.keys(CATEGORY_TIERS)).toHaveLength(33);
 		});
 
 		it('has 6 core categories', () => {
@@ -134,9 +135,9 @@ export function defineScoringModelSuite(s: ScoringModule): void {
 			expect(core.map(([k]) => k).sort()).toEqual(['authoritative_dns_infra', 'dkim', 'dmarc', 'dnssec', 'spf', 'ssl']);
 		});
 
-		it('has 11 protective categories', () => {
+		it('has 17 protective categories (11 scored + the 6 non-scoring ones)', () => {
 			const protective = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'protective');
-			expect(protective).toHaveLength(11);
+			expect(protective).toHaveLength(17);
 		});
 
 		it('has 10 hardening categories', () => {

@@ -37,6 +37,13 @@ export const CheckCategorySchema = z.enum([
 	'brand_discovery',
 	'authoritative_dns_infra',
 	'dnskey_strength',
+	// Non-scoring categories (NON_SCORING_CATEGORIES in ../types).
+	'web_content',
+	'csp_quality',
+	'hsts_preload',
+	'http_redirect',
+	'security_txt',
+	'cert_posture',
 ]);
 
 /** Severity levels. */

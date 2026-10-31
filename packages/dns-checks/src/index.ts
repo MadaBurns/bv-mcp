@@ -25,7 +25,7 @@ export type {
 	ZoneDelegationStatus,
 	ZoneContext,
 } from './types';
-export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS } from './types';
+export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS, NON_SCORING_CATEGORIES } from './types';
 
 // The nullable-`ScanScore` narrowing guard. Exported from the PACKAGE ROOT as well
 // as from `./scoring`: the breaking change (`overall`/`grade` became nullable) is
@@ -87,6 +87,11 @@ export {
 	checkSubdomainTakeover,
 	checkSubdomailing,
 	checkHTTPSecurity,
+	checkWebContent,
+	checkHstsPreload,
+	checkHttpRedirect,
+	checkSecurityTxt,
+	parseSecurityTxt,
 	HTTP_SECURITY_MAX_REDIRECT_HOPS,
 	// Analysis utilities
 	parseDmarcTags,
@@ -100,8 +105,26 @@ export {
 	isTransientDanePinReason,
 	parseCaaRecord,
 	analyzeSecurityHeaders,
+	assessPreloadEligibility,
+	// Shared helpers for the non-scoring web checks (one capped GET per host, HTML refs)
+	fetchPageCapped,
+	extractHtmlRefs,
+	// csp_quality (non-scoring)
+	checkCspQuality,
+	CSP_QUALITY_MAX_FINDINGS,
+	parseCsp,
+	evaluateCsp,
 } from './checks';
 export type {
+	CheckCspQualityOptions,
+	CspIssue,
+	CspRule,
+	CspDelivery,
+	EvaluateCspOptions,
+	CappedPage,
+	PageFetchOptions,
+	HtmlRef,
+	HtmlRefs,
 	CaaRecord,
 	TlsaRecord,
 	ServedCertificate,
@@ -110,6 +133,14 @@ export type {
 	TlsaVerificationContext,
 	TlsaVerification,
 	CheckDaneHttpsOptions,
+	CheckWebContentOptions,
+	CheckHstsPreloadOptions,
+	CheckHttpRedirectOptions,
+	CheckSecurityTxtOptions,
+	ParsedSecurityTxt,
+	PreloadEligibility,
+	PreloadMembership,
+	PreloadStatus,
 } from './checks';
 
 // RFC 8657 CAA parameter parsing (`accounturi` / `validationmethods`). Sourced
@@ -117,6 +148,10 @@ export type {
 // re-exports only the record-level `parseCaaRecord`.
 export { parseCaaParameters, MAX_CAA_ISSUERS, MAX_CAA_TOKEN_LENGTH, TRUNCATION_MARKER } from './checks/caa-analysis';
 export type { CaaParameters } from './checks/caa-analysis';
+
+// cert_posture (NON-SCORING): host-injected certificate vs expiry / key strength / CAA-allowed CAs.
+export { checkCertPosture, effectiveCaaIssuers, identifyIssuingCa, CA_PROFILES } from './checks';
+export type { CheckCertPostureOptions, EffectiveCaa, CaProfile } from './checks';
 
 // RFC 7505 null-MX classification, shared with Worker-side consumers (map_supply_chain)
 // so a null MX is never re-parsed — and mis-rendered as a provider — outside check_mx.

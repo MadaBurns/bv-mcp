@@ -68,6 +68,12 @@ export interface ScanRuntimeOptions {
 	certstream?: { fetch: typeof fetch };
 	/** Bearer token for the bv-certstream-worker admin auth gate. */
 	certstreamAuthToken?: string;
+	/**
+	 * `WEB_POSTURE_ENABLED` kill switch for scan_domain's NON-SCORING web posture section (US-16
+	 * T10), parsed by `parseWebPostureEnabled`. `false` omits the section entirely (no web posture
+	 * fetches, and the section is stripped from a cache hit); absent or `true` runs it.
+	 */
+	webPostureEnabled?: boolean;
 	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
 	forceRefresh?: boolean;
 	/** Internal: scan target inherits its DNS zone rather than owning a delegation. */

@@ -205,13 +205,30 @@ export function extractPolicyMxPatterns(body: string): string[] {
 	return [...body.matchAll(/mx:\s*(\S+)/gi)].map((match) => match[1].toLowerCase());
 }
 
+function normalizeMxName(name: string): string {
+	const lower = name.toLowerCase();
+	return lower.endsWith('.') ? lower.slice(0, -1) : lower;
+}
+
+/**
+ * RFC 8461 §4.1: a `*.` pattern matches only the left-most single label, so
+ * `*.example.com` matches `mx1.example.com` but NOT `a.b.example.com` or the bare
+ * apex `example.com`. Names compare case-insensitively with one trailing dot stripped.
+ */
 export function matchesMxPattern(hostname: string, pattern: string): boolean {
-	if (pattern.startsWith('*.')) {
-		const suffix = pattern.slice(1);
-		return hostname.endsWith(suffix) || hostname === pattern.slice(2);
+	const host = normalizeMxName(hostname);
+	const normalizedPattern = normalizeMxName(pattern);
+
+	if (normalizedPattern.startsWith('*.')) {
+		const suffix = normalizedPattern.slice(1);
+		if (!host.endsWith(suffix)) {
+			return false;
+		}
+		const label = host.slice(0, host.length - suffix.length);
+		return label.length > 0 && !label.includes('.');
 	}
 
-	return hostname === pattern;
+	return host === normalizedPattern;
 }
 
 export function getUncoveredMxHostFindings(mxHosts: string[], policyMxPatterns: string[]): Finding[] {

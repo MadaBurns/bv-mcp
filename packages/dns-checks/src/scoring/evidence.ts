@@ -19,6 +19,7 @@
  */
 
 import type { CheckResult, CheckStatus, ScanEvidence } from '../types';
+import { isScoringResult } from '../types';
 
 export type { ScanEvidence };
 
@@ -62,8 +63,14 @@ export function isCheckMeasured(checkStatus: CheckStatus | string | undefined): 
  */
 export const EVIDENCE_SUFFICIENCY_THRESHOLD = 0.6;
 
-/** Count how much of a scan completed. See {@link ScanEvidence}. */
-export function computeScanEvidence(results: CheckResult[]): ScanEvidence {
+/**
+ * Count how much of a scan completed. See {@link ScanEvidence}.
+ *
+ * Non-scoring results (NON_SCORING_CATEGORIES) are not counted: evidence measures the
+ * coverage behind the grade, and those results never feed it.
+ */
+export function computeScanEvidence(submittedResults: CheckResult[]): ScanEvidence {
+	const results = submittedResults.filter(isScoringResult);
 	const attempted = results.length;
 	let completed = 0;
 	for (const result of results) {
