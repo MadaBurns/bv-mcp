@@ -7,6 +7,7 @@ import { identifyIssuingCa, parseIssuerDn } from '../../checks/cert-posture-anal
 import { NON_SCORING_CATEGORIES } from '../../types';
 import type { CertMetadata } from '../../cert/cert-metadata';
 import type { CheckResult, DNSQueryFunction, Finding } from '../../types';
+import type { ServedCertificate } from '../../checks/dane-analysis';
 
 const DAY = 86400;
 const NOW = 1_800_000_000; // fixed clock, epoch seconds
@@ -221,7 +222,8 @@ describe('checkCertPosture — caveat, abstention, non-scoring', () => {
 
 	it('a live-sourced certificate gets the live caveat, not the CT one', async () => {
 		const result = await run(makeCert({ source: 'live' }));
-		for (const finding of result.findings) {
+		// DANE findings compare CT-derived certificates whatever the posture certificate's source, so they keep the CT caveat.
+		for (const finding of result.findings.filter((f) => !f.title.startsWith('DANE'))) {
 			expect(finding.detail).toContain('live TLS handshake');
 			expect(finding.detail).not.toContain('Certificate Transparency logs');
 		}
@@ -247,13 +249,14 @@ describe('checkCertPosture — healthy fixture (positive control)', () => {
 	it('a modern, CAA-honoured, short-lived certificate yields only info findings', async () => {
 		const result = await run(makeCert(), caaResolver({ 'example.com': ['0 issue "letsencrypt.org"', '0 iodef "mailto:sec@example.com"'] }));
 		expect(result.checkStatus).toBeUndefined();
-		expect(result.findings.map((f) => f.severity)).toEqual(['info', 'info', 'info', 'info']);
+		expect(result.findings.map((f) => f.severity)).toEqual(['info', 'info', 'info', 'info', 'info']);
 		expect(result.findings.some((f) => f.metadata?.notAssessed === true)).toBe(false);
 		expect(result.findings.map((f) => f.title)).toEqual([
 			'Certificate expiry is healthy',
 			'Certificate key strength is strong',
 			'Certificate validity window is within limits',
 			'CAA honoured by the issuing CA',
+			'DANE vs logged certificate: no TLSA record, nothing to compare',
 		]);
 	});
 
@@ -329,5 +332,136 @@ describe('effectiveCaaIssuers', () => {
 		const caa = await effectiveCaaIssuers('example.com', caaResolver({ 'example.com': records }));
 		expect(caa.issuers).toHaveLength(32);
 		expect(caa.issuersTruncated).toBe(true);
+	});
+});
+
+describe('checkCertPosture — DANE TLSA vs logged certificates', () => {
+	const SPKI_A = 'a'.repeat(64);
+	const SPKI_B = 'b'.repeat(64);
+	const SHA_CERT = 'c'.repeat(64);
+	const TLSA_APEX = '_443._tcp.example.com';
+	const TLSA_WWW = '_443._tcp.www.example.com';
+
+	/** A CT-derived certificate as the host would inject it: digests only, no live probe. */
+	function ctCert(overrides: Partial<ServedCertificate> = {}): ServedCertificate {
+		return { host: 'example.com', port: 443, leafSpkiSha256: SPKI_A, leafSha256: SHA_CERT, ...overrides };
+	}
+
+	function runDane(zones: Record<string, string[]>, ctCertificates?: ServedCertificate[], certificate: CertMetadata | null = makeCert()) {
+		return checkCertPosture('example.com', caaResolver(zones), { certificate, nowSeconds: NOW, ctCertificates });
+	}
+
+	function dane(result: CheckResult): Finding[] {
+		return result.findings.filter((f) => f.title.startsWith('DANE vs logged certificate'));
+	}
+
+	it('a DANE-EE SPKI-sha256 pin that equals a logged certificate is an info pass', async () => {
+		const findings = dane(await runDane({ [TLSA_APEX]: [`3 1 1 ${SPKI_A}`] }, [ctCert()]));
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({ severity: 'info', title: 'DANE vs logged certificate: TLSA matches a logged certificate' });
+		expect(findings[0].metadata).toMatchObject({ daneOutcome: 'matched', tlsaName: TLSA_APEX, loggedCertificateCount: 1 });
+		expect(findings[0].metadata?.notAssessed).toBeUndefined();
+	});
+
+	it('a match on ANY logged certificate suffices (RFC 7671), and the www owner name is queried too', async () => {
+		const findings = dane(await runDane({ [TLSA_WWW]: [`3 1 1 ${SPKI_B}`] }, [ctCert(), ctCert({ leafSpkiSha256: SPKI_B })]));
+		expect(findings.map((f) => f.metadata?.tlsaName)).toEqual([TLSA_WWW]);
+		expect(findings[0].metadata?.daneOutcome).toBe('matched');
+	});
+
+	it('a pin that matches NO logged certificate is medium and says the served certificate may be private', async () => {
+		const findings = dane(await runDane({ [TLSA_APEX]: [`3 1 1 ${SPKI_B}`] }, [ctCert()]));
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({ severity: 'medium', title: 'DANE vs logged certificate: TLSA matches no logged certificate' });
+		expect(findings[0].metadata?.daneOutcome).toBe('mismatch');
+		expect(findings[0].detail).toContain('may be private or not logged');
+		expect(findings[0].detail).toContain('check the live endpoint');
+	});
+
+	it('the same TLSA turns from pass to medium when ONLY the logged certificate changes (discriminating variable)', async () => {
+		const zones = { [TLSA_APEX]: [`3 1 1 ${SPKI_A}`] };
+		const matching = dane(await runDane(zones, [ctCert()]));
+		const other = dane(await runDane(zones, [ctCert({ leafSpkiSha256: SPKI_B })]));
+		expect(matching[0].severity).toBe('info');
+		expect(other[0].severity).toBe('medium');
+	});
+
+	it.each([
+		['undefined', undefined],
+		['an empty list', []],
+	])('TLSA present but ctCertificates is %s is a distinct not-assessed, never a pass or a mismatch', async (_label, certs) => {
+		const findings = dane(await runDane({ [TLSA_APEX]: [`3 1 1 ${SPKI_A}`] }, certs));
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({ severity: 'info', title: 'DANE vs logged certificate not assessed' });
+		expect(findings[0].metadata).toMatchObject({ notAssessed: true, daneOutcome: 'no-certificate-supplied' });
+	});
+
+	it('no TLSA anywhere is one info "nothing to compare"', async () => {
+		const findings = dane(await runDane({}, [ctCert()]));
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({ severity: 'info', title: 'DANE vs logged certificate: no TLSA record, nothing to compare' });
+		expect(findings[0].metadata?.daneOutcome).toBe('no-tlsa');
+	});
+
+	it('a DANE-TA (usage 2) pin that misses a lone leaf is not-assessed for that record, not a mismatch', async () => {
+		const findings = dane(await runDane({ [TLSA_APEX]: [`2 1 1 ${SPKI_B}`] }, [ctCert()]));
+		expect(findings[0].metadata).toMatchObject({ notAssessed: true, daneOutcome: 'not-comparable' });
+		expect(findings[0].severity).toBe('info');
+	});
+
+	it('a DANE-TA pin that misses every member of a supplied issuer chain IS a mismatch', async () => {
+		const chained = ctCert({ chain: [{ spkiSha256: SPKI_A }, { spkiSha256: 'd'.repeat(64) }] });
+		const findings = dane(await runDane({ [TLSA_APEX]: [`2 1 1 ${SPKI_B}`] }, [chained]));
+		expect(findings[0].metadata?.daneOutcome).toBe('mismatch');
+		expect(findings[0].severity).toBe('medium');
+	});
+
+	it('a DANE-TA pin matching an issuer in the supplied chain is a pass', async () => {
+		const chained = ctCert({ chain: [{ spkiSha256: SPKI_A }, { spkiSha256: SPKI_B }] });
+		const findings = dane(await runDane({ [TLSA_APEX]: [`2 1 1 ${SPKI_B}`] }, [chained]));
+		expect(findings[0].metadata?.daneOutcome).toBe('matched');
+	});
+
+	it('a pin whose material the host did not supply (no SHA-512) is not-assessed, never a mismatch', async () => {
+		const findings = dane(await runDane({ [TLSA_APEX]: [`3 1 2 ${'e'.repeat(128)}`] }, [ctCert()]));
+		expect(findings[0].metadata?.daneOutcome).toBe('not-comparable');
+	});
+
+	it('an unparseable TLSA record is not-assessed', async () => {
+		const findings = dane(await runDane({ [TLSA_APEX]: ['garbage'] }, [ctCert()]));
+		expect(findings[0].metadata?.daneOutcome).toBe('not-comparable');
+	});
+
+	it('a failed TLSA lookup is not-assessed and suppresses the "no TLSA" claim', async () => {
+		const resolver = caaResolver({}, { [TLSA_APEX]: 2 });
+		const result = await checkCertPosture('example.com', resolver, { certificate: makeCert(), nowSeconds: NOW, ctCertificates: [ctCert()] });
+		const findings = dane(result);
+		expect(findings).toHaveLength(1);
+		expect(findings[0].metadata).toMatchObject({ notAssessed: true, daneOutcome: 'lookup-failed', tlsaName: TLSA_APEX });
+	});
+
+	it('a THROWING TLSA lookup is not-assessed too', async () => {
+		const throwing = (async (name: string) => {
+			if (name.startsWith('_443._tcp.')) throw new Error('boom');
+			return [];
+		}) as DNSQueryFunction;
+		const findings = dane(await checkCertPosture('example.com', throwing, { certificate: makeCert(), nowSeconds: NOW, ctCertificates: [ctCert()] }));
+		expect(findings.map((f) => f.metadata?.daneOutcome)).toEqual(['lookup-failed', 'lookup-failed']);
+	});
+
+	it('ctCertificates without a posture certificate yields only the DANE findings (no abstention)', async () => {
+		const result = await runDane({ [TLSA_APEX]: [`3 1 1 ${SPKI_A}`] }, [ctCert()], null);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.map((f) => f.title)).toEqual(['DANE vs logged certificate: TLSA matches a logged certificate']);
+	});
+
+	it('does not query TLSA at all when there is neither a certificate nor ctCertificates', async () => {
+		const seen: string[] = [];
+		const resolver = (async (name: string) => {
+			seen.push(name);
+			return [];
+		}) as DNSQueryFunction;
+		await checkCertPosture('example.com', resolver, { certificate: null });
+		expect(seen).toEqual([]);
 	});
 });

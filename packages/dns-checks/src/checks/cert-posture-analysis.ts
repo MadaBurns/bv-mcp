@@ -22,6 +22,7 @@ import { assessKeyStrength } from '../cert/key-strength';
 import { assessValidityWindow } from '../cert/validity-window';
 import type { CertMetadata } from '../cert/cert-metadata';
 import { MAX_CAA_ISSUERS, type EffectiveCaa } from './caa-analysis';
+import { parseTlsaRecord, verifyTlsaAssociations, type ServedCertificate, type TlsaRecord } from './dane-analysis';
 
 /** CA/Browser Forum maximum certificate lifetime (398 days) in force since 2020-09-01. */
 export const MAX_CERT_VALIDITY_DAYS = 398;
@@ -414,6 +415,124 @@ export function caaIssuerFinding(ctx: PostureContext, caa: EffectiveCaa, issuerD
 	const outcome = classifyCaaIssuer(caa, ca);
 	const base = { caaOutcome: outcome, caaFoundAt: caa.foundAt, issuingCa: ca?.id ?? null };
 	return CAA_FINDING_BUILDERS[outcome]({ ctx, caa, ca, issuerDn, base });
+}
+
+// ─── DANE (TLSA) vs logged certificates ──────────────────────────────────────
+
+/** What a TLSA lookup at one owner name returned. `unreadable` = no answer was obtained (throw/SERVFAIL/REFUSED). */
+export interface TlsaLookup {
+	/** The TLSA owner name, e.g. `_443._tcp.example.com`. */
+	name: string;
+	records: string[];
+	unreadable: boolean;
+}
+
+type DaneRecordVerdict = 'matched' | 'unmatched' | 'unverifiable';
+
+const DANE_TITLE = 'DANE vs logged certificate';
+
+/** The comparison data is CT-derived and host-injected, so a miss never proves a broken pin. */
+const DANE_CONTEXT: PostureContext = {
+	source: 'ct',
+	caveat: `${buildPostureContext('ct').caveat} The certificate actually served may be private or not logged, so check the live endpoint before treating a mismatch as a fault.`,
+};
+
+/** DANE-TA / PKIX-TA pin an issuing CA, which a lone leaf certificate cannot refute. */
+function isTrustAnchorUsage(record: TlsaRecord): boolean {
+	return record.usage === 0 || record.usage === 2;
+}
+
+function hasIssuerChain(cert: ServedCertificate): boolean {
+	return (cert.chain?.length ?? 0) > 1;
+}
+
+function verdictAgainstCert(record: TlsaRecord, cert: ServedCertificate): DaneRecordVerdict {
+	const verification = verifyTlsaAssociations([record], cert);
+	if (verification.matched.length > 0) return 'matched';
+	if (verification.unverifiable.length > 0) return 'unverifiable';
+	// A trust-anchor record that does not match a leaf-only certificate may still match the issuer we were not given.
+	return isTrustAnchorUsage(record) && !hasIssuerChain(cert) ? 'unverifiable' : 'unmatched';
+}
+
+/** One logged certificate matching is enough (RFC 7671: any matching association validates); one uncomparable withholds the verdict. */
+function verdictAcrossCerts(record: TlsaRecord, certs: readonly ServedCertificate[]): DaneRecordVerdict {
+	const verdicts = certs.map((cert) => verdictAgainstCert(record, cert));
+	if (verdicts.includes('matched')) return 'matched';
+	return verdicts.includes('unverifiable') ? 'unverifiable' : 'unmatched';
+}
+
+function unreadableTlsaFinding(lookup: TlsaLookup): Finding {
+	return notAssessed(
+		DANE_CONTEXT,
+		`${DANE_TITLE} not assessed`,
+		`The TLSA lookup at ${lookup.name} failed before any resolver answered, so DANE was not compared with the logged certificates.`,
+		{ daneOutcome: 'lookup-failed', tlsaName: lookup.name },
+	);
+}
+
+function noTlsaFinding(lookups: readonly TlsaLookup[]): Finding {
+	return posture(
+		DANE_CONTEXT,
+		`${DANE_TITLE}: no TLSA record, nothing to compare`,
+		'info',
+		`No TLSA record was found at ${lookups.map((l) => l.name).join(' or ')}, so there is no DANE pin to compare with a logged certificate.`,
+		{ daneOutcome: 'no-tlsa' },
+	);
+}
+
+/** Judge one TLSA RRset that is present against the supplied logged certificates. */
+function tlsaPresentFinding(lookup: TlsaLookup, certs: readonly ServedCertificate[]): Finding {
+	const base = { tlsaName: lookup.name, tlsaRecordCount: lookup.records.length, loggedCertificateCount: certs.length };
+	if (certs.length === 0) {
+		return notAssessed(
+			DANE_CONTEXT,
+			`${DANE_TITLE} not assessed`,
+			`A TLSA record is published at ${lookup.name}, but no logged certificate was supplied to compare it with.`,
+			{ ...base, daneOutcome: 'no-certificate-supplied' },
+		);
+	}
+	const records = lookup.records.map(parseTlsaRecord).filter((record): record is TlsaRecord => record !== null);
+	const verdicts = records.map((record) => verdictAcrossCerts(record, certs));
+	if (verdicts.includes('matched')) {
+		return posture(
+			DANE_CONTEXT,
+			`${DANE_TITLE}: TLSA matches a logged certificate`,
+			'info',
+			`A TLSA record at ${lookup.name} matches one of ${certs.length} logged certificate(s).`,
+			{ ...base, daneOutcome: 'matched' },
+		);
+	}
+	if (verdicts.length === 0 || verdicts.includes('unverifiable')) {
+		return notAssessed(
+			DANE_CONTEXT,
+			`${DANE_TITLE} not assessed`,
+			`The TLSA record(s) at ${lookup.name} could not be compared with the logged certificates (unparseable record, unsupported field, or a trust-anchor record with only a leaf certificate available).`,
+			{ ...base, daneOutcome: 'not-comparable' },
+		);
+	}
+	return posture(
+		DANE_CONTEXT,
+		`${DANE_TITLE}: TLSA matches no logged certificate`,
+		'medium',
+		`The TLSA record(s) at ${lookup.name} match none of ${certs.length} logged certificate(s).`,
+		{ ...base, daneOutcome: 'mismatch' },
+	);
+}
+
+/**
+ * DANE TLSA records against host-injected, CT-derived certificates. Pure.
+ *
+ * Outcomes per owner name: a record matches a logged certificate → info; TLSA present but
+ * nothing matches → medium (with the "may be private / not in CT" caveat); TLSA present with no
+ * certificate supplied, an unparseable/unsupported record, or a trust-anchor record against a
+ * leaf-only certificate → not-assessed; no TLSA anywhere → one info "nothing to compare".
+ * An unanswered lookup is not-assessed and suppresses the "no TLSA" claim.
+ */
+export function daneVsLoggedCertFindings(lookups: readonly TlsaLookup[], certs: readonly ServedCertificate[]): Finding[] {
+	const unreadable = lookups.filter((lookup) => lookup.unreadable).map(unreadableTlsaFinding);
+	const present = lookups.filter((lookup) => lookup.records.length > 0).map((lookup) => tlsaPresentFinding(lookup, certs));
+	const findings = [...unreadable, ...present];
+	return findings.length > 0 ? findings : [noTlsaFinding(lookups)];
 }
 
 /** Every certificate-posture finding for one certificate, in a stable order. */
