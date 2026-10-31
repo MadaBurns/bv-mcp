@@ -49,3 +49,9 @@ export type {
 export type { CheckDaneHttpsOptions } from './check-dane-https';
 export { analyzeSecurityHeaders } from './http-security-analysis';
 export { estimateTxtRrsetBytes } from './spf-analysis';
+
+// ── Shared helpers for the non-scoring web checks ────────────────────────────
+export { fetchPageCapped } from './page-fetch';
+export type { CappedPage, PageFetchOptions } from './page-fetch';
+export { extractHtmlRefs } from './html-refs';
+export type { HtmlRef, HtmlRefs } from './html-refs';

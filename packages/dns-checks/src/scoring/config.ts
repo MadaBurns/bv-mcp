@@ -178,6 +178,13 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		brand_discovery: 0,
 		authoritative_dns_infra: 0,
 		dnskey_strength: 1,
+		// Non-scoring categories (NON_SCORING_CATEGORIES in ../types).
+		web_content: 0,
+		csp_quality: 0,
+		hsts_preload: 0,
+		http_redirect: 0,
+		security_txt: 0,
+		cert_posture: 0,
 	},
 	profileWeights: deriveDefaultProfileWeights(),
 	tierSplit: { core: 70, protective: 20, hardening: 10 },
