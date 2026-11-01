@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 export {
+	classifyAssessmentObservation,
+	summarizeAssessmentOutcomes,
+	type AssessmentObservation,
+	type AssessmentOutcome,
+	type AssessmentDisposition,
+} from './lib/assessment-outcomes';
+
+export {
 	DnsQueryError,
 	type DohResponse,
 	type DnsAnswer,
