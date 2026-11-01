@@ -35,12 +35,16 @@ export interface SiblingObservation {
 	notAfter: number;
 }
 // merge rule (idempotent, order-free): firstSeen=min, notAfter=max, issuer=from the row with the larger notAfter; drop rows with notAfter < now on any rewrite
+/** A name row as queued. The tailer omits key and apex; the indexer derives both from name and checks any it is given (SQ-528/SQ-530). */
+export type QueuedName = Omit<NameObservation, 'key' | 'apex'> & Partial<Pick<NameObservation, 'key' | 'apex'>>;
+/** A sibling row as queued. The tailer omits key; the indexer derives it from apex and sibling. */
+export type QueuedSibling = Omit<SiblingObservation, 'key'> & Partial<Pick<SiblingObservation, 'key'>>;
 export interface ObservationBatch {
 	logId: string;
 	startIndex: number;
 	endIndex: number;
-	names: NameObservation[];
-	siblings: SiblingObservation[];
+	names: QueuedName[];
+	siblings: QueuedSibling[];
 }
 
 export interface ScanPage {
