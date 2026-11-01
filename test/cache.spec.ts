@@ -461,6 +461,25 @@ describe('runWithCache — cross-isolate dedup', () => {
 		expect(run).toHaveBeenCalledOnce();
 	});
 
+	it('does not delete another isolate sentinel when polling exhausts and run executes', async () => {
+		const mockKV = {
+			get: vi
+				.fn()
+				.mockResolvedValueOnce(null) // cacheGet — no cached result
+				.mockResolvedValueOnce('12345') // sentinel held by another isolate
+				.mockResolvedValue(null), // every poll — nothing
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('fallback-executed');
+		const result = await runWithCache('sentinel:foreign', run, mockKV as unknown as KVNamespace);
+		expect(result).toBe('fallback-executed');
+		expect(run).toHaveBeenCalledOnce();
+		// We never wrote the sentinel, so we must not delete the other isolate's.
+		expect(mockKV.delete).not.toHaveBeenCalled();
+		expect(mockKV.put.mock.calls.find((c: unknown[]) => c[0] === 'sentinel:foreign:computing')).toBeUndefined();
+	});
+
 	it('skips sentinel logic when KV is unavailable', async () => {
 		const run = vi.fn().mockResolvedValue('no-kv');
 		const result = await runWithCache('sentinel:nokv', run);

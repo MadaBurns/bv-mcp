@@ -355,7 +355,7 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 		expect(Number.isFinite(result.score.overall as number)).toBe(true);
 	});
 
-	it('H4b — [FALSIFIED] with BV_RECON present but its fetch rejecting, the contract’s "structured error with an allowlisted prefix, not a 500" does not describe the measured behavior: every one of the 11 tools degrades to a normal, non-error CheckResult (isError falsy) carrying `upstreamUnavailable`/`unprovisioned` metadata — it never reaches the JSON-RPC client-error allowlist at all, and it never was going to be a 500 either way (recon-binding.ts fail-soft catches every throw)', async () => {
+	it('H4b — [FALSIFIED] with BV_RECON present but its fetch rejecting, the contract’s "structured error with an allowlisted prefix, not a 500" does not describe the measured behavior: every one of the 11 tools degrades to a normal, non-error CheckResult (isError falsy) carrying its own tool-specific marker (`backendUnavailable` for check_realtime_threat_feed, `upstreamUnavailable` for the rest, never `unprovisioned` because the binding IS present) — it never reaches the JSON-RPC client-error allowlist at all, and it never was going to be a 500 either way (recon-binding.ts fail-soft catches every throw)', async () => {
 		const { handleToolsCall } = await import('../../src/handlers/tools');
 		const rejectingBinding = { fetch: vi.fn().mockRejectedValue(new Error('ECONNRESET')) };
 
@@ -367,10 +367,9 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 			});
 			expect(result.isError, `${toolCase.name} must not be an MCP-level error (no 500-equivalent)`).not.toBe(true);
 			const text = JSON.stringify(result);
-			expect(
-				text.includes('"upstreamUnavailable":true') || text.includes('"unprovisioned":true') || text.includes('"backendUnavailable":true'),
-				`${toolCase.name} must degrade to a structured, non-error fail-soft result`,
-			).toBe(true);
+			const expectedKey = toolCase.name === 'check_realtime_threat_feed' ? 'backendUnavailable' : 'upstreamUnavailable';
+			expect(text, `${toolCase.name} must degrade to a structured fail-soft result carrying ${expectedKey}`).toContain(`"${expectedKey}":true`);
+			expect(text, `${toolCase.name} has a present binding, so it must NOT report unprovisioned`).not.toContain('"unprovisioned":true');
 		}
 	});
 });

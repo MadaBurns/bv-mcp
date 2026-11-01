@@ -106,10 +106,9 @@ describe('recon async proxies', () => {
 // fall into `!resp.ok` and record `binding_5xx`, so every poll of an unknown id
 // fired a FALSE operator degradation alert.
 //
-// This is not a new contract, only a newly-honored one: the doc comment on
-// `BindingDegradationKind` in src/lib/binding-degradation.ts already states the
-// kind set "deliberately excludes ... the benign recon 404" — until now only
-// `callReconScan` (the sync path) actually honored it.
+// The sync path (`callReconScan`) differs: a route-absent 404 there records
+// `binding_route_absent` (src/lib/recon-binding.ts), a distinct degradation
+// kind. This async 404 is a data miss on a route that exists, so it records nothing.
 // ---------------------------------------------------------------------------
 describe('recon async 404 is a silent data miss, not a degradation', () => {
 	it('returns not_found AND does NOT invoke the degradation sink or log a degradation', async () => {
