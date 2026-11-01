@@ -6,8 +6,17 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from '../../src/tenants/scheduled-handlers';
 import { synchronizeCycleProgress } from '../../src/tenants/cycle-progress';
-import { resolveTenantUncached } from '../../src/tenants/tenant-resolver';
+import { resetTenantResolverCache, resolveTenantUncached } from '../../src/tenants/tenant-resolver';
 import type { TenantCycleAlert } from '../../src/schemas/tenant-alerts';
+import type { DnsQueryFn } from '../../src/tenants/dns-fingerprint';
+import { emitScanCapture } from '../helpers/scan-capture';
+
+// SQ-496: the weekly-rescan coverage cases drive the REAL queue consumer, so only
+// the scan engine itself is replaced: it reports a fixed graded result.
+const handleToolsCallMock = vi.hoisted(() => vi.fn());
+vi.mock('../../src/handlers/tools', () => ({ handleToolsCall: handleToolsCallMock }));
+// The consumer's import graph reaches a Durable Object class; Node has no workerd runtime module.
+vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 
 let runtime: Miniflare;
 let registry: D1Database;
@@ -365,4 +374,96 @@ describe('Tenant cycle lifecycle against real D1', () => {
 			}
 		});
 	});
+});
+
+describe('Tenant weekly rescan coverage against real D1 (SQ-496)', () => {
+	const WEEK_MS = 168 * 3600 * 1000;
+	const DAY_MS = 24 * 3600 * 1000;
+
+	/** Every DNS lookup answers one SPF TXT record, so the fingerprint follows `spf`. */
+	function dns(spf: string): DnsQueryFn {
+		return async (domain) => ({
+			Status: 0,
+			TC: false,
+			RD: true,
+			RA: true,
+			AD: false,
+			CD: false,
+			Question: [],
+			Answer: [{ name: domain, type: 16, TTL: 300, data: `"${spf}"` }],
+		});
+	}
+
+	async function seedDomains(domains: string[]) {
+		await tenant.batch(
+			domains.map((domain) => tenant.prepare('INSERT INTO domains (domain, source, added_at) VALUES (?, ?, ?)').bind(domain, 'seed', 1)),
+		);
+	}
+
+	/**
+	 * One cron tick at `now`. Every enqueued message is consumed immediately by the
+	 * real `processScanMessage`, which persists the scan and stamps the domain row.
+	 * Returns the enqueued domains.
+	 */
+	async function weeklyTick(now: number, dnsQuery: DnsQueryFn): Promise<string[]> {
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const env = environment();
+		const enqueued: string[] = [];
+		await handleTenantWeeklyRescan(
+			{
+				...env,
+				BV_SCANNER_QUEUE: {
+					send: async (message) => {
+						enqueued.push(message.domain);
+						expect(await processScanMessage(message, 1, env as never, ctx)).toBe('ack');
+					},
+				},
+			},
+			ctx,
+			{ now: () => now, newCycleId: () => `cycle-${now}`, dnsQuery },
+		);
+		return enqueued;
+	}
+
+	beforeEach(() => {
+		resetTenantResolverCache();
+		handleToolsCallMock.mockReset();
+		handleToolsCallMock.mockImplementation(async (call: { arguments: { domain: string } }, _kv: unknown, runtimeOptions: unknown) => {
+			emitScanCapture(runtimeOptions as never, call.arguments.domain, { score: 81, grade: 'B+' });
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+	});
+
+	it('scans all 600 watched domains over two weekly ticks; the second tick picks the 100 the first left', async () => {
+		const domains = Array.from({ length: 600 }, (_, i) => `d${String(i).padStart(3, '0')}.example.com`);
+		await seedDomains(domains);
+		const tick1 = Date.now();
+
+		const first = await weeklyTick(tick1, dns('v=spf1 -all'));
+		expect(first).toHaveLength(500);
+		const stamped = await tenant
+			.prepare('SELECT COUNT(*) AS n FROM domains WHERE last_scanned_at IS NOT NULL AND last_score = 81 AND last_grade = ?')
+			.bind('B+')
+			.first<{ n: number }>();
+		expect(stamped?.n).toBe(500);
+
+		const second = await weeklyTick(tick1 + WEEK_MS, dns('v=spf1 -all'));
+		expect(second).toHaveLength(100);
+		expect(second.filter((domain) => first.includes(domain))).toEqual([]);
+		expect(new Set([...first, ...second]).size).toBe(600);
+	}, 120_000);
+
+	it('does not re-enqueue a domain scanned yesterday, nor one past its interval whose fingerprint is unchanged', async () => {
+		await seedDomains(['steady.example.com']);
+		const tick1 = Date.now();
+		expect(await weeklyTick(tick1, dns('v=spf1 -all'))).toEqual(['steady.example.com']);
+
+		// Scanned yesterday, unchanged DNS: not due, not re-enqueued.
+		expect(await weeklyTick(tick1 + DAY_MS, dns('v=spf1 -all'))).toEqual([]);
+		// One week on, inside 2x its interval and unchanged: the fingerprint skip holds it back.
+		expect(await weeklyTick(tick1 + WEEK_MS, dns('v=spf1 -all'))).toEqual([]);
+		// Positive control at the same point: a DNS change is enqueued. So the domain was due
+		// a week on (the due grace), and the skip above came from the fingerprint, not the due query.
+		expect(await weeklyTick(tick1 + WEEK_MS + 1, dns('v=spf1 ~all'))).toEqual(['steady.example.com']);
+	}, 60_000);
 });

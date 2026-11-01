@@ -250,6 +250,36 @@ describe('processScanMessage', () => {
 		expect(JSON.parse(resultJson as string)).toMatchObject({ score: 74, grade: 'C+', maturityStage: 3 });
 	});
 
+	it('stamps domains.last_scanned_at/last_score/last_grade with the persisted scan, after the scan row (SQ-496)', async () => {
+		// Regression: nothing wrote last_scanned_at, so the weekly dispatcher saw every
+		// domain as never scanned, re-enqueued the same first 500 every tick and never
+		// let the fingerprint skip fire.
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			emitScanCapture(runtimeOptions, 'example.com', { score: 74, grade: 'C+', findings: [] });
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, tenantCalls } = buildEnv();
+
+		expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+
+		const scanIndex = tenantCalls.findIndex((c) => c.sql === SCANS_INSERT_SQL);
+		const stampIndex = tenantCalls.findIndex((c) => c.sql.startsWith('UPDATE domains SET last_scanned_at = ?'));
+		expect(stampIndex).toBeGreaterThan(scanIndex);
+		expect(scanIndex).toBeGreaterThanOrEqual(0);
+		const scanAt = tenantCalls[scanIndex]!.binds[2];
+		expect(tenantCalls[stampIndex]!.binds).toEqual([scanAt, 74, 'C+', 'example.com']);
+	});
+
+	it('does not stamp last_scanned_at for a dead-lettered domain that was never measured (SQ-496)', async () => {
+		handleToolsCallMock.mockResolvedValue({ isError: true, content: [{ type: 'text', text: 'tool_failed' }] });
+		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, tenantCalls } = buildEnv();
+
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx())).toBe('ack');
+		expect(tenantCalls.some((c) => c.sql.startsWith('UPDATE domains SET last_scanned_at'))).toBe(false);
+	});
+
 	it('returns ack without writing when an existing scan row is found (idempotency)', async () => {
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
 		const registry = makeMockD1({
