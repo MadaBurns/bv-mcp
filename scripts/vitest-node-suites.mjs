@@ -44,6 +44,7 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/overlay-merge.node.test.ts',
 	'test/audits/pretooluse-hook-scope.node.test.ts',
 	'test/audits/private-config-injection.node.test.ts',
+	'test/audits/roaming-owner-provision.node.test.ts',
 	'test/audits/repo-safety-push-range-scanner.audit.test.ts',
 	'test/audits/score-stability-chaos-script.node.test.ts',
 	'test/audits/scoring-version-gate.node.test.ts',

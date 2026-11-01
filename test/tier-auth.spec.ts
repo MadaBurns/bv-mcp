@@ -7,6 +7,129 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+describe('temporary roaming owner credential', () => {
+	const roamingKey = 'synthetic-roaming-owner-key-32-bytes-minimum';
+	const oldKey = 'synthetic-ordinary-owner-key-32-bytes-minimum';
+	const now = Date.parse('2026-11-02T00:00:00.000Z');
+	const config = {
+		BV_ROAMING_OWNER_KEY: roamingKey,
+		BV_ROAMING_OWNER_EXPIRES_AT: '2026-11-09T00:00:00.000Z',
+		BV_API_KEY: oldKey,
+		OWNER_ALLOW_IPS: '192.0.2.10',
+	};
+
+	it.each(['198.51.100.20', undefined])('grants owner outside the allowlist or without an IP (%s)', async (ip) => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const kv = { get: vi.fn(), put: vi.fn() } as unknown as KVNamespace;
+		const fetch = vi.fn();
+		const result = await resolveTier(roamingKey, { ...config, RATE_LIMIT: kv, BV_WEB: { fetch } as unknown as Fetcher }, ip, 'https://example.com/mcp');
+		expect(result).toMatchObject({ authenticated: true, tier: 'owner', credentialHash: result.keyHash });
+		expect(result.keyHash).toMatch(/^[a-f0-9]{64}$/);
+		expect(result.legacyOwnerId).toBe(result.keyHash?.slice(0, 16));
+		expect(result.oauthTenantId).toBeUndefined();
+		expect(result.oauthPrincipalKind).toBeUndefined();
+		expect(kv.get).not.toHaveBeenCalled();
+		expect(kv.put).not.toHaveBeenCalled();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		undefined, '', 'invalid', '2026-11-02T00:00:00.000Z', '2026-11-01T23:59:59.999Z',
+		'2026-11-09T00:00:00Z', '2026-11-09T00:00:00.000+00:00', '2026-11-09',
+		'2026-11-31T00:00:00.000Z', ' 2026-11-09T00:00:00.000Z',
+	])('rejects missing, expired, or noncanonical expiry %s without fallback', async (expiry) => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const kv = { get: vi.fn().mockResolvedValue(JSON.stringify({ tier: 'owner', revokedAt: null })), put: vi.fn() } as unknown as KVNamespace;
+		const fetch = vi.fn().mockResolvedValue(Response.json({ tier: 'owner' }));
+		expect(await resolveTier(roamingKey, {
+			...config, BV_ROAMING_OWNER_EXPIRES_AT: expiry, RATE_LIMIT: kv,
+			BV_WEB: { fetch } as unknown as Fetcher, BV_WEB_INTERNAL_KEY: 'synthetic-web-internal-key',
+		}, '192.0.2.10', 'https://example.com/mcp')).toEqual({ authenticated: false });
+		expect(kv.get).not.toHaveBeenCalled();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it('accepts expiry one millisecond in the future', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		expect(await resolveTier(roamingKey, { ...config, BV_ROAMING_OWNER_EXPIRES_AT: new Date(now + 1).toISOString() }, undefined, 'https://example.com/mcp'))
+			.toMatchObject({ authenticated: true, tier: 'owner' });
+	});
+
+	it.each([config.BV_ROAMING_OWNER_EXPIRES_AT, '2026-11-01T23:59:59.999Z'])('rejects a weak matching key without fallback (%s)', async (expiry) => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const kv = { get: vi.fn().mockResolvedValue(JSON.stringify({ tier: 'owner', revokedAt: null })) } as unknown as KVNamespace;
+		expect(await resolveTier('weak-key', {
+			...config, BV_ROAMING_OWNER_KEY: 'weak-key', BV_ROAMING_OWNER_EXPIRES_AT: expiry, RATE_LIMIT: kv,
+		}, undefined, 'https://example.com/mcp'))
+			.toEqual({ authenticated: false });
+		expect(kv.get).not.toHaveBeenCalled();
+	});
+
+	it('revokes the previous roaming credential on rotation and gives the replacement a distinct identity', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const entries = new Map<string, string>();
+		const kv = {
+			get: vi.fn(async (key: string) => entries.get(key) ?? null),
+			put: vi.fn(async (key: string, value: string) => { entries.set(key, value); }),
+		} as unknown as KVNamespace;
+		const first = await resolveTier(roamingKey, { ...config, RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
+		expect(first).toMatchObject({ authenticated: true, tier: 'owner' });
+		const replacementKey = 'synthetic-replacement-roaming-owner-key-32-bytes-minimum';
+		const rotatedConfig = { ...config, BV_ROAMING_OWNER_KEY: replacementKey, RATE_LIMIT: kv };
+		expect(await resolveTier(roamingKey, rotatedConfig, undefined, 'https://example.com/mcp')).toEqual({ authenticated: false });
+		const replacement = await resolveTier(replacementKey, rotatedConfig, undefined, 'https://example.com/mcp');
+		expect(replacement).toMatchObject({ authenticated: true, tier: 'owner', credentialHash: replacement.keyHash });
+		expect(replacement.keyHash).toMatch(/^[a-f0-9]{64}$/);
+		expect(replacement.keyHash).not.toBe(first.keyHash);
+		expect(kv.put).not.toHaveBeenCalled();
+	});
+
+	it('denies a previously successful roaming key at exact expiry without reading or writing cached authorization', async () => {
+		const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const kv = {
+			get: vi.fn().mockResolvedValue(JSON.stringify({ tier: 'owner', revokedAt: null })),
+			put: vi.fn(),
+		} as unknown as KVNamespace;
+		const sameConfig = { ...config, RATE_LIMIT: kv };
+		expect(await resolveTier(roamingKey, sameConfig, undefined, 'https://example.com/mcp'))
+			.toMatchObject({ authenticated: true, tier: 'owner' });
+		clock.mockReturnValue(Date.parse(config.BV_ROAMING_OWNER_EXPIRES_AT));
+		expect(await resolveTier(roamingKey, sameConfig, undefined, 'https://example.com/mcp')).toEqual({ authenticated: false });
+		expect(kv.get).not.toHaveBeenCalled();
+		expect(kv.put).not.toHaveBeenCalled();
+	});
+
+	it.each(['BV_API_KEY', 'BV_INTERNAL_DEV_KEY', 'BV_INTERNAL_DEV_KEY_2', 'BV_LOAD_TEST_KEY', 'OAUTH_SIGNING_SECRET', 'BV_WEB_INTERNAL_KEY'] as const)(
+		'rejects aliases of %s before normal credential resolution', async (peer) => {
+			vi.spyOn(Date, 'now').mockReturnValue(now);
+			const { resolveTier } = await import('../src/lib/tier-auth');
+			expect(await resolveTier(roamingKey, { ...config, [peer]: roamingKey }, '192.0.2.10', 'https://example.com/mcp'))
+				.toEqual({ authenticated: false });
+		},
+	);
+
+	it('retains the old owner IP gate and uses a distinct credential principal', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const roaming = await resolveTier(roamingKey, config, undefined, 'https://example.com/mcp');
+		for (const ip of ['198.51.100.20', undefined]) {
+			for (const slot of ['BV_API_KEY', 'BV_INTERNAL_DEV_KEY', 'BV_INTERNAL_DEV_KEY_2'] as const) {
+				const result = await resolveTier(oldKey, { ...config, BV_API_KEY: undefined, [slot]: oldKey }, ip, 'https://example.com/mcp');
+				expect(result).toMatchObject({ authenticated: true, tier: 'partner' });
+				expect(result.keyHash).not.toBe(roaming.keyHash);
+			}
+		}
+		expect(await resolveTier(oldKey, config, '192.0.2.10', 'https://example.com/mcp')).toMatchObject({ authenticated: true, tier: 'owner' });
+		expect(await resolveTier(roamingKey, { ...config, BV_ROAMING_OWNER_KEY: undefined }, undefined, 'https://example.com/mcp')).toEqual({ authenticated: false });
+	});
+});
+
 describe('tier-auth KV cache validation', () => {
 	it('returns valid cached tier correctly', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
