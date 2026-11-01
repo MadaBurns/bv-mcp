@@ -72,6 +72,7 @@ describe('createRobotsProvenance', () => {
 			failOpen: true,
 			errorName: 'TimeoutError',
 			otherHosts: ['cdn.example.net'],
+			otherHostDecisions: [{ host: 'cdn.example.net', resolution: 'allowed', failOpen: false, status: 200 }],
 		});
 	});
 

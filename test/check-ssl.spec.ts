@@ -64,7 +64,7 @@ describe('checkSsl', () => {
 	// it. `checkStatus` is what excludes the category from scoring; the finding itself must
 	// also read as `info` + `inconclusive`, not a `high`/`critical` deficiency.
 	it('should return an info, inconclusive finding (not scored) on connection timeout', async () => {
-		globalThis.fetch = vi.fn().mockRejectedValue(new Error('The operation was aborted due to timeout'));
+		globalThis.fetch = vi.fn().mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
 		const result = await run();
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');

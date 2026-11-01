@@ -138,6 +138,8 @@ export interface RobotsResolutionRecord {
 	scope?: RobotsDisallowScope;
 	/** `error.name` of the failed robots.txt fetch (`unreachable`/`timeout` only). */
 	errorName?: string;
+	/** Wall-clock time spent resolving this request's robots decision (including a memo wait). */
+	elapsedMs?: number;
 }
 
 /** Outcome of resolving one host's robots.txt — memoized per host inside the gate. */
@@ -583,7 +585,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 		cacheState.retainedBytes += weight - previousWeight;
 	}
 
-	async function resolveOutcome(host: string): Promise<RobotsOutcome> {
+	async function resolveOutcome(host: string, callerSignal?: AbortSignal | null): Promise<RobotsOutcome> {
 		const cacheKey = cacheKeyFor(host);
 		let pending = cacheGet(cacheKey);
 		if (!pending) {
@@ -591,7 +593,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 				try {
 					const res = await fetchFn(`https://${host}/robots.txt`, {
 						headers: { 'User-Agent': userAgent },
-						signal: AbortSignal.timeout(timeoutMs),
+						signal: callerSignal ? AbortSignal.any([callerSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
 						redirect: 'manual',
 					});
 					if (!res.ok) {
@@ -614,7 +616,8 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 						sourceLength: text.length,
 					};
 				} catch (err) {
-					const errorName = err instanceof Error ? err.name : 'Error';
+					const name = err instanceof Error ? err.name : 'Error';
+					const errorName = ['TimeoutError', 'AbortError', 'TypeError', 'RobotsBodyTooLargeError'].includes(name) ? name : 'Error';
 					// `AbortSignal.timeout` rejects with a `TimeoutError`; a composed
 					// caller signal aborts with `AbortError`. Both mean "we ran out of
 					// time", which is the branch this issue is about.
@@ -626,12 +629,31 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 			const created = pending;
 			const cachedPending = cacheInsert(cacheKey, created, pendingCacheWeight(cacheKey));
 			void created.then((outcome) => {
+				// Cancellation belongs to this invocation, not to the host policy cache.
+				if (callerSignal?.aborted) {
+					deleteCacheEntry(cache, cacheState, cacheKey, created);
+					return;
+				}
 				const weight = settledCacheWeight(cacheKey, outcome);
 				if (cachedPending) cacheResize(cacheKey, created, weight);
 				else cacheInsert(cacheKey, created, weight);
 			});
 		}
-		return pending;
+		if (!callerSignal) return pending;
+		// A memoized in-flight request may belong to a longer-lived caller. Bound
+		// this wait independently and remove the listener on either settlement.
+		return new Promise<RobotsOutcome>((resolve) => {
+			const onAbort = (): void => {
+				callerSignal.removeEventListener('abort', onAbort);
+				resolve({ kind: 'timeout', errorName: 'AbortError' });
+			};
+			if (callerSignal.aborted) return onAbort();
+			callerSignal.addEventListener('abort', onAbort, { once: true });
+			void pending.then((outcome) => {
+				callerSignal.removeEventListener('abort', onAbort);
+				resolve(outcome);
+			});
+		});
 	}
 
 	/** Report one gated request's decision, fail-soft: instrumentation never breaks a scan. */
@@ -645,14 +667,16 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 	}
 
 	return async (url, init) => {
+		init?.signal?.throwIfAborted();
 		const parsed = new URL(url);
 		const headers = new Headers(init?.headers);
 		if (!headers.has('User-Agent')) headers.set('User-Agent', userAgent);
 		const nextInit: RequestInit = { ...init, headers };
 
 		if (parsed.pathname !== '/robots.txt') {
-			const outcome = await resolveOutcome(parsed.hostname);
-			const base = { host: parsed.hostname, path: parsed.pathname };
+			const startedAt = Date.now();
+			const outcome = await resolveOutcome(parsed.hostname, init?.signal);
+			const base = { host: parsed.hostname, path: parsed.pathname, elapsedMs: Math.max(0, Date.now() - startedAt) };
 			if (outcome.kind === 'policy') {
 				const disallowed = outcome.selected !== null && isPathDisallowed(outcome.selected.group, parsed.pathname);
 				report({
@@ -678,6 +702,8 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 			}
 		}
 
+		// Fail-open robots policy never overrides cancellation of the caller itself.
+		init?.signal?.throwIfAborted();
 		return fetchFn(url, nextInit);
 	};
 }
