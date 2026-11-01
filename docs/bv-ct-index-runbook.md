@@ -121,6 +121,14 @@ From SQ-402 on, the deploy also moves the compaction cron from `17 * * * *` to `
 whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
 then stay near 180 (about 32 min of ingest) instead of climbing past 400 after each :17.
 
+From SQ-491 on, a T0 -> T1 job closes its output at a coarse subset of the cuts (`coarseCuts` in `plan.ts`), so its
+`ct_compaction_job_done` line shows `outputs` of at most 128 (`MAX_T1_RANGES`), down from about 940. Roll-up jobs are tier 1 too.
+Each one takes a single coarse range and writes it back at every cut inside it, so it shows only a handful of outputs. To
+measure the saving, run `npx wrangler d1 insights bv-ct-index-cursors --sort-by writes --time-period 1d` once before the deploy
+and again a day after it, and compare the compaction swap's `INSERT INTO runs` writes. Use that, not `ops_ledger.d1_rows`.
+The ledger counts an insert as one row, but D1 bills each insert as five: the row plus its four index entries (measured locally
+on the SQ-491 test catalog: 4,712 rows written for 942 output runs).
+
 This redeploy is also required before `npm run deploy:prod` (step 8) will pass `check:sidecar-freshness`, because the live
 version predates the sidecar source. The secret persists across versions, so no `--secrets-file` is needed. Rollback of a bad sidecar deploy:
 `npx wrangler rollback --name bv-ct-index`.

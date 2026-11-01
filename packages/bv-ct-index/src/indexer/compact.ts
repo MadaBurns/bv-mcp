@@ -93,8 +93,9 @@ interface OutputRun {
 }
 
 /**
- * Output puts in flight at once (SQ-402): a T1 job closes one small run (~17 KB) per cut range, ~480 of them, and
- * one put after another took most of its ~6 min (SQ-403). Six is the Workers limit on open connections.
+ * Output puts in flight at once (SQ-402): a T1 job closed one small run (~17 KB) per cut range, ~480 of them, and
+ * one put after another took most of its ~6 min (SQ-403). A T0 -> T1 job now closes at most plan.ts MAX_T1_RANGES
+ * runs (SQ-491), and a roll-up job one per cut range of its coarse range. Six is the Workers limit on open connections.
  */
 export const PUT_CONCURRENCY = 6;
 /**
