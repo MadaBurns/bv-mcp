@@ -1002,9 +1002,20 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		if (!internalOnlyPolicy.allowed && internalOnlyPolicy.block === 'internal_only') {
 			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
 		}
+		// SQ-520: AGGREGATE_QUOTA_COUNTER is the per-key total's counter name, not a tool. A
+		// client-supplied `name` of the same string would reach the per-tool counter AND the
+		// aggregate on one key (every call counted twice, and the total drainable by name).
+		// Normalised names are only trimmed and lowercased, so no counter spelling is
+		// unreachable from the wire; reserve the name here, before any quota is consumed. The
+		// result is the genuine unknown-tool payload the dispatch path would return anyway.
+		if (internalOnlyName === AGGREGATE_QUOTA_COUNTER) {
+			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
+		}
 	}
 
 	let rateHeaders: Record<string, string> = {};
+	/** Per-key total to consume once the session and concurrency gates pass (SQ-494/SQ-520). */
+	let aggregateQuota: { tier: McpApiKeyTier; principalId: string; limit: number } | undefined;
 	if (!options.isAuthenticated && method === 'tools/call') {
 		const globalDailyLimit = options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT;
 		const globalResult = await checkGlobalDailyLimit(globalDailyLimit, options.rateLimitKv, options.quotaCoordinator, options.analytics);
@@ -1372,27 +1383,13 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			return buildTierQuotaExceededResponse(id, denial, method, options, rateHeaders, eventId, accessLogInput);
 		}
 
-		// SQ-494: per-key total across ALL tools, on top of the per-tool cap above.
-		// Checked only once the per-tool counter allowed, so a per-tool denial never
-		// consumes the total (the same ordering as the free-tier __force_refresh__
-		// sub-limit). Uncapped (Infinity) tiers short-circuit inside
-		// checkToolDailyRateLimit with no counter round trip. Allowed calls keep the
-		// per-tool x-quota-* headers; a denial reports the total that tripped.
-		const aggregateLimit = TIER_AGGREGATE_DAILY_LIMITS[tier];
-		const aggregateResult = await checkToolDailyRateLimit(
-			principalId,
-			AGGREGATE_QUOTA_COUNTER,
-			aggregateLimit,
-			options.rateLimitKv,
-			options.quotaCoordinator,
-		);
-		if (!aggregateResult.allowed) {
-			rateHeaders['x-quota-limit'] = String(aggregateResult.limit);
-			rateHeaders['x-quota-remaining'] = String(aggregateResult.remaining);
-			const message = `Rate limit exceeded. ${tier} tier is limited to ${aggregateLimit} requests per day across all tools.`;
-			const denial = { tier, counter: AGGREGATE_QUOTA_COUNTER, limit: aggregateLimit, result: aggregateResult, message };
-			return buildTierQuotaExceededResponse(id, denial, method, options, rateHeaders, eventId, accessLogInput);
-		}
+		// SQ-494: per-key total across ALL tools, on top of the per-tool cap above. SQ-520:
+		// only RECORDED here; it is consumed below, after the session and concurrency gates,
+		// so a call those gates reject never burns the total. (The per-tool counter above
+		// still runs first: moving it too would change which denial wins when both trip.)
+		// Uncapped (Infinity) tiers short-circuit inside checkToolDailyRateLimit with no
+		// counter round trip.
+		aggregateQuota = { tier, principalId, limit: TIER_AGGREGATE_DAILY_LIMITS[tier] };
 	}
 
 	// Per-tier concurrency limiting deferred to after notification check (below).
@@ -1508,6 +1505,30 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			// owner tier: unlimited, no slot tracking needed
 			concurrencyPrincipalId = undefined;
 		}
+	}
+
+	// SQ-494/SQ-520: the per-key total, consumed only for a call that cleared the session and
+	// concurrency gates above. An allowed call keeps the per-tool x-quota-* headers and adds
+	// x-quota-total-remaining for capped tiers; a denial reports the total that tripped, and
+	// hands back the concurrency slot it was holding.
+	if (aggregateQuota) {
+		const { tier, principalId, limit: aggregateLimit } = aggregateQuota;
+		const aggregateResult = await checkToolDailyRateLimit(
+			principalId,
+			AGGREGATE_QUOTA_COUNTER,
+			aggregateLimit,
+			options.rateLimitKv,
+			options.quotaCoordinator,
+		);
+		if (!aggregateResult.allowed) {
+			if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
+			rateHeaders['x-quota-limit'] = String(aggregateResult.limit);
+			rateHeaders['x-quota-remaining'] = String(aggregateResult.remaining);
+			const message = `Rate limit exceeded. ${tier} tier is limited to ${aggregateLimit} requests per day across all tools.`;
+			const denial = { tier, counter: AGGREGATE_QUOTA_COUNTER, limit: aggregateLimit, result: aggregateResult, message };
+			return buildTierQuotaExceededResponse(id, denial, method, options, rateHeaders, eventId, accessLogInput);
+		}
+		if (Number.isFinite(aggregateLimit)) rateHeaders['x-quota-total-remaining'] = String(aggregateResult.remaining);
 	}
 
 	if (options.allowStreaming && method === 'tools/call' && options.responseTransport === 'sse' && acceptsSSE(options.accept)) {

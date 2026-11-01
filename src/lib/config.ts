@@ -175,12 +175,13 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
  * it a key's real ceiling is its per-tool limit times every tool it can call
  * (developer: roughly 1.41M calls/month). Counted on the synthetic
  * AGGREGATE_QUOTA_COUNTER keyed by the same principal as the per-tool counters,
- * checked only after the per-tool check allows. `Infinity` = no aggregate cap
+ * consumed only after the per-tool check allows and the session and concurrency
+ * gates pass. `Infinity` = no aggregate cap
  * (per-tool limits only) and never touches a counter. Unauthenticated callers
  * are governed by FREE_IP_DAILY_LIMIT instead and never reach this cap.
  *
- * Starting values pending operator sign-off (SQ-494). There is no per-contract
- * override carrier yet: raising one enterprise key means changing this table.
+ * There is no per-contract override carrier yet: raising one enterprise key
+ * means changing this table.
  */
 export const TIER_AGGREGATE_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	free: Infinity,
@@ -191,7 +192,11 @@ export const TIER_AGGREGATE_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	owner: Infinity,
 };
 
-/** Synthetic tool name for the aggregate per-key counter (see TIER_AGGREGATE_DAILY_LIMITS). */
+/**
+ * Synthetic tool name for the aggregate per-key counter (see TIER_AGGREGATE_DAILY_LIMITS).
+ * Reserved: executeMcpRequest answers a client-supplied tool `name` equal to this with
+ * the unknown-tool result before any quota is consumed.
+ */
 export const AGGREGATE_QUOTA_COUNTER = '__all_tools__';
 
 /**
