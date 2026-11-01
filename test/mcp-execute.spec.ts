@@ -1567,6 +1567,24 @@ describe('executeMcpRequest — authenticated per-key daily total across tools',
 		);
 	});
 
+	it('omits retry-after when the denying counter gives no retry hint', async () => {
+		const checkToolSpy = vi
+			.fn()
+			.mockResolvedValueOnce({ allowed: true, remaining: 499, limit: 500 })
+			.mockResolvedValueOnce({ allowed: false, remaining: 0, limit: DEV_TOTAL });
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return { ...actual, checkToolDailyRateLimit: checkToolSpy };
+		});
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		const denied = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+		expect(denied.httpStatus).toBe(429);
+		expect(denied.headers['x-quota-limit']).toBe(String(DEV_TOTAL));
+		expect(denied.headers).not.toHaveProperty('retry-after');
+	});
+
 	it('owner keys are not capped by the total', async () => {
 		mockDeveloperTotal();
 		const { executeMcpRequest } = await import('../src/mcp/execute');
