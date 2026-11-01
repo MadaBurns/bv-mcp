@@ -37,6 +37,25 @@ const GATES_BEFORE_SHIP = [
 	'npm run check:tenant-schema',
 	'npm run check:bindings:prod',
 ];
+/**
+ * How deploy-private.mjs spells each GATES_BEFORE_SHIP entry (the call prefix, so a comment mentioning a script
+ * cannot satisfy it). Keyed by the deploy:prod gate: a gate added to deploy:prod with no entry here fails the
+ * "same gate set" test below, and so does an entry here that deploy:prod no longer runs.
+ */
+const PRIVATE_GATE_CALLS: Record<string, string> = {
+	'npm run check:deploy-freshness': "runStep([tsxCliPath, 'scripts/ci/deploy-freshness-check.ts']",
+	'npm run check:sidecar-freshness': "runStep([tsxCliPath, 'scripts/ci/sidecar-deploy-drift-check.ts']",
+	'npm run check:release-integrity': "runStep([tsxCliPath, 'scripts/ci/release-integrity-check.ts', '--mode', 'deploy']",
+	'npm -w packages/dns-checks run build': "runStep(['-w', 'packages/dns-checks', 'run', 'build']",
+	'npm run check:bindings': "runStep(['scripts/check-bindings.mjs']",
+	'node scripts/inject-private-config.cjs': "runStep(['scripts/inject-private-config.cjs']",
+	'node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc':
+		"runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath]",
+	'node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc':
+		"runStep(['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath]",
+	'npm run check:tenant-schema': "runStep(['scripts/tenants/check-schema-drift.mjs', '--config', generatedConfigPath]",
+	'npm run check:bindings:prod': "runStep(['scripts/check-bindings.mjs', '--config', generatedConfigPath]",
+};
 /** Every cf script in the config package starts with this overlay-env guard (see the BV_DEPLOY_OVERLAY_PATH test below). */
 const OVERLAY_GUARD = 'npm run guard:overlay-env && ';
 /** deploy-private.mjs's cf spawn: marker used to locate the ship step in its source. */
@@ -249,6 +268,27 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(freshnessIndex, 'freshness must prove HEAD ⊇ origin/main before the sidecar gate trusts `git log HEAD`').toBeLessThan(
 			sidecarIndex,
 		);
+	});
+
+	// The private door skips the npm chain entirely, so every gate deploy:prod runs must be re-wired in
+	// deploy-private.mjs: the same set, in the same order, all before the cf ship step. It once carried only the
+	// freshness, sidecar and two schema preflights, so it shipped what deploy:prod would have refused
+	// (release-integrity, bindings, tenant-schema).
+	it('runs the same gate set as deploy:prod, in the same order, before shipping on the private door', () => {
+		expect(Object.keys(PRIVATE_GATE_CALLS), 'every deploy:prod gate needs a private-door spelling, and no stale extras').toEqual(
+			GATES_BEFORE_SHIP,
+		);
+		const shipIndex = deployPrivateSource.indexOf(PRIVATE_SHIP);
+		expect(shipIndex, 'deploy-private.mjs must contain the cf production deploy call').toBeGreaterThan(-1);
+		let previousIndex = -1;
+		for (const gate of GATES_BEFORE_SHIP) {
+			const call = PRIVATE_GATE_CALLS[gate];
+			const index = deployPrivateSource.indexOf(call);
+			expect(index, `deploy-private.mjs must run the "${gate}" gate (${call})`).toBeGreaterThan(-1);
+			expect(index, `"${gate}" must run after the gate before it, mirroring deploy:prod`).toBeGreaterThan(previousIndex);
+			expect(index, `"${gate}" must run before cf deploy`).toBeLessThan(shipIndex);
+			previousIndex = index;
+		}
 	});
 
 	// Same ordering on the two npm doors, asserted from the scripts themselves so a
