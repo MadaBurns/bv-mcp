@@ -156,3 +156,74 @@ describe('internal /tools/batch access logging', () => {
 		expect(domains).toEqual(['example.com', 'example.net']);
 	});
 });
+
+describe('internal access logging honours ANALYTICS_ROLLUP_INTERNAL (SQ-500)', () => {
+	const rollupSql = (fake: ReturnType<typeof createFakeD1>) =>
+		fake.prepare.mock.calls.map((call) => String(call[0])).filter((sql) => /INSERT INTO mcp_access_rollup\b/.test(sql));
+	const rowSql = (fake: ReturnType<typeof createFakeD1>) =>
+		fake.prepare.mock.calls.map((call) => String(call[0])).filter((sql) => /INSERT INTO mcp_access_log\b/.test(sql));
+
+	async function postCall(env: Record<string, unknown>) {
+		mockTxtRecords(['v=spf1 -all']);
+		const { internalRoutes } = await import('../src/internal');
+		const { ctx, drain } = createFakeCtx();
+		const res = await internalRoutes.request(
+			'/tools/call',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			},
+			env,
+			ctx,
+		);
+		expect(res.status).toBe(200);
+		await drain();
+	}
+
+	async function postBatch(env: Record<string, unknown>) {
+		mockTxtRecords(['v=spf1 -all']);
+		const { internalRoutes } = await import('../src/internal');
+		const { ctx, drain } = createFakeCtx();
+		const res = await internalRoutes.request(
+			'/tools/batch',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tool: 'check_spf', domains: ['example.com', 'example.net'] }),
+			},
+			env,
+			ctx,
+		);
+		expect(res.status).toBe(200);
+		await drain();
+	}
+
+	it('/tools/call: flag on -> counter upsert, no per-event row', async () => {
+		const fake = createFakeD1();
+		await postCall({ REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: fake.db, ANALYTICS_ROLLUP_INTERNAL: 'true' });
+		expect(rollupSql(fake)).toHaveLength(1);
+		expect(rowSql(fake)).toHaveLength(0);
+	});
+
+	it('/tools/call: flag unset -> per-event row, no counter (default unchanged)', async () => {
+		const fake = createFakeD1();
+		await postCall({ REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: fake.db });
+		expect(rowSql(fake)).toHaveLength(1);
+		expect(rollupSql(fake)).toHaveLength(0);
+	});
+
+	it('/tools/batch: flag on -> one counter upsert per processed domain, no per-event rows', async () => {
+		const fake = createFakeD1();
+		await postBatch({ REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: fake.db, ANALYTICS_ROLLUP_INTERNAL: 'true' });
+		expect(rollupSql(fake)).toHaveLength(2);
+		expect(rowSql(fake)).toHaveLength(0);
+	});
+
+	it('/tools/batch: flag unset -> per-event rows, no counter', async () => {
+		const fake = createFakeD1();
+		await postBatch({ REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: fake.db });
+		expect(rowSql(fake)).toHaveLength(2);
+		expect(rollupSql(fake)).toHaveLength(0);
+	});
+});

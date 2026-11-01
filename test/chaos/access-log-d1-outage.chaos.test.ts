@@ -212,6 +212,8 @@ describe('Chaos B: access-log D1 (INTELLIGENCE_DB) outage', () => {
 			const env = {
 				INTELLIGENCE_DB: outage.db,
 				SCAN_SCHEDULE_DB: sibling.db,
+				// The rollup probe only runs with the rollup flag on (SQ-500); the outage case needs it exercised.
+				ANALYTICS_ROLLUP_INTERNAL: 'true',
 				ALERT_WEBHOOK_URL: 'https://hooks.example.com/test',
 			} as unknown as ScheduledEnv;
 
