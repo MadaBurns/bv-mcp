@@ -83,15 +83,15 @@ function resolveDoh(url: string): Response {
 
 /**
  * Serializes the result-bearing fields, then neutralizes the one legitimately
- * per-run-random token: the subdomain-takeover wildcard probe nonce
+ * per-run-random token and diagnostic durations: the subdomain-takeover wildcard probe nonce
  * (`_bv-probe-<rand>.<domain>`). That nonce is unrelated to DoH concurrency, so
- * normalizing it lets us assert true result-equality across cap settings.
+ * normalizing it and elapsed/remaining milliseconds preserves result-equality
+ * without requiring two scans to take exactly the same wall-clock time.
  */
 function stableShape(result: { score: unknown; checks: unknown[]; maturity: unknown }) {
-	return JSON.stringify({ score: result.score, maturity: result.maturity, checks: result.checks }).replace(
-		/_bv-probe-[a-z0-9]+\./g,
-		'_bv-probe-<nonce>.',
-	);
+	return JSON.stringify({ score: result.score, maturity: result.maturity, checks: result.checks }, (key, value: unknown) =>
+		key === 'elapsedMs' || key === 'remainingMs' ? '<duration-ms>' : value,
+	).replace(/_bv-probe-[a-z0-9]+\./g, '_bv-probe-<nonce>.');
 }
 
 describe('scan_domain DoH outbound-concurrency semaphore (R6)', () => {
