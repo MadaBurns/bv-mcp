@@ -93,11 +93,21 @@ const FINDINGS_INSERT_SQL =
  * dispatcher's due query reads `last_scanned_at`. Before this, nothing wrote
  * it, so every domain stayed NULL. That forced a full rescan of the same first
  * 500 rows each tick (starving the rest) and the fingerprint skip never fired.
- * An unmeasured scan (no captured score) keeps the last known score and grade.
+ *
+ * Only a GRADED scan (non-null score) stamps. An ungraded or inconclusive scan
+ * measured nothing, so it must leave the domain due at the next tick and must
+ * never write a fabricated grade (see `stampDomainScanned`).
+ *
+ * The `last_scanned_at` guard makes the stamp idempotent and monotonic: a
+ * redelivery of the same scan is a no-op, and a stale redelivery from an older
+ * cycle cannot move the stamp backwards.
  */
-// last_grade keeps a stale letter on an unmeasured scan: every reader must go through displayGradeFor (src/lib/ungraded-display.ts) and never trust it directly.
+// last_grade keeps a stale letter if a graded scan somehow carries no grade: every reader must go through displayGradeFor (src/lib/ungraded-display.ts) and never trust it directly.
 const MARK_DOMAIN_SCANNED_SQL =
-	'UPDATE domains SET last_scanned_at = ?, last_score = COALESCE(?, last_score), last_grade = COALESCE(?, last_grade) WHERE domain = ?';
+	'UPDATE domains SET last_scanned_at = ?, last_score = ?, last_grade = COALESCE(?, last_grade) ' +
+	'WHERE domain = ? AND (last_scanned_at IS NULL OR last_scanned_at < ?)';
+/** The persisted scan a `'complete'` redelivery re-stamps from. */
+const SCAN_STAMP_SOURCE_SQL = 'SELECT scan_at, score, grade FROM scans WHERE id = ?';
 const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
 const DELETE_SCAN_SQL = 'DELETE FROM scans WHERE id = ?';
 
@@ -215,9 +225,10 @@ async function persistScan(
 	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
 	captured: TenantScanSnapshot | null,
+	now: () => number,
 ): Promise<void> {
 	const scanId = newRowId();
-	const scanAt = Date.now();
+	const scanAt = now();
 	await tenantDb
 		.prepare(SCANS_INSERT_SQL)
 		.bind(
@@ -239,18 +250,60 @@ async function persistScan(
 
 	// Last, so a failed scan or findings write never marks the domain scanned.
 	// This write is the only one that can fail after the scan row is durable,
-	// and a retry would find the scan complete and skip straight to progress.
-	// So it stays best-effort: a missed stamp leaves the domain due next tick.
+	// and a retry would find the scan complete. It stays best-effort, and the
+	// `'complete'` redelivery path re-stamps from the persisted row
+	// (`restampCompletedScan`), so a missed stamp is repaired, not just logged.
+	await stampDomainScanned(tenantDb, msg, scanAt, captured?.score ?? null, captured?.grade ?? null);
+}
+
+/**
+ * Best-effort stamp of `domains.last_scanned_at` from a durable scan. Never
+ * throws: a missed stamp only leaves the domain due, and the `'complete'`
+ * redelivery path retries it.
+ *
+ * An ungraded scan (score null) does NOT stamp: it keeps the existing
+ * `last_scanned_at`, `last_score` and `last_grade`, so the domain stays due at
+ * the next tick and no fabricated grade is ever written (CLAUDE.md:
+ * `displayGradeFor` returns null for ungraded scans).
+ */
+async function stampDomainScanned(
+	tenantDb: TenantDbHandle,
+	msg: { cycle_id: string; domain: string },
+	scanAt: number,
+	score: number | null,
+	grade: string | null,
+): Promise<void> {
+	if (typeof score !== 'number') return;
 	try {
-		await tenantDb
-			.prepare(MARK_DOMAIN_SCANNED_SQL)
-			.bind(scanAt, captured?.score ?? null, captured?.grade ?? null, msg.domain)
-			.run();
+		await tenantDb.prepare(MARK_DOMAIN_SCANNED_SQL).bind(scanAt, score, grade, msg.domain, scanAt).run();
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'warn',
 			category: 'tenant.queue',
 			details: { message: 'tenant_queue_mark_scanned_failed', cycleId: msg.cycle_id, domainHash: hashDomain(msg.domain) },
+		});
+	}
+}
+
+/**
+ * Repairs a missed stamp (SQ-496): when the stamp UPDATE failed after the scan
+ * row was durable, every redelivery takes the `'complete'` fast path and would
+ * never stamp. Re-stamp from the persisted scan row, under the same
+ * null-score rule. Idempotent (see `MARK_DOMAIN_SCANNED_SQL`) and best-effort.
+ */
+async function restampCompletedScan(tenantDb: TenantDbHandle, cycleId: string, domain: string, scanId: string): Promise<void> {
+	try {
+		const row = await tenantDb
+			.prepare(SCAN_STAMP_SOURCE_SQL)
+			.bind(scanId)
+			.first<{ scan_at: number; score: number | null; grade: string | null }>();
+		if (!row) return;
+		await stampDomainScanned(tenantDb, { cycle_id: cycleId, domain }, Number(row.scan_at), row.score ?? null, row.grade ?? null);
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'tenant.queue',
+			details: { message: 'tenant_queue_restamp_failed', cycleId, domainHash: hashDomain(domain) },
 		});
 	}
 }
@@ -264,7 +317,10 @@ async function repairPartialScanIfNeeded(tenantDb: TenantDbHandle, cycleId: stri
 
 	const expectedFindings = Number(existing.finding_count ?? 0);
 	const persistedFindings = Number(existing.persisted_findings ?? 0);
-	if (persistedFindings >= expectedFindings) return 'complete';
+	if (persistedFindings >= expectedFindings) {
+		await restampCompletedScan(tenantDb, cycleId, domain, existing.id);
+		return 'complete';
+	}
 
 	await tenantDb.prepare(DELETE_FINDINGS_FOR_SCAN_SQL).bind(existing.id).run();
 	await tenantDb.prepare(DELETE_SCAN_SQL).bind(existing.id).run();
@@ -363,8 +419,14 @@ export async function processScanMessage(
 	rawBody: unknown,
 	attempts: number,
 	env: ScanQueueConsumerEnv,
-	ctx: { waitUntil: (p: Promise<unknown>) => void; onPoisonAck?: () => void },
+	ctx: {
+		waitUntil: (p: Promise<unknown>) => void;
+		onPoisonAck?: () => void;
+		/** Test seam: clock for `scans.scan_at` and the stamp. Defaults to `Date.now`. */
+		now?: () => number;
+	},
 ): Promise<'ack' | 'retry'> {
+	const clock = ctx.now ?? Date.now;
 	let parsed: ScanQueueMessage;
 	try {
 		parsed = ScanQueueMessageSchema.parse(rawBody);
@@ -439,7 +501,7 @@ export async function processScanMessage(
 						.bind(parsed.domain)
 						.first<{ fingerprint: string | null }>();
 
-					const now = Date.now();
+					const now = clock();
 					const oneDayMs = 24 * 3600 * 1000;
 					const isRecent = now - lastScan.scan_at < oneDayMs;
 
@@ -497,7 +559,7 @@ export async function processScanMessage(
 
 	try {
 		const snapshot = captured as TenantScanSnapshot | null;
-		await persistScan(tenantDb, parsed, snapshot);
+		await persistScan(tenantDb, parsed, snapshot, clock);
 		ctx.waitUntil(streamScanResult(env, {
 			domain: parsed.domain,
 			grade: snapshot?.grade ?? null,
