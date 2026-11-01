@@ -17,7 +17,7 @@
  * "the index has taken in everything the tailer handed over before this instant".
  */
 
-import { encodeRun, nameKey, serializeBlockIndex, siblingKey } from '../codec';
+import { apexOf, encodeRun, nameKey, serializeBlockIndex, siblingKey } from '../codec';
 import type { Env } from '../index';
 import type { CertDetails, NameObservation, SiblingObservation } from '../types';
 import { CURRENT_GENERATION_SQL, RUNS_PREFIX, isKilled, ledgerStatement } from './catalog';
@@ -62,47 +62,114 @@ function certDetails(value: unknown): CertDetails | undefined {
 	return Object.fromEntries(DETAIL_FIELDS.map((field) => [field, value[field]])) as unknown as CertDetails;
 }
 
-/** Whether `key` is exactly the key the codec derives from `name` (and `name` is already in its folded form). */
-function codecAgrees(key: string, name: string): boolean {
+/** Queue issuer limit, the same cut the tailer applies (tailer/observations.ts MAX_ISSUER_LENGTH). */
+export const MAX_QUEUED_ISSUER_LENGTH = 256;
+
+/** The codec's folded form of `name`, or null when the codec refuses it. */
+function folded(name: string): ReturnType<typeof nameKey> | null {
 	try {
-		const derived = nameKey(name);
-		return derived.key === key && derived.name === name;
-	} catch {
-		return false;
-	}
-}
-
-type NameFields = Fields & { key: string; name: string; apex: string; issuer: string; wildcard: boolean };
-
-function hasNameFields(o: Fields): o is NameFields {
-	return ['key', 'name', 'apex', 'issuer'].every((field) => typeof o[field] === 'string') && typeof o.wildcard === 'boolean';
-}
-
-/**
- * A queued observation is stored only if its key is exactly the key the codec derives from its name. A key
- * that disagreed (e.g. a name row keyed into the sibling keyspace) would sort into another domain's range or
- * make the run undecodable, and every read of that range would fail.
- */
-function nameObservation(o: unknown): NameObservation | null {
-	if (!isFields(o) || !epochs(o) || !hasNameFields(o)) return null;
-	const { key, name, apex, issuer, wildcard } = o;
-	if (!codecAgrees(key, name)) return null;
-	const row: NameObservation = { key, name, apex, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number, issuer, wildcard };
-	const details = certDetails(o.details);
-	if (details) row.details = details;
-	return row;
-}
-
-function siblingObservation(o: unknown): SiblingObservation | null {
-	if (!isFields(o) || !epochs(o)) return null;
-	const { key, apex, sibling } = o;
-	if (typeof key !== 'string' || typeof apex !== 'string' || typeof sibling !== 'string') return null;
-	try {
-		if (siblingKey(apex, sibling) !== key) return null;
+		return nameKey(name);
 	} catch {
 		return null;
 	}
-	return { key, apex, sibling, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number };
+}
+
+/** `value` if it is absent or a string, else false (a present non-string field fails the row). */
+function optionalString(value: unknown): string | undefined | false {
+	return value === undefined || typeof value === 'string' ? value : false;
+}
+
+/** A queued claim agrees when it was omitted (the compact wire shape) or equals what the indexer derived. */
+function agrees(queued: string | undefined, derived: string): boolean {
+	return queued === undefined || queued === derived;
+}
+
+type QueuedName = Fields & { name: string; issuer: string; wildcard: boolean };
+
+function hasRequiredNameFields(o: Fields): o is QueuedName {
+	return ['name', 'issuer'].every((field) => typeof o[field] === 'string') && typeof o.wildcard === 'boolean';
+}
+
+/** The queued `key` and `apex`: each may be omitted, but a present one must be a string. */
+function queuedClaims(o: Fields): { key?: string; apex?: string } | null {
+	const key = optionalString(o.key);
+	const apex = optionalString(o.apex);
+	return key === false || apex === false ? null : { key, apex };
+}
+
+/** nameKey(name).key when `name` is already folded and any queued key agrees, else null. */
+function derivedKey(name: string, queued: string | undefined): string | null {
+	const derived = folded(name);
+	return derived && derived.name === name && agrees(queued, derived.key) ? derived.key : null;
+}
+
+/** apexOf(name) when `name` has a registrable apex and any queued apex agrees, else null. */
+function derivedApex(name: string, queued: string | undefined): string | null {
+	const apex = apexOf(name);
+	return apex && agrees(queued, apex) ? apex : null;
+}
+
+/** The key and apex the indexer stores for a queued name row, or null when the row is refused. */
+function derivedNameFields(o: QueuedName): { key: string; apex: string } | null {
+	const claims = queuedClaims(o);
+	if (!claims || o.issuer.length > MAX_QUEUED_ISSUER_LENGTH) return null;
+	const key = derivedKey(o.name, claims.key);
+	const apex = derivedApex(o.name, claims.apex);
+	return key && apex ? { key, apex } : null;
+}
+
+function withDetails(row: NameObservation, value: unknown): NameObservation {
+	const details = certDetails(value);
+	return details ? { ...row, details } : row;
+}
+
+/**
+ * A queued name row is stored only with fields the indexer derives itself (SQ-528, #1341):
+ * - `key` is nameKey(name). A queued key may be omitted (the compact wire shape); when present it must equal the
+ *   derived key, since a key that disagreed would sort into another domain's range or make the run undecodable.
+ * - `apex` is apexOf(name), always. A queued apex may be omitted; when present it must equal the derived one. A
+ *   name with no registrable apex is refused, exactly as the tailer refuses it, so a forged apex can never be
+ *   persisted or win a merge tie-break.
+ * - `name` must already be in its folded form, and `issuer` within the tailer's 256-character cut.
+ */
+function nameObservation(o: unknown): NameObservation | null {
+	if (!isFields(o) || !epochs(o) || !hasRequiredNameFields(o)) return null;
+	const derived = derivedNameFields(o);
+	if (!derived) return null;
+	const { name, issuer, wildcard } = o;
+	return withDetails({ ...derived, name, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number, issuer, wildcard }, o.details);
+}
+
+/** A queued host that is its own registrable apex, in the codec's folded form, or null. */
+function foldedApex(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const host = folded(value);
+	if (!host || host.wildcard) return null;
+	return apexOf(host.name) === host.name ? host.name : null;
+}
+
+/** Both sides of a queued sibling row as distinct registrable apexes, as the tailer pairs them, or null. */
+function distinctApexes(o: Fields): { apex: string; sibling: string } | null {
+	const apex = foldedApex(o.apex);
+	const sibling = foldedApex(o.sibling);
+	return apex && sibling && apex !== sibling ? { apex, sibling } : null;
+}
+
+/** The stored key and apexes of a queued sibling row: key = siblingKey(apex, sibling); a queued key must agree. */
+function siblingFields(o: Fields): { key: string; apex: string; sibling: string } | null {
+	const key = optionalString(o.key);
+	if (key === false) return null;
+	const pair = distinctApexes(o);
+	if (!pair) return null;
+	const derived = siblingKey(pair.apex, pair.sibling);
+	return agrees(key, derived) ? { key: derived, ...pair } : null;
+}
+
+/** A queued sibling row is stored with its key derived and both apexes folded (SQ-528); see siblingFields. */
+function siblingObservation(o: unknown): SiblingObservation | null {
+	if (!isFields(o) || !epochs(o)) return null;
+	const fields = siblingFields(o);
+	return fields ? { ...fields, firstSeen: o.firstSeen as number, notAfter: o.notAfter as number } : null;
 }
 
 async function putRun(

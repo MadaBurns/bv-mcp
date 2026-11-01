@@ -10,7 +10,7 @@ import { runCompactionJob } from '../indexer/compact';
 import { COMPACTION_CRON, runCompactionCron } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import { KILLED_RETRY_DELAY_SECONDS, indexEntries } from '../indexer/write';
-import type { NameObservation } from '../types';
+import type { NameObservation, SiblingObservation } from '../types';
 import {
 	DAY_S,
 	HOUR_MS,
@@ -126,6 +126,67 @@ describe('T0 indexer', () => {
 		expect(batch.acked).toEqual(['m1', 'm2']);
 		expect(batch.ackedAll).toBe(true);
 		expect((await createReader(env, () => T).scan('example.com', { limit: 10 })).names.map((row) => row.name)).toEqual(['ok.example.com']);
+	});
+
+	it('indexes the compact wire shape (no key, no apex) to exactly the rows of the full shape (SQ-528)', async () => {
+		const names = [obs('www.example.com'), obs('*.example.com', { issuer: 'E5' }), obs('a.shop.co.nz')];
+		const siblings = [sib('example.com', 'other.org'), sib('other.org', 'example.com')];
+		const read = async () => {
+			const reader = createReader(testEnv(), () => T);
+			return {
+				names: [...(await reader.scan('example.com', { limit: 10 })).names, ...(await reader.scan('shop.co.nz', { limit: 10 })).names],
+				siblings: [
+					...(await reader.siblings('example.com', { limit: 10 })).siblings,
+					...(await reader.siblings('other.org', { limit: 10 })).siblings,
+				],
+			};
+		};
+
+		const full = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody(names, siblings)]), testEnv(), T);
+		const fromFull = await read();
+		await applyCatalog();
+
+		const compactNames = names.map(({ key: _key, apex: _apex, ...rest }) => rest) as unknown as NameObservation[];
+		const compactSiblings = siblings.map(({ key: _key, ...rest }) => rest) as unknown as SiblingObservation[];
+		const compact = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody(compactNames, compactSiblings)]), testEnv(), T);
+
+		expect(compact).toEqual(full);
+		expect(compact.rejected).toBe(0);
+		expect(await read()).toEqual(fromFull);
+		expect(fromFull.names.map((row) => row.apex)).toEqual(['example.com', 'example.com', 'shop.co.nz']);
+	});
+
+	it('derives apex itself: refuses a forged apex, a name with no registrable apex, an over-long issuer and non-string keys (SQ-528)', async () => {
+		const env = testEnv();
+		const rows = [
+			obs('ok.example.com'),
+			{ ...obs('www.victim.com'), apex: 'attacker.org' },
+			{ ...obs('govt.nz'), apex: 'govt.nz' },
+			obs('long.example.com', { issuer: 'x'.repeat(257) }),
+			{ ...obs('typed.example.com'), key: 42 },
+			{ ...obs('typed2.example.com'), apex: null },
+		] as unknown as NameObservation[];
+		const outcome = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody(rows, [])]), env, T);
+
+		expect(outcome).toEqual({ killed: false, names: 1, siblings: 0, rejected: 5 });
+		const stored = (await createReader(env, () => T).scan('example.com', { limit: 10 })).names;
+		expect(stored.map((row) => row.name)).toEqual(['ok.example.com']);
+		expect((await createReader(env, () => T).scan('victim.com', { limit: 10 })).names).toEqual([]);
+	});
+
+	it('stores siblings in folded form and refuses sides that are not registrable apexes (SQ-528)', async () => {
+		const env = testEnv();
+		const siblings = [
+			{ apex: 'Example.COM.', sibling: 'Other.org', firstSeen: T_S - DAY_S, notAfter: T_S + 60 * DAY_S },
+			sib('example.com', 'www.other.net'),
+			sib('co.nz', 'example.com'),
+			sib('example.com', 'example.com'),
+		] as unknown as SiblingObservation[];
+		const outcome = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody([], siblings)]), env, T);
+
+		expect(outcome).toEqual({ killed: false, names: 0, siblings: 1, rejected: 3 });
+		const stored = (await createReader(env, () => T).siblings('example.com', { limit: 10 })).siblings;
+		expect(stored).toEqual([sib('example.com', 'other.org')]);
 	});
 
 	it('stores certificate details from the queue, and drops malformed details but keeps the row and its names', async () => {
