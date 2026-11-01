@@ -48,7 +48,7 @@ function fakeAnalytics(): { client: AnalyticsClient; emit: ReturnType<typeof vi.
  * so the test exercises the production wiring rather than a hand-rolled sink.
  */
 function sinkFromAnalytics(client: AnalyticsClient | undefined) {
-	return client ? (e: { degradationType: 'binding_unavailable' | 'binding_5xx' | 'binding_timeout'; component: string; domain?: string }) => client.emitDegradationEvent(e) : undefined;
+	return client ? (e: { degradationType: 'binding_unavailable' | 'binding_5xx' | 'binding_timeout' | 'binding_route_absent'; component: string; domain?: string }) => client.emitDegradationEvent(e) : undefined;
 }
 
 /** A recon binding whose fetch resolves with a given status / body. */

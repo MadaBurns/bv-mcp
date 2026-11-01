@@ -368,7 +368,7 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 			expect(result.isError, `${toolCase.name} must not be an MCP-level error (no 500-equivalent)`).not.toBe(true);
 			const text = JSON.stringify(result);
 			expect(
-				text.includes('"upstreamUnavailable":true') || text.includes('"unprovisioned":true'),
+				text.includes('"upstreamUnavailable":true') || text.includes('"unprovisioned":true') || text.includes('"backendUnavailable":true'),
 				`${toolCase.name} must degrade to a structured, non-error fail-soft result`,
 			).toBe(true);
 		}
