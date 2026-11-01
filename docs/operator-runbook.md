@@ -23,7 +23,7 @@ Prerequisites:
    secret manager under `bv-mcp/deploy-overlay`; KV/D1/queue IDs can be
    re-derived from the Cloudflare dashboard if the secret-manager copy is stale
    (stale KV IDs → wrangler 422 on deploy).
-4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY,
+4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY, BV_ROAMING_OWNER_KEY,
    OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_MCP_OAUTH_MINT_KEY,
    BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_EMA_ADMIN_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
    BV_MCP_WATCH_CLEANUP_KEY,
@@ -321,6 +321,43 @@ Trial-key revocation requires `QUOTA_COORDINATOR`: the revoke route writes an
 authoritative deny marker before deleting the eventually consistent KV record.
 If strong state is unavailable it returns 503 and leaves the KV record intact;
 do not treat that response as a completed revocation.
+
+### Temporary roaming owner access
+
+`BV_ROAMING_OWNER_KEY` is a separate, optional owner credential for a trusted
+operator connecting over a changing network, including 3G. Only this dedicated
+credential bypasses `OWNER_ALLOW_IPS`; keep the existing allowlist and existing
+owner credentials in place. This grants full owner access, so never issue it to
+customers or share it as an alternative customer authentication method.
+
+1. After deploying support, use `scripts/roaming-owner-key.mjs create` with an
+   absolute, gitignored `--output` path. The script generates 256 random bits,
+   defaults to seven days (`--days` accepts 1 through 30), checks the production
+   secret inventory, and refuses to overwrite an existing roaming credential.
+   `--dry-run` prints only the plan, never a key. Keep the generated mode-0600
+   record in the operator's private storage; never put its key in an argument,
+   tracked file, log, or chat.
+2. The script provisions `BV_ROAMING_OWNER_KEY` and the required expiry metadata
+   `BV_ROAMING_OWNER_EXPIRES_AT` together through `wrangler secret bulk` stdin.
+   The expiry is canonical UTC (`YYYY-MM-DDTHH:mm:ss.sssZ`); missing, malformed,
+   or expired values fail closed. An ambiguous remote failure retains a private
+   recovery record and is never automatically retried. Neither binding is a
+   required deployment secret, allowing intentional removal.
+3. Install the new credential only in the trusted operator connector and verify
+   owner access from the roaming network. If owner verification fails, repair
+   the configuration; never fall back to customer, free, or anonymous access.
+4. Revoke independently by deleting `BV_ROAMING_OWNER_KEY` with `wrangler secret
+   delete BV_ROAMING_OWNER_KEY --config .dev/wrangler.deploy.jsonc`. Verify that
+   the old credential is rejected after propagation. Before renewal, also delete
+   `BV_ROAMING_OWNER_EXPIRES_AT` with the same command and that secret name: the
+   provisioning script refuses replacement while either roaming secret exists.
+   Re-run provisioning to generate a fresh distinct key and bounded expiry, then
+   verify owner access again.
+
+The roaming secret deliberately stays out of the deployment required-secret
+list so removal remains a supported revocation mechanism. An absent secret
+disables roaming owner access. Do not copy it to customer or cross-worker
+integrations, and do not broaden `OWNER_ALLOW_IPS` to enable roaming.
 
 ### Migrating ALERT_WEBHOOK_URL from a var to a secret (#1073)
 

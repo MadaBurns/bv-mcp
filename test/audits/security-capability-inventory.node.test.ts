@@ -26,6 +26,10 @@ function sourceFiles(root: string): string[] {
 }
 
 describe('MCP security capability inventory', () => {
+	it('classifies the independently revocable roaming owner credential as security-critical', () => {
+		expect(MCP_SECURITY_CRITICAL_SECRET_KEYS).toContain('BV_ROAMING_OWNER_KEY');
+	});
+
 	it('classifies the operator reconstruction manifest and every source-read secret-shaped field', () => {
 		const runbook = readFileSync('docs/operator-runbook.md', 'utf8');
 		const manifestBlock = runbook.match(/4\. Secrets \(`wrangler secret list`[\s\S]*?Values in the secret\s+manager/);

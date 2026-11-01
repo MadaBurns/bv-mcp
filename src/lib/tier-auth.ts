@@ -4,7 +4,7 @@
  * Tier-based API key authentication.
  *
  * Resolves a bearer token to its tier via:
- * 0. OAuth JWT verification, then configured static credentials
+ * 0. Temporary roaming owner capability, OAuth JWT verification, then static credentials
  * 1. KV cache (sub-ms, 5-min TTL)
  * 2. Trial key lookup (KV `trial:` prefix, 60s cache TTL)
  * 3. bv-web service binding (cache miss fallback)
@@ -25,6 +25,7 @@ import { checkControlPlaneRateLimit } from './rate-limiter';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import { deriveCanonicalOAuthPrincipal } from './auth-principal';
 import type { OAuthPrincipalKind } from './auth-principal';
+import { isStrongDistinctSecurityCapability } from './security-capabilities';
 
 /**
  * JWT-issuable tiers. The `/oauth/token` minting paths can only produce these
@@ -179,12 +180,13 @@ async function tokenVersionAndTenantCurrent(
  * Resolve a bearer token to its API key tier.
  *
  * Resolution order:
- * 0. OAuth JWT verification, then load-test, internal-dev, and BV_API_KEY credentials
+ * 0. Temporary roaming owner capability, OAuth JWT, load-test, internal-dev, and BV_API_KEY credentials
  * 1. KV cache lookup (`tier:{hash}`)
  * 2. Trial key lookup (`trial:{hash}` in KV — time + usage limits)
  * 3. Service binding to companion app (validate-key endpoint)
  *
- * Owner tier requires IP allowlist (OWNER_ALLOW_IPS env var, comma-separated).
+ * Except for the separate expiring roaming key, owner tier uses the IP allowlist
+ * (OWNER_ALLOW_IPS env var, comma-separated).
  * If the key matches BV_API_KEY but the IP is not in the allowlist,
  * the request is downgraded to partner tier.
  */
@@ -192,6 +194,8 @@ export async function resolveTier(
 	token: string | null,
 	env: {
 		BV_API_KEY?: string;
+		BV_ROAMING_OWNER_KEY?: string;
+		BV_ROAMING_OWNER_EXPIRES_AT?: string;
 		BV_INTERNAL_DEV_KEY?: string;
 		BV_INTERNAL_DEV_KEY_2?: string;
 		BV_LOAD_TEST_KEY?: string;
@@ -211,7 +215,30 @@ export async function resolveTier(
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
-	// 0. OAuth 2.1 Bearer JWT path — runs FIRST so a valid access token short-circuits before
+	// This separate, temporary owner capability deliberately works without an IP
+	// allowlist. Match before every other authentication path so invalid/expired
+	// configuration cannot fall through to a cached entitlement or aliased key.
+	const tokenRaw = await hashTokenRaw(token);
+	const keyHash = Array.from(tokenRaw)
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
+	if (await matchesStaticKey(tokenRaw, env.BV_ROAMING_OWNER_KEY)) {
+		const expiry = env.BV_ROAMING_OWNER_EXPIRES_AT;
+		const expiresAt = expiry ? Date.parse(expiry) : NaN;
+		if (
+			!isStrongDistinctSecurityCapability(env, 'BV_ROAMING_OWNER_KEY') ||
+			!expiry ||
+			!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(expiry) ||
+			!Number.isFinite(expiresAt) ||
+			new Date(expiresAt).toISOString() !== expiry ||
+			expiresAt <= Date.now()
+		) {
+			return { authenticated: false };
+		}
+		return { authenticated: true, tier: 'owner', keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+	}
+
+	// 0. OAuth 2.1 Bearer JWT path — a valid access token short-circuits before
 	// any KV / service-binding work. Shape check (3 dot-separated segments) is a cheap gate that
 	// lets a non-JWT bearer (e.g. static BV_API_KEY) skip straight to the legacy flow without
 	// paying a signing-key lookup. The jti revocation lookup is defense-in-depth.
@@ -294,11 +321,6 @@ export async function resolveTier(
 			// so an operator using a 3-segment static key isn't accidentally rejected.
 		}
 	}
-
-	const tokenRaw = await hashTokenRaw(token);
-	const keyHash = Array.from(tokenRaw)
-		.map((b) => b.toString(16).padStart(2, '0'))
-		.join('');
 
 	// Dedicated, temporary production load-test credential. It is intentionally
 	// separate from the two operator/dev keys and fails closed unless an explicit
