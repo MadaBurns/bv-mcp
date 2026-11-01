@@ -224,6 +224,11 @@ known migration source (for example `BRAND_AUDIT_DB`, which is hand-schema'd
 via `src/lib/db/brand-audit-schema.ts`) is reported as skipped, not silently
 ignored.
 
+`npm run deploy:prod` and `npm run deploy:prod:staged` run this checker
+automatically (after private-config injection, before the Worker ships) and
+fail closed: drift, an unreachable live database, or an unreadable config
+blocks the deploy. Apply the missing migration (below), then re-run the deploy.
+
 Applying a missing migration file to a live database is an operator action —
 this repository does not automate it. Use `wrangler d1 execute <db> --remote
 --file=<migration>` with the exact source file — for example, the two files

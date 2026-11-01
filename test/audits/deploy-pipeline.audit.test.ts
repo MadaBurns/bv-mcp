@@ -34,6 +34,7 @@ const GATES_BEFORE_SHIP = [
 	'node scripts/inject-private-config.cjs',
 	'node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc',
 	'node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc',
+	'npm run check:tenant-schema',
 	'npm run check:bindings:prod',
 ];
 /** Every cf script in the config package starts with this overlay-env guard (see the BV_DEPLOY_OVERLAY_PATH test below). */
@@ -289,6 +290,19 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(injectIndex, 'the preflight reads the injected config, so the injector must run first').toBeLessThan(preflightIndex);
 		expect(shipIndex, `${scriptName} must end in the cf deploy / versions hand-off`).toBeGreaterThan(-1);
 		expect(preflightIndex, 'the preflight must run before the Worker ships').toBeLessThan(shipIndex);
+	});
+
+	// SQ-501: tenant migrations are raw SQL applied by hand, so a deploy whose code reads a column or index
+	// the live tenant D1 lacks (the 0002 index missing in prod caused the 09-24 read storm) must fail closed.
+	// The checker reads the GENERATED config for the tenant bindings, so it runs after the injector.
+	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the tenant schema drift check after injection and before shipping in %s', (scriptName) => {
+		const script = pkg.scripts?.[scriptName] ?? '';
+		const injectIndex = script.indexOf('node scripts/inject-private-config.cjs');
+		const checkIndex = script.indexOf('npm run check:tenant-schema');
+		const shipIndex = script.search(SHIP_STEP);
+		expect(checkIndex, `${scriptName} must run check:tenant-schema`).toBeGreaterThan(-1);
+		expect(injectIndex, 'the checker reads the injected config, so the injector must run first').toBeLessThan(checkIndex);
+		expect(checkIndex, 'the checker must run before the Worker ships').toBeLessThan(shipIndex);
 	});
 
 	it('also runs the access-log schema preflight on the private deploy helper, after injection and before deploy', () => {

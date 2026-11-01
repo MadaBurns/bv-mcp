@@ -18,12 +18,17 @@
  * execute`. It NEVER executes DDL and never applies a migration.
  *
  * Why raw SQL files instead of the drizzle `meta/*_snapshot.json` files: the
- * tenant migration set's `meta/_journal.json` only has entries for
- * 0000/0001 — `0002_findings_scan_id_index.sql` exists on disk with no
- * matching snapshot/journal entry, so deriving the expected schema from meta
- * snapshots would silently miss exactly the drift this checker exists to
- * catch. The raw `.sql` files are the actual migration set of record (they're
- * what `provision-tenant.mjs` applies), so they're parsed directly instead.
+ * tenant migration set has no snapshot for
+ * `0002_findings_scan_id_index.sql` (a hand-written index migration; its
+ * `meta/_journal.json` entry was added later, SQ-501), so deriving the
+ * expected schema from meta snapshots would silently miss exactly the drift
+ * this checker exists to catch. The raw `.sql` files are the actual migration
+ * set of record (they're what `provision-tenant.mjs` applies), so they're
+ * parsed directly instead.
+ *
+ * Gate: `deploy:prod` and `deploy:prod:staged` run this check (after config
+ * injection, before shipping), so any drift or an unreachable live database
+ * (exit 1) or an unreadable config (exit 2) blocks the deploy fail-closed.
  *
  * Only bindings this script knows how to derive an expected schema for are
  * checked: `TENANT_REGISTRY_DB` (registry migrations) and any `TENANT_DB_*`
