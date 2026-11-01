@@ -142,9 +142,10 @@ export interface ScheduledEnv {
 	SCAN_SCHEDULE_DB?: D1Database;
 	ANALYTICS_RETENTION_DAYS?: string;
 	/**
-	 * Phase 1, decision #2 (default-off). Mirrors the producer flag; carried here for
-	 * config parity. The retention cron does not branch on it — the rollup is a
-	 * write-path concern in `src/mcp/execute.ts`.
+	 * Phase 1, decision #2 (default-off). Mirrors the producer flag. The write path
+	 * (`src/mcp/execute.ts`) routes on it; the cron only uses it to decide whether the
+	 * `mcp_access_rollup` provisioning probe ({@link checkAccessRollupProvisioned}) is
+	 * relevant at all. The retention cron itself does not branch on it.
 	 */
 	ANALYTICS_ROLLUP_INTERNAL?: string;
 	/**
@@ -318,8 +319,9 @@ const ROLLUP_HEALTH_LOOKBACK_HOURS = 24;
 
 /**
  * Fail-open measurement guard (SQ-72 #3): `mcp_access_rollup` (Phase 1, decision #2,
- * `scripts/intelligence/sql/0004_mcp_access_rollup.sql`) is shipped in-repo but NOT
- * provisioned in production — every write throws `SQLITE_ERROR: no such table`
+ * `scripts/intelligence/sql/0004_mcp_access_rollup.sql`) is shipped in-repo but may NOT
+ * be provisioned in production. With `ANALYTICS_ROLLUP_INTERNAL=true` and no table, every
+ * write throws `SQLITE_ERROR: no such table`
  * (code 7500), and the write site (`incrementAccessRollup` in `src/mcp/execute.ts`)
  * is a best-effort `fireAndForget` that logs one `warn` per request. That per-request
  * warn is indistinguishable from any other transient D1 hiccup, so a permanently
@@ -343,6 +345,11 @@ const ROLLUP_HEALTH_LOOKBACK_HOURS = 24;
 async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: string): Promise<void> {
 	const db = env.INTELLIGENCE_DB;
 	if (!db) return;
+	// Flag off (the default): nothing writes to the rollup, so a missing table loses no telemetry
+	// and the probe would only page about a table nobody asked for, plus pay a 24h indexed COUNT
+	// over mcp_access_log every tick to size that page. The fail-open gap exists only once the
+	// flag is on and the table is absent, which is exactly when this still runs.
+	if (env.ANALYTICS_ROLLUP_INTERNAL !== 'true') return;
 
 	try {
 		await db.prepare('SELECT 1 FROM mcp_access_rollup LIMIT 1').first();

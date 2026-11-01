@@ -489,6 +489,7 @@ describe('alert repeat suppression (#1164)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		const env = {
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			RATE_LIMIT: rateLimit,
 		} as unknown as ScheduledEnv;
@@ -573,6 +574,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
@@ -582,6 +584,37 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		expect(webhookCall!.body).toContain('uncounted_internal_requests_24h: 42');
 	});
 
+	it('stays silent and never queries when ANALYTICS_ROLLUP_INTERNAL is unset, even though the table is missing (SQ-500)', async () => {
+		const { db, bindCalls } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogRow: { cnt: 42 } });
+		const prepareSpy = vi.spyOn(db, 'prepare');
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		expect(fetchCalls.filter((c) => c.url.includes('hooks.slack.com'))).toHaveLength(0);
+		// Neither the table probe nor the 24h correlation COUNT is issued: the flag-off tick pays no D1 reads for it.
+		expect(prepareSpy.mock.calls.some(([sql]) => String(sql).includes('mcp_access_rollup'))).toBe(false);
+		expect(bindCalls.some((c) => c.sql.includes('SELECT COUNT(*)'))).toBe(false);
+	});
+
+	it('stays silent when ANALYTICS_ROLLUP_INTERNAL is set to anything but "true"', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogRow: { cnt: 42 } });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'false',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		expect(fetchCalls.filter((c) => c.url.includes('hooks.slack.com'))).toHaveLength(0);
+	});
+
 	it('does NOT alert when mcp_access_rollup is provisioned (table present, even if empty)', async () => {
 		const { db } = makeFakeIntelligenceDb({ rollupTableExists: true });
 		const fetchCalls = mockFetchCapturing();
@@ -589,6 +622,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
@@ -602,6 +636,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
@@ -617,6 +652,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
@@ -644,6 +680,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
@@ -660,6 +697,7 @@ describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({
 			INTELLIGENCE_DB: db,
+			ANALYTICS_ROLLUP_INTERNAL: 'true',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv);
 
