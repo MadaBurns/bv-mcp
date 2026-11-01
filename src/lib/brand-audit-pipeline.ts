@@ -350,8 +350,8 @@ export interface BrandAuditTierStats {
 	tier3FallbackTriggered: number;
 	tier1Freshness?: { overallStaleness: 'fresh' | 'partial' | 'stale' | 'very_stale' };
 	/**
-	 * Why tier 1 (bv-infrastructure-graph) was not `ok`, e.g.
-	 * `http_503:optout_service_unavailable` or `timeout`. Absent when ok/skipped.
+	 * Why tier 1 (bv-infrastructure-graph) was not `ok`, as the client-safe token discover_brand_domains emits
+	 * (e.g. `timeout` or `upstream_unavailable`; see clientSafeTier1Reason). Absent when ok/skipped.
 	 */
 	tier1DegradedReason?: string;
 	optOutsFiltered: number;
