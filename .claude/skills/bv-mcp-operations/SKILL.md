@@ -171,7 +171,7 @@ production deploy are operator actions, not before 2026-10-07).** The doors:
 Every gate in front of the cf step is unchanged and in the same order
 (`check:deploy-freshness` → `check:sidecar-freshness` → `check:release-integrity`
 → dns-checks build → `check:bindings` → `inject-private-config.cjs` → both D1
-preflights → `check:bindings:prod`). **The injector STAYS and still writes
+preflights → `check:tenant-schema` → `check:bindings:prod`). **The injector STAYS and still writes
 `wrangler.production.jsonc`**: the D1 preflights, `check:bindings:prod`, the drift
 check and every `--config wrangler.production.jsonc` script (Phase 6 ports
 those) read it, and it is the rollback config. cf evaluates
