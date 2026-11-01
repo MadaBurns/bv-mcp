@@ -59,8 +59,8 @@ describe('createReader().scan', () => {
 			obs('*.health.govt.nz'),
 			obs('stats.govt.nz'),
 			obs('a.b.c.police.govt.nz'),
-			obs('govt.nz'),
 		];
+		// The bare suffix has no registrable apex: the tailer never queues it and the indexer refuses it (SQ-528).
 		const outside = [obs('xgovt.nz'), obs('govt.nz.example.com'), obs('dia.govt.nz.evil.org'), obs('govt.com'), obs('stats.nz')];
 		await ingest(env, at(0, 1, 5), [...inside.slice(0, 4), ...outside]);
 		await cronAndDrain(env, at(0, 2, 17));
