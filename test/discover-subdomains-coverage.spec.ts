@@ -1320,3 +1320,31 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 		expect(result).not.toHaveProperty('enumerationComplete');
 	});
 });
+
+describe('CT upstream response diagnostics (#1147)', () => {
+	it('retains an explicit 504 timeout code without upstream prose', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		const { buildCtCoverage, formatCoverageLine } = await import('../src/lib/ct-coverage');
+		const response = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => Response.json({ code: 'timeout', message: 'private upstream text' }, { status: 504 }),
+		});
+		expect(response).toMatchObject({ outcome: 'http_error', httpStatus: 504, apiErrorCode: 'timeout' });
+		const coverage = buildCtCoverage([{ source: 'certspotter', ...response, contributed: false }]);
+		expect(coverage.perSource[0]).toMatchObject({ httpStatus: 504, apiErrorCode: 'timeout' });
+		expect(formatCoverageLine(coverage)).toContain('HTTP 504 code=timeout');
+		expect(JSON.stringify(coverage)).not.toContain('private upstream text');
+	});
+
+	it('keeps unknown error codes private and distinguishes a successful HTTP body cap', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		const denied = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => Response.json({ code: 'private-value' }, { status: 403 }),
+		});
+		expect(denied).toMatchObject({ outcome: 'access_denied', httpStatus: 403 });
+		expect(denied.apiErrorCode).toBeUndefined();
+		const capped = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => new Response('[]', { headers: { 'content-length': String(6 * 1024 * 1024) } }),
+		});
+		expect(capped).toMatchObject({ httpStatus: 200, failurePhase: 'response_size_cap' });
+	});
+});

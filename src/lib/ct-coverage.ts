@@ -166,8 +166,15 @@ export function ownedIndexIsPartial(c: OwnedIndexCoverage, nowMs: number = Date.
 	return nowMs - Date.parse(c.freshThrough) > OWNED_INDEX_MAX_STALENESS_MS;
 }
 
+/** Sanitized facts about an upstream response; never includes upstream prose or URLs. */
+export interface CtSourceDiagnostics {
+	httpStatus?: number;
+	apiErrorCode?: 'timeout' | 'not_allowed_by_plan';
+	failurePhase?: 'response_size_cap' | 'response_parse';
+}
+
 /** What one CT source contributed to this answer. */
-export interface CtSourceCoverage {
+export interface CtSourceCoverage extends CtSourceDiagnostics {
 	source: string;
 	outcome: CtSourceOutcome;
 	/** True when this source's names are in the returned set. */
@@ -233,7 +240,7 @@ export function historyWindowFor(source: string): CtHistoryWindow {
 }
 
 /** One recorded source attempt, as the tool observes it. */
-export interface CtSourceAttempt {
+export interface CtSourceAttempt extends CtSourceDiagnostics {
 	source: string;
 	outcome: CtSourceOutcome;
 	contributed: boolean;
@@ -252,6 +259,9 @@ export function buildCtCoverage(attempts: CtSourceAttempt[]): CtCoverage {
 	const perSource: CtSourceCoverage[] = attempts.map((a) => ({
 		source: a.source,
 		outcome: a.outcome,
+		...(a.httpStatus === undefined ? {} : { httpStatus: a.httpStatus }),
+		...(a.apiErrorCode ? { apiErrorCode: a.apiErrorCode } : {}),
+		...(a.failurePhase ? { failurePhase: a.failurePhase } : {}),
 		contributed: a.contributed,
 		...(a.indexExhausted === undefined ? {} : { indexExhausted: a.indexExhausted }),
 		historyWindow: a.ownedIndex ? 'forward-from' : historyWindowFor(a.source),
@@ -323,7 +333,7 @@ export function formatCoverageLine(coverage: CtCoverage): string {
 	const bits: string[] = [];
 	for (const s of coverage.perSource) {
 		const exhausted = s.indexExhausted === true ? ' index-exhausted' : s.indexExhausted === false ? ' index-partial' : '';
-		bits.push(`${s.source}=${s.outcome}${exhausted}`);
+		bits.push(`${s.source}=${s.outcome}${s.httpStatus ? ` HTTP ${s.httpStatus}` : ''}${s.apiErrorCode ? ` code=${s.apiErrorCode}` : ''}${s.failurePhase ? ` phase=${s.failurePhase}` : ''}${exhausted}`);
 	}
 	for (const s of coverage.notConsulted) bits.push(`${s}=not-consulted`);
 	return `Coverage [${coverage.basis}]: ${bits.join(', ')}`;
