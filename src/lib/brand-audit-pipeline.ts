@@ -361,6 +361,10 @@ const TIER_STATUSES = new Set(['ok', 'degraded', 'partial', 'timeout', 'skipped'
 /** Reason tokens are `[a-z0-9_]` words joined by `:`; anything else is dropped at this boundary. */
 const TIER_REASON = /^[a-z0-9_:]{1,96}$/;
 
+function readTier1DegradedReason(value: unknown): Pick<BrandAuditTierStats, 'tier1DegradedReason'> {
+	return typeof value === 'string' && TIER_REASON.test(value) ? { tier1DegradedReason: value } : {};
+}
+
 function readTierStatus(value: unknown): BrandAuditTierStats['tier0Status'] {
 	return typeof value === 'string' && TIER_STATUSES.has(value) ? (value as BrandAuditTierStats['tier0Status']) : 'skipped';
 }
@@ -394,9 +398,7 @@ function readTierStats(value: unknown): BrandAuditTierStats | undefined {
 		tier2Status: readTierStatus(t.tier2Status),
 		tier3FallbackTriggered: typeof t.tier3FallbackTriggered === 'number' ? t.tier3FallbackTriggered : 0,
 		...(tier1Freshness ? { tier1Freshness } : {}),
-		...(typeof t.tier1DegradedReason === 'string' && TIER_REASON.test(t.tier1DegradedReason)
-			? { tier1DegradedReason: t.tier1DegradedReason }
-			: {}),
+		...readTier1DegradedReason(t.tier1DegradedReason),
 		optOutsFiltered: typeof t.optOutsFiltered === 'number' ? t.optOutsFiltered : 0,
 	};
 }

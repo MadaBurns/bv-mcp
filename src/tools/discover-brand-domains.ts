@@ -332,8 +332,8 @@ interface BrandDiscoveryTiers {
 	tier2Status: string;
 	tier3FallbackTriggered: number;
 	tier1Freshness: Record<string, unknown> | null;
-	/** Why tier 1 was not `ok` (`http_503:optout_service_unavailable`, `timeout`, ...); null when ok/skipped. */
-	tier1DegradedReason: string | null;
+	/** Why tier 1 was not `ok` (`http_503:optout_service_unavailable`, `timeout`, ...); absent when ok/skipped. */
+	tier1DegradedReason?: string;
 	optOutsFiltered: number;
 }
 
@@ -798,7 +798,7 @@ export async function discoverBrandDomains(
 		tier2Status: string;
 		tier3FallbackTriggered: 0 | 1;
 		tier1Freshness: Record<string, unknown> | null;
-		tier1DegradedReason: string | null;
+		tier1DegradedReason?: string;
 		optOutsFiltered: number;
 	}
 	let tieredState: TieredState | null = null;
@@ -975,7 +975,6 @@ export async function discoverBrandDomains(
 			tier2Status: 'skipped',
 			tier3FallbackTriggered: 0,
 			tier1Freshness: null,
-			tier1DegradedReason: null,
 			optOutsFiltered: 0,
 		};
 		const tieredStartedAtMs = await startPhase('tiered_lookup');
@@ -1015,7 +1014,7 @@ export async function discoverBrandDomains(
 			const r = tier1Settled.value;
 			tieredState.tier1Status = r.status;
 			tieredState.tier1Freshness = (r.freshness as unknown as Record<string, unknown>) ?? null;
-			tieredState.tier1DegradedReason = r.degradedReason ?? null;
+			tieredState.tier1DegradedReason = r.degradedReason;
 			for (const obs of r.observations) {
 				tieredObservations.push({
 					candidate: obs.candidate,
@@ -1037,7 +1036,7 @@ export async function discoverBrandDomains(
 			await finishPhase('tier1_graph', r.status, tier1Started, {
 				observations: r.observations.length,
 				triggerTier3Fallback: r.triggerTier3Fallback,
-				...(r.degradedReason ? { degradedReason: r.degradedReason } : {}),
+				degradedReason: r.degradedReason,
 			});
 		} else {
 			tieredState.tier1Status = 'degraded';
