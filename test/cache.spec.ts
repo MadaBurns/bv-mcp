@@ -480,6 +480,8 @@ describe('runWithCache — cross-isolate dedup', () => {
 		// Sentinel check should NOT have been called (only the result cache put)
 		const sentinelCheck = mockKV.get.mock.calls.find((c: unknown[]) => c[0] === 'sentinel:skip:computing');
 		expect(sentinelCheck).toBeUndefined();
+		// No sentinel was written, so no wasted KV delete either
+		expect(mockKV.delete).not.toHaveBeenCalled();
 	});
 
 	it('degrades gracefully when KV sentinel operations fail', async () => {
