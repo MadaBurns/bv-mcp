@@ -8,9 +8,13 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.107.1] - 2026-11-01
+
+Axis: dns-checks 1.62.1. `SCORING_MODEL_VERSION` (scoring model) unchanged at 1.41.0.
+
 ### Fixed
 
-- web posture `http_redirect` no longer reports a false "Redirect chain not fully assessed" when a redirect hop waited in the section's shared fetch queue (the per-chain 5 s budget started before the wait, so a hop reached its slot already aborted). The section now gives `http_redirect`, `security_txt` and the homepage fetches the section deadline as their budget. An interrupted chain, or a host that was never reached, now names its cause: the time limit ("not assessed within the time limit"), a robots.txt disallow, a URL the outbound-request guard refused, or a network or TLS failure. No scoring change (non-scoring category). Axis: `dns-checks 1.62.1`.
+- web posture `http_redirect` no longer reports a false "Redirect chain not fully assessed" when a redirect hop waited in the section's shared fetch queue (the per-chain 5 s budget started before the wait, so a hop reached its slot already aborted). The section now gives `http_redirect`, `security_txt` and the homepage fetches the section deadline as their budget. An interrupted chain, or a host that was never reached, now names its cause: the time limit ("not assessed within the time limit"), a robots.txt disallow, a URL the outbound-request guard refused, or a network or TLS failure. No scoring change (non-scoring category). Axis: `dns-checks 1.62.1`. (#1339, SQ-489)
 
 ## [3.107.0] - 2026-10-31
 
