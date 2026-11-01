@@ -238,6 +238,13 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	/** Operator-chosen PII capture depth for the access log. Undefined → 'coarse'. */
 	ANALYTICS_PII_LEVEL?: string;
 	/**
+	 * Phase 1, decision #2 (default-off). Mirrored from `BvMcpEnv` so internal-door
+	 * access-log rows (the only `source: 'internal'` traffic) can route to the
+	 * `mcp_access_rollup` counter instead of per-event rows. `'true'` requires the
+	 * table to exist first (`scripts/intelligence/sql/0004_mcp_access_rollup.sql`).
+	 */
+	ANALYTICS_ROLLUP_INTERNAL?: string;
+	/**
 	 * D2 contract-flag gate switch, mirrored from `BvMcpEnv` so the internal door
 	 * evaluates the SAME per-tool policy the public `/mcp` path does. Default OFF —
 	 * `isContractFlagGateEnabled(undefined)` is false, so this is inert until an
@@ -902,6 +909,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			intelligenceDb: c.env.INTELLIGENCE_DB,
 			analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
 			analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+			rollupInternal: c.env.ANALYTICS_ROLLUP_INTERNAL === 'true',
 			ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 			ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
 			startTime,
@@ -1306,6 +1314,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 					intelligenceDb: c.env.INTELLIGENCE_DB,
 					analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
 					analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+					rollupInternal: c.env.ANALYTICS_ROLLUP_INTERNAL === 'true',
 					ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 					ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
 					startTime: batchStartTime,

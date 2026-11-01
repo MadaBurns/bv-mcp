@@ -37,12 +37,14 @@ describe('callReconScan', () => {
 		expect(out).toBeNull();
 	});
 
-	it('returns a benign info result on 404 (no threat-feed entry — not a failure)', async () => {
+	// SQ-502: a 404 means the /osint/check route is absent upstream (bv2-recon never
+	// served it), NOT "no threat-intel entry" — a data miss is a 200 with status 'info'.
+	// Fabricating a benign result here made every caller report a false clean "no match".
+	it('returns null on 404 (route absent upstream — never a fabricated benign no-match)', async () => {
 		const { callReconScan } = await fresh();
 		const binding = bindingReturning({ error: 'not found' }, 404);
 		const out = await callReconScan(binding, 'tok', 'REALTIME_THREAT_FEED', { domain: 'clean.example' });
-		expect(out).not.toBeNull();
-		expect(out?.status).toBe('info');
+		expect(out).toBeNull();
 	});
 
 	it('returns null when the body is not an object (non-parseable shape)', async () => {
@@ -96,15 +98,30 @@ describe('callReconScan degradation telemetry', () => {
 		expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('binding_degradation');
 	});
 
-	it('keeps the 404 benign branch SILENT (no degradation)', async () => {
+	it('records a 404 as its own binding_route_absent degradation, still null (missing route — SQ-502/SQ-514)', async () => {
 		const { callReconScan } = await fresh();
 		const sink = vi.fn();
 		const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const binding = bindingReturning({ error: 'not found' }, 404);
 		const out = await callReconScan(binding, 'tok', 'REALTIME_THREAT_FEED', { domain: 'clean.example' }, undefined, sink);
-		expect(out?.status).toBe('info');
-		expect(sink).not.toHaveBeenCalled();
-		expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('binding_degradation');
+		expect(out).toBeNull();
+		expect(sink).toHaveBeenCalledTimes(1);
+		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_route_absent', component: 'recon', domain: 'clean.example' });
+		const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+		expect(logged).toContain('binding_degradation');
+		expect(logged).toContain('binding_route_absent');
+		expect(logged).toContain('404');
+	});
+
+	it('keeps every non-404 non-2xx (500/502/503) on binding_5xx so the paging alert still fires', async () => {
+		const { callReconScan } = await fresh();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		for (const status of [500, 502, 503]) {
+			const sink = vi.fn();
+			const out = await callReconScan(bindingReturning({ error: 'x' }, status), 'tok', 'REALTIME_THREAT_FEED', { domain: 'x.com' }, undefined, sink);
+			expect(out).toBeNull();
+			expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'recon', domain: 'x.com' });
+		}
 	});
 
 	it('emits binding_timeout when the fetch aborts with a TimeoutError', async () => {

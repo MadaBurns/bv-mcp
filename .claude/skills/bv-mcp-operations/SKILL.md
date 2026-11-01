@@ -171,7 +171,7 @@ production deploy are operator actions, not before 2026-10-07).** The doors:
 Every gate in front of the cf step is unchanged and in the same order
 (`check:deploy-freshness` → `check:sidecar-freshness` → `check:release-integrity`
 → dns-checks build → `check:bindings` → `inject-private-config.cjs` → both D1
-preflights → `check:bindings:prod`). **The injector STAYS and still writes
+preflights → `check:tenant-schema` → `check:bindings:prod`). **The injector STAYS and still writes
 `wrangler.production.jsonc`**: the D1 preflights, `check:bindings:prod`, the drift
 check and every `--config wrangler.production.jsonc` script (Phase 6 ports
 those) read it, and it is the rollback config. cf evaluates
@@ -389,7 +389,7 @@ in "Binding notes" below.
 | `BV_INFRA_PROBE`                                                                   | Service          | authoritative_dns_infra probe. ⚠️ NOT overlay-only; sidecar Worker — `deploy:prod` does NOT deploy it (`npm run deploy:infra-probe`)        |
 | `INTELLIGENCE_DB`                                                                  | D1               | `mcp_access_log` + `mcp_access_log_audit` store, database `mcp-access-log-v1` (was `bv-intelligence`; see note). Absent → access-log no-op |
 | `BRAND_AUDIT_DB` / `BRAND_AUDIT_QUEUE` / `BRAND_AUDIT_PDF_QUEUE` / `BRAND_REPORTS` | D1/Queue/R2      | Async brand-audit state, job queues, PDF storage. Queues absent → `*_start` → `unprovisioned`                                               |
-| `BV_BROWSER_RENDERER` / `BV_BROWSER_RENDERER_KEY`                                  | Service / Secret | **Operator only.** Brand-report PDF rendering                                                                                               |
+| `BV_BROWSER_RENDERER` / `BV_BROWSER_RENDERER_KEY`                                  | Service / Secret | Not used by the brand-audit PDF queue (in-process pdf-lib); legacy plumbing only                                                                                               |
 | `KV_ENVELOPE_KEY`                                                                  | Secret           | AES-256 KV envelope encryption (FIND-17 — OAuth codes, trial keys)                                                                          |
 | `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`                                               | var              | **Operator only.** `"tiered"` flips the runtime default; unset → schema default `'classic'`                                                 |
 | `SCORING_CONFIG`                                                                   | var              | JSON scoring overrides                                                                                                                      |

@@ -431,10 +431,10 @@ Static API keys via `Authorization: Bearer` authenticate as a specific tier:
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
-| free | Anonymous (no key): 25 `scan_domain` scans/day per IP, at most 12 distinct domains/day, 3 concurrent. With a free key: 50/day per tool. High-cost tools have tighter per-tool limits; `batch_scan` and other multi-domain/offensive tools require a paid tier (developer+). | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
-| **agent** | **200 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
-| developer | 500 scans/day, 10 concurrent | OAuth + Developer plan | Subscription (bv-web) |
-| enterprise | 10,000 scans/day, 25 concurrent | OAuth + Enterprise plan | Sales-led subscription (bv-web) |
+| free | Anonymous (no key): 25 `scan_domain` scans/day per IP, at most 12 distinct domains/day, 3 concurrent. With a free key: 50/day per tool, with no separate total across tools. High-cost tools have tighter per-tool limits; `batch_scan` and other multi-domain/offensive tools require a paid tier (developer+). | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
+| **agent** | **200 scans/day per tool, 2,000 tool calls/day in total, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
+| developer | 500 scans/day per tool, 5,000 tool calls/day in total, 10 concurrent | OAuth + Developer plan | Subscription (bv-web) |
+| enterprise | 10,000 scans/day per tool, 50,000 tool calls/day in total, 25 concurrent | OAuth + Enterprise plan | Sales-led subscription (bv-web) |
 
 Free hosted usage keeps core DNS and email checks open for trial traffic, while private-probe tools have per-tool unauthenticated limits: `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` at 25/day. `check_fast_flux`, `check_lookalikes` and `check_shadow_domains` are paid-only (developer tier or higher): an unauthenticated call gets HTTP 401 with a `WWW-Authenticate` challenge pointing at the OAuth protected-resource metadata (Claude shows its Connect card), while a signed-in free or agent-tier caller gets an HTTP 403 upgrade-required response (`-32003`). Self-hosts without OAuth enabled keep the 403 for unauthenticated callers. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier; their status and report pollers (`brand_audit_status`, `brand_audit_get_report`, `discover_brand_domains_status`, `discover_brand_domains_findings`) have no unauthenticated allowance and return HTTP 429 without a key.
 

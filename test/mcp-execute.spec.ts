@@ -1418,3 +1418,298 @@ describe('executeMcpRequest — unknown resource / prompt', () => {
 		expect(payload.error.message).toBe('Invalid prompt name: no-such-prompt');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Authenticated per-key daily total across all tools (SQ-494)
+// ---------------------------------------------------------------------------
+
+type RateLimitEmitter = NonNullable<ExecuteMcpRequestOptions['analytics']>['emitRateLimitEvent'];
+
+describe('executeMcpRequest — authenticated per-key daily total across tools', () => {
+	/** Lowered developer total so a cross-tool run reaches it in a few calls; every other tier keeps its shipped value. */
+	const DEV_TOTAL = 3;
+	const developerKey = { authenticated: true, tier: 'developer', keyHash: 'dev-total-key' } as const;
+
+	// vi.doMock registrations outlive resetModules: earlier blocks leave a stubbed
+	// rate-limiter behind, and these cases need the real (in-memory) counters.
+	beforeEach(() => {
+		vi.doUnmock('../src/lib/rate-limiter');
+		vi.doUnmock('../src/lib/config');
+		vi.doUnmock('../src/mcp/dispatch');
+		vi.doUnmock('../src/lib/session');
+	});
+
+	function mockDeveloperTotal(perToolLimits: Record<string, number> = {}, otherTotals: Record<string, number> = {}): void {
+		vi.doMock('../src/lib/config', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/config')>();
+			return {
+				...actual,
+				TIER_AGGREGATE_DAILY_LIMITS: { ...actual.TIER_AGGREGATE_DAILY_LIMITS, ...otherTotals, developer: DEV_TOTAL },
+				tierToolDailyLimit: (tier: Parameters<typeof actual.tierToolDailyLimit>[0], tool: string) =>
+					perToolLimits[tool] ?? actual.tierToolDailyLimit(tier, tool),
+			};
+		});
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: 1, result: {} },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'check_spf',
+				logCategory: 'tool',
+				logResult: 'ok',
+				logDetails: {},
+			}),
+		}));
+	}
+
+	function toolCall(name: string, overrides: Partial<ExecuteMcpRequestOptions> = {}): ExecuteMcpRequestOptions {
+		return baseOptions({
+			body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+			...overrides,
+		});
+	}
+
+	function asDeveloper(overrides: Partial<ExecuteMcpRequestOptions> = {}): Partial<ExecuteMcpRequestOptions> {
+		return { isAuthenticated: true, tierAuthResult: developerKey, ...overrides };
+	}
+
+	function analyticsWith(emitRateLimitEvent: RateLimitEmitter): ExecuteMcpRequestOptions['analytics'] {
+		return {
+			enabled: true,
+			emitRequestEvent: vi.fn(),
+			emitToolEvent: vi.fn(),
+			emitDegradationEvent: vi.fn(),
+			emitUngradedNotCachedEvent: vi.fn(),
+			emitDohPrimarySummary: vi.fn(),
+			emitQuotaShardEvent: vi.fn(),
+			emitQueueBatchEvent: vi.fn(),
+			emitTailAggregate: vi.fn(),
+			emitRateLimitEvent,
+			emitSessionEvent: vi.fn(),
+		};
+	}
+
+	async function statusOf(result: Promise<import('../src/mcp/execute').ProcessedRequestResult>) {
+		const settled = await result;
+		if (settled.kind !== 'response') throw new Error('expected response');
+		return settled;
+	}
+
+	it('rejects the first call past the total even though every per-tool counter is under its cap', async () => {
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { AGGREGATE_QUOTA_COUNTER } = await import('../src/lib/config');
+
+		for (const tool of ['scan_domain', 'check_spf', 'check_dmarc']) {
+			const allowed = await statusOf(executeMcpRequest(toolCall(tool, asDeveloper())));
+			expect(allowed.httpStatus).toBe(200);
+			// Allowed calls keep reporting the per-tool counter, exactly as before the total existed.
+			expect(allowed.headers['x-quota-limit']).toBe('500');
+			expect(allowed.headers['x-quota-remaining']).toBe('499');
+		}
+
+		const emitRateLimitEvent = vi.fn<RateLimitEmitter>();
+		const denied = await statusOf(executeMcpRequest(toolCall('check_mx', asDeveloper({ analytics: analyticsWith(emitRateLimitEvent) }))));
+		expect(denied.httpStatus).toBe(429);
+		const payload = denied.payload as { error: { code: number; message: string } };
+		expect(payload.error.code).toBe(-32029);
+		expect(payload.error.message).toBe(`Rate limit exceeded. developer tier is limited to ${DEV_TOTAL} requests per day across all tools.`);
+		expect(denied.headers['x-quota-limit']).toBe(String(DEV_TOTAL));
+		expect(denied.headers['x-quota-remaining']).toBe('0');
+		expect(denied.headers['x-quota-tier']).toBe('developer');
+		expect(Number(denied.headers['retry-after'])).toBeGreaterThan(0);
+		expect(emitRateLimitEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ limitType: 'daily_tool', toolName: AGGREGATE_QUOTA_COUNTER, limit: DEV_TOTAL, authTier: 'developer' }),
+		);
+	});
+
+	it('a per-tool denial does not consume the total, and the per-tool message is unchanged', async () => {
+		mockDeveloperTotal({ check_spf: 1 });
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		expect((await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())))).httpStatus).toBe(200);
+		const perTool = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+		expect(perTool.httpStatus).toBe(429);
+		expect((perTool.payload as { error: { message: string } }).error.message).toBe(
+			'Rate limit exceeded. developer tier is limited to 1 requests per day.',
+		);
+
+		// Two more calls fit only if the per-tool denial above left the total at 1 of 3.
+		expect((await statusOf(executeMcpRequest(toolCall('check_dmarc', asDeveloper())))).httpStatus).toBe(200);
+		expect((await statusOf(executeMcpRequest(toolCall('check_mx', asDeveloper())))).httpStatus).toBe(200);
+		const overTotal = await statusOf(executeMcpRequest(toolCall('check_ns', asDeveloper())));
+		expect(overTotal.httpStatus).toBe(429);
+		expect((overTotal.payload as { error: { message: string } }).error.message).toContain('across all tools');
+	});
+
+	it('keys the total on the same principal as the per-tool counter', async () => {
+		const checkToolSpy = vi.fn().mockResolvedValue({ allowed: true, remaining: 9_999, limit: 10_000 });
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return { ...actual, checkToolDailyRateLimit: checkToolSpy };
+		});
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { AGGREGATE_QUOTA_COUNTER, TIER_AGGREGATE_DAILY_LIMITS } = await import('../src/lib/config');
+
+		await executeMcpRequest(
+			toolCall('scan_domain', { isAuthenticated: true, tierAuthResult: { authenticated: true, tier: 'enterprise', keyHash: 'ent-key' } }),
+		);
+
+		expect(checkToolSpy).toHaveBeenNthCalledWith(1, 'ent-key', 'scan_domain', 10_000, undefined, undefined);
+		expect(checkToolSpy).toHaveBeenNthCalledWith(
+			2,
+			'ent-key',
+			AGGREGATE_QUOTA_COUNTER,
+			TIER_AGGREGATE_DAILY_LIMITS.enterprise,
+			undefined,
+			undefined,
+		);
+	});
+
+	it('omits retry-after when the denying counter gives no retry hint', async () => {
+		const checkToolSpy = vi
+			.fn()
+			.mockResolvedValueOnce({ allowed: true, remaining: 499, limit: 500 })
+			.mockResolvedValueOnce({ allowed: false, remaining: 0, limit: DEV_TOTAL });
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return { ...actual, checkToolDailyRateLimit: checkToolSpy };
+		});
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		const denied = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+		expect(denied.httpStatus).toBe(429);
+		expect(denied.headers['x-quota-limit']).toBe(String(DEV_TOTAL));
+		expect(denied.headers).not.toHaveProperty('retry-after');
+	});
+
+	it('exposes the remaining total on allowed calls without changing the per-tool headers', async () => {
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		const first = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+		expect(first.httpStatus).toBe(200);
+		expect(first.headers['x-quota-limit']).toBe('500');
+		expect(first.headers['x-quota-remaining']).toBe('499');
+		expect(first.headers['x-quota-total-remaining']).toBe(String(DEV_TOTAL - 1));
+
+		const second = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+		expect(second.headers['x-quota-total-remaining']).toBe(String(DEV_TOTAL - 2));
+	});
+
+	it('does not send x-quota-total-remaining for an uncapped tier', async () => {
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const owner = { isAuthenticated: true, tierAuthResult: { authenticated: true, tier: 'owner', keyHash: 'owner-hdr-key' } as const };
+
+		const result = await statusOf(executeMcpRequest(toolCall('check_spf', owner)));
+		expect(result.httpStatus).toBe(200);
+		expect(result.headers).not.toHaveProperty('x-quota-total-remaining');
+	});
+
+	it('a client-supplied tool name equal to the aggregate counter is unknown and consumes nothing', async () => {
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { AGGREGATE_QUOTA_COUNTER } = await import('../src/lib/config');
+
+		// Raw, upper-cased and padded spellings all normalise onto the counter name.
+		for (const spelling of [AGGREGATE_QUOTA_COUNTER, AGGREGATE_QUOTA_COUNTER.toUpperCase(), ` ${AGGREGATE_QUOTA_COUNTER} `]) {
+			const reserved = await statusOf(executeMcpRequest(toolCall(spelling, asDeveloper())));
+			expect(reserved.httpStatus).toBe(200);
+			const result = (reserved.payload as { result: { isError: boolean; content: Array<{ text: string }> } }).result;
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toContain(`Unknown tool: ${AGGREGATE_QUOTA_COUNTER}`);
+		}
+
+		// The whole total is still available: had a reserved call counted (twice each), fewer fit.
+		for (const tool of ['check_spf', 'check_dmarc', 'check_mx']) {
+			expect((await statusOf(executeMcpRequest(toolCall(tool, asDeveloper())))).httpStatus).toBe(200);
+		}
+		const overTotal = await statusOf(executeMcpRequest(toolCall('check_ns', asDeveloper())));
+		expect(overTotal.httpStatus).toBe(429);
+		expect((overTotal.payload as { error: { message: string } }).error.message).toContain('across all tools');
+	});
+
+	it('a call rejected by the concurrency limit does not consume the total', async () => {
+		const state = { reject: true };
+		const release = vi.fn();
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return {
+				...actual,
+				acquireConcurrencySlot: vi.fn(() =>
+					state.reject ? { allowed: false, retryAfterMs: 1000, active: 10, limit: 10 } : { allowed: true, active: 1, limit: 10 },
+				),
+				releaseConcurrencySlot: release,
+			};
+		});
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		// More rejected calls than the total allows: if they consumed it, nothing would fit below.
+		for (let i = 0; i < DEV_TOTAL + 2; i++) {
+			const rejected = await statusOf(executeMcpRequest(toolCall('check_spf', asDeveloper())));
+			expect(rejected.httpStatus).toBe(429);
+			expect((rejected.payload as { error: { message: string } }).error.message).toContain('concurrent requests');
+		}
+
+		state.reject = false;
+		for (const tool of ['check_dmarc', 'check_mx', 'check_ns']) {
+			expect((await statusOf(executeMcpRequest(toolCall(tool, asDeveloper())))).httpStatus).toBe(200);
+		}
+		const overTotal = await statusOf(executeMcpRequest(toolCall('check_ptr', asDeveloper())));
+		expect(overTotal.httpStatus).toBe(429);
+		expect((overTotal.payload as { error: { message: string } }).error.message).toContain('across all tools');
+		// Three completed calls release in the finally block; the total denial hands back its slot too.
+		expect(release).toHaveBeenCalledTimes(4);
+	});
+
+	it('a call rejected by session validation does not consume the total', async () => {
+		const state = { valid: false };
+		vi.doMock('../src/lib/session', () => ({
+			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
+			createSession: vi.fn(),
+			validateSession: vi.fn(async () => state.valid),
+		}));
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const withSession = asDeveloper({ validateSession: true, sessionId: 'b'.repeat(64) });
+
+		for (let i = 0; i < DEV_TOTAL + 2; i++) {
+			expect((await statusOf(executeMcpRequest(toolCall('check_spf', withSession)))).httpStatus).toBe(404);
+		}
+
+		state.valid = true;
+		for (const tool of ['check_dmarc', 'check_mx', 'check_ns']) {
+			expect((await statusOf(executeMcpRequest(toolCall(tool, withSession)))).httpStatus).toBe(200);
+		}
+		expect((await statusOf(executeMcpRequest(toolCall('check_ptr', withSession)))).httpStatus).toBe(429);
+	});
+
+	it('owner keys are not capped by the total', async () => {
+		mockDeveloperTotal();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const owner = { isAuthenticated: true, tierAuthResult: { authenticated: true, tier: 'owner', keyHash: 'owner-total-key' } as const };
+
+		for (let i = 0; i < DEV_TOTAL + 2; i++) {
+			const result = await statusOf(executeMcpRequest(toolCall('check_spf', owner)));
+			expect(result.httpStatus).toBe(200);
+			expect(result.headers['x-quota-tier']).toBe('owner');
+		}
+	});
+
+	it('unauthenticated callers are not capped by any tier total', async () => {
+		// Every tier's total lowered, so applying ANY of them to an anonymous caller would deny here.
+		mockDeveloperTotal({}, { free: DEV_TOTAL, agent: DEV_TOTAL, enterprise: DEV_TOTAL, partner: DEV_TOTAL, owner: DEV_TOTAL });
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		for (let i = 0; i < DEV_TOTAL + 2; i++) {
+			const result = await statusOf(executeMcpRequest(toolCall('check_spf')));
+			expect(result.httpStatus).toBe(200);
+			expect(result.headers['x-quota-tier']).toBe('free');
+		}
+	});
+});

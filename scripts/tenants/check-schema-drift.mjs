@@ -18,12 +18,17 @@
  * execute`. It NEVER executes DDL and never applies a migration.
  *
  * Why raw SQL files instead of the drizzle `meta/*_snapshot.json` files: the
- * tenant migration set's `meta/_journal.json` only has entries for
- * 0000/0001 — `0002_findings_scan_id_index.sql` exists on disk with no
- * matching snapshot/journal entry, so deriving the expected schema from meta
- * snapshots would silently miss exactly the drift this checker exists to
- * catch. The raw `.sql` files are the actual migration set of record (they're
- * what `provision-tenant.mjs` applies), so they're parsed directly instead.
+ * tenant migration set has no snapshot for
+ * `0002_findings_scan_id_index.sql` (a hand-written index migration; its
+ * `meta/_journal.json` entry was added later, SQ-501), so deriving the
+ * expected schema from meta snapshots would silently miss exactly the drift
+ * this checker exists to catch. The raw `.sql` files are the actual migration
+ * set of record (they're what `provision-tenant.mjs` applies), so they're
+ * parsed directly instead.
+ *
+ * Gate: `deploy:prod` and `deploy:prod:staged` run this check (after config
+ * injection, before shipping), so any drift or an unreachable live database
+ * (exit 1) or an unreadable config (exit 2) blocks the deploy fail-closed.
  *
  * Only bindings this script knows how to derive an expected schema for are
  * checked: `TENANT_REGISTRY_DB` (registry migrations) and any `TENANT_DB_*`
@@ -369,6 +374,12 @@ export function runSchemaDriftCheck(opts, deps) {
 	}
 
 	if (targets.length === 0) {
+		// Passes on purpose (tenants are off without TENANT_REGISTRY_DB), but never quietly: a config that
+		// lost its tenant bindings by mistake would otherwise ship unchecked behind a green gate.
+		deps.stderr(
+			`WARN: no D1 binding named TENANT_REGISTRY_DB or ${TENANT_BINDING_PREFIX}* found in ${configPath}; ` +
+				`tenant schema drift was NOT checked. Expected only when tenants are disabled.\n`,
+		);
 		deps.stdout(`No registry or tenant D1 bindings found in ${configPath}; nothing to check.\n`);
 		return 0;
 	}
@@ -408,26 +419,35 @@ export function runSchemaDriftCheck(opts, deps) {
 
 // -- CLI bootstrap -------------------------------------------------------------
 
-// Only run the CLI when invoked directly (node scripts/tenants/check-schema-drift.mjs ...).
-// When imported by a test, the `node:*` modules are NOT loaded — keeping the
-// module compatible with the @cloudflare/vitest-plugin runtime.
-const isDirectInvocation = (() => {
+/**
+ * True when this module is the script node was started with. Pure: the caller injects `realpath`, so
+ * importing this module never loads a `node:*` builtin.
+ *
+ * `argv1` is the path as typed (spaces literal, symlinked directories unresolved) while `metaUrl` is
+ * percent-encoded and symlink-resolved, so a raw string compare misses a path with a space or one reached
+ * through a symlink, and the CLI would then exit 0 without checking anything.
+ */
+export function isEntrypoint(metaUrl, argv1, realpath = (p) => p) {
+	if (!argv1) return false;
+	const self = decodeURIComponent(new URL(metaUrl).pathname);
+	if (argv1 === self) return true;
 	try {
-		if (typeof process === 'undefined' || !process?.argv?.[1]) return false;
-		const entry = process.argv[1];
-		return import.meta.url === `file://${entry}`;
+		return realpath(argv1) === realpath(self);
 	} catch {
 		return false;
 	}
-})();
+}
 
-if (isDirectInvocation) {
-	const [{ execFileSync }, fsMod, pathMod, urlMod] = await Promise.all([
-		import('node:child_process'),
-		import('node:fs'),
-		import('node:path'),
-		import('node:url'),
-	]);
+// Only run the CLI when invoked directly (node scripts/tenants/check-schema-drift.mjs ...).
+// When imported by a test, process.argv[1] is absent (workerd), so the `node:*` modules are NOT
+// loaded — keeping the module compatible with the @cloudflare/vitest-plugin runtime.
+const argv1 = typeof process === 'undefined' ? undefined : process?.argv?.[1];
+const nodeMods = argv1
+	? await Promise.all([import('node:child_process'), import('node:fs'), import('node:path'), import('node:url')])
+	: null;
+
+if (nodeMods && isEntrypoint(import.meta.url, argv1, nodeMods[1].realpathSync)) {
+	const [{ execFileSync }, fsMod, pathMod, urlMod] = nodeMods;
 
 	const __filename = urlMod.fileURLToPath(import.meta.url);
 	const __dirname = pathMod.dirname(__filename);

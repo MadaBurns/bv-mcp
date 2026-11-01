@@ -349,10 +349,21 @@ export interface BrandAuditTierStats {
 	tier2Status: 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
 	tier3FallbackTriggered: number;
 	tier1Freshness?: { overallStaleness: 'fresh' | 'partial' | 'stale' | 'very_stale' };
+	/**
+	 * Why tier 1 (bv-infrastructure-graph) was not `ok`, e.g.
+	 * `http_503:optout_service_unavailable` or `timeout`. Absent when ok/skipped.
+	 */
+	tier1DegradedReason?: string;
 	optOutsFiltered: number;
 }
 
 const TIER_STATUSES = new Set(['ok', 'degraded', 'partial', 'timeout', 'skipped']);
+/** Reason tokens are `[a-z0-9_]` words joined by `:`; anything else is dropped at this boundary. */
+const TIER_REASON = /^[a-z0-9_:]{1,96}$/;
+
+function readTier1DegradedReason(value: unknown): Pick<BrandAuditTierStats, 'tier1DegradedReason'> {
+	return typeof value === 'string' && TIER_REASON.test(value) ? { tier1DegradedReason: value } : {};
+}
 
 function readTierStatus(value: unknown): BrandAuditTierStats['tier0Status'] {
 	return typeof value === 'string' && TIER_STATUSES.has(value) ? (value as BrandAuditTierStats['tier0Status']) : 'skipped';
@@ -387,6 +398,7 @@ function readTierStats(value: unknown): BrandAuditTierStats | undefined {
 		tier2Status: readTierStatus(t.tier2Status),
 		tier3FallbackTriggered: typeof t.tier3FallbackTriggered === 'number' ? t.tier3FallbackTriggered : 0,
 		...(tier1Freshness ? { tier1Freshness } : {}),
+		...readTier1DegradedReason(t.tier1DegradedReason),
 		optOutsFiltered: typeof t.optOutsFiltered === 'number' ? t.optOutsFiltered : 0,
 	};
 }

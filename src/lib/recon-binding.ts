@@ -9,8 +9,7 @@
  * `ReconOutcome<T>` rather than `T | null`, so a caller can tell "not provisioned"
  * from "no such id" from "upstream is down" — see `ReconFailureReason`. The
  * synchronous `callReconScan` keeps `T | null`: it has four call sites that only
- * ever ask "did I get intel?", and it already resolves the one distinction that
- * mattered (404 => benign no-match) internally.
+ * ever ask "did I get intel?". A 404 there is a failure, not a no-match (SQ-502).
  */
 import { z } from 'zod';
 
@@ -116,19 +115,22 @@ export async function callReconScan(
 			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
 			signal: composeSignal(signal),
 		});
-		// A 404 from the intelligence /check means the threat feed has no entry for
-		// this target — i.e. no adverse intel (benign), NOT a provisioning failure.
-		// Return a benign result so callers render "no hits" instead of "unavailable".
-		// (The route 404 is fixed + regression-tested in bv-recon, so a 404 here is a
-		// data miss, not a misroute.) Stays SILENT — not a degradation.
-		if (resp.status === 404) {
-			await disposeUnreadResponseBody(resp);
-			return { status: 'info', details: 'No threat-intelligence match for this target.' };
-		}
-		// Other non-2xx (5xx / auth) are a present-binding failure: record + null.
+		// Any non-2xx — 404 included — is a present-binding failure: record + null, so
+		// callers report the enrichment as unavailable, never as a clean "no match".
+		// A data miss is a 200 with a benign `status` ('info'); a 404 means the route
+		// is absent. SQ-502: bv2-recon (bv-web-prod cloudflare/recon) has never served
+		// /osint/check, and the former 404 => benign shortcut turned that missing
+		// route into a permanent false "no threat-intelligence match" on all four
+		// callers. SQ-514: that standing condition is recorded as its own
+		// `binding_route_absent` kind (excluded from the paging alert, still queryable)
+		// so it stays observable without paging; every other non-2xx stays `binding_5xx`.
 		if (!resp.ok) {
 			await disposeUnreadResponseBody(resp);
-			recordReconDegradation('binding_5xx', telemetry, { route: '/osint/check', status: resp.status, domain: target.domain });
+			recordReconDegradation(resp.status === 404 ? 'binding_route_absent' : 'binding_5xx', telemetry, {
+				route: '/osint/check',
+				status: resp.status,
+				domain: target.domain,
+			});
 			return null;
 		}
 		const parsed = ReconScanResponseSchema.safeParse(await readJsonResponseCapped(resp, RECON_MAX_BODY_BYTES));
@@ -171,11 +173,11 @@ export type ReconOpaque = Record<string, unknown>;
  *                    so it is SILENT: not a degradation, never alertable.
  * - `not_found`    — upstream answered **definitively** with 404: no such investigation/scan,
  *                    or it has expired, or the caller raced a `*_start`. Also SILENT — a data
- *                    miss is not a binding failure. `binding-degradation.ts` already documents
- *                    that the kind set "deliberately excludes ... the benign recon 404"; before
- *                    this discriminant existed only `callReconScan` honored it, so every poll of
- *                    an unknown id on THIS path emitted a false `binding_5xx` into the operator
- *                    degradation alert.
+ *                    miss is not a binding failure: these routes exist on bv2-recon, so a 404
+ *                    is the id lookup missing, not the route. Before this discriminant every
+ *                    poll of an unknown id emitted a false `binding_5xx` into the operator
+ *                    degradation alert. (`callReconScan` is the opposite case: its route is
+ *                    absent upstream, so its 404 IS a failure — SQ-502.)
  * - `unauthorized` — 401. The binding is bound but the credential was rejected: an operator
  *                    misconfiguration, distinct from an outage and from a data miss.
  * - `target_not_authorized` — 403. The credential was ACCEPTED; bv-recon's second gate
@@ -230,8 +232,7 @@ async function reconJson(
 			signal: composeSignal(signal),
 		});
 		// A 404 is a DATA MISS (unknown/expired id, or a poll that raced its own start), not a
-		// binding failure. Stay SILENT, matching `callReconScan` and the contract documented on
-		// `BindingDegradationKind`.
+		// binding failure. Stay SILENT, per the contract documented on `BindingDegradationKind`.
 		if (resp.status === 404) {
 			await disposeUnreadResponseBody(resp);
 			return reconFailure('not_found', 404);

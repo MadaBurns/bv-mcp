@@ -40,6 +40,8 @@ Deploy:
 
     npm run deploy:prod
 
+When a preflight cannot pass and the fix is urgent, the sanctioned paths are `npx wrangler rollback` (§2) to restore the last-good version, or a direct Worker deploy (`npm -w packages/bv-dns-security-mcp run deploy`) that skips the gate chain, including the dns-checks dist build and the injector's required-secrets (`ALERT_WEBHOOK_URL`) and production-vars gates; neither has an env override, and the second needs an operator who accepts the unchecked risk.
+
 Verify (MANDATORY after every deploy):
 
     curl -s https://<worker-host>/mcp -X POST -H 'content-type: application/json' \
@@ -165,6 +167,10 @@ directory per step) and delete them when the cut-over is done.
 
        npx wrangler d1 create mcp-access-log-v1 --location oc
        npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0001_baseline.sql
+       npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0002_drop_unused_indexes.sql
+
+   The second file drops three unused indexes before any rows land, so the bulk
+   copy does not pay to maintain them.
 
 3. **Bulk copy.** Run:
 
