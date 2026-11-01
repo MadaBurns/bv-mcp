@@ -609,7 +609,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
 		if (runtimeOptions?.signal?.aborted) throw runtimeOptions.signal.reason ?? new Error('scan_aborted');
 		// A scan_domain call does not replay an entry another tool cached without the web posture
-		// section; it rescans (scored checks from the per-check cache) and re-caches with the section.
+		// section; it rescans (re-running the checks) and re-caches with the section.
 		if (cached && canReplayCachedScan(cached, runtimeOptions)) {
 			// Deliberately NOT re-stamped with the current hash: a cached result's score
 			// was computed under the config in force when it was written, so it must keep
@@ -757,7 +757,6 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const robotsMemo = createRobotsFetchMemo();
 
 	const forceRefresh = runtimeOptions?.forceRefresh;
-	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
 	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile
 		? [
@@ -785,7 +784,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				// per-check signal alive until either source fires.
 				const perCheckAbort = new AbortController();
 				const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanSignal]);
-				return runCachedCheck(
+				return runDedupedCheck(
 					domain,
 					cat,
 					() =>
@@ -807,8 +806,6 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 							// never wait on the DNS pool — see CHECKS_WITHOUT_DNS_POOL above.
 							CHECKS_WITHOUT_DNS_POOL.has(cat) ? undefined : () => dnsSemaphore.saturatedMs(),
 						),
-					kv,
-					cacheTtl,
 					forceRefresh,
 				);
 			});
@@ -823,7 +820,6 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		robotsMemo,
 		signal: scanSignal,
 		perCheckTimeoutMs: timeoutBudget.perCheckTimeoutMs,
-		kv,
 	});
 
 	let timedOut = false;
@@ -1354,18 +1350,24 @@ export function evictAdaptiveWeightCache(): void {
 /** Exposed for testing only — do not use in production code. */
 export const _adaptiveWeightCacheForTest = adaptiveWeightCache;
 
-async function runCachedCheck(
-	domain: string,
-	category: CheckCategory,
-	run: () => Promise<CheckResult>,
-	kv?: KVNamespace,
-	ttlSeconds?: number,
-	skipCache?: boolean,
-): Promise<CheckResult> {
-	// skipSentinel: per-check scan caches are ~98% unique-domain / low-contention;
-	// the cross-isolate sentinel's KV writes+deletes cost more than the rare stampede
-	// they'd prevent (INFLIGHT still dedups in-isolate).
-	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache, (r: CheckResult) => !r.partial, true);
+/**
+ * Run one scored check with in-isolate dedup, writing NOTHING to KV or memory.
+ *
+ * SQ-498: a cold scan used to write one `...:check:<category>` entry per category (19 scored + 6
+ * web posture) alongside the single scan-level entry: ~27 SCAN_CACHE puts for one scan. Measured
+ * over 7 days of production tool_call events, only ~1.3k direct check_* calls hit such an entry
+ * (against ~800 cold scans' worth of writes), 95% of them from owner-tier sweeps rather than
+ * customers, and a repeat scan is answered by the scan-level entry, not these. So the scan keeps
+ * the scan-level entry (the 5-min scan cache) and no longer persists its per-check results.
+ *
+ * What stays: `runWithCache` still shares the in-flight promise for the same key, so two
+ * concurrent scans of one domain in an isolate run each check once, and it reads the in-memory
+ * cache. `shouldCache` is false so nothing is written there either (a memory write per category
+ * would churn the 1000-entry fallback cache that short-TTL poller results rely on). Direct
+ * check_* calls keep their own KV-backed per-check cache under the same key.
+ */
+function runDedupedCheck(domain: string, category: CheckCategory, run: () => Promise<CheckResult>, skipCache?: boolean): Promise<CheckResult> {
+	return runWithCache(buildCheckCacheKey(domain, category), run, undefined, undefined, skipCache, () => false, true);
 }
 
 /**

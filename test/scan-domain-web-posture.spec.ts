@@ -402,7 +402,10 @@ describe('scan_domain webPosture — never delays or starves the scored result (
 		const optedIn = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(optedIn.cached).toBe(false);
 		expect(optedIn.webPosture?.results).toHaveLength(6);
-		expect(optedIn.score).toEqual(plain.score);
+		// SQ-498: the rescan re-runs the scored checks (no per-check cache), so volatile metadata such
+		// as the wildcard probe's random label differs; the verdict does not.
+		expect(optedIn.score.overall).toBe(plain.score.overall);
+		expect(optedIn.score.grade).toBe(plain.score.grade);
 
 		const hit = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(hit.cached).toBe(true);
