@@ -179,6 +179,10 @@ type BvMcpEnv = Env & {
 	 */
 	ANALYTICS_DATASET?: string;
 	BV_API_KEY?: string;
+	/** Optional dedicated owner credential for roaming access; requires a valid unexpired BV_ROAMING_OWNER_EXPIRES_AT. */
+	BV_ROAMING_OWNER_KEY?: string;
+	/** Required expiry for roaming owner access: canonical ISO 8601 UTC timestamp (YYYY-MM-DDTHH:mm:ss.sssZ). */
+	BV_ROAMING_OWNER_EXPIRES_AT?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
 	OWNER_ALLOW_IPS?: string;
 	BV_WEB?: Fetcher;

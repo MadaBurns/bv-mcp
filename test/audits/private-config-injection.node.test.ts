@@ -166,6 +166,8 @@ describe('private Wrangler config injection', () => {
 
 		expect(injected.secrets?.required, 'the generated production config must declare its required secrets').toContain('BV_API_KEY');
 		expect(injected.secrets?.required).toContain('OAUTH_SIGNING_SECRET');
+		// Removal is a supported way to revoke temporary roaming owner access.
+		expect(injected.secrets?.required).not.toContain('BV_ROAMING_OWNER_KEY');
 
 		// Fail-soft capabilities must stay out: check_ssl, the recon tools and Cert Spotter
 		// are all designed to degrade when unset, so requiring them would block a deploy
