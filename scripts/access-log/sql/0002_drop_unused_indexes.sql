@@ -1,9 +1,11 @@
 -- scripts/access-log/sql/0002_drop_unused_indexes.sql
 -- Drops the three mcp_access_log secondary indexes that no query in this repo uses (SQ-500).
 -- Target binding: INTELLIGENCE_DB (D1)
--- Target database: mcp-access-log-v1
--- Provisioning (operator-run, idempotent, after 0001_baseline.sql):
---   npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0002_drop_unused_indexes.sql
+-- Target database: bv-intelligence while it is still live (before the operator-runbook §3a cut-over),
+--   then mcp-access-log-v1 once the binding points there. Apply it to whichever database the binding
+--   resolves to at the time; the saving only lands once this file has run against the LIVE database.
+-- Provisioning (operator-run, idempotent, after 0001_baseline.sql on a new database):
+--   npx wrangler d1 execute <bv-intelligence | mcp-access-log-v1> --remote --file scripts/access-log/sql/0002_drop_unused_indexes.sql
 --
 -- Why: D1 bills every index entry as a row written, on insert and again on the retention DELETE
 -- (and the archive pass reads the table). Every logged call paid for six secondary indexes; only
