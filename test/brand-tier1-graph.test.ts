@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { computeTier1Confidence, tier1GraphLookup } from '../src/lib/brand-tier1-graph';
+import { clientSafeTier1Reason, computeTier1Confidence, tier1GraphLookup } from '../src/lib/brand-tier1-graph';
 
 interface MockEnv {
 	BV_WEB_INTERNAL_KEY?: string;
@@ -264,7 +264,9 @@ describe('tier1GraphLookup', () => {
 
 			const result = await tier1GraphLookup('example.com', binding, baseEnv, 5);
 
-			expect(result.status).toBe('degraded');
+			// Headers arrived, the body stalled past the deadline: a timeout, not an unreadable body (SQ-524).
+			expect(result.status).toBe('timeout');
+			expect(result.degradedReason).toBe('timeout');
 			expect(requestSignal?.aborted).toBe(true);
 			const request = vi.mocked(binding.fetch).mock.calls[0]?.[0] as Request;
 			expect(request.redirect).toBe('manual');
@@ -395,6 +397,21 @@ describe('tier1GraphLookup', () => {
 				baseEnv,
 			);
 			expect(result.triggerTier3Fallback).toBe(false);
+		});
+	});
+
+	describe('clientSafeTier1Reason', () => {
+		it('collapses config-state and producer tokens to a generic reason', () => {
+			for (const reason of ['no_internal_key', 'auth_not_configured', 'http_401:internal_key_invalid', 'http_503:optout_service_unavailable', 'http_502', 'anything_new']) {
+				expect(clientSafeTier1Reason(reason)).toBe('upstream_unavailable');
+			}
+		});
+
+		it('keeps transport/payload tokens and passes undefined through', () => {
+			for (const reason of ['timeout', 'fetch_failed', 'body_unreadable', 'schema_mismatch', 'lookup_rejected']) {
+				expect(clientSafeTier1Reason(reason)).toBe(reason);
+			}
+			expect(clientSafeTier1Reason(undefined)).toBeUndefined();
 		});
 	});
 

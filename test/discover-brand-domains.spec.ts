@@ -1300,17 +1300,12 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		expect(correlateNs).toHaveBeenCalled();
 	});
 
-	it('surfaces the tier1 degraded reason in the tiers block (SQ-503: producer 503 was invisible)', async () => {
+	it('surfaces a transport-level tier1 degraded reason in the tiers block as-is', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const tieredDeps = {
 			...makeDeps({ correlateNs: vi.fn().mockResolvedValue(okNs([])) }),
 			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
-			tier1Lookup: vi.fn().mockResolvedValue({
-				observations: [],
-				status: 'degraded',
-				triggerTier3Fallback: true,
-				degradedReason: 'http_503:optout_service_unavailable',
-			}),
+			tier1Lookup: vi.fn().mockResolvedValue({ observations: [], status: 'timeout', triggerTier3Fallback: true, degradedReason: 'timeout' }),
 			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
 		};
 		const result = await discoverBrandDomains(
@@ -1320,9 +1315,48 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
-		expect(tiers?.tier1Status).toBe('degraded');
-		expect(tiers?.tier1DegradedReason).toBe('http_503:optout_service_unavailable');
+		expect(tiers?.tier1Status).toBe('timeout');
+		expect(tiers?.tier1DegradedReason).toBe('timeout');
 	});
+
+	it.each(['no_internal_key', 'http_401:internal_key_invalid', 'http_503:optout_service_unavailable'])(
+		'shows a generic tier1 reason to callers, never the config-state token %s (SQ-524)',
+		async (precise) => {
+			const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+			const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+			try {
+				const tieredDeps = {
+					...makeDeps({ correlateNs: vi.fn().mockResolvedValue(okNs([])) }),
+					tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+					tier1Lookup: vi.fn().mockResolvedValue({
+						observations: [],
+						status: 'degraded',
+						triggerTier3Fallback: true,
+						degradedReason: precise,
+					}),
+					tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+				};
+				const result = await discoverBrandDomains(
+					'example.com',
+					{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+					tieredDeps as unknown as DiscoverBrandDomainsDeps,
+				);
+				const summary = result.findings.find((f) => f.metadata?.summary === true);
+				const perf = summary?.metadata?.discoveryPerformance as
+					| { tiers?: Record<string, unknown>; phases?: Array<{ name: string; detail?: Record<string, unknown> }> }
+					| undefined;
+				expect(perf?.tiers?.tier1Status).toBe('degraded');
+				expect(perf?.tiers?.tier1DegradedReason).toBe('upstream_unavailable');
+				expect(perf?.phases?.find((p) => p.name === 'tier1_graph')?.detail?.degradedReason).toBe('upstream_unavailable');
+				// Nothing in the caller-visible result carries the precise token...
+				expect(JSON.stringify(result)).not.toContain(precise);
+				// ...it stays in the structured log.
+				expect(logSpy.mock.calls.some(([line]) => typeof line === 'string' && line.includes(precise))).toBe(true);
+			} finally {
+				logSpy.mockRestore();
+			}
+		},
+	);
 
 	it('triggers tier3 fallback when caller_candidates are not covered by tier 0/1/2', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
