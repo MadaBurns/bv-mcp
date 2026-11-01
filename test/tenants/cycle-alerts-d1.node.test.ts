@@ -276,4 +276,93 @@ describe('Tenant cycle lifecycle against real D1', () => {
 			vi.unstubAllGlobals();
 		}
 	});
+
+	describe('retry budget (SQ-501)', () => {
+		const startedAt = 1_000_000;
+		const budget = 7 * 24 * 3600 * 1000;
+
+		function captureOperatorAlerts(): string[] {
+			const bodies: string[] = [];
+			vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+				bodies.push(String(init?.body ?? ''));
+				return new Response('ok');
+			});
+			return bodies;
+		}
+		const cycleRow = (id: string) =>
+			registry.prepare('SELECT alert_sent_at, alert_outcome FROM tenant_cycles WHERE id = ?').bind(id).first();
+
+		it('abandons a cycle whose tenant stays unreconcilable past the budget, with one extra operator alert', async () => {
+			const operatorAlerts = captureOperatorAlerts();
+			try {
+				// 'tenant-2' is registered but has no TENANT_DB_TENANT_2 binding, so every reconcile throws `Tenant not found`.
+				await registry
+					.prepare('INSERT INTO sub_tenants (id, super_tenant_id, name, d1_db_id, created_at) VALUES (?, ?, ?, ?, ?)')
+					.bind('tenant-2', 'super-1', 'Unbound tenant', 'unbound-db', 1)
+					.run();
+				await registry
+					.prepare('INSERT INTO tenant_cycles (id, super_tenant_id, sub_tenant_id, started_at, expected_total) VALUES (?, ?, ?, ?, ?)')
+					.bind('cycle-unbound', 'super-1', 'tenant-2', startedAt, 3)
+					.run();
+				const sweep = (now: number) => handleTenantCycleAlerts(environment(), ctx, { now: () => now });
+
+				// Exactly at the budget it is still retryable: escalated once, not abandoned.
+				await sweep(startedAt + budget);
+				expect(await cycleRow('cycle-unbound')).toEqual({ alert_sent_at: null, alert_outcome: 'unreconcilable' });
+				expect(operatorAlerts).toHaveLength(1);
+				expect(operatorAlerts[0]).toContain('unreconcilable');
+
+				// One tick past the budget it is stamped terminal and raises exactly one more alert.
+				await sweep(startedAt + budget + 1);
+				expect(await cycleRow('cycle-unbound')).toEqual({ alert_sent_at: startedAt + budget + 1, alert_outcome: 'abandoned_retry_budget' });
+				expect(operatorAlerts).toHaveLength(2);
+				expect(operatorAlerts[1]).toContain('abandoned after retry budget');
+				expect(operatorAlerts[1]).toContain('cycle_id: cycle-unbound');
+
+				// It has left the reconcile loop: no further reads, no further alerts.
+				await sweep(startedAt + budget + 2);
+				expect(operatorAlerts).toHaveLength(2);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+
+		it('abandons a settled cycle whose findings read keeps failing past the budget, and never earlier', async () => {
+			const operatorAlerts = captureOperatorAlerts();
+			try {
+				await cycle('cycle-pending', startedAt, 1);
+				await registry.prepare('UPDATE tenant_cycles SET completed_total = 1 WHERE id = ?').bind('cycle-pending').run();
+				const failingTenant = new Proxy(tenant, {
+					get(target, prop) {
+						if (prop === 'prepare') {
+							return (sql: string) => {
+								if (/\bFROM findings\b/i.test(sql)) throw new Error('simulated tenant D1 read failure');
+								return target.prepare(sql);
+							};
+						}
+						const value = Reflect.get(target, prop, target);
+						return typeof value === 'function' ? value.bind(target) : value;
+					},
+				});
+				const env = { ...environment(), TENANT_DB_TENANT_1: failingTenant };
+				const sweep = (now: number) => handleTenantCycleAlerts(env, ctx, { now: () => now, sendAlert: async () => ({ delivered: true }) });
+
+				// Within the budget the cycle stays retryable and silent.
+				await sweep(startedAt + budget);
+				expect(await cycleRow('cycle-pending')).toEqual({ alert_sent_at: null, alert_outcome: null });
+				expect(operatorAlerts).toHaveLength(0);
+
+				// Past the budget it is abandoned once.
+				await sweep(startedAt + budget + 1);
+				expect(await cycleRow('cycle-pending')).toEqual({ alert_sent_at: startedAt + budget + 1, alert_outcome: 'abandoned_retry_budget' });
+				expect(operatorAlerts).toHaveLength(1);
+				expect(operatorAlerts[0]).toContain('cycle_id: cycle-pending');
+
+				await sweep(startedAt + budget + 2);
+				expect(operatorAlerts).toHaveLength(1);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+	});
 });

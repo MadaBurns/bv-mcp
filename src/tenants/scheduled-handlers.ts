@@ -116,6 +116,16 @@ const UNSETTLED_CYCLES_SQL = `
  * alerts and is re-reconciled every tick forever (SQ-167: 09-13 and 09-20 cycles).
  */
 const STALLED_CYCLE_SETTLE_MS = 6 * 3600 * 1000;
+/**
+ * Total retry budget for a cycle whose reconcile or alert step keeps failing
+ * transiently. Every 15-minute tick re-reads the tenant D1 for such a cycle, and
+ * nothing else ever removes it: a tenant that stays unreadable or unresolvable
+ * would be re-queried forever. Cycles are weekly, so a cycle still failing after a
+ * full week is superseded by newer ones; it is stamped terminal and one operator
+ * alert is raised. Age-based on purpose: no per-cycle attempt counter is persisted.
+ */
+const CYCLE_RETRY_BUDGET_MS = 7 * 24 * 3600 * 1000;
+const ALERT_OUTCOME_ABANDONED = 'abandoned_retry_budget';
 // Count every domain that never reported as errored so the cycle settles into
 // the normal alert path. The guard makes this idempotent and race-safe.
 const SETTLE_STALLED_CYCLE_SQL = `
@@ -622,6 +632,53 @@ async function escalateUnreconcilableCycle(
 }
 
 /**
+ * Give up on a cycle whose reconcile or alert step is still failing after
+ * {@link CYCLE_RETRY_BUDGET_MS}: stamp it terminal so the sweep stops re-reading
+ * its tenant D1 every tick, and raise ONE operator alert (the guarded stamp lets
+ * exactly one sweep win). Returns whether the cycle is past the budget. Fail-open:
+ * nothing throws, and a failed stamp leaves the cycle retryable.
+ */
+async function abandonCycleIfPastRetryBudget(
+	env: TenantScheduledEnv,
+	cycle: UnsettledCycleRow,
+	nowMs: number,
+	reason: unknown,
+): Promise<boolean> {
+	if (nowMs - cycle.started_at <= CYCLE_RETRY_BUDGET_MS) return false;
+	const stamped = await env
+		.TENANT_REGISTRY_DB!.prepare(STAMP_ALERT_SQL)
+		.bind(nowMs, ALERT_OUTCOME_ABANDONED, cycle.id)
+		.run()
+		.catch(() => null);
+	if (!stamped || stamped.meta.changes === 0) return true; // Stamp failed (retry next tick), or already abandoned/alerted.
+
+	const details = {
+		cycleId: cycle.id,
+		superTenantId: cycle.super_tenant_id,
+		subTenantId: cycle.sub_tenant_id,
+		ageHours: Math.round((nowMs - cycle.started_at) / 3_600_000),
+		reason: reason instanceof Error ? reason.message : String(reason),
+	};
+	logError('tenant_cycle_abandoned', { severity: 'error', category: 'tenant.scheduled', details });
+	await sendAlert(
+		env.ALERT_WEBHOOK_URL ?? '',
+		buildAlertPayload({
+			title: 'Tenant monitoring cycle abandoned after retry budget',
+			severity: 'warning',
+			metrics: {
+				cycle_id: details.cycleId,
+				sub_tenant_id: details.subTenantId,
+				age_hours: details.ageHours,
+				reason: details.reason,
+			},
+			threshold: `cycle reconciled and alerted within ${CYCLE_RETRY_BUDGET_MS / 3_600_000}h of start`,
+		}),
+		{ bvWeb: env.BV_WEB },
+	).catch(() => {});
+	return true;
+}
+
+/**
  * Per-cycle alert sweep. Runs alongside the existing fuzzing scan on the
  * 15-minute trigger.
  *
@@ -682,7 +739,10 @@ export async function handleTenantCycleAlerts(
 				});
 				// A settle failure is retried next tick. A cycle that cannot even be
 				// measured past the deadline would otherwise fail here silently forever.
-				if (stalled && !reconciled) await escalateUnreconcilableCycle(env, cycle, now(), err);
+				// Past the retry budget it is abandoned instead (the abandon alert covers it).
+				if (stalled && !(await abandonCycleIfPastRetryBudget(env, cycle, now(), err)) && !reconciled) {
+					await escalateUnreconcilableCycle(env, cycle, now(), err);
+				}
 			}
 		}
 	} catch (err) {
@@ -721,6 +781,7 @@ export async function handleTenantCycleAlerts(
 					subTenantId: cycle.sub_tenant_id,
 				},
 			});
+			await abandonCycleIfPastRetryBudget(env, cycle, now(), err);
 		}
 	}
 }
@@ -803,7 +864,9 @@ async function processCycleAlert(
 				cycleId: cycle.id,
 			},
 		});
-		// Leave the cycle retryable: a transient read must not permanently lose its alert.
+		// Leave the cycle retryable: a transient read must not permanently lose its alert,
+		// until the retry budget is spent.
+		await abandonCycleIfPastRetryBudget(env, cycle, deps.now(), err);
 		return;
 	}
 
