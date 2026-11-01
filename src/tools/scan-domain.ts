@@ -1439,9 +1439,9 @@ async function safeCheck(
 
 		const findings = [createFinding(category, title, severity, detail)];
 		const result = buildCheckResult(category, findings);
-		// `partial: true` keeps the one-off transient error OUT of the 5-min
-		// per-check cache (see runCachedCheck's shouldCache predicate) so it
-		// self-heals and isn't served to direct check_* calls.
+		// `partial: true` keeps the one-off transient error OUT of the 5-min per-check
+		// cache that direct check_* calls use (their shouldCache predicate is `!partial`),
+		// so it self-heals and is not served to them.
 		// `passed: false` explicitly: buildCheckResult derived `passed: true` from the
 		// single high/low finding's score (75/95), which survived the `score: 0` spread —
 		// the post-processing re-apply masked it in scan output, but the intermediate
