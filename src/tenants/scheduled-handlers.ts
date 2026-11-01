@@ -70,6 +70,11 @@ const STALE_RESCAN_MULTIPLIER = 2;
  * not due at the next Sunday 02:00 tick, so it would be checked only every
  * other week and rescanned only every third. Matches the dispatch dedup
  * window: a scan finishing that close to its tick belongs to that tick.
+ *
+ * The grace assumes the weekly batch drains in under 6h. A drain longer than
+ * that stamps a scan past the grace, so the domain is not due at the next
+ * tick and skips a cycle. Do not raise this to paper over a slow drain: it
+ * also widens the stale-rescan check below.
  */
 const DUE_GRACE_MS = 6 * 3600 * 1000;
 

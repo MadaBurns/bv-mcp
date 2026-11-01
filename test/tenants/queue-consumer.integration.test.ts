@@ -18,7 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, createExecutionContext } from 'cloudflare:test';
 import { resetTenantResolverCache } from '../../src/tenants/tenant-resolver';
-import { emitScanCapture } from '../helpers/scan-capture';
+import { emitScanCapture, makeScanDomainResult } from '../helpers/scan-capture';
 
 // Hoisted mock state so vi.mock factory can read it.
 const handleToolsCallMock = vi.hoisted(() =>
@@ -53,6 +53,11 @@ const SCANS_INSERT_SQL =
 const FINDINGS_INSERT_SQL =
 	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+const SCAN_STAMP_SOURCE_SQL = 'SELECT scan_at, score, grade FROM scans WHERE id = ?';
+const STAMP_PREFIX = 'UPDATE domains SET last_scanned_at = ?';
+const MARK_DOMAIN_SCANNED_SQL =
+	'UPDATE domains SET last_scanned_at = ?, last_score = ?, last_grade = COALESCE(?, last_grade) ' +
+	'WHERE domain = ? AND (last_scanned_at IS NULL OR last_scanned_at < ?)';
 const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
 const DELETE_SCAN_SQL = 'DELETE FROM scans WHERE id = ?';
 
@@ -268,7 +273,48 @@ describe('processScanMessage', () => {
 		expect(stampIndex).toBeGreaterThan(scanIndex);
 		expect(scanIndex).toBeGreaterThanOrEqual(0);
 		const scanAt = tenantCalls[scanIndex]!.binds[2];
-		expect(tenantCalls[stampIndex]!.binds).toEqual([scanAt, 74, 'C+', 'example.com']);
+		// The trailing bind is the monotonic guard: a stale redelivery cannot move the stamp back.
+		expect(tenantCalls[stampIndex]!.binds).toEqual([scanAt, 74, 'C+', 'example.com', scanAt]);
+	});
+
+	it('threads the injected clock into scan_at and the stamp, so a test never races Date.now()', async () => {
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			emitScanCapture(runtimeOptions, 'example.com', { score: 74, grade: 'C+', findings: [] });
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, tenantCalls } = buildEnv();
+
+		expect(await processScanMessage(validMsg, 1, customEnv, { ...makeCtx(), now: () => 1_234_567 })).toBe('ack');
+
+		expect(tenantCalls.find((c) => c.sql === SCANS_INSERT_SQL)!.binds[2]).toBe(1_234_567);
+		expect(tenantCalls.find((c) => c.sql.startsWith(STAMP_PREFIX))!.binds).toEqual([1_234_567, 74, 'C+', 'example.com', 1_234_567]);
+	});
+
+	it('does not advance last_scanned_at for an ungraded scan (null score), so the domain stays due (SQ-496)', async () => {
+		// An inconclusive scan (NXDOMAIN, SERVFAIL, scoring failure) reports overall/grade null.
+		// Stamping it would hide a never-measured domain for a full interval, and writing a
+		// grade for it would fabricate a failing measurement.
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			const ungraded = makeScanDomainResult('example.com');
+			(runtimeOptions as { scanResultCapture: (r: unknown) => void }).scanResultCapture({
+				...ungraded,
+				score: { ...ungraded.score, overall: null, grade: null },
+			});
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, tenantCalls } = buildEnv();
+
+		expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+
+		// Positive control: the scan row WAS persisted, with the null score, so the absent
+		// stamp below is the rule applying, not the scan failing to run.
+		const scanInsert = tenantCalls.find((c) => c.sql === SCANS_INSERT_SQL);
+		expect(scanInsert).toBeDefined();
+		expect(scanInsert!.binds[3]).toBeNull();
+		expect(scanInsert!.binds[4]).toBeNull();
+		expect(tenantCalls.some((c) => c.sql.startsWith('UPDATE domains'))).toBe(false);
 	});
 
 	it('does not stamp last_scanned_at for a dead-lettered domain that was never measured (SQ-496)', async () => {
@@ -277,7 +323,75 @@ describe('processScanMessage', () => {
 		const { customEnv, tenantCalls } = buildEnv();
 
 		expect(await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx())).toBe('ack');
-		expect(tenantCalls.some((c) => c.sql.startsWith('UPDATE domains SET last_scanned_at'))).toBe(false);
+		// Not vacuous: the DLQ marker row (null score) was written, and no domains write of any kind followed.
+		expect(tenantCalls.filter((c) => c.sql === SCANS_INSERT_SQL)).toHaveLength(1);
+		expect(tenantCalls.some((c) => c.sql.startsWith('UPDATE domains'))).toBe(false);
+	});
+
+	describe("'complete' redelivery re-stamps a missed stamp (SQ-496)", () => {
+		function tenantWithCompleteScan(scanRow: { scan_at: number; score: number | null; grade: string | null }, failFirstStamp = false) {
+			const registry = makeMockD1({
+				rowsBySql: {
+					// A cached tenant is re-checked for `active` on the next delivery.
+					'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1': [{ active: 1 }],
+					[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 }],
+				},
+			});
+			const tenant = makeMockD1({
+				rowsBySql: {
+					[SCAN_COMPLETION_PROBE_SQL]: [{ id: 'durable-scan', finding_count: 2, persisted_findings: 2 }],
+					[SCAN_STAMP_SOURCE_SQL]: [scanRow],
+				},
+				throwOnRunOnce: failFirstStamp ? new Map([[MARK_DOMAIN_SCANNED_SQL, new Error('d1_stamp_failed')]]) : undefined,
+			});
+			return { tenant, customEnv: { ...env, TENANT_REGISTRY_DB: registry.db, [TEST_TENANT_BINDING]: tenant.db } };
+		}
+
+		it('stamps from the persisted scan row, without rescanning or inserting another scan', async () => {
+			const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+			const { tenant, customEnv } = tenantWithCompleteScan({ scan_at: 5_000, score: 74, grade: 'C+' });
+
+			expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+
+			expect(tenant.calls).toContainEqual({ sql: SCAN_STAMP_SOURCE_SQL, binds: ['durable-scan'] });
+			expect(tenant.calls.find((c) => c.sql.startsWith(STAMP_PREFIX))!.binds).toEqual([5_000, 74, 'C+', 'example.com', 5_000]);
+			expect(tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL)).toHaveLength(0);
+			expect(handleToolsCallMock).not.toHaveBeenCalled();
+		});
+
+		it('is idempotent: repeated redeliveries issue the identical guarded stamp', async () => {
+			const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+			const { tenant, customEnv } = tenantWithCompleteScan({ scan_at: 5_000, score: 74, grade: 'C+' });
+
+			expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+			expect(await processScanMessage(validMsg, 2, customEnv, makeCtx())).toBe('ack');
+
+			const stamps = tenant.calls.filter((c) => c.sql.startsWith(STAMP_PREFIX));
+			expect(stamps).toHaveLength(2);
+			expect(stamps[1]).toEqual(stamps[0]);
+			// The guard that makes it a no-op once stamped (and keeps it monotonic).
+			expect(stamps[0]!.sql).toContain('last_scanned_at IS NULL OR last_scanned_at < ?');
+		});
+
+		it('does not stamp when the persisted scan is ungraded (null score), such as a queue_dlq marker', async () => {
+			const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+			const { tenant, customEnv } = tenantWithCompleteScan({ scan_at: 5_000, score: null, grade: null });
+
+			expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+
+			expect(tenant.calls).toContainEqual({ sql: SCAN_STAMP_SOURCE_SQL, binds: ['durable-scan'] });
+			expect(tenant.calls.some((c) => c.sql.startsWith('UPDATE domains'))).toBe(false);
+		});
+
+		it('still acks when the re-stamp itself fails: it is best-effort and never blocks progress', async () => {
+			const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+			const { tenant, customEnv } = tenantWithCompleteScan({ scan_at: 5_000, score: 74, grade: 'C+' }, true);
+
+			expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+			// The next redelivery retries the stamp and succeeds.
+			expect(await processScanMessage(validMsg, 2, customEnv, makeCtx())).toBe('ack');
+			expect(tenant.calls.filter((c) => c.sql.startsWith(STAMP_PREFIX))).toHaveLength(2);
+		});
 	});
 
 	it('returns ack without writing when an existing scan row is found (idempotency)', async () => {
