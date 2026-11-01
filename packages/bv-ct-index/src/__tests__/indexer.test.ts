@@ -10,6 +10,7 @@ import { runCompactionJob } from '../indexer/compact';
 import { COMPACTION_CRON, runCompactionCron } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import { KILLED_RETRY_DELAY_SECONDS, indexEntries } from '../indexer/write';
+import { toBatches } from '../tailer/observations';
 import type { NameObservation, SiblingObservation } from '../types';
 import {
 	DAY_S,
@@ -154,6 +155,30 @@ describe('T0 indexer', () => {
 		expect(compact.rejected).toBe(0);
 		expect(await read()).toEqual(fromFull);
 		expect(fromFull.names.map((row) => row.apex)).toEqual(['example.com', 'example.com', 'shop.co.nz']);
+	});
+
+	it('indexes what the tailer queues (toBatches, no key/apex) to exactly the rows of the full shape (SQ-530)', async () => {
+		const names = [obs('www.example.com'), obs('*.example.com', { issuer: 'E5' }), obs('a.shop.co.nz')];
+		const siblings = [sib('example.com', 'other.org'), sib('other.org', 'example.com')];
+		const read = async () => {
+			const reader = createReader(testEnv(), () => T);
+			return {
+				names: [...(await reader.scan('example.com', { limit: 10 })).names, ...(await reader.scan('shop.co.nz', { limit: 10 })).names],
+				siblings: (await reader.siblings('example.com', { limit: 10 })).siblings,
+			};
+		};
+
+		const full = await indexEntries(fakeBatch('bv-ct-index-entries', [batchBody(names, siblings)]), testEnv(), T);
+		const fromFull = await read();
+		await applyCatalog();
+
+		const queued = toBatches('log-a', 0, 1, { names, siblings });
+		expect(queued.flatMap((batch) => [...batch.names, ...batch.siblings]).some((row) => 'key' in row)).toBe(false);
+		const fromTailer = await indexEntries(fakeBatch('bv-ct-index-entries', queued), testEnv(), T);
+
+		expect(fromTailer).toEqual(full);
+		expect(fromTailer.rejected).toBe(0);
+		expect(await read()).toEqual(fromFull);
 	});
 
 	it('derives apex itself: refuses a forged apex, a name with no registrable apex, an over-long issuer and non-string keys (SQ-528)', async () => {

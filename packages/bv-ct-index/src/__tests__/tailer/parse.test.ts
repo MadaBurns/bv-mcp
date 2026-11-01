@@ -318,8 +318,10 @@ describe('toBatches', () => {
 			expect(new TextEncoder().encode(JSON.stringify(batch)).byteLength).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
 			expect(batch).toMatchObject({ logId: 'log-a', startIndex: 10, endIndex: 20 });
 		}
-		expect(batches.flatMap((batch) => batch.names)).toEqual(names);
-		expect(batches.flatMap((batch) => batch.siblings)).toEqual(siblings);
+		// queued without the re-derivable fields: name key/apex, sibling key (SQ-530)
+		expect(batches.flatMap((batch) => batch.names)).toEqual(names.map(({ key: _key, apex: _apex, ...queued }) => queued));
+		expect(batches.flatMap((batch) => batch.siblings)).toEqual(siblings.map(({ key: _key, ...queued }) => queued));
+		for (const row of batches.flatMap((batch) => batch.names)) expect(row).not.toHaveProperty('key');
 	});
 
 	it('returns no batch when there are no rows', () => {

@@ -10,7 +10,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import cursorsSql from '../../../migrations/0001_log_cursors.sql?raw';
 import catalogSql from '../../../migrations/0002_catalog.sql?raw';
 import cursorErrorsSql from '../../../migrations/0003_cursor_errors.sql?raw';
-import { nameKey } from '../../codec';
 import type { Env } from '../../index';
 import { LOG_LIST_URL, TILE_WIDTH, tilePath } from '../../tailer/ct';
 import { HEADER_SLOTS, WINDOW, resetLogListMemo, runTailer, type TailerOptions } from '../../tailer';
@@ -179,9 +178,8 @@ describe('runTailer', () => {
 		expect(rfcBatch).toMatchObject({ startIndex: 980, endIndex: 1_000, siblings: [] });
 		expect(rfcBatch.names).toEqual([
 			{
-				key: nameKey('4f6k.com').key,
+				// queued without key and apex: the indexer derives both (SQ-530)
 				name: '4f6k.com',
-				apex: '4f6k.com',
 				firstSeen: RFC6962_PRECERT_FACTS.notBefore,
 				notAfter: RFC6962_PRECERT_FACTS.notAfter,
 				issuer: RFC6962_PRECERT_FACTS.issuer,
@@ -195,7 +193,7 @@ describe('runTailer', () => {
 			wildcard: true,
 			firstSeen: STATIC_PRECERT_FACTS.notBefore,
 		});
-		expect(staticNames.some((row) => row.apex === 'agoda.com')).toBe(true);
+		expect(staticNames.some((row) => row.name === 'agoda.com' || row.name.endsWith('.agoda.com'))).toBe(true);
 		// Siblings come only from the 2-apex precert; the >32-apex precert contributes names but no pairs.
 		expect(staticBatches.flatMap((batch) => batch.siblings).map((row) => `${row.apex}>${row.sibling}`)).toEqual([
 			'bluemoonstudio.au>totallyrenewableyack.org.au',
