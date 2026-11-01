@@ -121,10 +121,14 @@ From SQ-402 on, the deploy also moves the compaction cron from `17 * * * *` to `
 whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
 then stay near 180 (about 32 min of ingest) instead of climbing past 400 after each :17.
 
-From SQ-491 on, a T0 -> T1 job closes its output at a coarse subset of the cuts (`coarseCuts` in `plan.ts`), so its
-`ct_compaction_job_done` line shows `outputs` of at most 128 (`MAX_T1_RANGES`), down from about 940. Roll-up jobs are tier 1 too.
-Each one takes a single coarse range and writes it back at every cut inside it, so it shows only a handful of outputs. To
-measure the saving, run `npx wrangler d1 insights bv-ct-index-cursors --sort-by writes --time-period 1d` once before the deploy
+From SQ-491 on, a T0 -> T1 job closes its output at a coarse subset of the cuts (`coarseCuts` in `plan.ts`): at most 128
+coarse ranges (`MAX_T1_RANGES`), down from about 940 cut ranges. Its `ct_compaction_job_done` line shows about one output per
+coarse range that holds rows. It can show more than 128: `compact.ts` also closes a run at its size target (~36 MB raw), and
+from SQ-518 on, a tier-1 run once its key filter reaches 32,768 entries (`KEY_FILTER_MAX_ENTRIES`), so every T1 run keeps a
+filter. Roll-up jobs are tier 1 too. Each takes the runs of one stretch of a coarse range, in key order, and writes them back
+at every cut inside it, one output per cut range it covers. A coarse range wider than one job (32 input runs) is rolled up
+by several jobs. From SQ-518 on, a job whose runs are all key-disjoint is not planned, because merging it would only rewrite
+them. So the hourly roll-up's job count levels off instead of rising each hour. To measure the saving, run `npx wrangler d1 insights bv-ct-index-cursors --sort-by writes --time-period 1d` once before the deploy
 and again a day after it, and compare the compaction swap's `INSERT INTO runs` writes. Use that, not `ops_ledger.d1_rows`.
 The ledger counts an insert as one row, but D1 bills each insert as five: the row plus its four index entries (measured locally
 on the SQ-491 test catalog: 4,712 rows written for 942 output runs).

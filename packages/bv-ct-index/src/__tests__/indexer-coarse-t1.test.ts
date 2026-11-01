@@ -5,10 +5,10 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { SIBLING_PREFIX } from '../codec';
+import { KEY_FILTER_MAX_ENTRIES, SIBLING_PREFIX } from '../codec';
 import { runCompactionJob } from '../indexer/compact';
 import type { CompactionJob } from '../indexer/compact';
-import { DEFAULT_PLAN_LIMITS, MAX_T1_RANGES, coarseCuts, cutsFor, runCompactionCron } from '../indexer/plan';
+import { DEFAULT_PLAN_LIMITS, MAX_T1_RANGES, coarseCuts, components, cutLevel, cutsFor, runCompactionCron } from '../indexer/plan';
 import type { PlanLimits } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import type { NameObservation } from '../types';
@@ -118,6 +118,37 @@ describe('coarseCuts', () => {
 		const half = coarseCuts(cuts, MAX_T1_RANGES / 2);
 		expect(half.length).toBeLessThan(coarse.length);
 		expect(half.every((cut) => coarse.includes(cut))).toBe(true);
+	});
+
+	/** `count` cut keys at exactly `level`, found by trying `${prefix}${i}`. */
+	const atLevel = (level: number, count: number, prefix: string) => {
+		const found: string[] = [];
+		for (let i = 0; found.length < count; i++) if (cutLevel(`${prefix}${i}`) === level) found.push(`${prefix}${i}`);
+		return found;
+	};
+
+	it('closes into at most maxRanges ranges however many cuts tie at a level, and at least the fixed three (SQ-518)', () => {
+		// 200 cuts at level 1 and 300 at level 0: the 128th highest level is a tie of 200, so all of them go.
+		const tied = [...FIXED, ...atLevel(1, 200, 'com\x01a'), ...atLevel(0, 300, 'com\x01b')].sort();
+		expect(coarseCuts(tied, MAX_T1_RANGES)).toEqual(FIXED);
+		const spread = [...FIXED, ...[5, 4, 3, 2, 1, 0].flatMap((level) => atLevel(level, 40 << (5 - level), `org\x01l${level}x`))].sort();
+		for (const maxRanges of [3, 8, 64, 128, 129, 1000]) {
+			for (const set of [tied, spread, cuts]) expect(coarseCuts(set, maxRanges).length + 1).toBeLessThanOrEqual(maxRanges);
+		}
+		for (const maxRanges of [0, 1, 2]) expect(coarseCuts(spread, maxRanges)).toEqual(FIXED);
+	});
+
+	it('spreads coarse cuts over keys that differ only near their end: no coarse range holds 8x the mean (SQ-518)', ({ task }) => {
+		const families = { sequential: cuts, names: [...FIXED, ...names(941 * PER_SHARD).map((row) => row.key)].sort() };
+		for (const [family, set] of Object.entries(families)) {
+			const coarse = coarseCuts(set, MAX_T1_RANGES);
+			// Fine ranges per coarse range: the cuts at and after each coarse cut, up to the next one.
+			const at = [-1, ...coarse.map((cut) => set.indexOf(cut)), set.length];
+			const widths = at.slice(1).map((index, i) => index - at[i]!);
+			const mean = (set.length + 1) / (coarse.length + 1);
+			Object.assign(task.meta, { [family]: { cuts: set.length, ranges: coarse.length + 1, mean, widest: Math.max(...widths) } });
+			expect(Math.max(...widths), family).toBeLessThan(8 * mean);
+		}
 	});
 });
 
@@ -241,4 +272,110 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(await runsOf(2)).toEqual([]);
 		expect(await readAll(env, at(1, 1, 17))).toEqual(expectedRows(all, Math.floor(at(1, 1, 17) / 1000)));
 	});
+
+	it('closes a T1 run before its key filter passes KEY_FILTER_MAX_ENTRIES, so every T1 run keeps a filter (SQ-518)', async () => {
+		const env = testEnv();
+		// One filter entry per row ('com\x01apex<i>'), all in one coarse range: no T3 shards, so only the fixed cuts.
+		const count = KEY_FILTER_MAX_ENTRIES + 500;
+		const rows = Array.from({ length: count }, (_, i) => obs(`n${i}.apex${i}.com`)).sort(byKey);
+		await ingest(env, at(0, 2, 5), rows);
+		await planAndDrain(env, at(0, 2, 32), SEED_LIMITS);
+		const { results } = await env.CURSORS.prepare(
+			'SELECT rows, key_filter IS NOT NULL AS filtered FROM runs WHERE tier = 1 ORDER BY key_lo',
+		).all<{ rows: number; filtered: number }>();
+		expect(results.map((run) => [Number(run.rows), Number(run.filtered)])).toEqual([
+			[KEY_FILTER_MAX_ENTRIES, 1],
+			[500, 1],
+		]);
+		const reader = createReader(env, () => at(0, 2, 32));
+		for (const i of [0, count - 1]) {
+			const row = rows.find((candidate) => candidate.name === `n${i}.apex${i}.com`)!;
+			expect((await reader.scan(`apex${i}.com`, { limit: 10 })).names).toEqual(expectedRows([row], Math.floor(at(0, 2, 32) / 1000)));
+		}
+	});
+});
+
+/** True when two of `runs` share a key. Sorted by key_lo, any overlap shows between neighbours. */
+const overlapping = (runs: ReadonlyArray<{ key_lo: string; key_hi: string }>) =>
+	[...runs].sort((a, b) => (a.key_lo < b.key_lo ? -1 : 1)).some((run, i, sorted) => i > 0 && run.key_lo <= sorted[i - 1]!.key_hi);
+
+describe('the T1 roll-up of a coarse range wider than a job (SQ-518)', () => {
+	interface Tick {
+		/** The T1 runs the roll-up planned from, with created_at. */
+		before: Array<CatalogRow & { created_at: string }>;
+		jobs: CompactionJob[];
+		puts: number;
+		/** T1 runs after its jobs. */
+		after: number;
+	}
+
+	/**
+	 * Simulated hours from 02:00 over ~100 cuts. In hour 02 + h, a T0 batch at each minute of `schedule[h]`, of rows seen
+	 * again and new names, then the next :17 roll-up. Returns each roll-up, and checks that reads match the merge rule
+	 * at the end.
+	 */
+	async function simulate(maxT1Ranges: number, schedule: ReadonlyArray<readonly number[]>): Promise<{ cuts: string[]; ticks: Tick[] }> {
+		await applyCatalog();
+		const env = testEnv();
+		const base = names(100 * PER_SHARD);
+		const cuts = await seedShards(env, base);
+		const limits = { ...SEED_LIMITS, maxT1Ranges };
+		const all = [...base];
+		const ticks: Tick[] = [];
+		for (const [h, minutes] of schedule.entries()) {
+			const hour = 2 + h;
+			for (const mm of minutes) {
+				const batch = [...seenAgain(base.filter((_, i) => (i + hour + mm) % 3 === 0)), ...names(30, `h${hour}m${mm}x`)];
+				all.push(...batch);
+				await ingest(env, at(0, hour, mm), batch);
+				await planAndDrain(env, at(0, hour, mm + 27), limits);
+			}
+			const { results: before } = await env.CURSORS.prepare(
+				'SELECT id, generation, tier, key_lo, key_hi, r2_key, rows, created_at FROM runs WHERE tier = 1',
+			).all<CatalogRow & { created_at: string }>();
+			const { jobs, puts } = await planAndDrain(env, at(0, hour + 1, 17), limits);
+			ticks.push({ before, jobs, puts, after: (await runsOf(1)).length });
+		}
+		const end = at(0, 2 + schedule.length, 17);
+		expect(await readAll(env, end)).toEqual(expectedRows(all, Math.floor(end / 1000)));
+		return { cuts, ticks };
+	}
+
+	it('plans no job of key-disjoint runs, and the range stops gaining runs and jobs', async ({ task }) => {
+		// maxT1Ranges 2 keeps only the fixed cuts: the names below the sibling keyspace are one coarse range of ~50 cuts.
+		const { ticks } = await simulate(
+			2,
+			Array.from({ length: 6 }, () => [5, 20]),
+		);
+		Object.assign(task.meta, { ticks: ticks.map((tick) => ({ jobs: tick.jobs.length, outputs: tick.puts, t1Runs: tick.after })) });
+		// Before the second roll-up the range holds the first one's output, one run per cut range, and two new coarse runs.
+		const range = ticks[1]!.before.filter((run) => run.key_hi < SIBLING_PREFIX);
+		const oldest = [...range].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)).slice(0, DEFAULT_PLAN_LIMITS.maxInputs);
+		expect(range.length).toBeGreaterThan(DEFAULT_PLAN_LIMITS.maxInputs);
+		expect(overlapping(oldest)).toBe(false);
+		expect(range.filter((run) => run.created_at > oldest.at(-1)!.created_at).every((run) => overlapping([run, ...oldest]))).toBe(true);
+		for (const tick of ticks) {
+			const byId = new Map(tick.before.map((run) => [run.id, run]));
+			for (const job of tick.jobs) expect(overlapping(job.inputs.map((id) => byId.get(id)!)), job.id).toBe(true);
+		}
+		// The first roll-up writes one run per cut range. Later ones keep at most two, and the last hour adds no run or job.
+		for (const tick of ticks) expect(tick.after).toBeLessThanOrEqual(2 * ticks[0]!.after);
+		const [previous, last] = ticks.slice(-2) as [Tick, Tick];
+		expect(last.after).toBeLessThanOrEqual(previous.after);
+		expect(last.jobs.length).toBeLessThanOrEqual(previous.jobs.length);
+	}, 120_000);
+
+	it('rolls a coarse range that fits one job into one job of all its runs, as before', async () => {
+		// 32 coarse ranges over ~100 cuts: each holds a few cut ranges, so the last roll-up's output and the new runs fit.
+		// Hour 02's two coarse runs roll up at 03:17; hour 03 adds one more, which 04:17 rolls up with that output.
+		const { cuts, ticks } = await simulate(32, [[5, 20], [5]]);
+		// The second roll-up: each component holds the first one's output for its cut ranges and one new coarse run.
+		const tick = ticks[1]!;
+		const parts = components(tick.before, cuts);
+		expect(parts.every((part) => part.runs.length <= DEFAULT_PLAN_LIMITS.maxInputs)).toBe(true);
+		expect(parts.some((part) => part.runs.length > 2)).toBe(true);
+		// Before SQ-518: one job per component whose runs overlap, holding all of them, closed at the cuts inside it.
+		const expected = parts.filter((part) => overlapping(part.runs)).map((part) => [part.runs.map((run) => run.id).sort(), part.cuts]);
+		expect(tick.jobs.map((job) => [job.inputs, job.cuts]).sort()).toEqual(expected.sort());
+	}, 60_000);
 });
