@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 export {
+	classifyAssessmentObservation,
+	summarizeAssessmentOutcomes,
+	type AssessmentObservation,
+	type AssessmentOutcome,
+	type AssessmentDisposition,
+} from './lib/assessment-outcomes';
+
+export {
 	DnsQueryError,
 	type DohResponse,
 	type DnsAnswer,
@@ -73,4 +81,12 @@ export { checkSsl } from './tools/check-ssl';
 export { checkSubdomainTakeover } from './tools/check-subdomain-takeover';
 export { checkTlsrpt } from './tools/check-tlsrpt';
 export { explainFinding, formatExplanation, resolveImpactNarrative, type ExplanationResult } from './tools/explain-finding';
-export { buildStructuredScanResult, formatScanReport, scanDomain, type MaturityStage, type ScanDomainResult, type ScanRuntimeOptions, type StructuredScanResult } from './tools/scan-domain';
+export {
+	buildStructuredScanResult,
+	formatScanReport,
+	scanDomain,
+	type MaturityStage,
+	type ScanDomainResult,
+	type ScanRuntimeOptions,
+	type StructuredScanResult,
+} from './tools/scan-domain';

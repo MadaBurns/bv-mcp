@@ -40,7 +40,7 @@ import { buildCtCoverage, formatCoverageLine, isoOrUndefined, ownedIndexIsPartia
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
-import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
+import { disposeUnreadResponseBody, readTextResponseCappedDetailed, readJsonResponseCapped } from '../lib/response-body';
 import { certstreamHeaders } from '../lib/certstream-headers';
 
 /**
@@ -1243,6 +1243,9 @@ const COMPACT_ISSUE_DETAIL_CAP = 200;
 
 /** Normalized result of one direct-source attempt. */
 export interface SourceResult {
+	httpStatus?: number;
+	apiErrorCode?: 'timeout' | 'not_allowed_by_plan';
+	failurePhase?: 'response_size_cap' | 'response_parse' | 'response_timeout' | 'response_transport';
 	outcome: CtSourceOutcome;
 	entries: CrtShEntry[];
 	/** Retry delay advertised by an upstream 429, clamped before persistence. */
@@ -1376,14 +1379,16 @@ function httpFailureOutcome(status: number, restrictionDeclared = false): CtSour
  * message (which in the measured case names the refused domain and a vendor
  * contact address) must never reach a caller, a log line, or the cache.
  */
-async function classifyHttpFailure(response: Response): Promise<CtSourceOutcome> {
-	if (response.status !== 403) {
-		await disposeUnreadResponseBody(response);
-		return httpFailureOutcome(response.status);
-	}
+async function classifyHttpFailure(response: Response): Promise<Omit<SourceResult, 'entries'>> {
+	const httpStatus = response.status;
+	// Only recognized machine codes escape this small, bounded read. Upstream text is discarded.
 	const body = await readJsonResponseCapped<{ code?: unknown }>(response, CT_REFUSAL_BODY_MAX_BYTES);
-	const code = typeof body?.code === 'string' ? body.code : undefined;
-	return httpFailureOutcome(403, code !== undefined && CT_DECLARED_RESTRICTION_CODES.has(code));
+	const apiErrorCode = body?.code === 'timeout' || body?.code === 'not_allowed_by_plan' ? body.code : undefined;
+	return {
+		outcome: httpFailureOutcome(httpStatus, apiErrorCode !== undefined && CT_DECLARED_RESTRICTION_CODES.has(apiErrorCode)),
+		httpStatus,
+		...(apiErrorCode ? { apiErrorCode } : {}),
+	};
 }
 
 /** Fetch + parse crt.sh into normalized entries. Bounded body, no throw. */
@@ -1393,16 +1398,26 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 			signal,
 			redirect: 'manual',
 		});
-		if (!response.ok) return { outcome: await classifyHttpFailure(response), entries: [] };
-		const declaredLength = Number(response.headers.get('content-length'));
-		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
-			await disposeUnreadResponseBody(response);
-			return { outcome: 'http_error', entries: [] };
+		if (!response.ok) return { ...(await classifyHttpFailure(response)), entries: [] };
+		const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
+		if (body.text === null)
+			return {
+				outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error',
+				entries: [],
+				httpStatus: response.status,
+				failurePhase: body.overflowed
+					? ('response_size_cap' as const)
+					: signal.aborted
+						? ('response_timeout' as const)
+						: ('response_transport' as const),
+			};
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(body.text);
+		} catch {
+			return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
 		}
-		const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
-		if (rawBody === null) return { outcome: 'http_error', entries: [] };
-		const parsed = JSON.parse(rawBody) as unknown;
-		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
+		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
 		const entries = parsed as CrtShEntry[];
 		// crt.sh answers the whole query in one response — no pagination to miss.
 		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete: true };
@@ -1453,6 +1468,7 @@ export async function fetchCertspotterEntries(
 	let after: string | undefined;
 	let pagesRead = 0;
 	let enumerationComplete = true;
+	let diagnostics: Pick<SourceResult, 'httpStatus' | 'apiErrorCode' | 'failurePhase'> = {};
 
 	/** A mid-pagination stop: keep what we have, flag the gap. */
 	const stopIncomplete = (): boolean => {
@@ -1476,27 +1492,40 @@ export async function fetchCertspotterEntries(
 
 			if (!response.ok) {
 				const retryAfterSeconds = response.status === 429 ? parseRetryAfterSeconds(response.headers.get('retry-after')) : undefined;
-				if (pagesRead === 0) return { outcome: await classifyHttpFailure(response), entries: [], retryAfterSeconds };
-				await disposeUnreadResponseBody(response);
+				const failure = await classifyHttpFailure(response);
+				if (pagesRead === 0) return { ...failure, entries: [], retryAfterSeconds };
+				diagnostics = { httpStatus: failure.httpStatus, apiErrorCode: failure.apiErrorCode };
 				stopIncomplete();
 				break;
 			}
-			const declaredLength = Number(response.headers.get('content-length'));
-			if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
-				await disposeUnreadResponseBody(response);
-				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
+			const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
+			if (body.text === null) {
+				diagnostics = {
+					httpStatus: response.status,
+					failurePhase: body.overflowed
+						? ('response_size_cap' as const)
+						: signal.aborted
+							? ('response_timeout' as const)
+							: ('response_transport' as const),
+				};
+				if (pagesRead === 0)
+					return {
+						outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error',
+						entries: [],
+						...diagnostics,
+					};
 				stopIncomplete();
 				break;
 			}
-			const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
-			if (rawBody === null) {
-				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
-				stopIncomplete();
-				break;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(body.text);
+			} catch {
+				parsed = null;
 			}
-			const parsed = JSON.parse(rawBody) as unknown;
 			if (!Array.isArray(parsed)) {
-				if (pagesRead === 0) return { outcome: 'error', entries: [] };
+				diagnostics = { httpStatus: response.status, failurePhase: 'response_parse' };
+				if (pagesRead === 0) return { outcome: 'error', entries: [], ...diagnostics };
 				stopIncomplete();
 				break;
 			}
@@ -1527,10 +1556,16 @@ export async function fetchCertspotterEntries(
 			after = lastId;
 		}
 
-		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete };
+		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete, ...diagnostics };
 	} catch (err) {
 		// An abort/network error AFTER a successful page is still usable data.
-		if (entries.length > 0) return { outcome: 'ok', entries, enumerationComplete: false };
+		if (entries.length > 0)
+			return {
+				outcome: 'ok',
+				entries,
+				enumerationComplete: false,
+				failurePhase: signal.aborted || classifyFetchError(err) === 'timeout' ? 'response_timeout' : 'response_transport',
+			};
 		return { outcome: classifyFetchError(err), entries: [] };
 	}
 }
@@ -1626,8 +1661,22 @@ async function queryDirectSources(
 	// wins across retry passes; a source never reached stays out entirely so
 	// `buildCtCoverage` reports it as `notConsulted` rather than as healthy.
 	const attemptLog = new Map<string, CtSourceAttempt>();
-	const recordAttempt = (source: string, outcome: CtSourceOutcome, contributed: boolean, indexExhausted?: boolean): void => {
-		attemptLog.set(source, { source, outcome, contributed, ...(indexExhausted === undefined ? {} : { indexExhausted }) });
+	const recordAttempt = (
+		source: string,
+		outcome: CtSourceOutcome,
+		contributed: boolean,
+		indexExhausted?: boolean,
+		diagnostics?: SourceResult,
+	): void => {
+		attemptLog.set(source, {
+			source,
+			outcome,
+			contributed,
+			...(indexExhausted === undefined ? {} : { indexExhausted }),
+			...(diagnostics?.httpStatus === undefined ? {} : { httpStatus: diagnostics.httpStatus }),
+			...(diagnostics?.apiErrorCode ? { apiErrorCode: diagnostics.apiErrorCode } : {}),
+			...(diagnostics?.failurePhase ? { failurePhase: diagnostics.failurePhase } : {}),
+		});
 	};
 	const attempts = (): CtSourceAttempt[] =>
 		sources.filter((s) => attemptLog.has(s.name)).map((s) => attemptLog.get(s.name) as CtSourceAttempt);
@@ -1678,7 +1727,7 @@ async function queryDirectSources(
 			// reported only the winner (`sources: ["certspotter"]`), so a caller could
 			// not tell that crt.sh had been asked and had failed, i.e. that recall on
 			// that call was degraded. That omission is now impossible.
-			recordAttempt(source.name, res.outcome, res.outcome === 'ok', res.enumerationComplete);
+			recordAttempt(source.name, res.outcome, res.outcome === 'ok', res.enumerationComplete, res);
 			// #573 metadata (which source answered, was its index read to the end) rides
 			// on the ok path only. #575's `sawEmpty` fall-through is preserved: an
 			// `empty` outcome must NOT short-circuit, because a source that answers
@@ -2067,7 +2116,11 @@ async function queryCertstreamEndpoint<T>(
 			headers: certstreamHeaders(certstreamAuthToken),
 			signal: composed.signal,
 		});
-		if (!response.ok) return { data: null, outcome: await classifyHttpFailure(response) };
+		if (!response.ok) {
+			if (response.status === 403) return { data: null, outcome: (await classifyHttpFailure(response)).outcome };
+			await disposeUnreadResponseBody(response);
+			return { data: null, outcome: httpFailureOutcome(response.status) };
+		}
 		const data = await readJsonResponseCapped<T>(response, CT_SOURCE_MAX_BODY_BYTES);
 		return data === null ? { data: null, outcome: 'error' } : { data, outcome: 'ok' };
 	} catch {

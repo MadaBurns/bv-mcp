@@ -21,6 +21,25 @@ import {
 import { GET_FALLBACK_MIN_BUDGET_MS, tryGetFallback } from './probe-fetch';
 import { RobotsDisallowedError } from '../robots-gate';
 
+/** Sanitized, bounded evidence of the operations used to assess HTTPS. */
+interface HttpsOperation {
+	host: string;
+	method: string;
+	elapsedMs: number;
+	remainingMs: number;
+	outcome: 'response' | 'timeout' | 'robots_disallowed' | 'ssrf_rejected' | 'network_error';
+	status?: number;
+}
+
+function operationFailure(err: unknown): Exclude<HttpsOperation['outcome'], 'response'> {
+	if (err instanceof RobotsDisallowedError) return 'robots_disallowed';
+	if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) return 'timeout';
+	// This fixed prefix is emitted by the validated safeFetch boundary; never
+	// publish raw exception messages or classify timeouts from a target hostname.
+	if (err instanceof TypeError && err.message.startsWith('Outbound fetch blocked:')) return 'ssrf_rejected';
+	return 'network_error';
+}
+
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
 
@@ -49,15 +68,44 @@ function needsGetFallback(status: number): boolean {
 export async function checkSSL(domain: string, fetchFn: FetchFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeoutMs = options?.timeout ?? HTTPS_TIMEOUT_MS;
 	const findings: Finding[] = [];
+	const operations: HttpsOperation[] = [];
+	const startedAt = Date.now();
+	const observedFetch: FetchFunction = async (url, init) => {
+		const operationStartedAt = Date.now();
+		const base = {
+			host: new URL(url).hostname,
+			method: init?.method === 'GET' ? 'GET' : 'HEAD',
+			remainingMs: Math.max(0, timeoutMs - (operationStartedAt - startedAt)),
+		};
+		try {
+			const response = await fetchFn(url, init);
+			if (operations.length < 8) {
+				operations.push({ ...base, elapsedMs: Math.max(0, Date.now() - operationStartedAt), outcome: 'response', status: response.status });
+			}
+			return response;
+		} catch (err) {
+			if (operations.length < 8) {
+				operations.push({ ...base, elapsedMs: Math.max(0, Date.now() - operationStartedAt), outcome: operationFailure(err) });
+			}
+			throw err;
+		}
+	};
+	const stamp = (result: CheckResult): CheckResult => ({ ...result, metadata: { ...result.metadata, httpsOperations: operations } });
 
-	const { findings: httpsFindings, reachable, robotsDisallowed, inconclusive, transient } = await checkHttps(domain, fetchFn, timeoutMs);
+	const {
+		findings: httpsFindings,
+		reachable,
+		robotsDisallowed,
+		inconclusive,
+		transient,
+	} = await checkHttps(domain, observedFetch, timeoutMs);
 	findings.push(...httpsFindings);
 
 	// The entire `ssl` category signal comes from fetching the target — when robots.txt disallows
 	// it, exclude the category (checkStatus: 'error') rather than scoring a false pass (no other
 	// findings = 100) or letting a downstream check run against a target we were told not to touch.
 	if (robotsDisallowed) {
-		return { ...buildCheckResult('ssl', findings, undefined), checkStatus: 'error' };
+		return stamp({ ...buildCheckResult('ssl', findings, undefined), checkStatus: 'error' });
 	}
 
 	// A transient connection failure/timeout, or an origin the server itself could not serve
@@ -82,13 +130,13 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	// answered 0/5xx is an origin-persistent state (the same posture the sibling takes for
 	// its 5xx branch) and caches normally; re-probing it every call would not change the answer.
 	if (inconclusive) {
-		return {
+		return stamp({
 			...buildCheckResult('ssl', findings, reachable),
 			score: 0,
 			passed: false,
 			checkStatus: inconclusive,
 			...(transient ? { partial: true } : {}),
-		};
+		});
 	}
 
 	// Only check HTTP redirect if HTTPS is working (no critical findings)
@@ -111,7 +159,7 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 
 	// controlPresent: HTTPS was reachable (the TLS handshake completed). A connection failure/timeout
 	// means no working web TLS endpoint → web control absent for profile detection.
-	return buildCheckResult('ssl', findings, reachable);
+	return stamp(buildCheckResult('ssl', findings, reachable));
 }
 
 /**
@@ -270,7 +318,12 @@ async function checkHttps(
 							'HTTPS redirect chain not assessable',
 							'info',
 							`https://${domain} redirects to another HTTPS URL, and the redirect chain could not be followed to a final response, so HSTS posture could not be verified.`,
-							{ inconclusive: true, confidence: 'heuristic', errorKind: 'redirect_chain_unresolved' },
+							{
+								inconclusive: true,
+								confidence: 'heuristic',
+								errorKind: 'redirect_chain_unresolved',
+								redirectOutcome: followed.kind === 'unresolved' ? followed.cause : 'terminal_unassessable',
+							},
 						),
 					);
 				}
@@ -284,10 +337,7 @@ async function checkHttps(
 				robotsDisallowed: true,
 			};
 		}
-		const message =
-			err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'))
-				? 'Connection timeout'
-				: 'Connection failed';
+		const message = operationFailure(err) === 'timeout' ? 'Connection timeout' : 'Connection failed';
 		// A thrown fetch is a transient execution failure — exclude the category rather than scoring
 		// the connection-failure finding as a real deficiency. The existing finding is retained.
 		inconclusive = message === 'Connection timeout' ? 'timeout' : 'error';
@@ -304,7 +354,11 @@ const MAX_REDIRECT_HOPS = 3;
 type RedirectChainResult =
 	| { kind: 'final'; response: Response }
 	| { kind: 'downgrade'; target: string }
-	| { kind: 'unresolved'; reason: 'timeout' | 'error' };
+	| {
+			kind: 'unresolved';
+			reason: 'timeout' | 'error';
+			cause: Exclude<HttpsOperation['outcome'], 'response'> | 'invalid_redirect' | 'hop_cap';
+	  };
 
 /**
  * Follow an HTTPS→HTTPS redirect chain to its terminal response so HSTS can be read from the
@@ -339,16 +393,16 @@ async function followHttpsRedirectChain(response: Response, fetchFn: FetchFuncti
 		try {
 			nextUrl = new URL(location, current.url || undefined).href;
 		} catch {
-			return { kind: 'unresolved', reason: 'error' };
+			return { kind: 'unresolved', reason: 'error', cause: 'invalid_redirect' };
 		}
 		if (nextUrl.startsWith('http://')) return { kind: 'downgrade', target: nextUrl };
-		if (!nextUrl.startsWith('https://')) return { kind: 'unresolved', reason: 'error' };
+		if (!nextUrl.startsWith('https://')) return { kind: 'unresolved', reason: 'error', cause: 'invalid_redirect' };
 
 		// Below GET_FALLBACK_MIN_BUDGET_MS remaining, a hop cannot return a genuine answer —
 		// abstain rather than spend a fetch doomed to abort almost immediately (#1093, mirroring
 		// tryGetFallback's own gate).
 		if (deadlineAt - Date.now() < GET_FALLBACK_MIN_BUDGET_MS) {
-			return { kind: 'unresolved', reason: 'timeout' };
+			return { kind: 'unresolved', reason: 'timeout', cause: 'timeout' };
 		}
 
 		try {
@@ -362,12 +416,12 @@ async function followHttpsRedirectChain(response: Response, fetchFn: FetchFuncti
 		} catch (err) {
 			// Includes SSRF/robots rejection from a gated fetchFn — the chain is unmeasurable,
 			// which the caller must NOT score as a header absence.
-			const timedOut = err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'));
-			return { kind: 'unresolved', reason: timedOut ? 'timeout' : 'error' };
+			const timedOut = operationFailure(err) === 'timeout';
+			return { kind: 'unresolved', reason: timedOut ? 'timeout' : 'error', cause: operationFailure(err) };
 		}
 	}
 	const stillRedirecting = current.status >= 300 && current.status < 400 && current.headers.get('location') !== null;
-	return stillRedirecting ? { kind: 'unresolved', reason: 'error' } : { kind: 'final', response: current };
+	return stillRedirecting ? { kind: 'unresolved', reason: 'error', cause: 'hop_cap' } : { kind: 'final', response: current };
 }
 
 /** Check if HTTP redirects to HTTPS */

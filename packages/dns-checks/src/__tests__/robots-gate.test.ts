@@ -246,6 +246,7 @@ describe('withRobotsGate', () => {
 		expect(cancelled).toHaveBeenCalledOnce();
 		expect(records).toEqual([
 			{
+				elapsedMs: expect.any(Number),
 				host: 'example.com',
 				path: '/',
 				resolution: 'unreachable',
@@ -457,7 +458,17 @@ describe('withRobotsGate', () => {
 		it('records `allowed` with the matched scope when robots.txt permits the path', async () => {
 			const { records, error } = await gatedWithRecords(async () => textResponse('User-agent: *\nDisallow: /private\n'));
 			expect(error).toBeUndefined();
-			expect(records).toEqual([{ host: 'example.com', path: '/', resolution: 'allowed', failOpen: false, status: 200, scope: 'blanket' }]);
+			expect(records).toEqual([
+				{
+					elapsedMs: expect.any(Number),
+					host: 'example.com',
+					path: '/',
+					resolution: 'allowed',
+					failOpen: false,
+					status: 200,
+					scope: 'blanket',
+				},
+			]);
 		});
 
 		it('records `allowed` with no scope when no group in robots.txt applies to us', async () => {
@@ -470,6 +481,7 @@ describe('withRobotsGate', () => {
 			const { records, error } = await gatedWithRecords(async () => textResponse('User-agent: *\nDisallow: /\n'));
 			expect(error).toBeInstanceOf(RobotsDisallowedError);
 			expect(records[0]).toEqual({
+				elapsedMs: expect.any(Number),
 				host: 'example.com',
 				path: '/',
 				resolution: 'disallowed',
@@ -483,14 +495,28 @@ describe('withRobotsGate', () => {
 			// A 404 is a MEASUREMENT: this origin published no policy, and will say so
 			// again tomorrow. It must not be conflated with "we could not find out".
 			const { records } = await gatedWithRecords(async () => new Response('', { status: 404 }));
-			expect(records[0]).toEqual({ host: 'example.com', path: '/', resolution: 'no_policy', failOpen: false, status: 404 });
+			expect(records[0]).toEqual({
+				elapsedMs: expect.any(Number),
+				host: 'example.com',
+				path: '/',
+				resolution: 'no_policy',
+				failOpen: false,
+				status: 404,
+			});
 		});
 
 		it('records `unreachable` + failOpen for the crt.sh 502 case, and still proceeds', async () => {
 			const { records, error } = await gatedWithRecords(async () => new Response('', { status: 502 }), 'https://crt.sh/');
 			// Policy UNCHANGED: an unreadable robots.txt still does not block the scan.
 			expect(error).toBeUndefined();
-			expect(records[0]).toEqual({ host: 'crt.sh', path: '/', resolution: 'unreachable', failOpen: true, status: 502 });
+			expect(records[0]).toEqual({
+				elapsedMs: expect.any(Number),
+				host: 'crt.sh',
+				path: '/',
+				resolution: 'unreachable',
+				failOpen: true,
+				status: 502,
+			});
 		});
 
 		it('records `unreachable` + the error name when the robots.txt fetch throws', async () => {
@@ -499,6 +525,7 @@ describe('withRobotsGate', () => {
 			});
 			expect(error).toBeUndefined();
 			expect(records[0]).toEqual({
+				elapsedMs: expect.any(Number),
 				host: 'example.com',
 				path: '/',
 				resolution: 'unreachable',
@@ -515,6 +542,7 @@ describe('withRobotsGate', () => {
 			});
 			expect(error).toBeUndefined();
 			expect(records[0]).toEqual({
+				elapsedMs: expect.any(Number),
 				host: 'example.com',
 				path: '/',
 				resolution: 'timeout',

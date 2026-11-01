@@ -575,9 +575,9 @@ describe('discover_subdomains — a declared provider restriction is not a retry
 
 		expect(output).not.toContain('refusals@example.invalid');
 		expect(output).not.toMatch(/contact/i);
-		// Not stashed in the structured payload either — the code included.
+		// Raw upstream prose stays private; the recognized machine code is safe diagnostic evidence.
 		expect(JSON.stringify(result)).not.toContain('refusals@example.invalid');
-		expect(JSON.stringify(result)).not.toContain('not_allowed_by_plan');
+		expect(result.coverage?.perSource.find((s) => s.source === 'certspotter')?.apiErrorCode).toBe('not_allowed_by_plan');
 	});
 
 	// A 403 that does not DECLARE a restriction proves only that the request was
@@ -1318,5 +1318,78 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 
 		expect(text).toContain(`names observed since ${coverage.indexStartedAt}`);
 		expect(result).not.toHaveProperty('enumerationComplete');
+	});
+});
+
+describe('CT upstream response diagnostics (#1147)', () => {
+	it('retains an explicit 504 timeout code without upstream prose', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		const { buildCtCoverage, formatCoverageLine } = await import('../src/lib/ct-coverage');
+		const response = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => Response.json({ code: 'timeout', message: 'private upstream text' }, { status: 504 }),
+		});
+		expect(response).toMatchObject({ outcome: 'http_error', httpStatus: 504, apiErrorCode: 'timeout' });
+		const coverage = buildCtCoverage([{ source: 'certspotter', ...response, contributed: false }]);
+		expect(coverage.perSource[0]).toMatchObject({ httpStatus: 504, apiErrorCode: 'timeout' });
+		expect(formatCoverageLine(coverage)).toContain('HTTP 504 code=timeout');
+		expect(JSON.stringify(coverage)).not.toContain('private upstream text');
+	});
+
+	it('keeps unknown error codes private and distinguishes a successful HTTP body cap', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		const denied = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => Response.json({ code: 'private-value' }, { status: 403 }),
+		});
+		expect(denied).toMatchObject({ outcome: 'access_denied', httpStatus: 403 });
+		expect(denied.apiErrorCode).toBeUndefined();
+		const capped = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+			fetchFn: async () => new Response('[]', { headers: { 'content-length': String(6 * 1024 * 1024) } }),
+		});
+		expect(capped).toMatchObject({ httpStatus: 200, failurePhase: 'response_size_cap' });
+	});
+});
+
+describe('CT body failure diagnostics', () => {
+	it('does not call a stream error or caller abort a response-size cap', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		for (const aborted of [false, true]) {
+			const caller = new AbortController();
+			const result = await fetchCertspotterEntries('example.test', caller.signal, {
+				fetchFn: async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								if (aborted) caller.abort();
+								controller.error(new Error('private stream error'));
+							},
+						}),
+					),
+			});
+			expect(result.outcome).toBe(aborted ? 'timeout' : 'error');
+			expect(result.httpStatus).toBe(200);
+			expect(result.failurePhase).toBe(aborted ? 'response_timeout' : 'response_transport');
+		}
+	});
+
+	it('preserves terminal parse and cap diagnostics alongside earlier samples', async () => {
+		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
+		for (const cap of [false, true]) {
+			let calls = 0;
+			const result = await fetchCertspotterEntries('example.test', new AbortController().signal, {
+				fetchFn: async () =>
+					++calls === 1
+						? Response.json([{ id: '1', dns_names: ['a.example.test'] }], {
+								headers: { link: '<https://api.certspotter.com/>; rel="next"' },
+							})
+						: new Response('malformed', { headers: cap ? { 'content-length': String(6 * 1024 * 1024) } : {} }),
+			});
+			expect(result).toMatchObject({
+				outcome: 'ok',
+				enumerationComplete: false,
+				httpStatus: 200,
+				failurePhase: cap ? 'response_size_cap' : 'response_parse',
+			});
+			expect(result.entries).toHaveLength(1);
+		}
 	});
 });

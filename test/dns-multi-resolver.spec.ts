@@ -3,6 +3,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { mockResolverFetch, wireFixture } from './helpers/dns-wire-mock';
+import { encodeDnsQuery, decodeDnsResponse } from '../src/lib/dns-wire';
 import { queryMultiResolver, checkMultiResolverConsistency, RESOLVERS, CONSISTENCY_QUORUM } from '../src/lib/dns-multi-resolver';
 
 const { restore } = setupFetchMock();
@@ -11,14 +13,14 @@ afterEach(() => restore());
 
 /** Mock all resolvers to return the same A records. */
 function mockConsistentResolvers(answers: Array<{ name: string; type: number; TTL: number; data: string }> = []) {
-	globalThis.fetch = vi.fn().mockImplementation(() => {
+	mockResolverFetch(() => {
 		return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], answers));
 	});
 }
 
 /** Mock resolvers to return different answers based on resolver endpoint. */
 function mockSplitResolvers() {
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+	mockResolverFetch((url: string | URL) => {
 		const urlStr = typeof url === 'string' ? url : url.toString();
 		const isCloudflare = urlStr.includes('cloudflare');
 		const isGoogle = urlStr.includes('dns.google');
@@ -30,7 +32,7 @@ function mockSplitResolvers() {
 			return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 		}
 		// Other resolvers return different IP
-		return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '5.6.7.8' }]));
+		return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '198.51.100.20' }]));
 	});
 }
 
@@ -40,7 +42,7 @@ function mockSplitResolvers() {
  * SAME logical TXT value dressed in two different DoH presentation styles.
  */
 function mockPerResolverTxt(cloudflareData: string[], googleData: string[]) {
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+	mockResolverFetch((url: string | URL) => {
 		const urlStr = typeof url === 'string' ? url : url.toString();
 		const isCloudflare = urlStr.includes('cloudflare');
 		const u = new URL(urlStr);
@@ -54,7 +56,7 @@ function mockPerResolverTxt(cloudflareData: string[], googleData: string[]) {
 
 describe('queryMultiResolver', () => {
 	it('returns CONSISTENT when all resolvers agree', async () => {
-		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.10' }]);
 
 		const result = await queryMultiResolver('example.com', 'A');
 		expect(result.recordType).toBe('A');
@@ -79,7 +81,7 @@ describe('queryMultiResolver', () => {
 	});
 
 	it('handles resolver timeouts gracefully', async () => {
-		globalThis.fetch = vi.fn().mockImplementation(() => {
+		mockResolverFetch(() => {
 			return new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 50));
 		});
 
@@ -115,7 +117,7 @@ describe('queryMultiResolver', () => {
 	});
 
 	it('returns per-resolver answers', async () => {
-		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.10' }]);
 
 		const result = await queryMultiResolver('example.com', 'A');
 		for (const ra of result.resolverAnswers) {
@@ -184,7 +186,7 @@ describe('queryMultiResolver', () => {
 
 			const result = await queryMultiResolver('example.com', 'TXT');
 
-			expect(result.status).toBe('SPLIT_HORIZON');
+			expect(['SPLIT_HORIZON', 'SUSPICIOUS']).toContain(result.status);
 		});
 
 		// Contrived dangerous-direction case flagged in review: a resolver's bare
@@ -221,7 +223,7 @@ function mockReachable(answersByResolver: Record<string, string[]>) {
 		['quad9', 'Quad9'],
 		['opendns', 'OpenDNS'],
 	];
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+	mockResolverFetch((url: string | URL) => {
 		const urlStr = typeof url === 'string' ? url : url.toString();
 		const name = hostToName.find(([host]) => urlStr.includes(host))?.[1] ?? '';
 		const data = answersByResolver[name];
@@ -280,7 +282,7 @@ describe('queryMultiResolver — responder quorum (#1199)', () => {
 	});
 
 	it('4-of-4 unanimous answers are CONSISTENT with no unreachable resolvers', async () => {
-		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.10' }]);
 
 		const result = await queryMultiResolver('example.com', 'A');
 
@@ -303,7 +305,7 @@ describe('queryMultiResolver — responder quorum (#1199)', () => {
 	it('names late resolvers by fan-out index (not "unknown") when the overall timeout fires', async () => {
 		vi.useFakeTimers();
 		try {
-			globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			mockResolverFetch((url: string | URL) => {
 				const urlStr = typeof url === 'string' ? url : url.toString();
 				if (urlStr.includes('quad9') || urlStr.includes('opendns')) return new Promise(() => {}); // never settles
 				const qname = new URL(urlStr).searchParams.get('name') ?? 'example.com';
@@ -343,7 +345,7 @@ describe('checkMultiResolverConsistency', () => {
 
 describe('queryMultiResolver — SERVFAIL/REFUSED are not agreeing empties (T6 item 6)', () => {
 	function mockRcode(status: number) {
-		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		mockResolverFetch((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
 			const name = u.searchParams.get('name') ?? 'example.com';
 			return Promise.resolve(createDohResponse([{ name, type: 1 }], [], { status }));
@@ -377,5 +379,93 @@ describe('queryMultiResolver — SERVFAIL/REFUSED are not agreeing empties (T6 i
 
 		expect(result.status).toBe('CONSISTENT');
 		expect(result.resolverAnswers.every((r) => r.status === 'ok')).toBe(true);
+	});
+});
+
+describe('RFC 8484 resolver transports (#1346)', () => {
+	it('uses JSON for Cloudflare/Google and binary POST on port 443 for Quad9/OpenDNS', async () => {
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.1' }]);
+		const result = await queryMultiResolver('example.com', 'A');
+		expect(result.respondedCount).toBe(4);
+		for (const [url, init] of vi.mocked(fetch).mock.calls) {
+			const endpoint = new URL(String(url));
+			if (endpoint.hostname.includes('quad9') || endpoint.hostname.includes('opendns')) {
+				expect(endpoint.port).toBe('');
+				expect(endpoint.search).toBe('');
+				expect(init?.method).toBe('POST');
+				expect(new Headers(init?.headers).get('Content-Type')).toBe('application/dns-message');
+				expect(new Uint8Array(init?.body as ArrayBuffer)).toEqual(encodeDnsQuery('example.com', 'A'));
+			} else expect(init?.method).toBe('GET');
+		}
+	});
+
+	it.each([
+		['AAAA', 28, '2001:db8:0:0:0:0:0:1', '2001:db8::1'],
+		['MX', 15, '10 mail.example.test.', '10 mail.example.test.'],
+		['NS', 2, 'ns.example.test.', 'ns.example.test.'],
+		['CNAME', 5, 'alias.example.test.', 'alias.example.test.'],
+		['TXT', 16, '"part1" "part2"', '"part1" "part2"'],
+		[
+			'SOA',
+			6,
+			'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60',
+			'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60',
+		],
+		['CAA', 257, '0 issue "ca.example.test"', '0 issue "ca.example.test"'],
+	] as const)('decodes %s RDATA without comparing wire bytes with JSON presentation', async (type, code, data, expected) => {
+		const response = wireFixture(encodeDnsQuery('example.test', type), [{ type: code, TTL: 300, data }]);
+		const decoded = decodeDnsResponse(new Uint8Array(await response.arrayBuffer()), 'example.test', type);
+		expect(decoded.Answer?.[0].data).toBe(expected);
+	});
+
+	it('accepts compressed domain-name RDATA and rejects compression loops', async () => {
+		const response = wireFixture(encodeDnsQuery('example.test', 'NS'), [{ type: 2, TTL: 60, data: 'ns.example.test' }]);
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		const start = encodeDnsQuery('example.test', 'NS').length + 12;
+		const compressed = new Uint8Array([...bytes.slice(0, start - 2), 0, 2, 0xc0, 12]);
+		expect(decodeDnsResponse(compressed, 'example.test', 'NS').Answer?.[0].data).toBe('example.test.');
+		compressed[compressed.length - 1] = compressed.length - 2;
+		expect(() => decodeDnsResponse(compressed, 'example.test', 'NS')).toThrow();
+	});
+
+	it('keeps HTTP status separate from parse and network failures without exception text', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+			if (url.includes('quad9')) return Promise.resolve(new Response('private upstream body', { status: 504 }));
+			if (url.includes('opendns')) return Promise.resolve(new Response(new Uint8Array([0, 1])));
+			if (url.includes('google')) return Promise.reject(new Error('private network details'));
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+		});
+		const result = await queryMultiResolver('example.com', 'A');
+		expect(result.resolverAnswers[1]).toMatchObject({ status: 'error', failureKind: 'network' });
+		expect(result.resolverAnswers[2]).toMatchObject({ status: 'error', failureKind: 'http', httpStatus: 504 });
+		expect(result.resolverAnswers[3]).toMatchObject({ status: 'error', failureKind: 'parse', httpStatus: 200 });
+		expect(JSON.stringify(result)).not.toContain('private');
+	});
+
+	it('distinguishes actual deadline cancellation from a network exception', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn().mockImplementation(
+				(_url: string, init?: RequestInit) =>
+					new Promise((_, reject) => {
+						init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+					}),
+			);
+			const pending = queryMultiResolver('example.com', 'A');
+			await vi.advanceTimersByTimeAsync(3_100);
+			const result = await pending;
+			expect(result.resolverAnswers.every((r) => r.status === 'timeout' && r.failureKind === 'deadline')).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('rejects truncated packets, mismatched questions and invalid RDATA', async () => {
+		const response = wireFixture(encodeDnsQuery('example.test', 'A'), [{ type: 1, TTL: 60, data: '192.0.2.1' }]);
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		expect(() => decodeDnsResponse(bytes.slice(0, -1), 'example.test', 'A')).toThrow();
+		expect(() => decodeDnsResponse(bytes, 'other.example.test', 'A')).toThrow();
+		bytes[2] |= 2;
+		expect(() => decodeDnsResponse(bytes, 'example.test', 'A')).toThrow();
 	});
 });

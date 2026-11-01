@@ -44,6 +44,10 @@ export interface RobotsResolutionStamp {
 	errorName?: string;
 	/** Hostnames beyond `host` that were also gated (redirect targets), if any. */
 	otherHosts?: string[];
+	/** Bounded cross-host decisions; paths and URLs are deliberately omitted. */
+	otherHostDecisions?: Omit<RobotsResolutionRecord, 'path'>[];
+	/** Time spent resolving the primary robots decision. */
+	elapsedMs?: number;
 }
 
 /** A collector handed to `withRobotsGate` for one check invocation. */
@@ -84,7 +88,8 @@ export function createRobotsProvenance(domain: string): RobotsProvenance {
 	const summarize = (): RobotsResolutionStamp | undefined => {
 		if (records.length === 0) return undefined;
 		const primary = records.find((r) => r.host.toLowerCase() === target) ?? records[0]!;
-		const others = records.filter((r) => r !== primary).map((r) => r.host);
+		const otherRecords = records.filter((r) => r !== primary).slice(0, 8);
+		const others = otherRecords.map((r) => r.host);
 		return {
 			host: primary.host,
 			resolution: primary.resolution,
@@ -92,7 +97,13 @@ export function createRobotsProvenance(domain: string): RobotsProvenance {
 			...(primary.status !== undefined ? { status: primary.status } : {}),
 			...(primary.scope ? { scope: primary.scope } : {}),
 			...(primary.errorName ? { errorName: primary.errorName } : {}),
-			...(others.length > 0 ? { otherHosts: others } : {}),
+			...(primary.elapsedMs !== undefined ? { elapsedMs: primary.elapsedMs } : {}),
+			...(others.length > 0
+				? {
+						otherHosts: others,
+						otherHostDecisions: otherRecords.map(({ path: _path, ...decision }) => decision),
+					}
+				: {}),
 		};
 	};
 
