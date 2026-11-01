@@ -16,7 +16,7 @@
 // Per testing-methodology.md principle 4 — audit tests replace review checklists.
 
 import { describe, it, expect } from 'vitest';
-import { TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS, TIER_CONCURRENT_LIMITS } from '../../src/lib/config';
+import { TIER_AGGREGATE_DAILY_LIMITS, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS, TIER_CONCURRENT_LIMITS } from '../../src/lib/config';
 
 const ALL_TIERS = ['free', 'agent', 'developer', 'enterprise', 'partner', 'owner'] as const;
 
@@ -56,6 +56,35 @@ describe('TIER_DAILY_LIMITS audit (flat per-tier defaults)', () => {
 		expect(TIER_DAILY_LIMITS.developer).toBeLessThanOrEqual(TIER_DAILY_LIMITS.enterprise);
 		expect(TIER_DAILY_LIMITS.enterprise).toBeLessThanOrEqual(TIER_DAILY_LIMITS.partner);
 		expect(TIER_DAILY_LIMITS.partner).toBeLessThanOrEqual(TIER_DAILY_LIMITS.owner);
+	});
+});
+
+describe('TIER_AGGREGATE_DAILY_LIMITS audit (per-key total across all tools, SQ-494)', () => {
+	it('covers every tier from the McpApiKeyTier union', () => {
+		expect(new Set(Object.keys(TIER_AGGREGATE_DAILY_LIMITS))).toEqual(new Set(ALL_TIERS));
+	});
+
+	it('locks the starting values (operator sign-off pending; free/partner/owner uncapped)', () => {
+		expect(TIER_AGGREGATE_DAILY_LIMITS).toEqual({
+			free: Infinity,
+			agent: 2_000,
+			developer: 5_000,
+			enterprise: 50_000,
+			partner: Infinity,
+			owner: Infinity,
+		});
+	});
+
+	it('never undercuts a per-tool cap of the same tier (that per-tool cap would be unreachable)', () => {
+		for (const tier of ALL_TIERS) {
+			const perToolCaps = [TIER_DAILY_LIMITS[tier], ...Object.values(TIER_TOOL_DAILY_LIMITS[tier] ?? {})];
+			expect(TIER_AGGREGATE_DAILY_LIMITS[tier], tier).toBeGreaterThanOrEqual(Math.max(...perToolCaps));
+		}
+	});
+
+	it('capped tiers form a non-decreasing series (agent ≤ developer ≤ enterprise)', () => {
+		expect(TIER_AGGREGATE_DAILY_LIMITS.agent).toBeLessThanOrEqual(TIER_AGGREGATE_DAILY_LIMITS.developer);
+		expect(TIER_AGGREGATE_DAILY_LIMITS.developer).toBeLessThanOrEqual(TIER_AGGREGATE_DAILY_LIMITS.enterprise);
 	});
 });
 

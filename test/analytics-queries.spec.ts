@@ -212,6 +212,16 @@ describe('analytics query builders', () => {
 		expect(sql).not.toContain("blob1 != 'cost_ceiling_degraded'");
 	});
 
+	it('queryBindingDegradation excludes binding_route_absent (recon 404 on /osint/check) but still counts a real binding_5xx (SQ-514)', () => {
+		// A recon 404 is the standing "bv2-recon does not serve /osint/check yet" condition: recorded in AE
+		// (queryable) but must not page. A 5xx / timeout / unavailable is a genuine outage and must still alert.
+		const sql = queryBindingDegradation('15');
+		expect(sql).toContain("blob1 != 'binding_route_absent'");
+		expect(sql).not.toContain("blob1 != 'binding_5xx'");
+		expect(sql).not.toContain("blob1 != 'binding_timeout'");
+		expect(sql).not.toContain("blob1 != 'binding_unavailable'");
+	});
+
 	it('queryRecentAnomalies splits input vs real errors on the outcome reason (blob16), not on blob4=none (T10)', () => {
 		// blob4 is the domain fingerprint: it is 'none' for EVERY tool without a required domain
 		// (batch_scan, scan_buckets_*, osint_*, brand_audit_*), so keying "no tool ran" on it counted

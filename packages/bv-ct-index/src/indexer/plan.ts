@@ -8,9 +8,11 @@
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
  *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
  *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
- *   next :17 tick, ~15 min after the :02 tick planned it, is planned again; the guard lets one swap through.
+ *   next :17 tick, ~15 min after the :02 tick planned it, is planned again; the guard lets one swap through. Its
+ *   output closes at a coarse subset of the cuts only (`coarseCuts`, SQ-491), at most MAX_T1_RANGES ranges a job
+ *   (compact.ts also closes a run at its size target and at its key filter's limit).
  * - T1 roll-up (:17): per key range, the overlapping T1 runs created earlier today before this hour, merged into
- *   one T1 run in the same bounded jobs (`planRollUp`).
+ *   one T1 run per range in bounded jobs taken in key order, each of runs that overlap (`planRollUp`, SQ-518).
  * - T1 -> T2: every T1 run created on a UTC day that has ended, per day and key range, in the same bounded jobs.
  * - T2 + T3 -> T3: per key range, the range's T3 shards with its oldest T2 runs, in one job per range of at most
  *   MAX_T3_JOB_ROWS rows; T2 runs past the budget wait for the next cron (SQ-363).
@@ -23,7 +25,8 @@
  * GROUP_SHARDS shards (~80 MB) however big the index grows. Its output is closed every ~10 MB, which splits a
  * grown shard and merges shrunken neighbours. A boundary that moves only moves the cuts next to it, and a run
  * planned against older cuts that now straddles one simply joins the neighbouring range's job (`components`),
- * so jobs never share an input.
+ * so jobs never share an input. A T0 -> T1 run, closed at coarse cuts only, straddles cuts the same way: the
+ * roll-up and T1 -> T2 jobs take its whole coarse range and write it back closed at every cut.
  *
  * Job size (SQ-362): every T0 run spans the whole keyspace, so a T1 job opens all of its inputs at once, each
  * holding a read window and a decoded block. One job per clock hour (~235 runs, ~3.4M rows at the 2026-10-17
@@ -79,15 +82,29 @@ export const MAX_JOB_ROWS = 750_000;
 export const MAX_T3_JOB_ROWS = 1_500_000;
 /** A range closes once its T3 shards hold this many rows, leaving at least half of a T3 job for T2 runs. */
 export const MAX_T3_RANGE_ROWS = MAX_T3_JOB_ROWS / 2;
+/**
+ * At most this many coarse key ranges per T0 -> T1 job (SQ-491), each closed into one output run unless compact.ts
+ * closes it sooner at its size target or key filter limit. A T0 run spans the whole keyspace, so a job closed at every
+ * cut wrote one ~17 KB run per cut range, ~940 of them on the 2026-11-01 catalog, each an R2 put and a D1 insert. A
+ * read still opens one run per job, and the roll-up writes every cut back.
+ */
+export const MAX_T1_RANGES = 128;
 
 export interface PlanLimits {
 	maxInputs: number;
 	maxRows: number;
 	/** MAX_T3_JOB_ROWS; ranges close at half of it. */
 	maxT3Rows: number;
+	/** MAX_T1_RANGES: the most coarse key ranges a T0 -> T1 job's output is closed at (`coarseCuts`). */
+	maxT1Ranges: number;
 }
 
-export const DEFAULT_PLAN_LIMITS: PlanLimits = { maxInputs: MAX_JOB_INPUTS, maxRows: MAX_JOB_ROWS, maxT3Rows: MAX_T3_JOB_ROWS };
+export const DEFAULT_PLAN_LIMITS: PlanLimits = {
+	maxInputs: MAX_JOB_INPUTS,
+	maxRows: MAX_JOB_ROWS,
+	maxT3Rows: MAX_T3_JOB_ROWS,
+	maxT1Ranges: MAX_T1_RANGES,
+};
 
 interface PlanRun {
 	id: string;
@@ -124,6 +141,45 @@ export function cutsFor(t3: ReadonlyArray<{ key_lo: string; rows?: number }>, ma
 		rangeRows += rowsOf(shard);
 	}
 	return [...cuts].sort(compareText);
+}
+
+/** murmur3's 32-bit finalizer. FNV-1a's top bits barely move between keys that differ only near their end. */
+function mix(hash: number): number {
+	const a = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+	const b = Math.imul(a ^ (a >>> 13), 0xc2b2ae35);
+	return (b ^ (b >>> 16)) >>> 0;
+}
+
+/** A fixed cut's level, above any hash's (Math.clz32 is at most 32). */
+const FIXED_LEVEL = 33;
+
+/**
+ * A cut's level for `coarseCuts`: the leading zero bits of its mixed hash, so each level holds about half of the cuts
+ * at it or above. Unmixed, the cut keys `com\x01cut0000`..`cut0937` put 432 of their 941 ranges in one coarse range.
+ */
+export function cutLevel(cut: string): number {
+	return FIXED_CUTS.includes(cut) ? FIXED_LEVEL : Math.clz32(mix(fnv1a(cut)));
+}
+
+/**
+ * The cuts a T0 -> T1 job closes its output at (SQ-491): at most `max(maxRanges - 1, 2)` of `cuts`, always the
+ * fixed ones, so at most `maxRanges` ranges once maxRanges is 3 or more. The subset is every cut at the lowest
+ * level (`cutLevel`) that fits, or above. So it is chosen by content, like the cuts: a cut that comes or goes adds
+ * or drops at most itself while the level holds, and when the level moves, the ranges of one level nest in those of
+ * the other. Either way, runs planned before and after never chain ranges together in `components`.
+ *
+ * Ties only lower the count, since the whole boundary level goes, and so widen the coarse ranges. No content rule can
+ * cap a coarse range's width in cuts: a cap by position would move other coarse cuts when one cut comes or goes. The
+ * widest measured 5 to 7 times the mean (indexer-coarse-t1.test.ts). A wide range only costs the roll-up more jobs,
+ * and `planRollUp` keeps those bounded (SQ-518).
+ */
+export function coarseCuts(cuts: readonly string[], maxRanges: number): string[] {
+	const keep = Math.max(maxRanges - 1, FIXED_CUTS.length);
+	if (cuts.length <= keep) return [...cuts];
+	const levels = cuts.map(cutLevel);
+	// The (keep + 1)-th highest level must go, so the subset is every cut above it.
+	const level = [...levels].sort((a, b) => b - a)[keep]! + 1;
+	return cuts.filter((_, i) => levels[i]! >= level);
 }
 
 /** True when a run spans more than one cut range. */
@@ -172,12 +228,19 @@ export function components<T extends { key_lo: string; key_hi: string }>(
 	return out;
 }
 
+type ChunkRun = { id: string; rows: number; created_at: string };
+
+/** Oldest first. */
+const byAge = (a: ChunkRun, b: ChunkRun) => compareText(a.created_at, b.created_at) || compareText(a.id, b.id);
+/** By first key, then oldest first: a chunk holds the runs of one stretch of keys (the roll-up, SQ-518). */
+const byKey = (a: PlanRun, b: PlanRun) => compareText(a.key_lo, b.key_lo) || byAge(a, b);
+
 /**
- * Splits runs, oldest first, into consecutive chunks of at most `maxInputs` runs and `maxRows` rows. A run over
- * `maxRows` on its own still gets a chunk, so nothing is left unplanned.
+ * Splits runs, in `order` (oldest first by default), into consecutive chunks of at most `maxInputs` runs and
+ * `maxRows` rows. A run over `maxRows` on its own still gets a chunk, so nothing is left unplanned.
  */
-export function boundedChunks<T extends { id: string; rows: number; created_at: string }>(runs: readonly T[], limits: PlanLimits): T[][] {
-	const sorted = [...runs].sort((a, b) => compareText(a.created_at, b.created_at) || compareText(a.id, b.id));
+export function boundedChunks<T extends ChunkRun>(runs: readonly T[], limits: PlanLimits, order: (a: T, b: T) => number = byAge): T[][] {
+	const sorted = [...runs].sort(order);
 	const chunks: T[][] = [];
 	let chunk: T[] = [];
 	let rows = 0;
@@ -268,12 +331,13 @@ export async function planCompactions(
 	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
 	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
 	const windowStart = full ? -Infinity : windowEnd - T0_WINDOW_MS;
-	// T0 runs span the whole keyspace, so a T1 job takes every cut (a few hundred keys at full size).
+	// T0 runs span the whole keyspace, so a T1 job takes cuts across all of it: the coarse subset (SQ-491).
+	const t1Cuts = coarseCuts(plan.cuts, limits.maxT1Ranges);
 	for (const runs of groupBy(
 		tier(0).filter((run) => createdIn(run, windowStart, windowEnd)),
 		(run) => run.created_at.slice(0, 13),
 	).values()) {
-		await planChunks(plan, 1, runs, plan.cuts);
+		await planChunks(plan, 1, runs, t1Cuts);
 	}
 	if (!full) return plan.jobs;
 	await planRollUp(plan, tier(1), nowMs);
@@ -291,23 +355,31 @@ interface Plan {
 	jobs: CompactionJob[];
 }
 
-/** One job of output `tier` per bounded chunk of `runs` that holds at least `minInputs` runs. */
-async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cuts: string[], minInputs = 1): Promise<void> {
-	for (const chunk of boundedChunks(runs, plan.limits)) {
-		if (chunk.length >= minInputs) plan.jobs.push(await makeJob(plan.generation, tier, chunk, cuts, plan.now));
-	}
+/** One job of output `tier` per bounded chunk of `runs`. */
+async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cuts: string[]): Promise<void> {
+	for (const chunk of boundedChunks(runs, plan.limits)) plan.jobs.push(await makeJob(plan.generation, tier, chunk, cuts, plan.now));
 }
 
 /**
- * The T1 roll-up (SQ-402): every T0 window adds one T1 run per cut range per job, about 14 an hour, and a read of a
- * key opens each of them. So every hour, a range's overlapping T1 runs from earlier hours of the day (the last
- * roll-up's output among them) merge into one T1 run, in the same bounded jobs as T1 -> T2. A range then holds
- * about one T1 run per job since the last full hour, plus one; the day's T1 -> T2 job still takes them all.
+ * The T1 roll-up (SQ-402): every T0 window adds one T1 run per coarse range per job, about 14 an hour, and a read of
+ * a key opens each of them. So every hour, a range's overlapping T1 runs from earlier hours of the day (the last
+ * roll-up's output among them) merge into one T1 run, in jobs bounded like T1 -> T2. A range then holds about one
+ * T1 run per job since the last full hour, plus one or two; the day's T1 -> T2 job still takes them all. A component
+ * is a whole coarse range (its runs straddle the cuts inside it), and its jobs write one run per cut range.
+ *
+ * Chunks follow key order, not age, and a chunk whose runs are key-disjoint is not planned (SQ-518). A coarse range
+ * wider than a job leaves the last roll-up's output as more than `maxInputs` key-disjoint runs, all older than the
+ * new coarse runs: oldest-first chunks rewrote them unmerged every hour, and the range gained a run per cut range
+ * each hour. In key order the new coarse runs, which start the range, merge with the runs of its first cut ranges.
+ * Each later chunk either holds runs that overlap, which it merges, or holds nothing to merge and is skipped. So a cut
+ * range keeps one or two roll-up runs, and the range's run count levels off (indexer-coarse-t1.test.ts).
  */
 async function planRollUp(plan: Plan, t1: readonly PlanRun[], nowMs: number): Promise<void> {
 	const rollable = t1.filter((run) => createdIn(run, Math.floor(nowMs / DAY_MS) * DAY_MS, Math.floor(nowMs / HOUR_MS) * HOUR_MS));
 	for (const component of components(rollable, plan.cuts)) {
-		if (overlapping(component.runs)) await planChunks(plan, 1, component.runs, component.cuts, 2);
+		for (const chunk of boundedChunks(component.runs, plan.limits, byKey)) {
+			if (overlapping(chunk)) plan.jobs.push(await makeJob(plan.generation, 1, chunk, component.cuts, plan.now));
+		}
 	}
 }
 

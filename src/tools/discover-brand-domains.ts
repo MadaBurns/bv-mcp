@@ -74,7 +74,8 @@ import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bou
 import { generateVariants } from './check-shadow-domains';
 import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import type { Tier0Result } from '../lib/brand-tier0-enterprise';
-import type { Tier1Result } from '../lib/brand-tier1-graph';
+import { clientSafeTier1Reason, type Tier1Result } from '../lib/brand-tier1-graph';
+import { logEvent } from '../lib/log';
 import type { Tier2Result } from '../lib/brand-tier2-evidence';
 import { applyOptoutFilter, type OptoutFetcher } from '../lib/brand-optout-enforcement';
 
@@ -332,6 +333,8 @@ interface BrandDiscoveryTiers {
 	tier2Status: string;
 	tier3FallbackTriggered: number;
 	tier1Freshness: Record<string, unknown> | null;
+	/** Why tier 1 was not `ok` (`timeout`, `upstream_unavailable`, ...; config-state and producer tokens are collapsed by `clientSafeTier1Reason`); absent when ok/skipped. */
+	tier1DegradedReason?: string;
 	optOutsFiltered: number;
 }
 
@@ -796,6 +799,7 @@ export async function discoverBrandDomains(
 		tier2Status: string;
 		tier3FallbackTriggered: 0 | 1;
 		tier1Freshness: Record<string, unknown> | null;
+		tier1DegradedReason?: string;
 		optOutsFiltered: number;
 	}
 	let tieredState: TieredState | null = null;
@@ -846,6 +850,7 @@ export async function discoverBrandDomains(
 				tier2Status: tieredState.tier2Status,
 				tier3FallbackTriggered: tieredState.tier3FallbackTriggered,
 				tier1Freshness: tieredState.tier1Freshness,
+				tier1DegradedReason: tieredState.tier1DegradedReason,
 				optOutsFiltered: tieredState.optOutsFiltered,
 			};
 		}
@@ -1010,6 +1015,19 @@ export async function discoverBrandDomains(
 			const r = tier1Settled.value;
 			tieredState.tier1Status = r.status;
 			tieredState.tier1Freshness = (r.freshness as unknown as Record<string, unknown>) ?? null;
+			// Precise token (config state, producer codes) goes to logs only; callers get a generic one.
+			tieredState.tier1DegradedReason = clientSafeTier1Reason(r.degradedReason);
+			if (r.degradedReason !== undefined) {
+				logEvent({
+					timestamp: new Date().toISOString(),
+					severity: 'warn',
+					tool: 'discover_brand_domains',
+					domain: seedDomain,
+					category: 'brand_discovery_tier1',
+					result: r.status,
+					details: { degradedReason: r.degradedReason },
+				});
+			}
 			for (const obs of r.observations) {
 				tieredObservations.push({
 					candidate: obs.candidate,
@@ -1031,9 +1049,11 @@ export async function discoverBrandDomains(
 			await finishPhase('tier1_graph', r.status, tier1Started, {
 				observations: r.observations.length,
 				triggerTier3Fallback: r.triggerTier3Fallback,
+				degradedReason: tieredState.tier1DegradedReason,
 			});
 		} else {
 			tieredState.tier1Status = 'degraded';
+			tieredState.tier1DegradedReason = 'lookup_rejected';
 			await finishPhase('tier1_graph', 'failed', tier1Started, { error: String(tier1Settled.reason) });
 		}
 

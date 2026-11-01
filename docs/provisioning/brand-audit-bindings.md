@@ -12,7 +12,6 @@ Provision private production resources for:
 - `BRAND_AUDIT_QUEUE` producer and consumer queue.
 - `BRAND_AUDIT_PDF_QUEUE` producer and consumer queue.
 - `BRAND_REPORTS` R2 bucket.
-- `BV_BROWSER_RENDERER` service binding.
 - Existing `BV_WEB` service binding for the exact first-party Brand Drift receiver.
 - `BV_MCP_BRAND_WEBHOOK_KEY` secret, shared only with `bv-web-prod` and at least
   32 UTF-8 bytes. Keep it distinct from every other internal capability.
@@ -67,7 +66,6 @@ ignored and merged into `wrangler.production.jsonc` by
 		],
 	},
 	"r2_buckets": [{ "binding": "BRAND_REPORTS", "bucket_name": "<brand-reports-bucket-name>" }],
-	"services": [{ "binding": "BV_BROWSER_RENDERER", "service": "<renderer-worker-service>" }],
 }
 ```
 

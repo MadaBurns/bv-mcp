@@ -224,6 +224,11 @@ known migration source (for example `BRAND_AUDIT_DB`, which is hand-schema'd
 via `src/lib/db/brand-audit-schema.ts`) is reported as skipped, not silently
 ignored.
 
+`npm run deploy:prod` and `npm run deploy:prod:staged` run this checker
+automatically (after private-config injection, before the Worker ships) and
+fail closed: drift, an unreachable live database, or an unreadable config
+blocks the deploy. Apply the missing migration (below), then re-run the deploy.
+
 Applying a missing migration file to a live database is an operator action —
 this repository does not automate it. Use `wrangler d1 execute <db> --remote
 --file=<migration>` with the exact source file — for example, the two files
@@ -263,7 +268,10 @@ export locations in ignored notes.
   exports, generated reports, PDFs, client-engagement output, or tenant databases.
 - erasure: deactivate the `sub_tenants` row, revoke tenant keys, stop scheduled
   scans, delete or tombstone per-tenant D1 data under the approved retention
-  policy, then record the operator action in the registry audit log.
+  policy, remove the tenant's `TENANT_DB_*` binding from the private overlay
+  (`.dev/wrangler.deploy.jsonc`) so the schema-drift deploy gate stops checking
+  a database that no longer exists and the next deploy does not fail on it,
+  then record the operator action in the registry audit log.
 - restore drill: at least once per release window that changes tenant schema or
   migrations, restore a synthetic tenant backup into a disposable D1 database,
   run the tenant schema/audit tests, and verify a queued scan can complete.

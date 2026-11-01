@@ -461,6 +461,44 @@ describe('DNS Security MCP Server', () => {
 			expect(['ok', 'error', 'absent']).toContain(body.bindings.quotaCoordinator);
 		});
 
+		it('deep mode accepts only the dedicated roaming credential off the owner allowlist', async () => {
+			const roamingKey = 'roaming-owner-fixture-'.repeat(3);
+			const authEnv = {
+				...env,
+				BV_API_KEY: TEST_API_KEY,
+				BV_ROAMING_OWNER_KEY: roamingKey,
+				BV_ROAMING_OWNER_EXPIRES_AT: new Date(Date.now() + 60_000).toISOString(),
+				OWNER_ALLOW_IPS: '192.0.2.10',
+			} as Env;
+			for (const [key, allowed] of [[roamingKey, true], [TEST_API_KEY, false]] as const) {
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(new Request('http://example.test/health?deep=1', {
+					headers: { Authorization: `Bearer ${key}`, 'CF-Connecting-IP': '198.51.100.20' },
+				}), authEnv, ctx);
+				await waitOnExecutionContext(ctx);
+				if (allowed) {
+					expect([200, 503]).toContain(response.status);
+					expect((await response.json() as { bindings?: unknown }).bindings).toBeDefined();
+				} else expect(response.status).toBe(403);
+			}
+		});
+
+		it('deep mode rejects an expired roaming credential even off the owner allowlist', async () => {
+			const roamingKey = 'expired-roaming-fixture-'.repeat(3);
+			const authEnv = {
+				...env,
+				BV_ROAMING_OWNER_KEY: roamingKey,
+				BV_ROAMING_OWNER_EXPIRES_AT: new Date(Date.now() - 1).toISOString(),
+				OWNER_ALLOW_IPS: '192.0.2.10',
+			} as Env;
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(new Request('http://example.test/health?deep=1', {
+				headers: { Authorization: `Bearer ${roamingKey}`, 'CF-Connecting-IP': '198.51.100.20' },
+			}), authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+		});
+
 		it('deep mode reports production-critical binding presence beyond scan cache and quota coordinator', async () => {
 			const authEnv = {
 				...env,

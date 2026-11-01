@@ -20,7 +20,9 @@
  *      Missing key → short-circuit with degraded status; the binding is never called.
  *   2. Never throw. Every failure mode (binding error, non-2xx, malformed JSON,
  *      schema mismatch) collapses into `{ observations: [], status: 'degraded',
- *      triggerTier3Fallback: true }`.
+ *      triggerTier3Fallback: true }` (`status: 'timeout'` when the deadline
+ *      aborted the call), carrying a `degradedReason` token so a dead seam is
+ *      diagnosable from the audit result instead of reading as a bare "degraded".
  *   3. Clamp `specificityScore` to [0, 1] on the consumer side as defense vs
  *      producer drift — the schema requires it but we don't depend on validation.
  *   4. No PII logging. The wrapper does not log domain values or auth tokens.
@@ -40,10 +42,18 @@ import {
 	shouldTriggerLiveFallback,
 	type FreshnessResponse,
 } from './brand-fingerprint-freshness';
-import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
+import { readJsonResponseCapped } from './response-body';
 
 const TIER1_GRAPH_MAX_BODY_BYTES = 1024 * 1024;
 const TIER1_GRAPH_TIMEOUT_MS = 5_000;
+/** Cap for reading the producer's JSON error envelope on a non-2xx reply. */
+const TIER1_GRAPH_MAX_ERROR_BODY_BYTES = 4 * 1024;
+/**
+ * Producer error codes are fixed snake_case tokens (`optout_service_unavailable`,
+ * `signal_db_unavailable`, `auth_not_configured`, ...). Anything else is dropped
+ * so producer-controlled text, and any domain value, never reaches the result.
+ */
+const UPSTREAM_ERROR_CODE = /^[a-z0-9_]{1,64}$/;
 
 /** Single aggregated observation per co-occurring candidate domain. */
 export interface Tier1Observation {
@@ -72,6 +82,14 @@ export interface Tier1Result {
 	status: Tier1Status;
 	triggerTier3Fallback: boolean;
 	freshness?: FreshnessResponse;
+	/**
+	 * Why the lookup did not return `ok`; present on every degraded/timeout
+	 * result. One of `no_internal_key`, `timeout`, `fetch_failed`,
+	 * `body_unreadable`, `schema_mismatch`, or `http_<status>` optionally
+	 * suffixed with the producer's error code (`http_503:optout_service_unavailable`).
+	 * Internal: names config state, so callers see {@link clientSafeTier1Reason}.
+	 */
+	degradedReason?: string;
 }
 
 /** Env shape minimally required by this wrapper. */
@@ -203,9 +221,40 @@ function flattenSharedSignals(signals: readonly SharedSignal[]): Tier1Observatio
 	return observations;
 }
 
-/** The single failure mode for every error path — keeps semantics uniform. */
-function degraded(): Tier1Result {
-	return { observations: [], status: 'degraded', triggerTier3Fallback: true };
+/** The single failure shape for every error path — keeps semantics uniform. */
+function degraded(degradedReason: string, status: 'degraded' | 'timeout' = 'degraded'): Tier1Result {
+	return { observations: [], status, triggerTier3Fallback: true, degradedReason };
+}
+
+/**
+ * Reason tokens that are safe to show a caller: they describe the transport or
+ * payload, not our configuration. Everything else (`no_internal_key`, any
+ * `http_<status>[:<producer code>]`) names config state or a producer
+ * internal, so it collapses to {@link TIER1_GENERIC_REASON}. Allowlist, not
+ * denylist: a token added later fails closed. The precise token stays on
+ * `Tier1Result.degradedReason` for logs.
+ */
+const TIER1_CLIENT_SAFE_REASONS: ReadonlySet<string> = new Set([
+	'timeout',
+	'fetch_failed',
+	'body_unreadable',
+	'schema_mismatch',
+	'lookup_rejected',
+]);
+export const TIER1_GENERIC_REASON = 'upstream_unavailable';
+
+/** Map a precise Tier 1 degraded reason to the token a caller may see. */
+export function clientSafeTier1Reason(reason: string | undefined): string | undefined {
+	if (reason === undefined) return undefined;
+	return TIER1_CLIENT_SAFE_REASONS.has(reason) ? reason : TIER1_GENERIC_REASON;
+}
+
+/** `http_<status>`, suffixed with the producer's error code when it sent a valid one. */
+async function upstreamHttpReason(response: Response): Promise<string> {
+	const reason = `http_${response.status}`;
+	const body = await readJsonResponseCapped<unknown>(response, TIER1_GRAPH_MAX_ERROR_BODY_BYTES);
+	const code = body && typeof body === 'object' ? (body as { error?: unknown }).error : undefined;
+	return typeof code === 'string' && UPSTREAM_ERROR_CODE.test(code) ? `${reason}:${code}` : reason;
 }
 
 /**
@@ -221,7 +270,7 @@ export async function tier1GraphLookup(
 ): Promise<Tier1Result> {
 	// Invariant 1: no auth key → never construct an Authorization header.
 	if (!env.BV_WEB_INTERNAL_KEY) {
-		return degraded();
+		return degraded('no_internal_key');
 	}
 
 	const controller = new AbortController();
@@ -243,16 +292,18 @@ export async function tier1GraphLookup(
 		const response = await binding.fetch(req);
 
 		if (!response.ok) {
-			await disposeUnreadResponseBody(response);
-			return degraded();
+			return degraded(await upstreamHttpReason(response));
 		}
 
 		const rawBody = await readJsonResponseCapped<unknown>(response, TIER1_GRAPH_MAX_BODY_BYTES);
-		if (rawBody === null) return degraded();
+		if (rawBody === null) {
+			// A deadline abort mid-body surfaces as an unreadable body; it is a timeout.
+			return controller.signal.aborted ? degraded('timeout', 'timeout') : degraded('body_unreadable');
+		}
 
 		const parsed = DomainRelatedResponseSchema.safeParse(rawBody);
 		if (!parsed.success) {
-			return degraded();
+			return degraded('schema_mismatch');
 		}
 
 		const data: DomainRelatedResponse = parsed.data;
@@ -266,7 +317,7 @@ export async function tier1GraphLookup(
 			freshness: data.freshness,
 		};
 	} catch {
-		return degraded();
+		return controller.signal.aborted ? degraded('timeout', 'timeout') : degraded('fetch_failed');
 	} finally {
 		clearTimeout(timeoutId);
 	}

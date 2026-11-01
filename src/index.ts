@@ -179,6 +179,10 @@ type BvMcpEnv = Env & {
 	 */
 	ANALYTICS_DATASET?: string;
 	BV_API_KEY?: string;
+	/** Optional dedicated owner credential for roaming access; requires a valid unexpired BV_ROAMING_OWNER_EXPIRES_AT. */
+	BV_ROAMING_OWNER_KEY?: string;
+	/** Required expiry for roaming owner access: canonical ISO 8601 UTC timestamp (YYYY-MM-DDTHH:mm:ss.sssZ). */
+	BV_ROAMING_OWNER_EXPIRES_AT?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
 	OWNER_ALLOW_IPS?: string;
 	BV_WEB?: Fetcher;
@@ -1716,10 +1720,9 @@ import { brandWebhookPeerSecretsFromEnv, handleBrandAuditQueue, type BrandAuditC
 import { securityConfigurationCollision } from './lib/security-capabilities';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from './tenants/scheduled-handlers';
-// Phase 2 scheduler core (ships DARK). The handlers no-op unless
-// `SCAN_DISPATCH_ENABLED === 'true'` AND `SCAN_SCHEDULE_DB` is bound; the cron
-// strings below are deliberately NOT added to `wrangler.jsonc`, so they never
-// fire in prod until an operator adds them at enable time.
+// Phase 2 scheduler core. The crons (`* * * * *`, `*/30 * * * *`) are in
+// `wrangler.jsonc` triggers, but the handlers no-op unless
+// `SCAN_DISPATCH_ENABLED === 'true'` AND `SCAN_SCHEDULE_DB` is bound.
 import { handleScanDispatch, handleScanRateRecompute, type ScanDispatchEnv } from './lib/scan-scheduler';
 
 /**
@@ -1785,8 +1788,8 @@ export function routeCron(cron: string): CronRoute {
 	const normalized = normalizeCron(cron);
 	if (normalized === normalizeCron('0 8 * * *')) return 'daily-digest';
 	if (normalized === normalizeCron('0 2 * * 0')) return 'weekly-tenant-rescan';
-	// Phase 2 scheduler core (DARK). These crons are NOT in wrangler.jsonc — the
-	// operator adds them at enable time; the handlers no-op while the flag is off.
+	// Phase 2 scheduler core. These crons are in wrangler.jsonc triggers; the
+	// handlers no-op while SCAN_DISPATCH_ENABLED is off.
 	if (normalized === normalizeCron('* * * * *')) return 'scan-dispatch';
 	if (normalized === normalizeCron('*/30 * * * *')) return 'scan-rate-recompute';
 	if (normalized === normalizeCron('*/15 * * * *')) return 'periodic';
@@ -2059,8 +2062,8 @@ export default {
 					for (const m of batch.messages) m.ack();
 					return;
 				}
-				// Renderer is now in-process (pdf-lib); BV_BROWSER_RENDERER + KEY
-				// no longer required for brand-audit PDF generation.
+				// Renderer is in-process (pdf-lib); the brand-audit PDF queue needs no
+				// BV_BROWSER_RENDERER binding or key.
 				const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
 				await handleBrandAuditPdfQueue(batch, deps);
 				return;

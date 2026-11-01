@@ -9,10 +9,12 @@ bearer tokens in ignored deployment notes — never in this repo.
 ## 1. Provision the access-log database FIRST
 
 The `INTELLIGENCE_DB` binding holds `mcp_access_log` and `mcp_access_log_audit`.
-Its database is `mcp-access-log-v1`, owned by bv-mcp (SQ-187). It replaces
-`bv-intelligence`, bv-web-prod's decommissioned database, on which bv-mcp was
-the only remaining writer. The binding **name** is unchanged; only the
-`database_name`/`database_id` behind it in the private overlay moved.
+The target database is `mcp-access-log-v1`, owned by bv-mcp (SQ-187). It
+replaces `bv-intelligence`, bv-web-prod's database, on which bv-mcp is the only
+remaining writer. `bv-intelligence` stays live until the
+[§3a cut-over](../operator-runbook.md#3a-moving-the-access-log-to-mcp-access-log-v1-sq-187-cut-over)
+and is decommissioned after it. The binding **name** is unchanged; only the
+`database_name`/`database_id` behind it in the private overlay moves.
 
 A new database gets the consolidated baseline, which already carries every
 enrichment (0002) and `source` (0003) column:
@@ -20,13 +22,33 @@ enrichment (0002) and `source` (0003) column:
 ```bash
 npx wrangler d1 create mcp-access-log-v1 --location oc
 npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0001_baseline.sql
+npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0002_drop_unused_indexes.sql
 ```
+
+`0002_drop_unused_indexes.sql` (SQ-500) drops the three `mcp_access_log` indexes
+no query uses (`country`, `domain`, `ip_masked`). D1 bills each index entry as a
+row written, on insert and again on the retention delete, so every logged call
+costs 3 index entries instead of 6 afterwards. It is idempotent (`DROP INDEX IF
+EXISTS`), so apply it to an existing database too. Its targets are `bv-intelligence`
+(the live database until the [§3a cut-over](../operator-runbook.md#3a-moving-the-access-log-to-mcp-access-log-v1-sq-187-cut-over))
+and `mcp-access-log-v1` (after it). The saving lands only once 0002 has been applied
+to the database the `INTELLIGENCE_DB` binding currently resolves to. Apply it before a bulk
+copy so the copy does not pay for the dead indexes either. The file lists, per
+index, which query keeps or loses it.
 
 Do **not** replay `scripts/intelligence/sql/0001`–`0003` on a new database. The
 live table drifted from that chain (`ip_masked` is `NOT NULL`, and the index set
 differs), and the baseline reproduces live, not the chain. Those files remain the
-history of the old database. `0004_mcp_access_rollup.sql` is optional and
+history of the old database. `scripts/intelligence/sql/0004_mcp_access_rollup.sql` is optional and
 separate; the rollup is off.
+
+To enable the rollup, apply `0004_mcp_access_rollup.sql` first, then set
+`ANALYTICS_ROLLUP_INTERNAL=true`. The flag now reaches both the public `/mcp`
+recorder and the internal door (`/internal/tools/{call,batch}`), which is the only
+source of `source = 'internal'` traffic, so those rescans increment a daily counter
+instead of inserting one `mcp_access_log` row each. While the flag is unset the
+15-minute provisioning probe (`checkAccessRollupProvisioned`) does nothing; once it
+is `true` and the table is missing, the probe alerts.
 
 A deploy against an unmigrated database is refused.
 `scripts/access-log-schema-preflight.mjs` runs in `deploy:prod`,

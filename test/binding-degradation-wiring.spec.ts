@@ -9,8 +9,8 @@
  * This spec verifies the MISSING upstream wiring: that the registry forwards
  * `ro.onBindingDegradation` into each recon/tls tool's options object, and that the
  * dispatch seam builds that sink from `ro.analytics` (so `emitDegradationEvent`
- * fires with the right degradationType + component). Absent-binding and the benign
- * recon-404 must stay SILENT.
+ * fires with the right degradationType + component). Absent-binding must stay SILENT;
+ * a recon 404 (the /osint/check route is absent upstream — SQ-502) is a degradation.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
@@ -48,7 +48,7 @@ function fakeAnalytics(): { client: AnalyticsClient; emit: ReturnType<typeof vi.
  * so the test exercises the production wiring rather than a hand-rolled sink.
  */
 function sinkFromAnalytics(client: AnalyticsClient | undefined) {
-	return client ? (e: { degradationType: 'binding_unavailable' | 'binding_5xx' | 'binding_timeout'; component: string; domain?: string }) => client.emitDegradationEvent(e) : undefined;
+	return client ? (e: { degradationType: 'binding_unavailable' | 'binding_5xx' | 'binding_timeout' | 'binding_route_absent'; component: string; domain?: string }) => client.emitDegradationEvent(e) : undefined;
 }
 
 /** A recon binding whose fetch resolves with a given status / body. */
@@ -101,10 +101,14 @@ describe('R1 binding-degradation sink wiring (recon path via handleToolsCall)', 
 		expect(emit).not.toHaveBeenCalled();
 	});
 
-	it('stays SILENT on a benign recon 404 (no threat-feed entry — a data miss, not a failure)', async () => {
+	it('emits binding_route_absent on a recon 404 and never reports a clean "no hits" (route absent upstream — SQ-502/SQ-514)', async () => {
 		const { client, emit } = fakeAnalytics();
-		await callRealtimeThreatFeed('recon-clean.com', { reconBinding: reconBindingStatus(404), analytics: client });
-		expect(emit).not.toHaveBeenCalled();
+		const res = await callRealtimeThreatFeed('recon-route404.com', { reconBinding: reconBindingStatus(404), analytics: client });
+		expect(emit).toHaveBeenCalledTimes(1);
+		expect(emit).toHaveBeenCalledWith({ degradationType: 'binding_route_absent', component: 'recon', domain: 'recon-route404.com' });
+		const text = JSON.stringify(res);
+		expect(text).not.toContain('No realtime threat-feed hits');
+		expect(text).not.toContain('No threat-intelligence match');
 	});
 
 	it('does NOT emit when no analytics client is wired (sink undefined — only the warn log fires)', async () => {

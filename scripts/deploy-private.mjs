@@ -34,9 +34,12 @@ const tsxCliPath = require.resolve('tsx/cli');
 const cfProjectDir = fileURLToPath(new URL('../packages/bv-dns-security-mcp/', import.meta.url));
 const cfCliPath = fileURLToPath(new URL('../packages/bv-dns-security-mcp/node_modules/.bin/cf', import.meta.url));
 
-/** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. */
-function runStep(argv, description) {
-	const step = spawnSync(process.execPath, argv, { stdio: 'inherit' });
+// `npm` is a shell script on Windows (npm.cmd), which spawnSync only runs through a shell.
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. Defaults to `node <argv>`. */
+function runStep(argv, description, command = process.execPath) {
+	const step = spawnSync(command, argv, { stdio: 'inherit', shell: command === npmCommand && process.platform === 'win32' });
 	if (step.error) {
 		console.error(`${description} failed: ${step.error.message}`);
 		process.exit(1);
@@ -78,6 +81,18 @@ runStep([tsxCliPath, 'scripts/ci/deploy-freshness-check.ts'], 'Deploy freshness 
 
 runStep([tsxCliPath, 'scripts/ci/sidecar-deploy-drift-check.ts'], 'Sidecar deploy-drift gate');
 
+// The rest of deploy:prod's gate chain (package.json) is re-wired below in the same order, so this door cannot ship
+// what `deploy:prod` would refuse. test/audits/deploy-pipeline.audit.test.ts pins the two chains to the same gate set.
+// Exact version tag + clean tree + dns-checks source identity (override: BV_ALLOW_UNPINNED_DEPLOY=1, same as deploy:prod).
+runStep([tsxCliPath, 'scripts/ci/release-integrity-check.ts', '--mode', 'deploy'], 'Release-integrity gate');
+
+// The Worker bundles @blackveil/dns-checks from its dist: a stale build ships old check logic with no other signal.
+runStep(['-w', 'packages/dns-checks', 'run', 'build'], 'dns-checks build', npmCommand);
+
+// Public-config binding/type check. It reads the public wrangler.jsonc, so it runs BEFORE the injector; the
+// generated-config pass runs after the preflights below.
+runStep(['scripts/check-bindings.mjs'], 'Bindings check (public config)');
+
 runStep(['scripts/inject-private-config.cjs'], 'Private config injection');
 
 runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath], 'Brand Audit schema preflight');
@@ -85,6 +100,13 @@ runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfig
 // INTELLIGENCE_DB bound to an unmigrated database makes every fire-and-forget access-log insert throw
 // with nothing to surface it (SQ-187). Needs the injected config, so it runs after the injector.
 runStep(['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath], 'Access-log schema preflight');
+
+// Tenant migrations are raw SQL applied by hand, so a deploy whose code reads a column or index the live tenant D1
+// lacks must fail closed (SQ-501). Same checker and flags as `npm run check:tenant-schema`; reads the injected config.
+runStep(['scripts/tenants/check-schema-drift.mjs', '--config', generatedConfigPath], 'Tenant schema drift check');
+
+// Type-check the Env the Worker will actually run against: the injected production config, not the public one.
+runStep(['scripts/check-bindings.mjs', '--config', generatedConfigPath], 'Bindings check (generated production config)');
 
 // `--mode production` is hard-coded: a bare `cf deploy` ships the public-only shape (named
 // bv-dns-security-mcp-dev by cloudflare.config.ts so it cannot strip production's private bindings).

@@ -7,6 +7,7 @@ import packageJsonSource from '../../package.json?raw';
 import deployPrivateSource from '../../scripts/deploy-private.mjs?raw';
 import promoteSource from '../../scripts/deploy-prod-promote.mjs?raw';
 import injectScriptSource from '../../scripts/inject-private-config.cjs?raw';
+import { isEntrypoint, runSchemaDriftCheck } from '../../scripts/tenants/check-schema-drift.mjs';
 
 interface PackageJson {
 	scripts?: Record<string, string>;
@@ -34,8 +35,28 @@ const GATES_BEFORE_SHIP = [
 	'node scripts/inject-private-config.cjs',
 	'node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc',
 	'node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc',
+	'npm run check:tenant-schema',
 	'npm run check:bindings:prod',
 ];
+/**
+ * How deploy-private.mjs spells each GATES_BEFORE_SHIP entry (the call prefix, so a comment mentioning a script
+ * cannot satisfy it). Keyed by the deploy:prod gate: a gate added to deploy:prod with no entry here fails the
+ * "same gate set" test below, and so does an entry here that deploy:prod no longer runs.
+ */
+const PRIVATE_GATE_CALLS: Record<string, string> = {
+	'npm run check:deploy-freshness': "runStep([tsxCliPath, 'scripts/ci/deploy-freshness-check.ts']",
+	'npm run check:sidecar-freshness': "runStep([tsxCliPath, 'scripts/ci/sidecar-deploy-drift-check.ts']",
+	'npm run check:release-integrity': "runStep([tsxCliPath, 'scripts/ci/release-integrity-check.ts', '--mode', 'deploy']",
+	'npm -w packages/dns-checks run build': "runStep(['-w', 'packages/dns-checks', 'run', 'build']",
+	'npm run check:bindings': "runStep(['scripts/check-bindings.mjs']",
+	'node scripts/inject-private-config.cjs': "runStep(['scripts/inject-private-config.cjs']",
+	'node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc':
+		"runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath]",
+	'node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc':
+		"runStep(['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath]",
+	'npm run check:tenant-schema': "runStep(['scripts/tenants/check-schema-drift.mjs', '--config', generatedConfigPath]",
+	'npm run check:bindings:prod': "runStep(['scripts/check-bindings.mjs', '--config', generatedConfigPath]",
+};
 /** Every cf script in the config package starts with this overlay-env guard (see the BV_DEPLOY_OVERLAY_PATH test below). */
 const OVERLAY_GUARD = 'npm run guard:overlay-env && ';
 /** deploy-private.mjs's cf spawn: marker used to locate the ship step in its source. */
@@ -250,6 +271,27 @@ describe('deploy:prod pipeline integrity', () => {
 		);
 	});
 
+	// The private door skips the npm chain entirely, so every gate deploy:prod runs must be re-wired in
+	// deploy-private.mjs: the same set, in the same order, all before the cf ship step. It once carried only the
+	// freshness, sidecar and two schema preflights, so it shipped what deploy:prod would have refused
+	// (release-integrity, bindings, tenant-schema).
+	it('runs the same gate set as deploy:prod, in the same order, before shipping on the private door', () => {
+		expect(Object.keys(PRIVATE_GATE_CALLS), 'every deploy:prod gate needs a private-door spelling, and no stale extras').toEqual(
+			GATES_BEFORE_SHIP,
+		);
+		const shipIndex = deployPrivateSource.indexOf(PRIVATE_SHIP);
+		expect(shipIndex, 'deploy-private.mjs must contain the cf production deploy call').toBeGreaterThan(-1);
+		let previousIndex = -1;
+		for (const gate of GATES_BEFORE_SHIP) {
+			const call = PRIVATE_GATE_CALLS[gate];
+			const index = deployPrivateSource.indexOf(call);
+			expect(index, `deploy-private.mjs must run the "${gate}" gate (${call})`).toBeGreaterThan(-1);
+			expect(index, `"${gate}" must run after the gate before it, mirroring deploy:prod`).toBeGreaterThan(previousIndex);
+			expect(index, `"${gate}" must run before cf deploy`).toBeLessThan(shipIndex);
+			previousIndex = index;
+		}
+	});
+
 	// Same ordering on the two npm doors, asserted from the scripts themselves so a
 	// reordering of the chain cannot silently invert the dependency.
 	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the freshness gate before the sidecar gate in %s', (scriptName) => {
@@ -289,6 +331,19 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(injectIndex, 'the preflight reads the injected config, so the injector must run first').toBeLessThan(preflightIndex);
 		expect(shipIndex, `${scriptName} must end in the cf deploy / versions hand-off`).toBeGreaterThan(-1);
 		expect(preflightIndex, 'the preflight must run before the Worker ships').toBeLessThan(shipIndex);
+	});
+
+	// SQ-501: tenant migrations are raw SQL applied by hand, so a deploy whose code reads a column or index
+	// the live tenant D1 lacks (the 0002 index missing in prod caused the 09-24 read storm) must fail closed.
+	// The checker reads the GENERATED config for the tenant bindings, so it runs after the injector.
+	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the tenant schema drift check after injection and before shipping in %s', (scriptName) => {
+		const script = pkg.scripts?.[scriptName] ?? '';
+		const injectIndex = script.indexOf('node scripts/inject-private-config.cjs');
+		const checkIndex = script.indexOf('npm run check:tenant-schema');
+		const shipIndex = script.search(SHIP_STEP);
+		expect(checkIndex, `${scriptName} must run check:tenant-schema`).toBeGreaterThan(-1);
+		expect(injectIndex, 'the checker reads the injected config, so the injector must run first').toBeLessThan(checkIndex);
+		expect(checkIndex, 'the checker must run before the Worker ships').toBeLessThan(shipIndex);
 	});
 
 	it('also runs the access-log schema preflight on the private deploy helper, after injection and before deploy', () => {
@@ -404,5 +459,57 @@ describe('inject-private-config fail-closed on missing overlay', () => {
 
 	it('does not silently `return` from the missing-overlay branch', () => {
 		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(/\breturn\b/);
+	});
+});
+
+// SQ-519: check:tenant-schema is a deploy gate. Its CLI bootstrap used `import.meta.url === file://${argv[1]}`,
+// which is false for a path with a space (the URL is percent-encoded) and for a symlinked directory (the URL is
+// symlink-resolved, argv[1] is not). The gate then exited 0 having checked nothing.
+describe('check-schema-drift entrypoint detection', () => {
+	const META = 'file:///repo/a%20b/scripts/tenants/check-schema-drift.mjs';
+
+	it('imports without running the CLI or loading node:* (process.argv[1] is absent under workerd)', () => {
+		// The static import above already evaluated the module; with no argv[1] its bootstrap loads nothing.
+		expect(process.argv[1]).toBeUndefined();
+	});
+
+	it('still passes, but warns on stderr naming the bindings it looked for, when the config has no tenant D1 bindings', () => {
+		const out: string[] = [];
+		const err: string[] = [];
+		const code = runSchemaDriftCheck(
+			{ config: 'wrangler.production.jsonc' },
+			{
+				fs: { readFileSync: () => '{"d1_databases":[{"binding":"DB"}]}', readdirSync: () => [] },
+				runWranglerQuery: () => [],
+				migrationsDir: { registry: '/r', tenant: '/t' },
+				stdout: (s: string) => out.push(s),
+				stderr: (s: string) => err.push(s),
+			},
+		);
+		expect(code).toBe(0);
+		expect(err.join('')).toMatch(/WARN.*TENANT_REGISTRY_DB.*TENANT_DB_/);
+	});
+
+	it('matches a plain path', () => {
+		expect(isEntrypoint('file:///repo/s/check.mjs', '/repo/s/check.mjs')).toBe(true);
+	});
+
+	it('matches a path containing a space (percent-encoded in import.meta.url)', () => {
+		expect(isEntrypoint(META, '/repo/a b/scripts/tenants/check-schema-drift.mjs')).toBe(true);
+	});
+
+	it('matches a path reached through a symlinked directory (argv[1] unresolved, import.meta.url resolved)', () => {
+		const realpath = (p: string): string => p.replace('/linked/', '/repo/a b/');
+		expect(isEntrypoint(META, '/linked/scripts/tenants/check-schema-drift.mjs', realpath)).toBe(true);
+	});
+
+	it('does not match another script, and treats a failing realpath or a missing argv[1] as not-the-entrypoint', () => {
+		expect(isEntrypoint(META, '/repo/a b/scripts/other.mjs', (p) => p)).toBe(false);
+		expect(
+			isEntrypoint(META, '/nope', () => {
+				throw new Error('ENOENT');
+			}),
+		).toBe(false);
+		expect(isEntrypoint(META, undefined)).toBe(false);
 	});
 });

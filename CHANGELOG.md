@@ -8,6 +8,13 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.0] - 2026-11-02
+
+### Added
+
+- Optional temporary roaming owner credentials with a required UTC expiry and independent revocation. Only the dedicated credential bypasses the owner IP allowlist; existing static keys and OAuth credentials retain their IP restrictions. Missing, malformed, expired, weak or reused roaming credentials fail closed.
+- Private credential provisioning with a seven-day default, guarded secret inventory, stdin-only secret updates, and a mode-0600 recovery record. No scoring change; dns-checks stays at 1.62.1 and scoring model stays at 1.41.0.
+
 ## [3.107.1] - 2026-11-01
 
 Axis: dns-checks 1.62.1. `SCORING_MODEL_VERSION` (scoring model) unchanged at 1.41.0.

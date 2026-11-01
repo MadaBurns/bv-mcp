@@ -330,6 +330,7 @@ export async function runWithCache<T>(
 	}, INFLIGHT_CLEANUP_MS);
 	const promise = Promise.resolve()
 		.then(async () => {
+			let wroteSentinel = false;
 			if (kv && !skipCache && !skipSentinel) {
 				const sentinelKey = `${key}:computing`;
 				try {
@@ -342,6 +343,7 @@ export async function runWithCache<T>(
 					} else {
 						// Claim the computation
 						await kv.put(sentinelKey, String(Date.now()), { expirationTtl: SENTINEL_TTL_SECONDS });
+						wroteSentinel = true;
 					}
 				} catch {
 					// KV error — proceed without cross-isolate dedup
@@ -355,7 +357,7 @@ export async function runWithCache<T>(
 				}
 				return result;
 			} finally {
-				if (kv && !skipSentinel) {
+				if (kv && wroteSentinel) {
 					try {
 						await kv.delete(`${key}:computing`);
 					} catch {

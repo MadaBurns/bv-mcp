@@ -63,6 +63,21 @@ const DEFAULT_WATCH_INTERVAL_HOURS = 168;
 /** Above this multiple of the watch interval, force a rescan even when the fingerprint is unchanged. */
 const STALE_RESCAN_MULTIPLIER = 2;
 
+/**
+ * Slack applied to the interval checks (SQ-496). The queue consumer stamps
+ * `last_scanned_at` when a scan completes, which is minutes after the tick
+ * that dispatched it. Without slack, a 168h domain scanned at 02:05 is still
+ * not due at the next Sunday 02:00 tick, so it would be checked only every
+ * other week and rescanned only every third. Matches the dispatch dedup
+ * window: a scan finishing that close to its tick belongs to that tick.
+ *
+ * The grace assumes the weekly batch drains in under 6h. A drain longer than
+ * that stamps a scan past the grace, so the domain is not due at the next
+ * tick and skips a cycle. Do not raise this to paper over a slow drain: it
+ * also widens the stale-rescan check below.
+ */
+const DUE_GRACE_MS = 6 * 3600 * 1000;
+
 /** Per-tick cap on number of cycles processed in the alert sweep — defense against runaway batches. */
 const MAX_CYCLES_PER_ALERT_TICK = 100;
 /** Per-tick cap on active tenants inspected by the weekly rescan dispatcher. */
@@ -116,6 +131,16 @@ const UNSETTLED_CYCLES_SQL = `
  * alerts and is re-reconciled every tick forever (SQ-167: 09-13 and 09-20 cycles).
  */
 const STALLED_CYCLE_SETTLE_MS = 6 * 3600 * 1000;
+/**
+ * Total retry budget for a cycle whose reconcile or alert step keeps failing
+ * transiently. Every 15-minute tick re-reads the tenant D1 for such a cycle, and
+ * nothing else ever removes it: a tenant that stays unreadable or unresolvable
+ * would be re-queried forever. Cycles are weekly, so a cycle still failing after a
+ * full week is superseded by newer ones; it is stamped terminal and one operator
+ * alert is raised. Age-based on purpose: no per-cycle attempt counter is persisted.
+ */
+const CYCLE_RETRY_BUDGET_MS = 7 * 24 * 3600 * 1000;
+const ALERT_OUTCOME_ABANDONED = 'abandoned_retry_budget';
 // Count every domain that never reported as errored so the cycle settles into
 // the normal alert path. The guard makes this idempotent and race-safe.
 const SETTLE_STALLED_CYCLE_SQL = `
@@ -256,7 +281,8 @@ function toFindingRow(row: FindingRowDb): FindingRow {
  *   1. Enumerate active sub_tenants from the shared registry.
  *   2. For each, look up the per-tenant D1 binding.
  *   3. Query domains where watch=1 AND (last_scanned_at IS NULL OR
- *      last_scanned_at + watch_interval_hours*3600000 < now).
+ *      last_scanned_at + watch_interval_hours*3600000 < now + DUE_GRACE_MS).
+ *      The queue consumer stamps `last_scanned_at` when each scan completes.
  *   4. Compute fingerprint for each due domain.
  *   5. Decide whether to enqueue:
  *      - fingerprint differs from stored → enqueue
@@ -364,7 +390,7 @@ async function rescanTenant(
 	try {
 		const result = await tenantDb
 			.prepare(DUE_DOMAINS_SQL)
-			.bind(DEFAULT_WATCH_INTERVAL_HOURS, tNow, MAX_DUE_DOMAINS_PER_TENANT_TICK)
+			.bind(DEFAULT_WATCH_INTERVAL_HOURS, tNow + DUE_GRACE_MS, MAX_DUE_DOMAINS_PER_TENANT_TICK)
 			.all<DueDomainRow>();
 		dueDomains = result.results ?? [];
 	} catch (err) {
@@ -392,7 +418,7 @@ async function rescanTenant(
 			}
 
 			const intervalMs = (row.watch_interval_hours ?? DEFAULT_WATCH_INTERVAL_HOURS) * 3600 * 1000;
-			const stale = row.last_scanned_at !== null && tNow - row.last_scanned_at > intervalMs * STALE_RESCAN_MULTIPLIER;
+			const stale = row.last_scanned_at !== null && tNow + DUE_GRACE_MS - row.last_scanned_at > intervalMs * STALE_RESCAN_MULTIPLIER;
 
 			const shouldEnqueue = row.last_scanned_at === null || fingerprintsDiffer(fp.fingerprint, row.fingerprint) || stale;
 
@@ -622,6 +648,53 @@ async function escalateUnreconcilableCycle(
 }
 
 /**
+ * Give up on a cycle whose reconcile or alert step is still failing after
+ * {@link CYCLE_RETRY_BUDGET_MS}: stamp it terminal so the sweep stops re-reading
+ * its tenant D1 every tick, and raise ONE operator alert (the guarded stamp lets
+ * exactly one sweep win). Returns whether the cycle is past the budget. Fail-open:
+ * nothing throws, and a failed stamp leaves the cycle retryable.
+ */
+async function abandonCycleIfPastRetryBudget(
+	env: TenantScheduledEnv,
+	cycle: UnsettledCycleRow,
+	nowMs: number,
+	reason: unknown,
+): Promise<boolean> {
+	if (nowMs - cycle.started_at <= CYCLE_RETRY_BUDGET_MS) return false;
+	const stamped = await env
+		.TENANT_REGISTRY_DB!.prepare(STAMP_ALERT_SQL)
+		.bind(nowMs, ALERT_OUTCOME_ABANDONED, cycle.id)
+		.run()
+		.catch(() => null);
+	if (!stamped || stamped.meta.changes === 0) return true; // Stamp failed (retry next tick), or already abandoned/alerted.
+
+	const details = {
+		cycleId: cycle.id,
+		superTenantId: cycle.super_tenant_id,
+		subTenantId: cycle.sub_tenant_id,
+		ageHours: Math.round((nowMs - cycle.started_at) / 3_600_000),
+		reason: reason instanceof Error ? reason.message : String(reason),
+	};
+	logError('tenant_cycle_abandoned', { severity: 'error', category: 'tenant.scheduled', details });
+	await sendAlert(
+		env.ALERT_WEBHOOK_URL ?? '',
+		buildAlertPayload({
+			title: 'Tenant monitoring cycle abandoned after retry budget',
+			severity: 'warning',
+			metrics: {
+				cycle_id: details.cycleId,
+				sub_tenant_id: details.subTenantId,
+				age_hours: details.ageHours,
+				reason: details.reason,
+			},
+			threshold: `cycle reconciled and alerted within ${CYCLE_RETRY_BUDGET_MS / 3_600_000}h of start`,
+		}),
+		{ bvWeb: env.BV_WEB },
+	).catch(() => {});
+	return true;
+}
+
+/**
  * Per-cycle alert sweep. Runs alongside the existing fuzzing scan on the
  * 15-minute trigger.
  *
@@ -682,7 +755,10 @@ export async function handleTenantCycleAlerts(
 				});
 				// A settle failure is retried next tick. A cycle that cannot even be
 				// measured past the deadline would otherwise fail here silently forever.
-				if (stalled && !reconciled) await escalateUnreconcilableCycle(env, cycle, now(), err);
+				// Past the retry budget it is abandoned instead (the abandon alert covers it).
+				if (stalled && !(await abandonCycleIfPastRetryBudget(env, cycle, now(), err)) && !reconciled) {
+					await escalateUnreconcilableCycle(env, cycle, now(), err);
+				}
 			}
 		}
 	} catch (err) {
@@ -721,6 +797,7 @@ export async function handleTenantCycleAlerts(
 					subTenantId: cycle.sub_tenant_id,
 				},
 			});
+			await abandonCycleIfPastRetryBudget(env, cycle, now(), err);
 		}
 	}
 }
@@ -803,7 +880,9 @@ async function processCycleAlert(
 				cycleId: cycle.id,
 			},
 		});
-		// Leave the cycle retryable: a transient read must not permanently lose its alert.
+		// Leave the cycle retryable: a transient read must not permanently lose its alert,
+		// until the retry budget is spent.
+		await abandonCycleIfPastRetryBudget(env, cycle, deps.now(), err);
 		return;
 	}
 
