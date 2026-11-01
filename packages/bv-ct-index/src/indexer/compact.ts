@@ -7,8 +7,8 @@
  * notAfter < job.now), reading each run in range GETs of whole blocks and holding one window plus one decoded
  * block per open run. Key-disjoint inputs are read one after another, so a merge holds one open run per
  * overlapping layer. Output goes through `createRunWriter`, closed into a new R2 object at every cut key, at
- * every change of row kind (a run holds one kind only) and at ~TARGET_RAW_BYTES, so the job holds at most one
- * output run's compressed blocks.
+ * every change of row kind (a run holds one kind only), at ~TARGET_RAW_BYTES and, for T1 output, before its key filter
+ * would pass KEY_FILTER_MAX_ENTRIES (SQ-518), so the job holds at most one output run's compressed blocks.
  *
  * Commit: ONE D1 batch inserts the output rows and deletes the input rows, every statement guarded by "all
  * inputs are still listed and job.generation is still current". THEN the input objects that no row of any
@@ -20,7 +20,16 @@
  * same bytes under the same keys, and the guard lets exactly one swap through.
  */
 
-import { createRunWriter, isSiblingRow, mergeSortedRuns, parseBlockIndex, serializeBlockIndex, streamRun } from '../codec';
+import {
+	KEY_FILTER_MAX_ENTRIES,
+	createRunWriter,
+	isSiblingRow,
+	keyFilterEntries,
+	mergeSortedRuns,
+	parseBlockIndex,
+	serializeBlockIndex,
+	streamRun,
+} from '../codec';
 import type { RunWriter } from '../codec';
 import type { Env } from '../index';
 import type { BlockIndexEntry, RunDescriptor, RunRow } from '../types';
@@ -94,8 +103,9 @@ interface OutputRun {
 
 /**
  * Output puts in flight at once (SQ-402): a T1 job closed one small run (~17 KB) per cut range, ~480 of them, and
- * one put after another took most of its ~6 min (SQ-403). A T0 -> T1 job now closes at most plan.ts MAX_T1_RANGES
- * runs (SQ-491), and a roll-up job one per cut range of its coarse range. Six is the Workers limit on open connections.
+ * one put after another took most of its ~6 min (SQ-403). A T0 -> T1 job now closes about one run per coarse range,
+ * at most plan.ts MAX_T1_RANGES of them (SQ-491), and a roll-up job one per cut range it covers. Six is the Workers
+ * limit on open connections.
  */
 export const PUT_CONCURRENCY = 6;
 /**
@@ -116,7 +126,16 @@ export interface JobStats {
 	ms: number;
 }
 
-/** Writes a merge's output as a sequence of runs, closing one at each cut, kind change or size target. */
+/**
+ * The key filter entries an output run of `tier` may hold (SQ-518). Past KEY_FILTER_MAX_ENTRIES a run stores no
+ * filter, so every read in its range opens it. A coarse T0 -> T1 run holds its coarse range's share of a job of up to
+ * plan.ts MAX_JOB_ROWS rows, enough to get there, so T1 output closes at the limit instead. T2 and T3 runs are the
+ * large runs the limit leaves unfiltered on purpose: a T3 shard holds ~10 MB, and range pruning confines a read to one
+ * or two of them.
+ */
+const filterEntryLimit = (tier: number) => (tier === 1 ? KEY_FILTER_MAX_ENTRIES : Number.POSITIVE_INFINITY);
+
+/** Writes a merge's output as a sequence of runs, closing one at each cut, kind change, size target or filter limit. */
 class OutputSink {
 	readonly outputs: OutputRun[] = [];
 	/** Summed duration of the puts. */
@@ -124,6 +143,10 @@ class OutputSink {
 	private writer: RunWriter | null = null;
 	private sibling = false;
 	private rawBytes = 0;
+	/** The open run's distinct key filter entries, counted as codec's KeyFilterBuilder counts them. */
+	private filterEntries = 0;
+	/** The open run's last filter entry at each depth: rows arrive in key order, so a repeat is always that one. */
+	private lastEntries: string[] = [];
 	private nextCut = 0;
 	private readonly puts = new Set<Promise<void>>();
 	private putBytes = 0;
@@ -136,6 +159,7 @@ class OutputSink {
 		private readonly prefix: string,
 		private readonly cuts: readonly string[],
 		private readonly targetRawBytes: number,
+		private readonly maxFilterEntries: number,
 	) {}
 
 	async add(row: RunRow): Promise<void> {
@@ -146,14 +170,29 @@ class OutputSink {
 			crossedCut = true;
 		}
 		const sibling = isSiblingRow(row);
-		if (this.writer && (crossedCut || sibling !== this.sibling || this.rawBytes >= this.targetRawBytes)) await this.close();
+		const entries = keyFilterEntries(row.key);
+		if (this.writer && (crossedCut || sibling !== this.sibling || this.full(entries))) await this.close();
 		if (!this.writer) {
 			this.writer = createRunWriter();
 			this.sibling = sibling;
 			this.rawBytes = 0;
+			this.filterEntries = 0;
+			this.lastEntries = [];
 		}
 		await this.writer.add(row);
 		this.rawBytes += rawSize(row);
+		this.filterEntries += this.newEntries(entries);
+		entries.forEach((entry, depth) => (this.lastEntries[depth] = entry));
+	}
+
+	/** True when the open run is at its size target, or a row with filter `entries` would take it past its filter limit. */
+	private full(entries: readonly string[]): boolean {
+		return this.rawBytes >= this.targetRawBytes || this.filterEntries + this.newEntries(entries) > this.maxFilterEntries;
+	}
+
+	/** How many of a row's filter `entries` the open run does not hold yet. */
+	private newEntries(entries: readonly string[]): number {
+		return entries.filter((entry, depth) => entry !== this.lastEntries[depth]).length;
 	}
 
 	/** Closes the last run and waits for every put: a failed put throws, so the job is retried. */
@@ -262,7 +301,7 @@ export async function runCompactionJob(
 			);
 		}
 	});
-	const sink = new OutputSink(env.INDEX, outputPrefix, job.cuts, limits.targetRawBytes);
+	const sink = new OutputSink(env.INDEX, outputPrefix, job.cuts, limits.targetRawBytes, filterEntryLimit(job.tier));
 	for await (const row of mergeSortedRuns(layers, job.now)) await sink.add(row);
 	const outputs = await sink.finish();
 
