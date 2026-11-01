@@ -183,6 +183,11 @@ async function scoredView(result: ScanDomainResult) {
 	};
 }
 
+/** Replace the wildcard probe's per-run random label, the only volatile field in a rescanned score. */
+function maskWildcardProbe<T>(value: T): T {
+	return JSON.parse(JSON.stringify(value).replace(/_bv-probe-[a-z0-9]+/g, '_bv-probe-MASKED')) as T;
+}
+
 function webResult(result: ScanDomainResult, category: string): CheckResult | undefined {
 	return result.webPosture?.results.find((r) => r.category === category);
 }
@@ -402,10 +407,10 @@ describe('scan_domain webPosture — never delays or starves the scored result (
 		const optedIn = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(optedIn.cached).toBe(false);
 		expect(optedIn.webPosture?.results).toHaveLength(6);
-		// SQ-498: the rescan re-runs the scored checks (no per-check cache), so volatile metadata such
-		// as the wildcard probe's random label differs; the verdict does not.
-		expect(optedIn.score.overall).toBe(plain.score.overall);
-		expect(optedIn.score.grade).toBe(plain.score.grade);
+		// SQ-498: the rescan re-runs the scored checks (no per-check cache), so the wildcard probe's
+		// random label differs. Everything else in the score (overall, grade, categoryScores,
+		// findings, evidence) must match once that one volatile field is masked.
+		expect(maskWildcardProbe(optedIn.score)).toEqual(maskWildcardProbe(plain.score));
 
 		const hit = await scanDomain(DOMAIN, undefined, { webPosture: true });
 		expect(hit.cached).toBe(true);
@@ -612,6 +617,61 @@ describe('scan_domain webPosture — cache, force_refresh and the kill switch', 
 		expect(refreshed.cached).toBe(false);
 		expect(refreshed.webPosture?.results).toHaveLength(6);
 		expect(homepageGets()).toBe(2 * getsAfterFirst);
+	});
+
+	it('SQ-498: a cold scan with the section writes only the scan-level key, never a :check: entry (KV or memory)', async () => {
+		installSite();
+		const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(undefined) };
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const { buildScanCacheKey, buildCheckCacheKey } = await import('../src/lib/cache');
+
+		const result = await scanDomain(DOMAIN, kv as unknown as KVNamespace, { webPosture: true });
+		expect(result.webPosture?.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
+
+		const putKeys = (kv.put.mock.calls as unknown[][]).map((call) => call[0] as string);
+		expect(putKeys).toEqual([buildScanCacheKey(DOMAIN)]);
+		expect(putKeys.filter((key) => key.includes(':check:'))).toEqual([]);
+		// With a KV the memory fallback is not written at all.
+		for (const category of WEB_CATEGORIES) {
+			expect(IN_MEMORY_CACHE.has(buildCheckCacheKey(DOMAIN, category as never))).toBe(false);
+		}
+		expect(IN_MEMORY_CACHE.size).toBe(0);
+	});
+
+	it('SQ-498: without a KV the in-memory fallback holds the scan-level entry only, no per-check entry', async () => {
+		installSite();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const { buildScanCacheKey, buildCheckCacheKey } = await import('../src/lib/cache');
+
+		const result = await scanDomain(DOMAIN, undefined, { webPosture: true });
+		expect(result.webPosture?.results.map((r) => r.category)).toEqual(WEB_CATEGORIES);
+
+		for (const category of WEB_CATEGORIES) {
+			expect(IN_MEMORY_CACHE.has(buildCheckCacheKey(DOMAIN, category as never))).toBe(false);
+		}
+		expect(IN_MEMORY_CACHE.has(buildScanCacheKey(DOMAIN))).toBe(true);
+		expect(IN_MEMORY_CACHE.size).toBe(1);
+	});
+
+	it('SQ-498: two concurrent scans of one domain still run each web posture check once (in-flight dedup)', async () => {
+		const mock = installSite();
+		const homepageGets = () => mock.mock.calls.filter(([input]) => urlOf(input) === 'https://www.example.com/').length;
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		await scanDomain(DOMAIN, undefined, { webPosture: true, forceRefresh: true });
+		const single = homepageGets();
+		expect(single).toBeGreaterThan(0);
+		IN_MEMORY_CACHE.clear();
+		mock.mockClear();
+
+		const [a, b] = await Promise.all([
+			scanDomain(DOMAIN, undefined, { webPosture: true, forceRefresh: true }),
+			scanDomain(DOMAIN, undefined, { webPosture: true, forceRefresh: true }),
+		]);
+		expect(a.webPosture?.results).toHaveLength(6);
+		expect(b.webPosture?.results).toHaveLength(6);
+		// One scan's worth of section requests, not two.
+		expect(homepageGets()).toBe(single);
 	});
 
 	it('the kill switch omits the section and makes no web posture requests', async () => {

@@ -19,11 +19,12 @@
  *    at most 6 connections at a time, so a hung web host cannot queue the scored checks behind it.
  *  - Once the scored result is ready it waits at most {@link WEB_POSTURE_GRACE_MS}. A check still
  *    running then is reported as not assessed (`notAssessedReason: 'deadline'`). It keeps running in
- *    the background, so a completed result still fills the per-check cache for the next scan.
+ *    the background and is cut off by the overall deadline below.
  *  - One overall deadline ({@link webPostureDeadlineMs}: 8 s, clamped to the fetch budget the scored
  *    raw-fetch checks already self-bound to) ends that background run. A check still running at the
  *    deadline is not assessed (`checkStatus: 'timeout'`), and the deadline aborts its subrequests.
- *  - Completed results use the scored checks' per-check cache; not-assessed ones are re-measured.
+ *  - Like the scored checks (SQ-498), a check shares an in-flight run but writes nothing to the
+ *    per-check cache: the section is persisted only inside the scan-level cache entry.
  *  - Nothing here rejects: a thrown check becomes a not-assessed result.
  *  - One GET per host: the apex and www homepages are fetched once and handed to `web_content`,
  *    `csp_quality` and `hsts_preload` as `pages`.
@@ -99,13 +100,7 @@ export interface WebPostureOptions {
 	certstreamAuthToken?: string;
 	/** Injectable clock (epoch ms) for the CT-index freshness rule. */
 	nowMs?: number;
-	/**
-	 * Per-check result cache, the same one every scored check uses (`runWithCache`, keyed by
-	 * `buildCheckCacheKey(domain, category)`). A completed result is cached; a not-assessed
-	 * (`partial`) one is not, so it is re-measured next time. `forceRefresh` bypasses the read.
-	 */
-	kv?: KVNamespace;
-	cacheTtlSeconds?: number;
+	/** Bypass the read of an already-cached per-check result (direct `check_*` calls write those). */
 	forceRefresh?: boolean;
 }
 
@@ -362,22 +357,13 @@ function whenAborted(signal: AbortSignal): Promise<null> {
 	});
 }
 
-function isCacheableResult(result: CheckResult): boolean {
-	return !result.partial;
-}
-
-/** Serve a completed result from the per-check cache, or run and cache it (scored checks' `runCachedCheck` rule). */
-function cachedRunner(domain: string, category: WebPostureCategory, run: CheckRunner, options: WebPostureOptions): CheckRunner {
-	return () =>
-		runWithCache(
-			buildCheckCacheKey(domain, category),
-			run,
-			options.kv,
-			options.cacheTtlSeconds,
-			options.forceRefresh,
-			isCacheableResult,
-			true,
-		);
+/**
+ * Share the in-flight run for the same key, writing nothing to KV or memory (SQ-498; the same rule
+ * as scan-domain's `runDedupedCheck`, which this module cannot import without a cycle). Two
+ * concurrent scans of one domain in an isolate therefore run each web posture check once.
+ */
+function dedupedRunner(domain: string, category: WebPostureCategory, run: CheckRunner, options: WebPostureOptions): CheckRunner {
+	return () => runWithCache(buildCheckCacheKey(domain, category), run, undefined, undefined, options.forceRefresh, () => false, true);
 }
 
 async function settleCheck(
@@ -420,7 +406,7 @@ export function startWebPosture(domain: string, options: WebPostureOptions = {})
 	const cutoff = whenAborted(signal);
 	const checks = WEB_POSTURE_CATEGORIES.map((category) => ({
 		category,
-		result: settleCheck(category, cachedRunner(domain, category, runners[category], options), cutoff, deadlineMs),
+		result: settleCheck(category, dedupedRunner(domain, category, runners[category], options), cutoff, deadlineMs),
 	}));
 	const section = Promise.all(checks.map((check) => check.result)).then((results): WebPostureSection => {
 		clearTimeout(timer);
@@ -440,8 +426,6 @@ export interface ScanWebPostureContext {
 	signal: AbortSignal;
 	/** The scan's per-check budget; the section's deadline is the fetch share of it. */
 	perCheckTimeoutMs: number;
-	/** The scan's KV namespace, for the per-check result cache. */
-	kv?: KVNamespace;
 }
 
 /**
@@ -461,9 +445,7 @@ export function webPostureDeadlineMs(perCheckTimeoutMs: number): number {
  */
 export function startScanWebPosture(
 	domain: string,
-	runtimeOptions:
-		| (WebPostureRequest & Pick<ScanRuntimeOptions, 'certstream' | 'certstreamAuthToken' | 'cacheTtlSeconds' | 'forceRefresh'>)
-		| undefined,
+	runtimeOptions: (WebPostureRequest & Pick<ScanRuntimeOptions, 'certstream' | 'certstreamAuthToken' | 'forceRefresh'>) | undefined,
 	scan: ScanWebPostureContext,
 ): WebPostureRun | undefined {
 	if (!wantsWebPosture(runtimeOptions)) return undefined;
@@ -474,8 +456,6 @@ export function startScanWebPosture(
 		deadlineMs: webPostureDeadlineMs(scan.perCheckTimeoutMs),
 		certstream: runtimeOptions?.certstream,
 		certstreamAuthToken: runtimeOptions?.certstreamAuthToken,
-		kv: scan.kv,
-		cacheTtlSeconds: runtimeOptions?.cacheTtlSeconds,
 		forceRefresh: runtimeOptions?.forceRefresh,
 	});
 }
@@ -496,8 +476,8 @@ async function settleWithinGrace(check: WebPostureRun['checks'][number], grace: 
 /**
  * Attach the section to the scored result, waiting at most `graceMs` from now (the moment the
  * scored result is ready). A check not finished by then is reported as not assessed with reason
- * "deadline". The run itself is handed to `waitUntil`, so those checks still finish and a completed
- * result fills the per-check cache for the next scan. Nothing here can fail the scored result.
+ * "deadline". The run itself is handed to `waitUntil`, so those checks still finish in the
+ * background. Nothing here can fail the scored result.
  */
 export async function attachWebPosture<T extends object>(
 	result: T,
@@ -535,7 +515,8 @@ export function applyWebPostureSwitch<T extends { webPosture?: WebPostureSection
 /**
  * A cached scan can answer this caller unless the caller wants the section and the cached result
  * has none, because a caller that skipped the section wrote it. That caller rescans: the scored
- * checks come from the per-check cache, and the new result, section included, replaces the entry.
+ * checks are re-run (SQ-498: they are not cached per check), and the new result, section included,
+ * replaces the entry.
  */
 export function canReplayCachedScan(cached: { webPosture?: WebPostureSection }, request: WebPostureRequest | undefined): boolean {
 	return cached.webPosture !== undefined || !wantsWebPosture(request);
