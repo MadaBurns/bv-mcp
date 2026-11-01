@@ -6,7 +6,7 @@
  */
 
 import { apexOf, mergeObservations, nameKey, siblingKey } from '../codec';
-import type { CertDetails, NameObservation, ObservationBatch, RunRow, SiblingObservation } from '../types';
+import type { CertDetails, NameObservation, ObservationBatch, QueuedName, QueuedSibling, RunRow, SiblingObservation } from '../types';
 import type { CertFacts } from './x509';
 
 /** Contract v2: a cert spanning more apexes than this yields no sibling rows. */
@@ -130,9 +130,22 @@ export function newRows(set: ObservationSet, emitted: Map<string, RunRow>): { na
 const encoder = new TextEncoder();
 const jsonBytes = (value: unknown) => encoder.encode(JSON.stringify(value)).byteLength;
 
+/** A name row as queued: key and apex are left off because the indexer re-derives them from name (SQ-530). */
+function queuedName(row: NameObservation): QueuedName {
+	const { key: _key, apex: _apex, ...queued } = row;
+	return queued;
+}
+
+/** A sibling row as queued: key is left off because the indexer re-derives it from apex and sibling (SQ-530). */
+function queuedSibling(row: SiblingObservation): QueuedSibling {
+	const { key: _key, ...queued } = row;
+	return queued;
+}
+
 /**
- * Cuts one log's rows into ObservationBatch messages of at most MAX_MESSAGE_BYTES of JSON each. Every
- * batch of a log carries that log's whole range for the tick, [startIndex, endIndex).
+ * Cuts one log's rows into ObservationBatch messages of at most MAX_MESSAGE_BYTES of JSON each, measured on the
+ * queued form (no re-derivable keys). Every batch of a log carries that log's whole range for the tick,
+ * [startIndex, endIndex).
  */
 export function toBatches(
 	logId: string,
@@ -145,18 +158,18 @@ export function toBatches(
 	const batches: ObservationBatch[] = [];
 	let batch = empty();
 	let bytes = envelopeBytes;
-	const add = (row: RunRow, push: (target: ObservationBatch) => void) => {
+	const add = <T>(row: T, list: (target: ObservationBatch) => T[]) => {
 		const rowBytes = jsonBytes(row) + 1; // and its comma
 		if (bytes + rowBytes > MAX_MESSAGE_BYTES && bytes > envelopeBytes) {
 			batches.push(batch);
 			batch = empty();
 			bytes = envelopeBytes;
 		}
-		push(batch);
+		list(batch).push(row);
 		bytes += rowBytes;
 	};
-	for (const row of rows.names) add(row, (target) => target.names.push(row));
-	for (const row of rows.siblings) add(row, (target) => target.siblings.push(row));
+	for (const row of rows.names) add(queuedName(row), (target) => target.names);
+	for (const row of rows.siblings) add(queuedSibling(row), (target) => target.siblings);
 	if (bytes > envelopeBytes) batches.push(batch);
 	return batches;
 }
