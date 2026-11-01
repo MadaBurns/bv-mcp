@@ -170,7 +170,7 @@ export function ownedIndexIsPartial(c: OwnedIndexCoverage, nowMs: number = Date.
 export interface CtSourceDiagnostics {
 	httpStatus?: number;
 	apiErrorCode?: 'timeout' | 'not_allowed_by_plan';
-	failurePhase?: 'response_size_cap' | 'response_parse';
+	failurePhase?: 'response_size_cap' | 'response_parse' | 'response_timeout' | 'response_transport';
 }
 
 /** What one CT source contributed to this answer. */

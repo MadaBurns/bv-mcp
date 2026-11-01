@@ -84,3 +84,28 @@ describe('HTTPS redirects through the robots gate', () => {
 		}
 	});
 });
+
+
+it('rechecks robots for a live sibling when the memo owner is cancelled', async () => {
+	let robotsCalls = 0;
+	let targetCalls = 0;
+	const transport: FetchFunction = async (url, init) => {
+		if (url.endsWith('/robots.txt')) {
+			if (++robotsCalls === 1) return waitForAbort(init?.signal);
+			return new Response('User-agent: *\nDisallow: /');
+		}
+		targetCalls++;
+		return new Response('ok');
+	};
+	const gate = withRobotsGate(transport);
+	const controller = new AbortController();
+	const first = gate('https://example.test/', { signal: controller.signal });
+	const firstRejected = expect(first).rejects.toMatchObject({ name: 'AbortError' });
+	const sibling = gate('https://example.test/');
+	const siblingRejected = expect(sibling).rejects.toMatchObject({ name: 'RobotsDisallowedError' });
+	controller.abort();
+	await firstRejected;
+	await siblingRejected;
+	expect(robotsCalls).toBe(2);
+	expect(targetCalls).toBe(0);
+});

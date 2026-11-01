@@ -40,7 +40,7 @@ import { buildCtCoverage, formatCoverageLine, isoOrUndefined, ownedIndexIsPartia
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
-import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
+import { readTextResponseCappedDetailed, readJsonResponseCapped } from '../lib/response-body';
 import { certstreamHeaders } from '../lib/certstream-headers';
 
 /**
@@ -1245,7 +1245,7 @@ const COMPACT_ISSUE_DETAIL_CAP = 200;
 export interface SourceResult {
 	httpStatus?: number;
 	apiErrorCode?: 'timeout' | 'not_allowed_by_plan';
-	failurePhase?: 'response_size_cap' | 'response_parse';
+	failurePhase?: 'response_size_cap' | 'response_parse' | 'response_timeout' | 'response_transport';
 	outcome: CtSourceOutcome;
 	entries: CrtShEntry[];
 	/** Retry delay advertised by an upstream 429, clamped before persistence. */
@@ -1399,15 +1399,16 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 			redirect: 'manual',
 		});
 		if (!response.ok) return { ...(await classifyHttpFailure(response)), entries: [] };
-		const declaredLength = Number(response.headers.get('content-length'));
-		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
-			await disposeUnreadResponseBody(response);
-			return { outcome: 'http_error', entries: [], httpStatus: response.status, failurePhase: 'response_size_cap' };
+		const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
+		if (body.text === null) return {
+			outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error', entries: [], httpStatus: response.status,
+			failurePhase: body.overflowed ? 'response_size_cap' as const : signal.aborted ? 'response_timeout' as const : 'response_transport' as const,
+		};
+		let parsed: unknown;
+		try { parsed = JSON.parse(body.text); } catch {
+			return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
 		}
-		const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
-		if (rawBody === null) return { outcome: 'http_error', entries: [], httpStatus: response.status, failurePhase: 'response_size_cap' };
-		const parsed = JSON.parse(rawBody) as unknown;
-		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
+		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
 		const entries = parsed as CrtShEntry[];
 		// crt.sh answers the whole query in one response — no pagination to miss.
 		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete: true };
@@ -1488,22 +1489,20 @@ export async function fetchCertspotterEntries(
 				stopIncomplete();
 				break;
 			}
-			const declaredLength = Number(response.headers.get('content-length'));
-			if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
-				await disposeUnreadResponseBody(response);
-				if (pagesRead === 0) return { outcome: 'http_error', entries: [], httpStatus: response.status, failurePhase: 'response_size_cap' };
+			const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
+			if (body.text === null) {
+				diagnostics = { httpStatus: response.status, failurePhase: body.overflowed ? 'response_size_cap' as const : signal.aborted ? 'response_timeout' as const : 'response_transport' as const };
+				if (pagesRead === 0) return {
+					outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error', entries: [], ...diagnostics,
+				};
 				stopIncomplete();
 				break;
 			}
-			const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
-			if (rawBody === null) {
-				if (pagesRead === 0) return { outcome: 'http_error', entries: [], httpStatus: response.status, failurePhase: 'response_size_cap' };
-				stopIncomplete();
-				break;
-			}
-			const parsed = JSON.parse(rawBody) as unknown;
+			let parsed: unknown;
+			try { parsed = JSON.parse(body.text); } catch { parsed = null; }
 			if (!Array.isArray(parsed)) {
-				if (pagesRead === 0) return { outcome: 'error', entries: [] };
+				diagnostics = { httpStatus: response.status, failurePhase: 'response_parse' };
+				if (pagesRead === 0) return { outcome: 'error', entries: [], ...diagnostics };
 				stopIncomplete();
 				break;
 			}
@@ -1537,7 +1536,7 @@ export async function fetchCertspotterEntries(
 		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete, ...diagnostics };
 	} catch (err) {
 		// An abort/network error AFTER a successful page is still usable data.
-		if (entries.length > 0) return { outcome: 'ok', entries, enumerationComplete: false };
+		if (entries.length > 0) return { outcome: 'ok', entries, enumerationComplete: false, failurePhase: signal.aborted || classifyFetchError(err) === 'timeout' ? 'response_timeout' : 'response_transport' };
 		return { outcome: classifyFetchError(err), entries: [] };
 	}
 }

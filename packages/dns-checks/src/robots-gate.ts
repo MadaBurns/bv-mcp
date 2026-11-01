@@ -149,6 +149,10 @@ type RobotsOutcome =
 	| { kind: 'unreachable'; status?: number; errorName?: string }
 	| { kind: 'timeout'; errorName: string };
 
+// Weak ownership metadata does not retain expired cache entries. A cancelled
+// request must never become a fail-open policy decision for a live sibling.
+const pendingOwners = new WeakMap<Promise<RobotsOutcome>, AbortSignal>();
+
 /** Statuses that mean "this origin has no robots.txt", as opposed to "we could not read it". */
 const ABSENT_ROBOTS_STATUSES = new Set([404, 410]);
 
@@ -627,6 +631,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 				}
 			})();
 			const created = pending;
+			if (callerSignal) pendingOwners.set(created, callerSignal);
 			const cachedPending = cacheInsert(cacheKey, created, pendingCacheWeight(cacheKey));
 			void created.then((outcome) => {
 				// Cancellation belongs to this invocation, not to the host policy cache.
@@ -639,7 +644,16 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 				else cacheInsert(cacheKey, created, weight);
 			});
 		}
-		if (!callerSignal) return pending;
+		const shared = pending;
+		const owner = pendingOwners.get(shared);
+		const usableOutcome = async (outcome: RobotsOutcome): Promise<RobotsOutcome> => {
+			if (owner?.aborted && owner !== callerSignal && !callerSignal?.aborted) {
+				deleteCacheEntry(cache, cacheState, cacheKey, shared);
+				return resolveOutcome(host, callerSignal);
+			}
+			return outcome;
+		};
+		if (!callerSignal) return usableOutcome(await shared);
 		// A memoized in-flight request may belong to a longer-lived caller. Bound
 		// this wait independently and remove the listener on either settlement.
 		return new Promise<RobotsOutcome>((resolve) => {
@@ -649,7 +663,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 			};
 			if (callerSignal.aborted) return onAbort();
 			callerSignal.addEventListener('abort', onAbort, { once: true });
-			void pending.then((outcome) => {
+			void shared.then(usableOutcome).then((outcome) => {
 				callerSignal.removeEventListener('abort', onAbort);
 				resolve(outcome);
 			});

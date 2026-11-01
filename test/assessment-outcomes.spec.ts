@@ -34,7 +34,7 @@ describe('assessment outcome contract', () => {
 	it('requires challenge evidence rather than inferring a WAF from HTTP 403', () => {
 		const denied = classifyAssessmentObservation({ ...response, httpStatus: 403 });
 		const challenged = classifyAssessmentObservation({ ...response, httpStatus: 403, accessEvidence: 'challenge_header' });
-		expect(denied.disposition).toBe('access_restriction');
+		expect(denied.disposition).toBe('access_denied');
 		expect(denied.accessEvidence).toBeUndefined();
 		expect(challenged.disposition).toBe('access_challenge');
 		expect(denied.reviewCompleted).toBe(false);
@@ -95,4 +95,16 @@ describe('assessment outcome contract', () => {
 		expect(Object.values(assessed.byDisposition).reduce((sum, value) => sum + value, 0)).toBe(assessed.attempts);
 		expect(summary.groups[1].completedReviews).toBe(1);
 	});
+});
+
+
+it('keeps HTTP 200 challenges unassessed and preserves request failures beside stale samples', () => {
+	const challenge = classifyAssessmentObservation({ vantage: 'worker', transport: 'response', httpStatus: 200,
+		accessEvidence: 'captcha_marker', reviewCompleted: true });
+	expect(challenge.disposition).toBe('access_challenge');
+	expect(challenge.reviewCompleted).toBe(false);
+	const stale = classifyAssessmentObservation({ vantage: 'worker', transport: 'timeout',
+		cache: { provenance: 'stale_fallback', ageMs: 1000 }, ct: { returnedSamples: 1, coverage } });
+	expect(stale.disposition).toBe('stale_fallback');
+	expect(stale.operationalFailure).toBe(true);
 });

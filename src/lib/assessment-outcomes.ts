@@ -30,6 +30,7 @@ export type AssessmentDisposition =
 	| 'response_size_cap'
 	| 'access_challenge'
 	| 'access_restriction'
+	| 'access_denied'
 	| 'upstream_http_error'
 	| 'transport_failure'
 	| 'timeout'
@@ -118,15 +119,16 @@ export function classifyAssessmentObservation(observation: AssessmentObservation
 		? { provenance: o.cache.provenance, ...(o.cache.ageMs === undefined ? {} : { ageMs: duration(o.cache.ageMs) }) }
 		: undefined;
 	const httpError = o.httpStatus !== undefined && o.httpStatus >= 400;
-	const accessEvidence = httpError ? o.accessEvidence : undefined;
+	const accessEvidence = o.accessEvidence;
 	let disposition: AssessmentDisposition;
 	if (o.responseSizeCapReached) disposition = 'response_size_cap';
 	else if (ct && ct.returnedSamples > 0 && cache?.provenance === 'stale_fallback') disposition = 'stale_fallback';
-	else if (ct && ct.returnedSamples > 0) disposition = 'partial_source_success';
+	else if (ct && ct.returnedSamples > 0 && o.transport === 'response' && !httpError && !accessEvidence) disposition = 'partial_source_success';
 	else if (o.transport === 'timeout') disposition = 'timeout';
 	else if (o.transport === 'network_error') disposition = 'transport_failure';
 	else if (accessEvidence === 'challenge_header' || accessEvidence === 'captcha_marker') disposition = 'access_challenge';
-	else if (accessEvidence === 'declared_restriction' || o.httpStatus === 401 || o.httpStatus === 403) disposition = 'access_restriction';
+	else if (accessEvidence === 'declared_restriction') disposition = 'access_restriction';
+	else if (o.httpStatus === 401 || o.httpStatus === 403) disposition = 'access_denied';
 	else if (httpError) disposition = 'upstream_http_error';
 	else if (cache?.provenance === 'stale_fallback') disposition = 'stale_fallback';
 	else if (o.reviewCompleted && !o.truncated) disposition = 'completed';
@@ -136,7 +138,7 @@ export function classifyAssessmentObservation(observation: AssessmentObservation
 		vantage: o.vantage,
 		positiveControl: o.positiveControl === true,
 		disposition,
-		operationalFailure: ['timeout', 'transport_failure', 'upstream_http_error'].includes(disposition),
+		operationalFailure: o.transport !== 'response' || httpError,
 		reviewCompleted: disposition === 'completed',
 		...(o.httpStatus === undefined ? {} : { httpStatus: o.httpStatus }),
 		...(accessEvidence ? { accessEvidence } : {}),
