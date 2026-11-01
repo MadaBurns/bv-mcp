@@ -16,6 +16,7 @@ import {
 	MAX_T3_RANGE_ROWS,
 	boundedChunks,
 	components,
+	rollUpChunks,
 	cutsFor,
 	runCompactionCron,
 	t3JobInputs,
@@ -314,6 +315,54 @@ describe('bounded job sizes (SQ-362)', () => {
 			['c', 'd'],
 			['e'],
 		]);
+	});
+});
+
+describe('roll-up chunks never split an overlap group (L5)', () => {
+	// created_at follows key order, so boundedChunks' oldest-first order is the roll-up's key order here.
+	const run = (id: string, key_lo: string, key_hi: string, minute: number) => ({
+		id,
+		tier: 1,
+		key_lo,
+		key_hi,
+		rows: 10,
+		created_at: `2026-11-01T03:${String(minute).padStart(2, '0')}:00.000Z`,
+	});
+	const limits = { ...DEFAULT_PLAN_LIMITS, maxInputs: 4, maxRows: 1_000 };
+	const ids = (chunks: Array<Array<{ id: string }>>) => chunks.map((chunk) => chunk.map((r) => r.id));
+	const overlaps = (chunk: Array<{ key_lo: string; key_hi: string }>) =>
+		chunk.some((a, i) => chunk.some((b, j) => i < j && a.key_lo <= b.key_hi && b.key_lo <= a.key_hi));
+
+	it('keeps an overlapping pair that straddles a maxInputs boundary in one chunk', () => {
+		// r3 [d, e5] overlaps r4 [e0, e1]; every other run is key-disjoint from all others.
+		const runs = [
+			run('r0', 'a0', 'a1', 0),
+			run('r1', 'b0', 'b1', 1),
+			run('r2', 'c0', 'c1', 2),
+			run('r3', 'd0', 'e5', 3),
+			run('r4', 'e0', 'e1', 4),
+			run('r5', 'f0', 'f1', 5),
+			run('r6', 'g0', 'g1', 6),
+			run('r7', 'h0', 'h1', 7),
+		];
+		// The fixed cut puts r3 and r4 in different chunks, each internally disjoint, so neither was planned.
+		const fixed = boundedChunks(runs, limits);
+		expect(ids(fixed)).toEqual([
+			['r0', 'r1', 'r2', 'r3'],
+			['r4', 'r5', 'r6', 'r7'],
+		]);
+		expect(fixed.some(overlaps)).toBe(false);
+
+		const chunks = rollUpChunks(runs, limits);
+		expect(ids(chunks)).toEqual([['r0', 'r1', 'r2'], ['r3', 'r4', 'r5', 'r6'], ['r7']]);
+		expect(chunks.filter(overlaps).map((chunk) => chunk.map((r) => r.id))).toEqual([['r3', 'r4', 'r5', 'r6']]);
+		expect(chunks.flat()).toHaveLength(runs.length);
+		expect(chunks.every((chunk) => chunk.length <= limits.maxInputs)).toBe(true);
+	});
+
+	it('splits a single overlap group over the limits by key, as before', () => {
+		const runs = ['a', 'b', 'c', 'd', 'e'].map((k, i) => run(`g${i}`, `${k}0`, 'z', i));
+		expect(ids(rollUpChunks(runs, limits))).toEqual([['g0', 'g1', 'g2', 'g3'], ['g4']]);
 	});
 });
 

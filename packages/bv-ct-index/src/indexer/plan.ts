@@ -258,6 +258,53 @@ export function boundedChunks<T extends ChunkRun>(runs: readonly T[], limits: Pl
 	return chunks;
 }
 
+/** Runs in key order, grouped where each run's key range overlaps the group's span so far (singletons included). */
+function overlapGroups<T extends PlanRun>(runs: readonly T[]): T[][] {
+	const groups: T[][] = [];
+	let hi = '';
+	for (const run of [...runs].sort(byKey)) {
+		const group = groups.at(-1);
+		if (group && run.key_lo <= hi) {
+			group.push(run);
+			if (run.key_hi > hi) hi = run.key_hi;
+		} else {
+			groups.push([run]);
+			hi = run.key_hi;
+		}
+	}
+	return groups;
+}
+
+const rowsOf = (runs: readonly ChunkRun[]) => runs.reduce((sum, run) => sum + (Number(run.rows) || 0), 0);
+/** True when `runs` fit in one job under `limits`. */
+const fits = (runs: readonly ChunkRun[], limits: PlanLimits) => runs.length <= limits.maxInputs && rowsOf(runs) <= limits.maxRows;
+
+/**
+ * The roll-up's key-ordered chunks (L5): `boundedChunks` by key, except that a chunk is never cut inside a group of
+ * overlapping runs. A fixed cut could split an overlapping pair across two chunks whose other runs were all
+ * key-disjoint, so neither chunk was planned and the pair waited. Whole groups are packed into chunks within
+ * `limits`; a group over the limits by itself is split by key, as before.
+ */
+export function rollUpChunks<T extends PlanRun>(runs: readonly T[], limits: PlanLimits): T[][] {
+	const chunks: T[][] = [];
+	let chunk: T[] = [];
+	const flush = () => {
+		if (chunk.length > 0) chunks.push(chunk);
+		chunk = [];
+	};
+	for (const group of overlapGroups(runs)) {
+		if (!fits(group, limits)) {
+			flush();
+			chunks.push(...boundedChunks(group, limits, byKey));
+			continue;
+		}
+		if (!fits([...chunk, ...group], limits)) flush();
+		chunk.push(...group);
+	}
+	flush();
+	return chunks;
+}
+
 /**
  * The inputs of one range's T3 job: every T3 shard (the output must replace them all to stay disjoint from the
  * rest of tier 3), then T2 runs oldest first while the total stays within `limits.maxT3Rows` rows and
@@ -367,7 +414,8 @@ async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cut
  * T1 run per job since the last full hour, plus one or two; the day's T1 -> T2 job still takes them all. A component
  * is a whole coarse range (its runs straddle the cuts inside it), and its jobs write one run per cut range.
  *
- * Chunks follow key order, not age, and a chunk whose runs are key-disjoint is not planned (SQ-518). A coarse range
+ * Chunks follow key order, not age, are never cut inside a group of overlapping runs (rollUpChunks), and a chunk
+ * whose runs are key-disjoint is not planned (SQ-518). A coarse range
  * wider than a job leaves the last roll-up's output as more than `maxInputs` key-disjoint runs, all older than the
  * new coarse runs: oldest-first chunks rewrote them unmerged every hour, and the range gained a run per cut range
  * each hour. In key order the new coarse runs, which start the range, merge with the runs of its first cut ranges.
@@ -377,7 +425,7 @@ async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cut
 async function planRollUp(plan: Plan, t1: readonly PlanRun[], nowMs: number): Promise<void> {
 	const rollable = t1.filter((run) => createdIn(run, Math.floor(nowMs / DAY_MS) * DAY_MS, Math.floor(nowMs / HOUR_MS) * HOUR_MS));
 	for (const component of components(rollable, plan.cuts)) {
-		for (const chunk of boundedChunks(component.runs, plan.limits, byKey)) {
+		for (const chunk of rollUpChunks(component.runs, plan.limits)) {
 			if (overlapping(chunk)) plan.jobs.push(await makeJob(plan.generation, 1, chunk, component.cuts, plan.now));
 		}
 	}
