@@ -406,6 +406,7 @@ describe('tier1GraphLookup', () => {
 				baseEnv,
 			);
 			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('fetch_failed');
 			expect(result.observations).toEqual([]);
 			expect(result.triggerTier3Fallback).toBe(true);
 		});
@@ -417,6 +418,7 @@ describe('tier1GraphLookup', () => {
 				baseEnv,
 			);
 			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('http_401:internal_key_invalid');
 			expect(result.observations).toEqual([]);
 			expect(result.triggerTier3Fallback).toBe(true);
 		});
@@ -430,6 +432,7 @@ describe('tier1GraphLookup', () => {
 
 			const result = await tier1GraphLookup('example.com', malformed, baseEnv);
 			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('body_unreadable');
 			expect(result.triggerTier3Fallback).toBe(true);
 		});
 
@@ -440,6 +443,7 @@ describe('tier1GraphLookup', () => {
 				baseEnv,
 			);
 			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('schema_mismatch');
 			expect(result.observations).toEqual([]);
 			expect(result.triggerTier3Fallback).toBe(true);
 		});
@@ -455,9 +459,45 @@ describe('tier1GraphLookup', () => {
 			const result = await tier1GraphLookup('example.com', noopBinding, {});
 
 			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('no_internal_key');
 			expect(result.observations).toEqual([]);
 			expect(result.triggerTier3Fallback).toBe(true);
 			expect((noopBinding.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+		});
+
+		it('names the producer error code when it 503s (live SQ-503 shape: opt-out registry unbound)', async () => {
+			const result = await tier1GraphLookup(
+				'example.com',
+				mockBindingReturning({ error: 'optout_service_unavailable', detail: 'ENTERPRISE_REGISTRY binding not configured' }, 503),
+				baseEnv,
+			);
+			expect(result.status).toBe('degraded');
+			expect(result.degradedReason).toBe('http_503:optout_service_unavailable');
+			expect(result.observations).toEqual([]);
+			expect(result.triggerTier3Fallback).toBe(true);
+		});
+
+		it('drops a non-token producer error string and keeps only the HTTP status', async () => {
+			for (const body of [{ error: 'Lookup failed for victim.example' }, { error: 42 }, 'plain text']) {
+				const result = await tier1GraphLookup('example.com', mockBindingReturning(body, 502), baseEnv);
+				expect(result.degradedReason).toBe('http_502');
+			}
+		});
+
+		it('reports timeout (not degraded) when the deadline aborts the call', async () => {
+			const hanging: Fetcher = {
+				fetch: vi.fn(
+					(req: Request) =>
+						new Promise<Response>((_resolve, reject) => {
+							req.signal.addEventListener('abort', () => reject(req.signal.reason));
+						}),
+				),
+			} as unknown as Fetcher;
+			const result = await tier1GraphLookup('example.com', hanging, baseEnv, 10);
+			expect(result.status).toBe('timeout');
+			expect(result.degradedReason).toBe('timeout');
+			expect(result.observations).toEqual([]);
+			expect(result.triggerTier3Fallback).toBe(true);
 		});
 
 		it('does not throw on any error path', async () => {

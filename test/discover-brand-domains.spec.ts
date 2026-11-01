@@ -1300,6 +1300,30 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		expect(correlateNs).toHaveBeenCalled();
 	});
 
+	it('surfaces the tier1 degraded reason in the tiers block (SQ-503: producer 503 was invisible)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const tieredDeps = {
+			...makeDeps({ correlateNs: vi.fn().mockResolvedValue(okNs([])) }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue({
+				observations: [],
+				status: 'degraded',
+				triggerTier3Fallback: true,
+				degradedReason: 'http_503:optout_service_unavailable',
+			}),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers?.tier1Status).toBe('degraded');
+		expect(tiers?.tier1DegradedReason).toBe('http_503:optout_service_unavailable');
+	});
+
 	it('triggers tier3 fallback when caller_candidates are not covered by tier 0/1/2', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
