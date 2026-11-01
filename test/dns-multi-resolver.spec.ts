@@ -405,7 +405,12 @@ describe('RFC 8484 resolver transports (#1346)', () => {
 		['NS', 2, 'ns.example.test.', 'ns.example.test.'],
 		['CNAME', 5, 'alias.example.test.', 'alias.example.test.'],
 		['TXT', 16, '"part1" "part2"', '"part1" "part2"'],
-		['SOA', 6, 'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60', 'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60'],
+		[
+			'SOA',
+			6,
+			'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60',
+			'ns.example.test. hostmaster.example.test. 1 3600 600 86400 60',
+		],
 		['CAA', 257, '0 issue "ca.example.test"', '0 issue "ca.example.test"'],
 	] as const)('decodes %s RDATA without comparing wire bytes with JSON presentation', async (type, code, data, expected) => {
 		const response = wireFixture(encodeDnsQuery('example.test', type), [{ type: code, TTL: 300, data }]);
@@ -440,14 +445,19 @@ describe('RFC 8484 resolver transports (#1346)', () => {
 	it('distinguishes actual deadline cancellation from a network exception', async () => {
 		vi.useFakeTimers();
 		try {
-			globalThis.fetch = vi.fn().mockImplementation((_url: string, init?: RequestInit) => new Promise((_, reject) => {
-				init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
-			}));
+			globalThis.fetch = vi.fn().mockImplementation(
+				(_url: string, init?: RequestInit) =>
+					new Promise((_, reject) => {
+						init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+					}),
+			);
 			const pending = queryMultiResolver('example.com', 'A');
 			await vi.advanceTimersByTimeAsync(3_100);
 			const result = await pending;
 			expect(result.resolverAnswers.every((r) => r.status === 'timeout' && r.failureKind === 'deadline')).toBe(true);
-		} finally { vi.useRealTimers(); }
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('rejects truncated packets, mismatched questions and invalid RDATA', async () => {

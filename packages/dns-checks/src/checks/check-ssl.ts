@@ -92,7 +92,13 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	};
 	const stamp = (result: CheckResult): CheckResult => ({ ...result, metadata: { ...result.metadata, httpsOperations: operations } });
 
-	const { findings: httpsFindings, reachable, robotsDisallowed, inconclusive, transient } = await checkHttps(domain, observedFetch, timeoutMs);
+	const {
+		findings: httpsFindings,
+		reachable,
+		robotsDisallowed,
+		inconclusive,
+		transient,
+	} = await checkHttps(domain, observedFetch, timeoutMs);
 	findings.push(...httpsFindings);
 
 	// The entire `ssl` category signal comes from fetching the target — when robots.txt disallows
@@ -331,10 +337,7 @@ async function checkHttps(
 				robotsDisallowed: true,
 			};
 		}
-		const message =
-			operationFailure(err) === 'timeout'
-				? 'Connection timeout'
-				: 'Connection failed';
+		const message = operationFailure(err) === 'timeout' ? 'Connection timeout' : 'Connection failed';
 		// A thrown fetch is a transient execution failure — exclude the category rather than scoring
 		// the connection-failure finding as a real deficiency. The existing finding is retained.
 		inconclusive = message === 'Connection timeout' ? 'timeout' : 'error';

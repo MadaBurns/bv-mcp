@@ -167,7 +167,7 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a scored deficiency', () => {
 	it('(i) a fetch timeout is excluded with checkStatus timeout, and is not a scored deficiency', async () => {
 		const fetchFn: FetchFunction = async () => {
-			throw new Error('fetch timeout');
+			throw new DOMException('fetch timeout', 'TimeoutError');
 		};
 		const result = await checkSSL('example.com', fetchFn);
 		expect(result.checkStatus).toBe('timeout');

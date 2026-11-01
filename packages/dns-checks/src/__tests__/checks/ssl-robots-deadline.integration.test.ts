@@ -21,22 +21,36 @@ describe('HTTPS redirects through the robots gate', () => {
 		const transport: FetchFunction = async (url, init) => {
 			if (url === 'https://example.test/robots.txt') return new Response('', { status: 200 });
 			if (url === 'https://redirect.example.test/robots.txt') {
-				try { return await waitForAbort(init?.signal); }
-				finally { robotsAborted = true; }
+				try {
+					return await waitForAbort(init?.signal);
+				} finally {
+					robotsAborted = true;
+				}
 			}
-			if (url === 'https://example.test') return new Response(null, { status: 307, headers: { location: 'https://redirect.example.test/' } });
+			if (url === 'https://example.test')
+				return new Response(null, { status: 307, headers: { location: 'https://redirect.example.test/' } });
 			targetRequested = true;
 			return new Response('', { status: 200 });
 		};
-		const result = await checkSSL('example.test', withRobotsGate(transport, { onRobotsResolution: (record) => records.push(record) }), { timeout: 500 });
+		const result = await checkSSL('example.test', withRobotsGate(transport, { onRobotsResolution: (record) => records.push(record) }), {
+			timeout: 500,
+		});
 		expect(robotsAborted).toBe(true);
 		expect(targetRequested).toBe(false);
 		expect(result).toMatchObject({ checkStatus: 'timeout', partial: true, passed: false });
 		expect(result.findings.some((finding) => finding.metadata?.missingControl)).toBe(false);
-		expect(records).toContainEqual(expect.objectContaining({ host: 'redirect.example.test', resolution: 'timeout', elapsedMs: expect.any(Number) }));
+		expect(records).toContainEqual(
+			expect.objectContaining({ host: 'redirect.example.test', resolution: 'timeout', elapsedMs: expect.any(Number) }),
+		);
 		expect(result.metadata?.httpsOperations).toEqual([
 			expect.objectContaining({ host: 'example.test', method: 'HEAD', outcome: 'response', status: 307 }),
-			expect.objectContaining({ host: 'redirect.example.test', method: 'HEAD', outcome: 'timeout', elapsedMs: expect.any(Number), remainingMs: expect.any(Number) }),
+			expect.objectContaining({
+				host: 'redirect.example.test',
+				method: 'HEAD',
+				outcome: 'timeout',
+				elapsedMs: expect.any(Number),
+				remainingMs: expect.any(Number),
+			}),
 		]);
 	});
 
@@ -47,7 +61,9 @@ describe('HTTPS redirects through the robots gate', () => {
 		const transport: FetchFunction = async (url) => {
 			if (url.endsWith('/robots.txt')) {
 				robotsCalls++;
-				return new Promise<Response>((resolve) => { release = resolve; });
+				return new Promise<Response>((resolve) => {
+					release = resolve;
+				});
 			}
 			targetCalls++;
 			return new Response('ok');
@@ -74,17 +90,19 @@ describe('HTTPS redirects through the robots gate', () => {
 					if (blockedBy === 'ssrf') throw new TypeError('Outbound fetch blocked: timeout.localhost');
 					return new Response('User-agent: *\nDisallow: /');
 				}
-				if (url === 'https://example.test') return new Response(null, { status: 307, headers: { location: 'https://redirect.example.test/' } });
+				if (url === 'https://example.test')
+					return new Response(null, { status: 307, headers: { location: 'https://redirect.example.test/' } });
 				if (blockedBy === 'ssrf') throw new TypeError('Outbound fetch blocked: timeout.localhost');
 				throw new Error('Unexpected target fetch');
 			};
 			const result = await checkSSL('example.test', withRobotsGate(transport));
 			expect(result.checkStatus).toBe('error');
-			expect(result.metadata?.httpsOperations).toContainEqual(expect.objectContaining({ outcome: blockedBy === 'robots' ? 'robots_disallowed' : 'ssrf_rejected' }));
+			expect(result.metadata?.httpsOperations).toContainEqual(
+				expect.objectContaining({ outcome: blockedBy === 'robots' ? 'robots_disallowed' : 'ssrf_rejected' }),
+			);
 		}
 	});
 });
-
 
 it('rechecks robots for a live sibling when the memo owner is cancelled', async () => {
 	let robotsCalls = 0;

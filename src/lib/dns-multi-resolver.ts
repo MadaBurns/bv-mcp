@@ -164,9 +164,10 @@ async function fetchResolver(resolver: (typeof RESOLVERS)[number], domain: strin
 		const query = transport === 'wire' ? encodeDnsQuery(domain, type) : undefined;
 		const response = await fetch(transport === 'wire' ? endpoint : buildUrl(endpoint, domain, type), {
 			method: transport === 'wire' ? 'POST' : 'GET',
-			headers: transport === 'wire'
-				? { Accept: 'application/dns-message', 'Content-Type': 'application/dns-message' }
-				: { Accept: 'application/dns-json' },
+			headers:
+				transport === 'wire'
+					? { Accept: 'application/dns-message', 'Content-Type': 'application/dns-message' }
+					: { Accept: 'application/dns-json' },
 			...(query ? { body: query.buffer as ArrayBuffer } : {}),
 			redirect: 'manual',
 			signal: controller.signal,
@@ -177,12 +178,20 @@ async function fetchResolver(resolver: (typeof RESOLVERS)[number], domain: strin
 			return { resolver: resolverName, status: 'error', answers: [], failureKind: 'http', httpStatus };
 		}
 		parsing = true;
-		const data = transport === 'wire'
-			? decodeDnsResponse(await readDnsMessage(response, DOH_MAX_BODY_BYTES), domain, type)
-			: await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
-		if (!data || !Number.isInteger(data.Status) || data.Status < 0 || data.Status > 15 || data.TC ||
-			(data.Answer !== undefined && (!Array.isArray(data.Answer) || data.Answer.some((a) =>
-				!a || typeof a.data !== 'string' || !Number.isInteger(a.type) || !Number.isFinite(a.TTL))))) {
+		const data =
+			transport === 'wire'
+				? decodeDnsResponse(await readDnsMessage(response, DOH_MAX_BODY_BYTES), domain, type)
+				: await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
+		if (
+			!data ||
+			!Number.isInteger(data.Status) ||
+			data.Status < 0 ||
+			data.Status > 15 ||
+			data.TC ||
+			(data.Answer !== undefined &&
+				(!Array.isArray(data.Answer) ||
+					data.Answer.some((a) => !a || typeof a.data !== 'string' || !Number.isInteger(a.type) || !Number.isFinite(a.TTL))))
+		) {
 			return { resolver: resolverName, status: 'error', answers: [], failureKind: 'parse', httpStatus };
 		}
 		// SERVFAIL/REFUSED is the resolver saying "I could not answer", not "this name has no
@@ -206,8 +215,13 @@ async function fetchResolver(resolver: (typeof RESOLVERS)[number], domain: strin
 			resolver: resolverName,
 			status: controller.signal.aborted ? 'timeout' : 'error',
 			answers: [],
-			failureKind: controller.signal.aborted ? 'deadline'
-				: error instanceof DnsMessageNetworkError ? 'network' : parsing ? 'parse' : 'network',
+			failureKind: controller.signal.aborted
+				? 'deadline'
+				: error instanceof DnsMessageNetworkError
+					? 'network'
+					: parsing
+						? 'parse'
+						: 'network',
 			...(httpStatus === undefined ? {} : { httpStatus }),
 		};
 	} finally {
@@ -313,7 +327,9 @@ export async function queryMultiResolver(domain: string, type: RecordTypeName): 
 							Promise.race([
 								q,
 								// Name the late resolver by fan-out index so unreachableResolvers stays accurate.
-								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: RESOLVERS[i].name, status: 'timeout', answers: [], failureKind: 'deadline' }), 0)),
+								new Promise<ResolverAnswer>((r) =>
+									setTimeout(() => r({ resolver: RESOLVERS[i].name, status: 'timeout', answers: [], failureKind: 'deadline' }), 0),
+								),
 							]),
 						),
 					),

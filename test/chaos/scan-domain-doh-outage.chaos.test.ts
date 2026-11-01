@@ -544,11 +544,14 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 		expect(net.hungQueries()).toBeGreaterThan(0);
 		expect(elapsed).toBeLessThan(scanTimeoutMs);
 		const statuses = statusByCategory(result);
-		// The policy host never answered, so mta_sts has no policy measurement: abstaining is the correct shape.
-		// Only mta_sts is cut; every other category stays measured.
-		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([['mta_sts', 'timeout']]);
+		// Composed robots cancellation now returns before safeCheck kills the check.
+		// The Worker preserves its documented retryable 'error' class for a policy
+		// fetch that returned an inconclusive result; every other category stays measured.
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([['mta_sts', 'error']]);
+		const policy = result.checks.find((check) => check.category === 'mta_sts');
+		expect(policy?.partial).toBe(true);
+		expect(policy?.findings.some((finding) => finding.metadata?.errorKind === 'timeout')).toBe(true);
 	}, 30_000);
-
 });
 
 // ---------------------------------------------------------------------------
@@ -560,7 +563,13 @@ describe('chaos: scan_domain emits one primary-DoH failure summary row (SQ-209)'
 
 	function analyticsSpy() {
 		const emitDohPrimarySummary = vi.fn();
-		return { emitDohPrimarySummary, analytics: { emitDohPrimarySummary, emitUngradedNotCachedEvent: vi.fn() } as unknown as import('../../src/lib/analytics').AnalyticsClient };
+		return {
+			emitDohPrimarySummary,
+			analytics: {
+				emitDohPrimarySummary,
+				emitUngradedNotCachedEvent: vi.fn(),
+			} as unknown as import('../../src/lib/analytics').AnalyticsClient,
+		};
 	}
 
 	it('Given a healthy primary, exactly ONE summary row is emitted with attempts > 0 and every failure count 0 (the denominator control)', async () => {

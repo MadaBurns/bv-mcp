@@ -231,40 +231,11 @@ describe('withFetchBudget — exhaustion rejects WITHOUT issuing a fetch', () =>
 	});
 });
 
-describe('withFetchBudget — rejection message is COUPLED to checkHttps in @blackveil/dns-checks', () => {
-	/**
-	 * `checkHttps` (packages/dns-checks/src/checks/check-ssl.ts) classifies a thrown
-	 * fetch by SUBSTRING, not by error type:
-	 *
-	 *   err.message.includes('timeout') || err.message.includes('abort')
-	 *     ? 'Connection timeout'  → checkStatus: 'timeout'
-	 *     : 'Connection failed'   → checkStatus: 'error'
-	 *
-	 * So the wording of `BUDGET_EXHAUSTED_MESSAGE` decides how an exhausted budget is
-	 * reported to customers. These tests exist so that a "harmless" rewording fails
-	 * HERE, with the reason, instead of silently re-labelling every budget-dropped
-	 * SSL leg as a connection error in production reports.
-	 */
-	const classifiesAsTimeout = (message: string) => message.includes('timeout') || message.includes('abort');
-
-	it('contains the literal substring the downstream classifier tests for', async () => {
+describe('withFetchBudget — typed timeout contract with checkSSL', () => {
+	it('rejects an exhausted budget with a named TimeoutError', async () => {
 		const { withFetchBudget } = await import('../src/lib/fetch-budget');
 		const { fetchFn } = makeInstantFetch();
-
-		const rejection: unknown = await withFetchBudget(
-			fetchFn,
-			1,
-		)('https://example.test').then(
-			() => undefined,
-			(e: unknown) => e,
-		);
-
-		expect(rejection).toBeInstanceOf(Error);
-		const message = (rejection as Error).message;
-		// Literal, deliberately not a regex-with-alternatives: this is the exact token
-		// `checkHttps` greps for. If you reword the message, update `checkHttps` too.
-		expect(message).toContain('timeout');
-		expect(classifiesAsTimeout(message)).toBe(true);
+		await expect(withFetchBudget(fetchFn, 1)('https://example.test')).rejects.toMatchObject({ name: 'TimeoutError' });
 	});
 
 	it('END-TO-END: checkSSL reports an exhausted budget as checkStatus "timeout" (and spends no subrequest)', async () => {
@@ -282,20 +253,12 @@ describe('withFetchBudget — rejection message is COUPLED to checkHttps in @bla
 		expect(calls).toHaveLength(0);
 	});
 
-	it('COUNTERFACTUAL: a message without "timeout"/"abort" downgrades the same event to checkStatus "error"', async () => {
+	it('uses the error name independently of timeout words in the message', async () => {
 		const { checkSSL } = await import('@blackveil/dns-checks');
-
-		// This is the wording someone would plausibly "tidy" the message down to.
-		const rewordedMessage = 'Fetch budget exhausted before this request';
-		expect(classifiesAsTimeout(rewordedMessage)).toBe(false);
-
-		const rejectingFetch = () => Promise.reject(new Error(rewordedMessage));
-		const result = await checkSSL('example.test', rejectingFetch);
-
-		// THIS is what breaks: the identical event is now reported as a connection error.
-		// Keep `timeout` in BUDGET_EXHAUSTED_MESSAGE (or teach `checkHttps` a real error
-		// type instead of a substring test).
-		expect(result.checkStatus).toBe('error');
+		const typed = await checkSSL('example.test', () => Promise.reject(new DOMException('Budget exhausted', 'TimeoutError')));
+		expect(typed.checkStatus).toBe('timeout');
+		const untyped = await checkSSL('example.test', () => Promise.reject(new Error('timeout.example.test failed')));
+		expect(untyped.checkStatus).toBe('error');
 	});
 });
 

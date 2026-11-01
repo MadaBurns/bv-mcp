@@ -24,7 +24,7 @@ export function mockResolverFetch(implementation: (url: string | URL, init?: Req
 		}
 		const response = await implementation(fixtureUrl, init);
 		if (new Headers(init?.headers).get('Accept') !== 'application/dns-message') return response;
-		const json = await response.json() as { Status: number; Answer?: Array<{ type: number; TTL: number; data: string }> };
+		const json = (await response.json()) as { Status: number; Answer?: Array<{ type: number; TTL: number; data: string }> };
 		return wireFixture(new Uint8Array(init?.body as ArrayBuffer), json.Answer ?? [], json.Status);
 	});
 }
@@ -35,7 +35,12 @@ export function wireFixture(query: Uint8Array, answers: Array<{ type: number; TT
 	bytes[3] = 0x80 | rcode;
 	bytes[6] = answers.length >> 8;
 	bytes[7] = answers.length & 255;
-	const nameBytes = (value: string) => value.replace(/\.$/, '').split('.').flatMap((s) => [s.length, ...Array.from(s, (c) => c.charCodeAt(0))]).concat(0);
+	const nameBytes = (value: string) =>
+		value
+			.replace(/\.$/, '')
+			.split('.')
+			.flatMap((s) => [s.length, ...Array.from(s, (c) => c.charCodeAt(0))])
+			.concat(0);
 	for (const answer of answers) {
 		let data: number[];
 		if (answer.type === 1) data = answer.data.split('.').map(Number);
@@ -45,27 +50,40 @@ export function wireFixture(query: Uint8Array, answers: Array<{ type: number; TT
 			data = [Number(priority) >> 8, Number(priority) & 255, ...nameBytes(host)];
 		} else if (answer.type === 16) {
 			// These fixtures exercise the observed JSON presentation conventions, including escaped quotes.
-			const segments = answer.data.startsWith('"') && answer.data.endsWith('"')
-				? answer.data.slice(1, -1).split('" "') : [answer.data];
+			const segments = answer.data.startsWith('"') && answer.data.endsWith('"') ? answer.data.slice(1, -1).split('" "') : [answer.data];
 			data = segments.flatMap((part) => {
 				const value = part.replace(/\\(["\\])/g, '$1');
 				return [value.length, ...Array.from(value, (c) => c.charCodeAt(0))];
 			});
 		} else if (answer.type === 6) {
 			const [mname, rname, ...numbers] = answer.data.split(' ');
-			data = [...nameBytes(mname), ...nameBytes(rname), ...numbers.flatMap((s) => {
-				const n = Number(s);
-				return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
-			})];
+			data = [
+				...nameBytes(mname),
+				...nameBytes(rname),
+				...numbers.flatMap((s) => {
+					const n = Number(s);
+					return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+				}),
+			];
 		} else if (answer.type === 257) {
 			const match = /^(\d+) (\w+) "(.*)"$/.exec(answer.data)!;
 			data = [Number(match[1]), match[2].length, ...Array.from(match[2] + match[3], (c) => c.charCodeAt(0))];
 		} else data = nameBytes(answer.data);
-		bytes.push(0xc0, 12, answer.type >> 8, answer.type & 255, 0, 1,
-			(answer.TTL >>> 24) & 255, (answer.TTL >>> 16) & 255, (answer.TTL >>> 8) & 255, answer.TTL & 255,
-			data.length >> 8, data.length & 255, ...data);
+		bytes.push(
+			0xc0,
+			12,
+			answer.type >> 8,
+			answer.type & 255,
+			0,
+			1,
+			(answer.TTL >>> 24) & 255,
+			(answer.TTL >>> 16) & 255,
+			(answer.TTL >>> 8) & 255,
+			answer.TTL & 255,
+			data.length >> 8,
+			data.length & 255,
+			...data,
+		);
 	}
 	return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': 'application/dns-message' } });
 }
-
-

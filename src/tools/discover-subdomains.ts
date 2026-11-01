@@ -40,7 +40,7 @@ import { buildCtCoverage, formatCoverageLine, isoOrUndefined, ownedIndexIsPartia
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isPublicSuffixApex } from '../lib/public-suffix';
-import { readTextResponseCappedDetailed, readJsonResponseCapped } from '../lib/response-body';
+import { disposeUnreadResponseBody, readTextResponseCappedDetailed, readJsonResponseCapped } from '../lib/response-body';
 import { certstreamHeaders } from '../lib/certstream-headers';
 
 /**
@@ -1400,12 +1400,21 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 		});
 		if (!response.ok) return { ...(await classifyHttpFailure(response)), entries: [] };
 		const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
-		if (body.text === null) return {
-			outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error', entries: [], httpStatus: response.status,
-			failurePhase: body.overflowed ? 'response_size_cap' as const : signal.aborted ? 'response_timeout' as const : 'response_transport' as const,
-		};
+		if (body.text === null)
+			return {
+				outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error',
+				entries: [],
+				httpStatus: response.status,
+				failurePhase: body.overflowed
+					? ('response_size_cap' as const)
+					: signal.aborted
+						? ('response_timeout' as const)
+						: ('response_transport' as const),
+			};
 		let parsed: unknown;
-		try { parsed = JSON.parse(body.text); } catch {
+		try {
+			parsed = JSON.parse(body.text);
+		} catch {
 			return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
 		}
 		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [], httpStatus: response.status, failurePhase: 'response_parse' };
@@ -1491,15 +1500,29 @@ export async function fetchCertspotterEntries(
 			}
 			const body = await readTextResponseCappedDetailed(response, CT_SOURCE_MAX_BODY_BYTES);
 			if (body.text === null) {
-				diagnostics = { httpStatus: response.status, failurePhase: body.overflowed ? 'response_size_cap' as const : signal.aborted ? 'response_timeout' as const : 'response_transport' as const };
-				if (pagesRead === 0) return {
-					outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error', entries: [], ...diagnostics,
+				diagnostics = {
+					httpStatus: response.status,
+					failurePhase: body.overflowed
+						? ('response_size_cap' as const)
+						: signal.aborted
+							? ('response_timeout' as const)
+							: ('response_transport' as const),
 				};
+				if (pagesRead === 0)
+					return {
+						outcome: signal.aborted ? 'timeout' : body.overflowed ? 'http_error' : 'error',
+						entries: [],
+						...diagnostics,
+					};
 				stopIncomplete();
 				break;
 			}
 			let parsed: unknown;
-			try { parsed = JSON.parse(body.text); } catch { parsed = null; }
+			try {
+				parsed = JSON.parse(body.text);
+			} catch {
+				parsed = null;
+			}
 			if (!Array.isArray(parsed)) {
 				diagnostics = { httpStatus: response.status, failurePhase: 'response_parse' };
 				if (pagesRead === 0) return { outcome: 'error', entries: [], ...diagnostics };
@@ -1536,7 +1559,13 @@ export async function fetchCertspotterEntries(
 		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete, ...diagnostics };
 	} catch (err) {
 		// An abort/network error AFTER a successful page is still usable data.
-		if (entries.length > 0) return { outcome: 'ok', entries, enumerationComplete: false, failurePhase: signal.aborted || classifyFetchError(err) === 'timeout' ? 'response_timeout' : 'response_transport' };
+		if (entries.length > 0)
+			return {
+				outcome: 'ok',
+				entries,
+				enumerationComplete: false,
+				failurePhase: signal.aborted || classifyFetchError(err) === 'timeout' ? 'response_timeout' : 'response_transport',
+			};
 		return { outcome: classifyFetchError(err), entries: [] };
 	}
 }
@@ -1632,9 +1661,18 @@ async function queryDirectSources(
 	// wins across retry passes; a source never reached stays out entirely so
 	// `buildCtCoverage` reports it as `notConsulted` rather than as healthy.
 	const attemptLog = new Map<string, CtSourceAttempt>();
-	const recordAttempt = (source: string, outcome: CtSourceOutcome, contributed: boolean, indexExhausted?: boolean, diagnostics?: SourceResult): void => {
+	const recordAttempt = (
+		source: string,
+		outcome: CtSourceOutcome,
+		contributed: boolean,
+		indexExhausted?: boolean,
+		diagnostics?: SourceResult,
+	): void => {
 		attemptLog.set(source, {
-			source, outcome, contributed, ...(indexExhausted === undefined ? {} : { indexExhausted }),
+			source,
+			outcome,
+			contributed,
+			...(indexExhausted === undefined ? {} : { indexExhausted }),
 			...(diagnostics?.httpStatus === undefined ? {} : { httpStatus: diagnostics.httpStatus }),
 			...(diagnostics?.apiErrorCode ? { apiErrorCode: diagnostics.apiErrorCode } : {}),
 			...(diagnostics?.failurePhase ? { failurePhase: diagnostics.failurePhase } : {}),
@@ -2078,7 +2116,11 @@ async function queryCertstreamEndpoint<T>(
 			headers: certstreamHeaders(certstreamAuthToken),
 			signal: composed.signal,
 		});
-		if (!response.ok) return { data: null, outcome: (await classifyHttpFailure(response)).outcome };
+		if (!response.ok) {
+			if (response.status === 403) return { data: null, outcome: (await classifyHttpFailure(response)).outcome };
+			await disposeUnreadResponseBody(response);
+			return { data: null, outcome: httpFailureOutcome(response.status) };
+		}
 		const data = await readJsonResponseCapped<T>(response, CT_SOURCE_MAX_BODY_BYTES);
 		return data === null ? { data: null, outcome: 'error' } : { data, outcome: 'ok' };
 	} catch {

@@ -63,13 +63,16 @@ export function decodeDnsResponse(bytes: Uint8Array, domain: string, type: Recor
 	};
 	need(0, 12);
 	const flags = view.getUint16(2);
-	if (view.getUint16(0) !== 0 || (flags & 0xf800) !== 0x8000 || (flags & 0x0200) || view.getUint16(4) !== 1) {
+	if (view.getUint16(0) !== 0 || (flags & 0xf800) !== 0x8000 || flags & 0x0200 || view.getUint16(4) !== 1) {
 		throw new Error('Invalid DNS response header');
 	}
 	const question = name(12);
 	need(question.next, 4);
-	if (question.value.toLowerCase().replace(/\.$/, '') !== domain.toLowerCase().replace(/\.$/, '') ||
-		view.getUint16(question.next) !== RecordType[type] || view.getUint16(question.next + 2) !== 1) {
+	if (
+		question.value.toLowerCase().replace(/\.$/, '') !== domain.toLowerCase().replace(/\.$/, '') ||
+		view.getUint16(question.next) !== RecordType[type] ||
+		view.getUint16(question.next + 2) !== 1
+	) {
 		throw new Error('Invalid DNS response question');
 	}
 	let offset = question.next + 4;
@@ -113,8 +116,12 @@ export function decodeDnsResponse(bytes: Uint8Array, domain: string, type: Recor
 						need(cursor, length, end);
 						let segment = '';
 						for (const byte of bytes.subarray(cursor, cursor + length)) {
-							segment += byte === 34 || byte === 92 ? `\\${String.fromCharCode(byte)}` :
-								byte < 32 || byte > 126 ? `\\${String(byte).padStart(3, '0')}` : String.fromCharCode(byte);
+							segment +=
+								byte === 34 || byte === 92
+									? `\\${String.fromCharCode(byte)}`
+									: byte < 32 || byte > 126
+										? `\\${String(byte).padStart(3, '0')}`
+										: String.fromCharCode(byte);
 						}
 						segments.push(`"${segment}"`);
 						cursor += length;
@@ -130,10 +137,11 @@ export function decodeDnsResponse(bytes: Uint8Array, domain: string, type: Recor
 					need(offset, 2, end);
 					const tagLength = bytes[offset + 1];
 					need(offset + 2, tagLength, end);
-					const text = (start: number, finish: number) => Array.from(bytes.subarray(start, finish), (b) => {
-						if (b < 32 || b > 126 || b === 34 || b === 92) throw new Error('Invalid DNS CAA text');
-						return String.fromCharCode(b);
-					}).join('');
+					const text = (start: number, finish: number) =>
+						Array.from(bytes.subarray(start, finish), (b) => {
+							if (b < 32 || b > 126 || b === 34 || b === 92) throw new Error('Invalid DNS CAA text');
+							return String.fromCharCode(b);
+						}).join('');
 					data = `${bytes[offset]} ${text(offset + 2, offset + 2 + tagLength)} "${text(offset + 2 + tagLength, end)}"`;
 				} else throw new Error('Unsupported DNS answer data');
 				answers.push({ name: owner.value, type: code, TTL: ttl, data });
@@ -142,8 +150,16 @@ export function decodeDnsResponse(bytes: Uint8Array, domain: string, type: Recor
 		}
 	}
 	if (offset !== bytes.length) throw new Error('Invalid DNS trailing data');
-	return { Status: flags & 15, TC: false, RD: !!(flags & 256), RA: !!(flags & 128), AD: !!(flags & 32), CD: !!(flags & 16),
-		Question: [{ name: question.value, type: RecordType[type] }], Answer: answers };
+	return {
+		Status: flags & 15,
+		TC: false,
+		RD: !!(flags & 256),
+		RA: !!(flags & 128),
+		AD: !!(flags & 32),
+		CD: !!(flags & 16),
+		Question: [{ name: question.value, type: RecordType[type] }],
+		Answer: answers,
+	};
 }
 
 /** Identifies body-stream failures separately from malformed DNS payloads. */
@@ -178,7 +194,9 @@ export async function readDnsMessage(response: Response, maxBytes: number): Prom
 		if (!finished) {
 			try {
 				await reader.cancel();
-			} catch { /* already aborted */ }
+			} catch {
+				/* already aborted */
+			}
 		}
 		reader.releaseLock();
 	}

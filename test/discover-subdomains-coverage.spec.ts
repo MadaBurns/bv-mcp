@@ -1349,17 +1349,21 @@ describe('CT upstream response diagnostics (#1147)', () => {
 	});
 });
 
-
 describe('CT body failure diagnostics', () => {
 	it('does not call a stream error or caller abort a response-size cap', async () => {
 		const { fetchCertspotterEntries } = await import('../src/tools/discover-subdomains');
 		for (const aborted of [false, true]) {
 			const caller = new AbortController();
 			const result = await fetchCertspotterEntries('example.test', caller.signal, {
-				fetchFn: async () => new Response(new ReadableStream({ start(controller) {
-					if (aborted) caller.abort();
-					controller.error(new Error('private stream error'));
-				} })),
+				fetchFn: async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								if (aborted) caller.abort();
+								controller.error(new Error('private stream error'));
+							},
+						}),
+					),
 			});
 			expect(result.outcome).toBe(aborted ? 'timeout' : 'error');
 			expect(result.httpStatus).toBe(200);
@@ -1372,12 +1376,19 @@ describe('CT body failure diagnostics', () => {
 		for (const cap of [false, true]) {
 			let calls = 0;
 			const result = await fetchCertspotterEntries('example.test', new AbortController().signal, {
-				fetchFn: async () => ++calls === 1
-					? Response.json([{ id: '1', dns_names: ['a.example.test'] }], { headers: { link: '<https://api.certspotter.com/>; rel="next"' } })
-					: new Response('malformed', { headers: cap ? { 'content-length': String(6 * 1024 * 1024) } : {} }),
+				fetchFn: async () =>
+					++calls === 1
+						? Response.json([{ id: '1', dns_names: ['a.example.test'] }], {
+								headers: { link: '<https://api.certspotter.com/>; rel="next"' },
+							})
+						: new Response('malformed', { headers: cap ? { 'content-length': String(6 * 1024 * 1024) } : {} }),
 			});
-			expect(result).toMatchObject({ outcome: 'ok', enumerationComplete: false, httpStatus: 200,
-				failurePhase: cap ? 'response_size_cap' : 'response_parse' });
+			expect(result).toMatchObject({
+				outcome: 'ok',
+				enumerationComplete: false,
+				httpStatus: 200,
+				failurePhase: cap ? 'response_size_cap' : 'response_parse',
+			});
 			expect(result.entries).toHaveLength(1);
 		}
 	});

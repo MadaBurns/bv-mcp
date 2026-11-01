@@ -43,18 +43,9 @@ import { composeSignal } from './abort-signal';
 const MIN_USEFUL_FETCH_MS = 200;
 
 /**
- * ⚠️ Load-bearing wording. `@blackveil/dns-checks`'s `checkHttps` classifies a
- * thrown fetch by SUBSTRING — `err.message.includes('timeout') || .includes('abort')`
- * — to decide between `inconclusive: 'timeout'` and `'error'`. Budget exhaustion is
- * a timeout in every sense that matters to that decision, so the message contains
- * the literal token deliberately. Reword it and an exhausted budget starts being
- * reported as a connection error instead.
- *
- * Second, quieter constraint: this string starts with none of the prefixes
- * `sanitizeErrorMessage()` allowlists, so if a future adopter lets the rejection
- * PROPAGATE to a client rather than swallowing it (as `checkSSL` does), the caller
- * sees the generic fallback, not this text. Fine today; a trap for the next check
- * that adopts the budget and expects the message to survive.
+ * Exhaustion uses a named TimeoutError so classification does not depend on
+ * prose, URLs or attacker-controlled hostnames. The message remains private
+ * under the JSON-RPC error sanitizer's existing allowlist.
  */
 const BUDGET_EXHAUSTED_MESSAGE = 'Fetch budget exhausted before this request (timeout)';
 
@@ -110,7 +101,7 @@ export function createFetchBudget(budgetMs: number | undefined): FetchBudget {
 			if (budgetMs === undefined) return fetchFn;
 			const wrapped = (input: Parameters<F>[0], init?: RequestInit) => {
 				if (!canIssueRequest()) {
-					return Promise.reject(new Error(BUDGET_EXHAUSTED_MESSAGE));
+					return Promise.reject(new DOMException(BUDGET_EXHAUSTED_MESSAGE, 'TimeoutError'));
 				}
 				// Composed, never substituted: the package's own per-fetch timeout still
 				// applies, and whichever fires first wins. The budget can only ever make a

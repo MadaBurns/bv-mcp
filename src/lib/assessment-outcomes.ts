@@ -91,7 +91,8 @@ export function classifyAssessmentObservation(observation: AssessmentObservation
 	requireMember(o.vantage, ['worker', 'local', 'mobile', 'unknown']);
 	requireMember(o.transport, ['response', 'network_error', 'timeout']);
 	if (o.accessEvidence !== undefined) requireMember(o.accessEvidence, ['challenge_header', 'captcha_marker', 'declared_restriction']);
-	if (o.timeoutPhase !== undefined) requireMember(o.timeoutPhase, ['dns', 'connect', 'tls', 'response_headers', 'response_body', 'unknown']);
+	if (o.timeoutPhase !== undefined)
+		requireMember(o.timeoutPhase, ['dns', 'connect', 'tls', 'response_headers', 'response_body', 'unknown']);
 	if (o.cache) requireMember(o.cache.provenance, ['fresh', 'stale_fallback']);
 	if (o.httpStatus !== undefined && (!Number.isInteger(o.httpStatus) || o.httpStatus < 100 || o.httpStatus > 599)) {
 		throw new Error('Invalid assessment HTTP status');
@@ -123,7 +124,8 @@ export function classifyAssessmentObservation(observation: AssessmentObservation
 	let disposition: AssessmentDisposition;
 	if (o.responseSizeCapReached) disposition = 'response_size_cap';
 	else if (ct && ct.returnedSamples > 0 && cache?.provenance === 'stale_fallback') disposition = 'stale_fallback';
-	else if (ct && ct.returnedSamples > 0 && o.transport === 'response' && !httpError && !accessEvidence) disposition = 'partial_source_success';
+	else if (ct && ct.returnedSamples > 0 && o.transport === 'response' && !httpError && !accessEvidence)
+		disposition = 'partial_source_success';
 	else if (o.transport === 'timeout') disposition = 'timeout';
 	else if (o.transport === 'network_error') disposition = 'transport_failure';
 	else if (accessEvidence === 'challenge_header' || accessEvidence === 'captcha_marker') disposition = 'access_challenge';
@@ -156,22 +158,25 @@ export function classifyAssessmentObservation(observation: AssessmentObservation
 
 /** One input is one attempt; totals never deduplicate retries or mix vantage/control groups. */
 export function summarizeAssessmentOutcomes(outcomes: readonly AssessmentOutcome[]) {
-	const groups = new Map<string, {
-		vantage: AssessmentOutcome['vantage'];
-		positiveControl: boolean;
-		attempts: number;
-		completedReviews: number;
-		operationalFailures: number;
-		capturedBytes: number;
-		attemptsWithByteMeasurements: number;
-		truncated: number;
-		staleFallbacks: number;
-		attemptedCtSources: number;
-		unavailableCtSources: number;
-		notConsultedCtSources: number;
-		returnedCtSamples: number;
-		byDisposition: Partial<Record<AssessmentDisposition, number>>;
-	}>();
+	const groups = new Map<
+		string,
+		{
+			vantage: AssessmentOutcome['vantage'];
+			positiveControl: boolean;
+			attempts: number;
+			completedReviews: number;
+			operationalFailures: number;
+			capturedBytes: number;
+			attemptsWithByteMeasurements: number;
+			truncated: number;
+			staleFallbacks: number;
+			attemptedCtSources: number;
+			unavailableCtSources: number;
+			notConsultedCtSources: number;
+			returnedCtSamples: number;
+			byDisposition: Partial<Record<AssessmentDisposition, number>>;
+		}
+	>();
 	for (const outcome of outcomes) {
 		const key = `${outcome.vantage}:${outcome.positiveControl}`;
 		const group = groups.get(key) ?? {

@@ -71,14 +71,7 @@
  * is never re-emitted to a caller.
  */
 export type CtSourceOutcome =
-	| 'ok'
-	| 'empty'
-	| 'http_error'
-	| 'rate_limited'
-	| 'provider_restricted'
-	| 'access_denied'
-	| 'timeout'
-	| 'error';
+	'ok' | 'empty' | 'http_error' | 'rate_limited' | 'provider_restricted' | 'access_denied' | 'timeout' | 'error';
 
 /**
  * How much of CT history a source can see AT ALL, independent of whether we
@@ -333,7 +326,9 @@ export function formatCoverageLine(coverage: CtCoverage): string {
 	const bits: string[] = [];
 	for (const s of coverage.perSource) {
 		const exhausted = s.indexExhausted === true ? ' index-exhausted' : s.indexExhausted === false ? ' index-partial' : '';
-		bits.push(`${s.source}=${s.outcome}${s.httpStatus ? ` HTTP ${s.httpStatus}` : ''}${s.apiErrorCode ? ` code=${s.apiErrorCode}` : ''}${s.failurePhase ? ` phase=${s.failurePhase}` : ''}${exhausted}`);
+		bits.push(
+			`${s.source}=${s.outcome}${s.httpStatus ? ` HTTP ${s.httpStatus}` : ''}${s.apiErrorCode ? ` code=${s.apiErrorCode}` : ''}${s.failurePhase ? ` phase=${s.failurePhase}` : ''}${exhausted}`,
+		);
 	}
 	for (const s of coverage.notConsulted) bits.push(`${s}=not-consulted`);
 	return `Coverage [${coverage.basis}]: ${bits.join(', ')}`;

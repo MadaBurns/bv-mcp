@@ -8,7 +8,11 @@ import type { CtCoverage } from '../src/lib/ct-coverage';
 const coverage: CtCoverage = {
 	basis: 'ct-sample',
 	perSource: [{ source: 'crtsh', outcome: 'ok', contributed: true, historyWindow: 'unexpired-only' }],
-	contributing: ['crtsh'], unavailable: [], notConsulted: ['certspotter'], degraded: true, caveat: 'CT sample only',
+	contributing: ['crtsh'],
+	unavailable: [],
+	notConsulted: ['certspotter'],
+	degraded: true,
+	caveat: 'CT sample only',
 };
 const response: AssessmentObservation = { vantage: 'worker', transport: 'response', httpStatus: 200 };
 
@@ -23,8 +27,12 @@ describe('assessment outcome contract', () => {
 	});
 
 	it('retains stale fallback age and truncation alongside returned samples', () => {
-		const result = classifyAssessmentObservation({ ...response, ct: { returnedSamples: 3, coverage }, truncated: true,
-			cache: { provenance: 'stale_fallback', ageMs: 143 * 60_000 } });
+		const result = classifyAssessmentObservation({
+			...response,
+			ct: { returnedSamples: 3, coverage },
+			truncated: true,
+			cache: { provenance: 'stale_fallback', ageMs: 143 * 60_000 },
+		});
 		expect(result.disposition).toBe('stale_fallback');
 		expect(result.cache?.ageMs).toBe(8_580_000);
 		expect(result.truncated).toBe(true);
@@ -44,16 +52,26 @@ describe('assessment outcome contract', () => {
 	it('distinguishes HTTP errors, transport failures and measured timeout phases', () => {
 		expect(classifyAssessmentObservation({ ...response, httpStatus: 504 }).disposition).toBe('upstream_http_error');
 		expect(classifyAssessmentObservation({ vantage: 'local', transport: 'network_error' }).disposition).toBe('transport_failure');
-		const result = classifyAssessmentObservation({ vantage: 'local', transport: 'timeout', timeoutPhase: 'response_headers',
-			phaseTimingsMs: { connect: 42, response_headers: 12_000 }, capturedBytes: 0 });
+		const result = classifyAssessmentObservation({
+			vantage: 'local',
+			transport: 'timeout',
+			timeoutPhase: 'response_headers',
+			phaseTimingsMs: { connect: 42, response_headers: 12_000 },
+			capturedBytes: 0,
+		});
 		expect(result.timeoutPhase).toBe('response_headers');
 		expect(result.phaseTimingsMs).toEqual({ connect: 42, response_headers: 12_000 });
 		expect(classifyAssessmentObservation({ vantage: 'worker', transport: 'timeout' }).timeoutPhase).toBe('unknown');
 	});
 
 	it('defers a capped sitemap review despite HTTP 200 and keeps limits intact', () => {
-		const result = classifyAssessmentObservation({ ...response, capturedBytes: 2_097_152, byteLimit: 2_097_152,
-			responseSizeCapReached: true, reviewCompleted: true });
+		const result = classifyAssessmentObservation({
+			...response,
+			capturedBytes: 2_097_152,
+			byteLimit: 2_097_152,
+			responseSizeCapReached: true,
+			reviewCompleted: true,
+		});
 		expect(result.disposition).toBe('response_size_cap');
 		expect(result.continuation).toBe('deferred_within_existing_limits');
 		expect(result.reviewCompleted).toBe(false);
@@ -97,14 +115,22 @@ describe('assessment outcome contract', () => {
 	});
 });
 
-
 it('keeps HTTP 200 challenges unassessed and preserves request failures beside stale samples', () => {
-	const challenge = classifyAssessmentObservation({ vantage: 'worker', transport: 'response', httpStatus: 200,
-		accessEvidence: 'captcha_marker', reviewCompleted: true });
+	const challenge = classifyAssessmentObservation({
+		vantage: 'worker',
+		transport: 'response',
+		httpStatus: 200,
+		accessEvidence: 'captcha_marker',
+		reviewCompleted: true,
+	});
 	expect(challenge.disposition).toBe('access_challenge');
 	expect(challenge.reviewCompleted).toBe(false);
-	const stale = classifyAssessmentObservation({ vantage: 'worker', transport: 'timeout',
-		cache: { provenance: 'stale_fallback', ageMs: 1000 }, ct: { returnedSamples: 1, coverage } });
+	const stale = classifyAssessmentObservation({
+		vantage: 'worker',
+		transport: 'timeout',
+		cache: { provenance: 'stale_fallback', ageMs: 1000 },
+		ct: { returnedSamples: 1, coverage },
+	});
 	expect(stale.disposition).toBe('stale_fallback');
 	expect(stale.operationalFailure).toBe(true);
 });

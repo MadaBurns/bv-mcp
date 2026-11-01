@@ -17,9 +17,7 @@ function mockConsistentDns() {
 		const typeNum = type === 'MX' ? 15 : type === 'TXT' ? 16 : type === 'NS' ? 2 : type === 'AAAA' ? 28 : 1;
 
 		if (type === 'A' || typeNum === 1) {
-			return Promise.resolve(createDohResponse([{ name, type: 1 }], [
-				{ name, type: 1, TTL: 300, data: '192.0.2.10' },
-			]));
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.10' }]));
 		}
 		return Promise.resolve(createDohResponse([{ name, type: typeNum }], []));
 	});
@@ -34,9 +32,7 @@ function mockSplitDns() {
 
 		// Alternate between two different IPs per resolver
 		const ip = callCount % 2 === 0 ? '192.0.2.1' : '198.51.100.20';
-		return Promise.resolve(createDohResponse([{ name, type: 1 }], [
-			{ name, type: 1, TTL: 300, data: ip },
-		]));
+		return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: ip }]));
 	});
 }
 
@@ -244,18 +240,23 @@ describe('checkResolverConsistency — fan-out coverage and quorum (#1199)', () 
 	});
 });
 
-
 describe('resolver diagnostic metadata (#1346)', () => {
 	it('retains upstream status even when no resolver answered and the tool abstains', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 504 }));
 		const { checkResolverConsistency } = await import('../src/tools/check-resolver-consistency');
 		const result = await checkResolverConsistency('example.test', 'A');
 		expect(result.checkStatus).toBe('error');
-		expect(result.findings[0].metadata?.resolverDiagnostics).toEqual([{
-			recordType: 'A',
-			resolvers: ['Cloudflare', 'Google', 'Quad9', 'OpenDNS'].map((resolver) => ({
-				resolver, status: 'error', failureKind: 'http', httpStatus: 504, dnsRcode: undefined,
-			})),
-		}]);
+		expect(result.findings[0].metadata?.resolverDiagnostics).toEqual([
+			{
+				recordType: 'A',
+				resolvers: ['Cloudflare', 'Google', 'Quad9', 'OpenDNS'].map((resolver) => ({
+					resolver,
+					status: 'error',
+					failureKind: 'http',
+					httpStatus: 504,
+					dnsRcode: undefined,
+				})),
+			},
+		]);
 	});
 });

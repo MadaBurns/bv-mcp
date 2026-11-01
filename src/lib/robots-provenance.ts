@@ -98,10 +98,12 @@ export function createRobotsProvenance(domain: string): RobotsProvenance {
 			...(primary.scope ? { scope: primary.scope } : {}),
 			...(primary.errorName ? { errorName: primary.errorName } : {}),
 			...(primary.elapsedMs !== undefined ? { elapsedMs: primary.elapsedMs } : {}),
-			...(others.length > 0 ? {
-				otherHosts: others,
-				otherHostDecisions: otherRecords.map(({ path: _path, ...decision }) => decision),
-			} : {}),
+			...(others.length > 0
+				? {
+						otherHosts: others,
+						otherHostDecisions: otherRecords.map(({ path: _path, ...decision }) => decision),
+					}
+				: {}),
 		};
 	};
 
