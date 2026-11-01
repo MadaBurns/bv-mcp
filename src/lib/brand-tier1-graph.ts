@@ -87,6 +87,7 @@ export interface Tier1Result {
 	 * result. One of `no_internal_key`, `timeout`, `fetch_failed`,
 	 * `body_unreadable`, `schema_mismatch`, or `http_<status>` optionally
 	 * suffixed with the producer's error code (`http_503:optout_service_unavailable`).
+	 * Internal: names config state, so callers see {@link clientSafeTier1Reason}.
 	 */
 	degradedReason?: string;
 }
@@ -225,6 +226,29 @@ function degraded(degradedReason: string, status: 'degraded' | 'timeout' = 'degr
 	return { observations: [], status, triggerTier3Fallback: true, degradedReason };
 }
 
+/**
+ * Reason tokens that are safe to show a caller: they describe the transport or
+ * payload, not our configuration. Everything else (`no_internal_key`, any
+ * `http_<status>[:<producer code>]`) names config state or a producer
+ * internal, so it collapses to {@link TIER1_GENERIC_REASON}. Allowlist, not
+ * denylist: a token added later fails closed. The precise token stays on
+ * `Tier1Result.degradedReason` for logs.
+ */
+const TIER1_CLIENT_SAFE_REASONS: ReadonlySet<string> = new Set([
+	'timeout',
+	'fetch_failed',
+	'body_unreadable',
+	'schema_mismatch',
+	'lookup_rejected',
+]);
+export const TIER1_GENERIC_REASON = 'upstream_unavailable';
+
+/** Map a precise Tier 1 degraded reason to the token a caller may see. */
+export function clientSafeTier1Reason(reason: string | undefined): string | undefined {
+	if (reason === undefined) return undefined;
+	return TIER1_CLIENT_SAFE_REASONS.has(reason) ? reason : TIER1_GENERIC_REASON;
+}
+
 /** `http_<status>`, suffixed with the producer's error code when it sent a valid one. */
 async function upstreamHttpReason(response: Response): Promise<string> {
 	const reason = `http_${response.status}`;
@@ -272,7 +296,10 @@ export async function tier1GraphLookup(
 		}
 
 		const rawBody = await readJsonResponseCapped<unknown>(response, TIER1_GRAPH_MAX_BODY_BYTES);
-		if (rawBody === null) return degraded('body_unreadable');
+		if (rawBody === null) {
+			// A deadline abort mid-body surfaces as an unreadable body; it is a timeout.
+			return controller.signal.aborted ? degraded('timeout', 'timeout') : degraded('body_unreadable');
+		}
 
 		const parsed = DomainRelatedResponseSchema.safeParse(rawBody);
 		if (!parsed.success) {
