@@ -88,6 +88,15 @@ const SCANS_INSERT_SQL =
 const FINDINGS_INSERT_SQL =
 	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+/**
+ * Stamps the domain row once its scan row is durable (SQ-496). The weekly
+ * dispatcher's due query reads `last_scanned_at`. Before this, nothing wrote
+ * it, so every domain stayed NULL. That forced a full rescan of the same first
+ * 500 rows each tick (starving the rest) and the fingerprint skip never fired.
+ * An unmeasured scan (no captured score) keeps the last known score and grade.
+ */
+const MARK_DOMAIN_SCANNED_SQL =
+	'UPDATE domains SET last_scanned_at = ?, last_score = COALESCE(?, last_score), last_grade = COALESCE(?, last_grade) WHERE domain = ?';
 const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
 const DELETE_SCAN_SQL = 'DELETE FROM scans WHERE id = ?';
 
@@ -207,12 +216,13 @@ async function persistScan(
 	captured: TenantScanSnapshot | null,
 ): Promise<void> {
 	const scanId = newRowId();
+	const scanAt = Date.now();
 	await tenantDb
 		.prepare(SCANS_INSERT_SQL)
 		.bind(
 			scanId,
 			msg.domain,
-			Date.now(),
+			scanAt,
 			captured?.score ?? null,
 			captured?.grade ?? null,
 			captured?.maturityStage ?? null,
@@ -224,6 +234,23 @@ async function persistScan(
 
 	if (captured?.findings.length) {
 		await persistFindings(tenantDb, scanId, msg.domain, captured.findings);
+	}
+
+	// Last, so a failed scan or findings write never marks the domain scanned.
+	// This write is the only one that can fail after the scan row is durable,
+	// and a retry would find the scan complete and skip straight to progress.
+	// So it stays best-effort: a missed stamp leaves the domain due next tick.
+	try {
+		await tenantDb
+			.prepare(MARK_DOMAIN_SCANNED_SQL)
+			.bind(scanAt, captured?.score ?? null, captured?.grade ?? null, msg.domain)
+			.run();
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'tenant.queue',
+			details: { message: 'tenant_queue_mark_scanned_failed', cycleId: msg.cycle_id, domainHash: hashDomain(msg.domain) },
+		});
 	}
 }
 

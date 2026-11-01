@@ -629,7 +629,8 @@ describe('handleTenantWeeklyRescan', () => {
 		expect(tenantEnum?.sql).toContain('LIMIT ?');
 		expect(tenantEnum?.binds).toEqual([100]);
 		expect(dueEnum?.sql).toContain('LIMIT ?');
-		expect(dueEnum?.binds).toEqual([168, 1, 500]);
+		// SQ-496: the due cutoff carries the 6h grace for scans that complete just after their tick.
+		expect(dueEnum?.binds).toEqual([168, 1 + 6 * 3600 * 1000, 500]);
 	});
 });
 
