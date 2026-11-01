@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, it, expect, afterEach } from 'vitest';
-import { vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mockResolverFetch } from './helpers/dns-wire-mock';
 import { setupFetchMock, createDohResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
@@ -9,7 +9,7 @@ const { restore } = setupFetchMock();
 afterEach(() => restore());
 
 function mockConsistentDns() {
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+	mockResolverFetch((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? 'example.com';
 		const type = u.searchParams.get('type') ?? 'A';
@@ -18,7 +18,7 @@ function mockConsistentDns() {
 
 		if (type === 'A' || typeNum === 1) {
 			return Promise.resolve(createDohResponse([{ name, type: 1 }], [
-				{ name, type: 1, TTL: 300, data: '93.184.216.34' },
+				{ name, type: 1, TTL: 300, data: '192.0.2.10' },
 			]));
 		}
 		return Promise.resolve(createDohResponse([{ name, type: typeNum }], []));
@@ -27,13 +27,13 @@ function mockConsistentDns() {
 
 function mockSplitDns() {
 	let callCount = 0;
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+	mockResolverFetch((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? 'example.com';
 		callCount++;
 
 		// Alternate between two different IPs per resolver
-		const ip = callCount % 2 === 0 ? '192.0.2.1' : '5.6.7.8';
+		const ip = callCount % 2 === 0 ? '192.0.2.1' : '198.51.100.20';
 		return Promise.resolve(createDohResponse([{ name, type: 1 }], [
 			{ name, type: 1, TTL: 300, data: ip },
 		]));
@@ -132,7 +132,7 @@ describe('checkResolverConsistency — resolvers that never answered (T6 item 6)
 	}
 
 	it('abstains when every resolver SERVFAILs instead of reporting consistent records', async () => {
-		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		mockResolverFetch((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
 			return Promise.resolve(servfailResponse(u.searchParams.get('name') ?? 'example.com', 1));
 		});
@@ -149,7 +149,7 @@ describe('checkResolverConsistency — resolvers that never answered (T6 item 6)
 	});
 
 	it('does not abstain the whole check when only some record types lack a resolver quorum', async () => {
-		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		mockResolverFetch((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
 			const name = u.searchParams.get('name') ?? 'example.com';
 			if (u.searchParams.get('type') === 'MX') return Promise.resolve(servfailResponse(name, 15));
@@ -173,7 +173,7 @@ describe('checkResolverConsistency — fan-out coverage and quorum (#1199)', () 
 
 	/** Cloudflare + Google answer `answers`; Quad9 + OpenDNS are unreachable. */
 	function mockTwoOfFour(cloudflare: string, google: string) {
-		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		mockResolverFetch((url: string | URL) => {
 			const urlStr = typeof url === 'string' ? url : url.toString();
 			const isCloudflare = urlStr.includes('cloudflare');
 			if (!isCloudflare && !urlStr.includes('dns.google')) return Promise.reject(new Error('unreachable'));
@@ -241,5 +241,21 @@ describe('checkResolverConsistency — fan-out coverage and quorum (#1199)', () 
 		const text = formatResolverConsistency(await checkResolverConsistency('example.com', 'A'));
 
 		expect(text).toContain('answered 2/4');
+	});
+});
+
+
+describe('resolver diagnostic metadata (#1346)', () => {
+	it('retains upstream status even when no resolver answered and the tool abstains', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 504 }));
+		const { checkResolverConsistency } = await import('../src/tools/check-resolver-consistency');
+		const result = await checkResolverConsistency('example.test', 'A');
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings[0].metadata?.resolverDiagnostics).toEqual([{
+			recordType: 'A',
+			resolvers: ['Cloudflare', 'Google', 'Quad9', 'OpenDNS'].map((resolver) => ({
+				resolver, status: 'error', failureKind: 'http', httpStatus: 504, dnsRcode: undefined,
+			})),
+		}]);
 	});
 });

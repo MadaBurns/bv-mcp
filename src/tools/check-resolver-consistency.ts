@@ -54,11 +54,26 @@ export async function checkResolverConsistency(
 	// A quorum on some types but not others stays a per-type INCOMPLETE finding below.
 	const answeredCount = (r: ConsistencyResult) => r.resolverAnswers.filter((a) => a.status === 'ok').length;
 	if (results.every((r) => answeredCount(r) < 2)) {
-		return buildDnsErrorResult(
+		const result = buildDnsErrorResult(
 			CATEGORY,
 			'Resolver consistency',
 			new Error('DNS query failed: fewer than 2 public resolvers returned a usable answer for any record type'),
 		) as CheckResult;
+		return {
+			...result,
+			findings: result.findings.map((finding) => ({
+				...finding,
+				metadata: {
+					...finding.metadata,
+					resolverDiagnostics: results.map((r) => ({
+						recordType: r.recordType,
+						resolvers: r.resolverAnswers.map(({ resolver, status, failureKind, httpStatus, dnsRcode }) => ({
+							resolver, status, failureKind, httpStatus, dnsRcode,
+						})),
+					})),
+				},
+			})),
+		};
 	}
 
 	// Fan-out coverage rides on EVERY finding (denominator included), so a reader can always
@@ -69,6 +84,9 @@ export async function checkResolverConsistency(
 		unreachableResolvers: r.unreachableResolvers,
 		quorum: r.quorum,
 		quorumMet: r.quorumMet,
+		resolverDiagnostics: r.resolverAnswers.map(({ resolver, status, failureKind, httpStatus, dnsRcode }) => ({
+			resolver, status, failureKind, httpStatus, dnsRcode,
+		})),
 	});
 
 	const findings = results.map((result: ConsistencyResult) => {

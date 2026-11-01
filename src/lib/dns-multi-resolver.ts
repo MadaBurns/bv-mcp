@@ -11,14 +11,15 @@ import type { DnsAnswer, DohResponse, RecordTypeName } from './dns-types';
 import { RecordType } from './dns-types';
 import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
 import { isInconclusiveRcode } from '@blackveil/dns-checks';
+import { decodeDnsResponse, encodeDnsQuery, readDnsMessage, DnsMessageNetworkError } from './dns-wire';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 /** Public DoH resolver endpoints. */
 export const RESOLVERS = [
-	{ name: 'Cloudflare', endpoint: CLOUDFLARE_DOH_ENDPOINT },
-	{ name: 'Google', endpoint: 'https://dns.google/resolve' },
-	{ name: 'Quad9', endpoint: 'https://dns.quad9.net:5053/dns-query' },
-	{ name: 'OpenDNS', endpoint: 'https://doh.opendns.com/dns-query' },
+	{ name: 'Cloudflare', endpoint: CLOUDFLARE_DOH_ENDPOINT, transport: 'json' },
+	{ name: 'Google', endpoint: 'https://dns.google/resolve', transport: 'json' },
+	{ name: 'Quad9', endpoint: 'https://dns.quad9.net/dns-query', transport: 'wire' },
+	{ name: 'OpenDNS', endpoint: 'https://doh.opendns.com/dns-query', transport: 'wire' },
 ] as const;
 
 /**
@@ -43,6 +44,10 @@ export interface ResolverAnswer {
 	status: 'ok' | 'error' | 'timeout';
 	answers: string[];
 	ttl?: number;
+	/** Sanitized machine-readable diagnostics; never upstream bodies or exception text. */
+	failureKind?: 'http' | 'network' | 'parse' | 'deadline' | 'dns_rcode';
+	httpStatus?: number;
+	dnsRcode?: number;
 }
 
 /** Consistency classification for a record type. */
@@ -148,33 +153,43 @@ function stripOuterQuotePairIfUnambiguous(s: string): string {
 }
 
 /** Fetch a DoH response from a single resolver with timeout. */
-async function fetchResolver(resolverName: string, endpoint: string, domain: string, type: RecordTypeName): Promise<ResolverAnswer> {
+async function fetchResolver(resolver: (typeof RESOLVERS)[number], domain: string, type: RecordTypeName): Promise<ResolverAnswer> {
+	const { name: resolverName, endpoint, transport } = resolver;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), RESOLVER_TIMEOUT_MS);
 
+	let httpStatus: number | undefined;
+	let parsing = false;
 	try {
-		const url = buildUrl(endpoint, domain, type);
-		const response = await fetch(url, {
-			method: 'GET',
-			headers: { Accept: 'application/dns-json' },
+		const query = transport === 'wire' ? encodeDnsQuery(domain, type) : undefined;
+		const response = await fetch(transport === 'wire' ? endpoint : buildUrl(endpoint, domain, type), {
+			method: transport === 'wire' ? 'POST' : 'GET',
+			headers: transport === 'wire'
+				? { Accept: 'application/dns-message', 'Content-Type': 'application/dns-message' }
+				: { Accept: 'application/dns-json' },
+			...(query ? { body: query.buffer as ArrayBuffer } : {}),
 			redirect: 'manual',
 			signal: controller.signal,
 		});
-
+		httpStatus = response.status;
 		if (!response.ok) {
 			await disposeUnreadResponseBody(response);
-			return { resolver: resolverName, status: 'error', answers: [] };
+			return { resolver: resolverName, status: 'error', answers: [], failureKind: 'http', httpStatus };
 		}
-
-		const data = await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
-		if (typeof data?.Status !== 'number') {
-			return { resolver: resolverName, status: 'error', answers: [] };
+		parsing = true;
+		const data = transport === 'wire'
+			? decodeDnsResponse(await readDnsMessage(response, DOH_MAX_BODY_BYTES), domain, type)
+			: await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
+		if (!data || !Number.isInteger(data.Status) || data.Status < 0 || data.Status > 15 || data.TC ||
+			(data.Answer !== undefined && (!Array.isArray(data.Answer) || data.Answer.some((a) =>
+				!a || typeof a.data !== 'string' || !Number.isInteger(a.type) || !Number.isFinite(a.TTL))))) {
+			return { resolver: resolverName, status: 'error', answers: [], failureKind: 'parse', httpStatus };
 		}
 		// SERVFAIL/REFUSED is the resolver saying "I could not answer", not "this name has no
 		// such records" (NOERROR/NXDOMAIN are the conclusions). Filing it as an `ok` empty
 		// answer let four failing resolvers "agree" on an empty set and read as CONSISTENT.
 		if (isInconclusiveRcode(data.Status)) {
-			return { resolver: resolverName, status: 'error', answers: [] };
+			return { resolver: resolverName, status: 'error', answers: [], failureKind: 'dns_rcode', httpStatus, dnsRcode: data.Status };
 		}
 
 		const typeCode = RecordType[type];
@@ -185,9 +200,16 @@ async function fetchResolver(resolverName: string, endpoint: string, domain: str
 
 		const ttl = data.Answer?.[0]?.TTL;
 
-		return { resolver: resolverName, status: 'ok', answers, ttl };
-	} catch {
-		return { resolver: resolverName, status: 'timeout', answers: [] };
+		return { resolver: resolverName, status: 'ok', answers, ttl, httpStatus, dnsRcode: data.Status };
+	} catch (error) {
+		return {
+			resolver: resolverName,
+			status: controller.signal.aborted ? 'timeout' : 'error',
+			answers: [],
+			failureKind: controller.signal.aborted ? 'deadline'
+				: error instanceof DnsMessageNetworkError ? 'network' : parsing ? 'parse' : 'network',
+			...(httpStatus === undefined ? {} : { httpStatus }),
+		};
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -278,7 +300,7 @@ function classifyConsistency(resolverAnswers: ResolverAnswer[], type: RecordType
  * @returns Consistency result with per-resolver answers
  */
 export async function queryMultiResolver(domain: string, type: RecordTypeName): Promise<ConsistencyResult> {
-	const queries = RESOLVERS.map((r) => fetchResolver(r.name, r.endpoint, domain, type));
+	const queries = RESOLVERS.map((r) => fetchResolver(r, domain, type));
 
 	const resolverAnswers = await Promise.race([
 		Promise.all(queries),
@@ -291,7 +313,7 @@ export async function queryMultiResolver(domain: string, type: RecordTypeName): 
 							Promise.race([
 								q,
 								// Name the late resolver by fan-out index so unreachableResolvers stays accurate.
-								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: RESOLVERS[i].name, status: 'timeout', answers: [] }), 0)),
+								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: RESOLVERS[i].name, status: 'timeout', answers: [], failureKind: 'deadline' }), 0)),
 							]),
 						),
 					),
