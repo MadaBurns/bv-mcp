@@ -634,6 +634,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 			if (callerSignal) pendingOwners.set(created, callerSignal);
 			const cachedPending = cacheInsert(cacheKey, created, pendingCacheWeight(cacheKey));
 			void created.then((outcome) => {
+				if (!callerSignal?.aborted) pendingOwners.delete(created);
 				// Cancellation belongs to this invocation, not to the host policy cache.
 				if (callerSignal?.aborted) {
 					deleteCacheEntry(cache, cacheState, cacheKey, created);
@@ -647,7 +648,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 		const shared = pending;
 		const owner = pendingOwners.get(shared);
 		const usableOutcome = async (outcome: RobotsOutcome): Promise<RobotsOutcome> => {
-			if (owner?.aborted && owner !== callerSignal && !callerSignal?.aborted) {
+			if (outcome.kind !== 'policy' && outcome.kind !== 'no_policy' && owner?.aborted && owner !== callerSignal && !callerSignal?.aborted) {
 				deleteCacheEntry(cache, cacheState, cacheKey, shared);
 				return resolveOutcome(host, callerSignal);
 			}

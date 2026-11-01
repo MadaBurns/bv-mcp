@@ -127,3 +127,19 @@ it('rechecks robots for a live sibling when the memo owner is cancelled', async 
 	expect(robotsCalls).toBe(2);
 	expect(targetCalls).toBe(0);
 });
+
+it('retains a measured policy after its original caller later aborts', async () => {
+	let robotsCalls = 0;
+	const gate = withRobotsGate(async (url) => {
+		if (url.endsWith('/robots.txt')) {
+			robotsCalls++;
+			return new Response('User-agent: *\nDisallow: /');
+		}
+		throw new Error('Disallowed target must not be fetched');
+	});
+	const controller = new AbortController();
+	await expect(gate('https://example.test/', { signal: controller.signal })).rejects.toMatchObject({ name: 'RobotsDisallowedError' });
+	controller.abort();
+	await expect(gate('https://example.test/')).rejects.toMatchObject({ name: 'RobotsDisallowedError' });
+	expect(robotsCalls).toBe(1);
+});
