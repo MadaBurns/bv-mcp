@@ -18,7 +18,7 @@
  *      duplicate delivery shouldn't re-render or re-write R2.
  *   3. Skip-and-ack if `result_json` is null (upstream failure or race;
  *      no useful retry).
- *   4. Render PDF via `renderBrandAuditPdf` → `BV_BROWSER_RENDERER`.
+ *   4. Render PDF in-process via `renderBrandAuditPdf` (pdf-lib; no renderer binding).
  *   5. Write to R2 at `audits/{auditId}/{target}.pdf`.
  *   6. UPDATE `brand_audit_targets.pdf_r2_key` so `brand_audit_get_report`
  *      can mint signed URLs.

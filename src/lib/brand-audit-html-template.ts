@@ -7,8 +7,9 @@
  * can be invoked from a Cloudflare Worker (no Node.js Buffer dependency, no
  * filesystem reads). Worker-runtime safe — only string operations.
  *
- * Output is intended for Cloudflare Browser Rendering via `BV_BROWSER_RENDERER`
- * (see `src/lib/brand-audit-pdf.ts`). The styling deliberately uses dark
+ * Output is HTML for a browser-style renderer; the brand-audit PDF queue itself
+ * renders in-process via `src/lib/brand-audit-pdf-render.ts` (pdf-lib), not via a
+ * renderer service binding. The styling deliberately uses dark
  * Blackveil palette + Google Fonts; the renderer Worker fetches the fonts at
  * render time.
  *
