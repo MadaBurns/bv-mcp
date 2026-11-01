@@ -540,6 +540,24 @@ describe('Tenant weekly rescan coverage against real D1 (SQ-496)', () => {
 			expect(await weeklyTick(T0 + 7 * 3600 * 1000, dns('v=spf1 ~all'))).toEqual(['dead.example.com']);
 		}, 60_000);
 
+		it('rotates persistently ungraded domains: 600 that never grade are all inspected over two ticks, not the same 500 twice (L4)', async () => {
+			const domains = Array.from({ length: 600 }, (_, i) => `u${String(i).padStart(3, '0')}.example.com`);
+			await seedDomains(domains);
+			mockUngradedScan();
+
+			const first = await weeklyTick(T0, dns('v=spf1 -all'));
+			expect(first).toHaveLength(500);
+			// None of them graded, so none is stamped: all 600 stay due.
+			expect((await tenant.prepare('SELECT COUNT(*) AS n FROM domains WHERE last_scanned_at IS NULL').first<{ n: number }>())?.n).toBe(600);
+
+			const second = await weeklyTick(T0 + 7 * 24 * 3600 * 1000, dns('v=spf1 -all'));
+			const leftOver = domains.filter((domain) => !first.includes(domain));
+			expect(leftOver).toHaveLength(100);
+			// The 100 the first tick never reached go first, ahead of the 500 it already inspected.
+			expect(second.slice(0, 100).sort()).toEqual(leftOver);
+			expect(new Set([...first, ...second]).size).toBe(600);
+		}, 120_000);
+
 		it('a never-scanned domain whose first scan is ungraded stays unstamped (NULL), not stamped with a fabricated grade', async () => {
 			await seedDomains(['never.example.com']);
 			mockUngradedScan();

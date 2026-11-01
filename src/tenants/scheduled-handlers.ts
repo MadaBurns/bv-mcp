@@ -87,13 +87,19 @@ const MAX_DUE_DOMAINS_PER_TENANT_TICK = 500;
 
 const ACTIVE_TENANTS_SQL =
 	'SELECT id, super_tenant_id FROM sub_tenants WHERE active = 1 ORDER BY id LIMIT ?';
+// Oldest-touched first. A domain's place in line is its later of last_scanned_at and
+// fingerprint_at, and fingerprint_at is refreshed for every due domain this dispatcher
+// fingerprints. A domain that is scanned but never grades keeps last_scanned_at NULL
+// (SQ-496), so ordering by last_scanned_at alone put the same ungradeable domains first
+// every tick and let 500 of them starve a tenant's other domains. Now an inspected
+// domain moves behind domains not yet inspected.
 const DUE_DOMAINS_SQL = `
 	SELECT domain, last_scanned_at, watch_interval_hours, fingerprint
 	FROM domains
 	WHERE watch = 1
 	  AND (last_scanned_at IS NULL
 	       OR last_scanned_at + COALESCE(watch_interval_hours, ?) * 3600000 < ?)
-	ORDER BY COALESCE(last_scanned_at, 0), domain
+	ORDER BY max(COALESCE(last_scanned_at, 0), COALESCE(fingerprint_at, 0)), domain
 	LIMIT ?
 `;
 const UPDATE_FINGERPRINT_SQL =
