@@ -101,11 +101,11 @@ describe('R1 binding-degradation sink wiring (recon path via handleToolsCall)', 
 		expect(emit).not.toHaveBeenCalled();
 	});
 
-	it('emits binding_5xx on a recon 404 and never reports a clean "no hits" (route absent upstream — SQ-502)', async () => {
+	it('emits binding_route_absent on a recon 404 and never reports a clean "no hits" (route absent upstream — SQ-502/SQ-514)', async () => {
 		const { client, emit } = fakeAnalytics();
 		const res = await callRealtimeThreatFeed('recon-route404.com', { reconBinding: reconBindingStatus(404), analytics: client });
 		expect(emit).toHaveBeenCalledTimes(1);
-		expect(emit).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'recon', domain: 'recon-route404.com' });
+		expect(emit).toHaveBeenCalledWith({ degradationType: 'binding_route_absent', component: 'recon', domain: 'recon-route404.com' });
 		const text = JSON.stringify(res);
 		expect(text).not.toContain('No realtime threat-feed hits');
 		expect(text).not.toContain('No threat-intelligence match');

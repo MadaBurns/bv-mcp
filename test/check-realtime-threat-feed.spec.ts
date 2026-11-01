@@ -21,6 +21,23 @@ describe('checkRealtimeThreatFeed', () => {
 		expect(r.passed).toBe(false);
 	});
 
+	it('does NOT claim "not provisioned" when the binding is present but the backend fails (404 / 5xx) — SQ-514', async () => {
+		const { checkRealtimeThreatFeed } = await import('../src/tools/check-realtime-threat-feed');
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		for (const status of [404, 503]) {
+			const r = await checkRealtimeThreatFeed('example.com', { reconBinding: reconBinding({ error: 'x' }, status), reconAuthToken: 'tok' });
+			const f = r.findings[0]!;
+			expect(f.detail).not.toMatch(/not provisioned|operator-deploy only/i);
+			expect(f.detail).toContain('backend did not return a usable response');
+			expect(f.metadata?.backendUnavailable).toBe(true);
+			expect(f.metadata?.unprovisioned).toBeUndefined();
+			// Still inconclusive, never a clean pass.
+			expect(r.checkStatus).toBe('error');
+			expect(r.score).toBe(0);
+			expect(r.passed).toBe(false);
+		}
+	});
+
 	it('surfaces a high finding when the feed reports a hit', async () => {
 		const { checkRealtimeThreatFeed } = await import('../src/tools/check-realtime-threat-feed');
 		const binding = reconBinding({ checkType: 'REALTIME_THREAT_FEED', status: 'warning', details: 'seen 2026-05-24' });

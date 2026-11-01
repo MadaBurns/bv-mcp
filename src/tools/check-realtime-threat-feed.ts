@@ -55,14 +55,26 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 	);
 
 	if (!scan) {
+		// Two distinct causes share this null: no binding at all (BSL self-host — a structural
+		// fact about the deployment) versus a bound binding whose backend did not give a usable
+		// answer (non-2xx incl. an absent route, timeout, malformed body). Telling an operator a
+		// working binding is "not provisioned" sends them to configure what is already bound.
 		findings.push(
-			createFinding(
-				CATEGORY,
-				'Realtime threat feed unavailable',
-				'info',
-				`Realtime threat-feed intelligence is not provisioned in this deployment for ${domain}. This is an operator-deploy only feature.`,
-				{ domain, unprovisioned: true },
-			),
+			options.reconBinding
+				? createFinding(
+						CATEGORY,
+						'Realtime threat feed unavailable',
+						'info',
+						`The realtime threat-feed backend did not return a usable response for ${domain}. The check could not be completed, so this is not a clean result; it may succeed on a later attempt.`,
+						{ domain, backendUnavailable: true },
+					)
+				: createFinding(
+						CATEGORY,
+						'Realtime threat feed unavailable',
+						'info',
+						`Realtime threat-feed intelligence is not provisioned in this deployment for ${domain}. This is an operator-deploy only feature.`,
+						{ domain, unprovisioned: true },
+					),
 		);
 		// Unlike the osint/bucket families, this check's findings use REAL severities
 		// (`hitSeverity()` below maps upstream threat status onto critical/high/medium), so

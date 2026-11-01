@@ -843,9 +843,10 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 		// Present-binding degradation (BV_RECON / BV_TLS_PROBE 5xx / timeout). A
 		// mis-rotated key or upstream outage is invisible without this — the
-		// fail-soft bindings null out silently otherwise. Absent bindings and the
-		// benign recon 404 never reach the `degradation` dataset, so any row here
-		// is a real, present-binding failure worth surfacing.
+		// fail-soft bindings null out silently otherwise. Absent bindings never reach
+		// the `degradation` dataset, and `queryBindingDegradation` excludes the
+		// standing `binding_route_absent` (recon 404 on /osint/check, SQ-514), so any
+		// row here is a real, present-binding failure worth surfacing.
 		const degradationRows = await lane<BindingDegradationRow[]>(
 			'binding_degradation',
 			[],

@@ -136,9 +136,11 @@ export interface AnalyticsClient {
 			 *  - `kv_fallback` — a KV write threw (emitted from session.ts).
 			 *  - `binding_unavailable` / `binding_5xx` / `binding_timeout` — a PRESENT
 			 *    operator-only service binding (BV_RECON / BV_TLS_PROBE) failed at call
-			 *    time. Absent-on-self-host and the benign recon 404 are deliberately NOT
-			 *    emitted (those are expected, not alertable). `component` carries which
-			 *    binding (`recon` | `tls_probe`).
+			 *    time. Absent-on-self-host is deliberately NOT emitted (expected, not
+			 *    alertable). `component` carries which binding (`recon` | `tls_probe`).
+			 *  - `binding_route_absent` — recon answered 404 on `/osint/check` (the route
+			 *    is not served upstream, SQ-502). Emitted so the condition stays queryable,
+			 *    but `queryBindingDegradation` excludes it (standing, not an outage).
 			 *  - `quota_coordinator_fallback` — the batched per-IP QuotaCoordinator
 			 *    evaluation was bypassed (breaker open, malformed-but-non-empty response,
 			 *    or the DO errored) and the request fell back to the serial / fail-soft
@@ -164,6 +166,7 @@ export interface AnalyticsClient {
 				| 'binding_unavailable'
 				| 'binding_5xx'
 				| 'binding_timeout'
+				| 'binding_route_absent'
 				| 'cost_ceiling_degraded'
 				| 'quota_coordinator_fallback'
 				| 'shard_below_benchmark_floor'
