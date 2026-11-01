@@ -7,6 +7,7 @@ import packageJsonSource from '../../package.json?raw';
 import deployPrivateSource from '../../scripts/deploy-private.mjs?raw';
 import promoteSource from '../../scripts/deploy-prod-promote.mjs?raw';
 import injectScriptSource from '../../scripts/inject-private-config.cjs?raw';
+import { isEntrypoint, runSchemaDriftCheck } from '../../scripts/tenants/check-schema-drift.mjs';
 
 interface PackageJson {
 	scripts?: Record<string, string>;
@@ -458,5 +459,57 @@ describe('inject-private-config fail-closed on missing overlay', () => {
 
 	it('does not silently `return` from the missing-overlay branch', () => {
 		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(/\breturn\b/);
+	});
+});
+
+// SQ-519: check:tenant-schema is a deploy gate. Its CLI bootstrap used `import.meta.url === file://${argv[1]}`,
+// which is false for a path with a space (the URL is percent-encoded) and for a symlinked directory (the URL is
+// symlink-resolved, argv[1] is not). The gate then exited 0 having checked nothing.
+describe('check-schema-drift entrypoint detection', () => {
+	const META = 'file:///repo/a%20b/scripts/tenants/check-schema-drift.mjs';
+
+	it('imports without running the CLI or loading node:* (process.argv[1] is absent under workerd)', () => {
+		// The static import above already evaluated the module; with no argv[1] its bootstrap loads nothing.
+		expect(process.argv[1]).toBeUndefined();
+	});
+
+	it('still passes, but warns on stderr naming the bindings it looked for, when the config has no tenant D1 bindings', () => {
+		const out: string[] = [];
+		const err: string[] = [];
+		const code = runSchemaDriftCheck(
+			{ config: 'wrangler.production.jsonc' },
+			{
+				fs: { readFileSync: () => '{"d1_databases":[{"binding":"DB"}]}', readdirSync: () => [] },
+				runWranglerQuery: () => [],
+				migrationsDir: { registry: '/r', tenant: '/t' },
+				stdout: (s: string) => out.push(s),
+				stderr: (s: string) => err.push(s),
+			},
+		);
+		expect(code).toBe(0);
+		expect(err.join('')).toMatch(/WARN.*TENANT_REGISTRY_DB.*TENANT_DB_/);
+	});
+
+	it('matches a plain path', () => {
+		expect(isEntrypoint('file:///repo/s/check.mjs', '/repo/s/check.mjs')).toBe(true);
+	});
+
+	it('matches a path containing a space (percent-encoded in import.meta.url)', () => {
+		expect(isEntrypoint(META, '/repo/a b/scripts/tenants/check-schema-drift.mjs')).toBe(true);
+	});
+
+	it('matches a path reached through a symlinked directory (argv[1] unresolved, import.meta.url resolved)', () => {
+		const realpath = (p: string): string => p.replace('/linked/', '/repo/a b/');
+		expect(isEntrypoint(META, '/linked/scripts/tenants/check-schema-drift.mjs', realpath)).toBe(true);
+	});
+
+	it('does not match another script, and treats a failing realpath or a missing argv[1] as not-the-entrypoint', () => {
+		expect(isEntrypoint(META, '/repo/a b/scripts/other.mjs', (p) => p)).toBe(false);
+		expect(
+			isEntrypoint(META, '/nope', () => {
+				throw new Error('ENOENT');
+			}),
+		).toBe(false);
+		expect(isEntrypoint(META, undefined)).toBe(false);
 	});
 });

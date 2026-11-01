@@ -40,7 +40,7 @@ Deploy:
 
     npm run deploy:prod
 
-When a preflight cannot pass and the fix is urgent, the sanctioned paths are `npx wrangler rollback` (§2) to restore the last-good version, or a direct Worker deploy (`npm -w packages/bv-dns-security-mcp run deploy`) that skips the gate chain; neither has an env override, and the second needs an operator who accepts the unchecked risk.
+When a preflight cannot pass and the fix is urgent, the sanctioned paths are `npx wrangler rollback` (§2) to restore the last-good version, or a direct Worker deploy (`npm -w packages/bv-dns-security-mcp run deploy`) that skips the gate chain, including the dns-checks dist build and the injector's required-secrets (`ALERT_WEBHOOK_URL`) and production-vars gates; neither has an env override, and the second needs an operator who accepts the unchecked risk.
 
 Verify (MANDATORY after every deploy):
 
