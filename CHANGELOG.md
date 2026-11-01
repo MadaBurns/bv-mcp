@@ -8,6 +8,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.1] - 2026-11-02
+
+### Fixed
+
+- Resolver consistency uses bounded RFC 8484 wire-format requests for Quad9 and OpenDNS over port 443, with sanitized HTTP, DNS, parsing, transport and deadline diagnostics. The three-responder quorum is unchanged.
+- SSL redirects compose caller and cross-host robots deadlines, preserve inconclusive posture and report bounded hop/robots outcomes and timings. Concurrent cancellation cannot turn another caller's robots policy into a fail-open decision or discard a measured cached policy.
+- Fetch budget exhaustion uses a named timeout error. CT coverage retains upstream HTTP status, recognized API error codes and bounded response failure phases, including partial pagination stops.
+
+### Added
+
+- A reusable assessment reporting contract distinguishes returned CT samples, stale cache, challenges, unexplained access denials, transport failures and deferred byte-limited reviews, with totals separated by vantage and positive controls. Private runner adoption remains pending.
+- Package identity and parity corpus advance together to dns-checks 1.62.2. Scoring model remains 1.41.0; scoring rules and weights are unchanged. Owned CT integration still requires its health, latency, read-credential and service-binding acceptance.
+
 ## [3.108.0] - 2026-11-02
 
 ### Added
