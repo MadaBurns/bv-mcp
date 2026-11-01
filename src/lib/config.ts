@@ -155,7 +155,11 @@ export const FUZZ_THRESHOLDS = {
 /** MCP API key tiers with daily scan quotas. Derived from the Zod TierSchema in schemas/primitives. */
 export type McpApiKeyTier = Tier;
 
-/** Daily scan limits per API key tier (applies per tool unless overridden by TIER_TOOL_DAILY_LIMITS). */
+/**
+ * Daily scan limits per API key tier, counted per tool (each tool has its own
+ * counter) unless overridden by TIER_TOOL_DAILY_LIMITS. A key's total across all
+ * tools is capped separately by TIER_AGGREGATE_DAILY_LIMITS.
+ */
 export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	free: 50,
 	agent: 200,
@@ -164,6 +168,31 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	partner: 100_000,
 	owner: Infinity,
 };
+
+/**
+ * Per-key daily cap on authenticated `tools/call` requests summed across ALL
+ * tools, enforced in addition to the per-tool limits above (which stay). Without
+ * it a key's real ceiling is its per-tool limit times every tool it can call
+ * (developer: roughly 1.41M calls/month). Counted on the synthetic
+ * AGGREGATE_QUOTA_COUNTER keyed by the same principal as the per-tool counters,
+ * checked only after the per-tool check allows. `Infinity` = no aggregate cap
+ * (per-tool limits only) and never touches a counter. Unauthenticated callers
+ * are governed by FREE_IP_DAILY_LIMIT instead and never reach this cap.
+ *
+ * Starting values pending operator sign-off (SQ-494). There is no per-contract
+ * override carrier yet: raising one enterprise key means changing this table.
+ */
+export const TIER_AGGREGATE_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
+	free: Infinity,
+	agent: 2_000,
+	developer: 5_000,
+	enterprise: 50_000,
+	partner: Infinity,
+	owner: Infinity,
+};
+
+/** Synthetic tool name for the aggregate per-key counter (see TIER_AGGREGATE_DAILY_LIMITS). */
+export const AGGREGATE_QUOTA_COUNTER = '__all_tools__';
 
 /**
  * Per-tool daily limit overrides for specific tiers.

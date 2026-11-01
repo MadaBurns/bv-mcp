@@ -5,8 +5,10 @@ import readme from '../../README.md?raw';
 import clientSetup from '../../docs/client-setup.md?raw';
 import troubleshooting from '../../docs/troubleshooting.md?raw';
 import vscodeReadme from '../../extensions/vscode/README.md?raw';
-import { FREE_TOOL_DAILY_LIMITS, GATED_PAID_ONLY_TOOLS, TIER_DAILY_LIMITS } from '../../src/lib/config';
+import { FREE_TOOL_DAILY_LIMITS, GATED_PAID_ONLY_TOOLS, TIER_AGGREGATE_DAILY_LIMITS, TIER_DAILY_LIMITS } from '../../src/lib/config';
 import { handleResourcesRead } from '../../src/handlers/resources';
+
+const fmt = (n: number): string => n.toLocaleString('en-US');
 
 function readResource(uri: string): string {
 	const result = handleResourcesRead({ uri });
@@ -23,9 +25,28 @@ describe('public quota surface audit', () => {
 	});
 
 	it('keeps client setup tier quotas aligned with runtime limits', () => {
-		expect(clientSetup).toContain(`| **agent** | **${TIER_DAILY_LIMITS.agent} scans/day, 5 concurrent**`);
-		expect(clientSetup).toContain(`| developer | ${TIER_DAILY_LIMITS.developer} scans/day, 10 concurrent`);
-		expect(clientSetup).toContain(`| enterprise | ${TIER_DAILY_LIMITS.enterprise.toLocaleString('en-US')} scans/day, 25 concurrent`);
+		const agg = TIER_AGGREGATE_DAILY_LIMITS;
+		expect(clientSetup).toContain(
+			`| **agent** | **${TIER_DAILY_LIMITS.agent} scans/day per tool, ${fmt(agg.agent)} tool calls/day in total, 5 concurrent**`,
+		);
+		expect(clientSetup).toContain(
+			`| developer | ${TIER_DAILY_LIMITS.developer} scans/day per tool, ${fmt(agg.developer)} tool calls/day in total, 10 concurrent`,
+		);
+		expect(clientSetup).toContain(
+			`| enterprise | ${fmt(TIER_DAILY_LIMITS.enterprise)} scans/day per tool, ${fmt(agg.enterprise)} tool calls/day in total, 25 concurrent`,
+		);
+		expect(clientSetup).toContain(`With a free key: ${TIER_DAILY_LIMITS.free}/day per tool, with no separate total across tools.`);
+		expect(agg.free).toBe(Infinity);
+	});
+
+	it('keeps the README per-key totals across tools aligned with TIER_AGGREGATE_DAILY_LIMITS (SQ-494)', () => {
+		const agg = TIER_AGGREGATE_DAILY_LIMITS;
+		expect(readme).toContain(`${TIER_DAILY_LIMITS.developer} per tool, ${fmt(agg.developer)} across all tools`);
+		expect(readme).toContain(`${fmt(TIER_DAILY_LIMITS.enterprise)}+ per tool, ${fmt(agg.enterprise)} across all tools`);
+		expect(readme).toContain(
+			`Agent, developer and enterprise keys also have a daily total across all tools combined (${fmt(agg.agent)}, ${fmt(agg.developer)} and ${fmt(agg.enterprise)} calls respectively)`,
+		);
+		expect(readme).toContain('`TIER_AGGREGATE_DAILY_LIMITS`');
 	});
 
 	it('keeps hosted static-key auth docs on Bearer/OAuth, not query-string credentials', () => {

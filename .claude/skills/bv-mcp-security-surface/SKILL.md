@@ -38,19 +38,24 @@ The distinction is where the hostname came from, not how the URL is spelled.
 **Paid OAuth tiers** (bv-web plan → tier claim → limits), resolved in
 `src/oauth/entitlements.ts` via the bv-web binding:
 
-| bv-web plan | tier | scans/day | concurrent |
-|---|---|---|---|
-| free / starter | (none) | 50 | 3 |
-| pro / business / MCP Developer | `developer` | 500 | 10 |
-| enterprise / MCP Enterprise | `enterprise` | 10,000 | 25 |
+| bv-web plan | tier | scans/day per tool | all tools/day | concurrent |
+|---|---|---|---|---|
+| free / starter | (none) | 50 | — | 3 |
+| pro / business / MCP Developer | `developer` | 500 | 5,000 | 10 |
+| enterprise / MCP Enterprise | `enterprise` | 10,000 | 50,000 | 25 |
 
-`agent` (200/day, 5) is reachable **only** via bv-web `validate-key`. Static
+`agent` (200/day per tool, 2,000/day across all tools, 5) is reachable **only** via bv-web `validate-key`. Static
 `BV_API_KEY` → `owner`, subject to the IP gate above.
 
 ## Rate limits and quotas
 
 - Unauthenticated: **50/min, 300/hr per IP**; only `tools/call` counts.
-- Authenticated bypasses the per-IP limit but pays per-tier daily quotas.
+- Authenticated bypasses the per-IP limit but pays per-tier daily quotas, two
+  counters per key: per tool (`tierToolDailyLimit`), then, only if that allowed,
+  the key's total across all tools (`TIER_AGGREGATE_DAILY_LIMITS` on the
+  synthetic `__all_tools__` counter; `owner`/`partner`/`free` keys are
+  uncapped). Both deny with 429 `-32029`; the total's message ends "across all
+  tools" and its `x-quota-*` headers describe the total.
 - Per-tool: `FREE_TOOL_DAILY_LIMITS` (`check_mx_reputation` 5/day + 60-min cache).
 - Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via the `QuotaCoordinator` DO.
 - **Distinct-domain cap**: unauthenticated per-IP distinct domains/day
