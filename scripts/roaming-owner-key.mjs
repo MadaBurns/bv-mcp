@@ -4,7 +4,6 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
-import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const WORKER_NAME = 'bv-dns-security-mcp';
@@ -53,6 +52,11 @@ export function newCredential(days = 7, now = Date.now()) {
 	};
 }
 
+export function resolveWranglerPath() {
+	// Wrangler does not export its bin subpath through package exports.
+	return resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js');
+}
+
 export function provisionCredential(record, output, { run = spawnSync, wranglerPath, configPath } = {}) {
 	output = validateCredentialOutput(output);
 	if (record.kind !== 'roaming-owner' || record.worker !== WORKER_NAME || typeof record.key !== 'string' || record.key.length < 32) {
@@ -63,8 +67,7 @@ export function provisionCredential(record, output, { run = spawnSync, wranglerP
 		throw new Error('Credential expiry must be canonical UTC and in the future.');
 	}
 	if (existsSync(output)) throw new Error('Credential file already exists; refusing to overwrite it.');
-	const require = createRequire(import.meta.url);
-	const cli = wranglerPath ?? require.resolve('wrangler/bin/wrangler.js');
+	const cli = wranglerPath ?? resolveWranglerPath();
 	const config = configPath ?? resolve(repoRoot, 'wrangler.production.jsonc');
 	const common = ['--name', WORKER_NAME, '--config', config];
 	// Wrangler otherwise permits inherited debug settings to persist request bodies on disk.

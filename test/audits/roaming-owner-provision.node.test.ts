@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { expiryForDays, newCredential, provisionCredential, validateCredentialOutput, WORKER_NAME } from '../../scripts/roaming-owner-key.mjs';
+import { expiryForDays, newCredential, provisionCredential, resolveWranglerPath, validateCredentialOutput, WORKER_NAME } from '../../scripts/roaming-owner-key.mjs';
 
 const dirs: string[] = [];
 function output() {
@@ -18,7 +18,13 @@ function runner(second = { status: 0, stdout: '' }) {
 		.mockReturnValueOnce({ status: 0, stdout: JSON.stringify([{ name: 'BV_API_KEY', type: 'secret_text' }]) })
 		.mockReturnValueOnce(second);
 }
-const options = (run: ReturnType<typeof vi.fn>) => ({ run, wranglerPath: '/synthetic/wrangler.js', configPath: '/synthetic/production.jsonc' });
+const options = (run: ReturnType<typeof vi.fn>) => ({
+	// This test double supplies only the UTF-8 signature and result fields consumed by provisioning.
+	// It is never used as the other Buffer/command-only overloads of Node's spawnSync.
+	run: run as unknown as typeof spawnSync,
+	wranglerPath: '/synthetic/wrangler.js',
+	configPath: '/synthetic/production.jsonc',
+});
 
 afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -26,6 +32,14 @@ afterEach(() => {
 });
 
 describe('roaming owner credential provisioning', () => {
+	it('resolves the installed Wrangler entrypoint without relying on a private package export', () => {
+		const cli = resolveWranglerPath();
+		expect(existsSync(cli)).toBe(true);
+		const run = runner();
+		const defaultPathOptions = { run: options(run).run, configPath: '/synthetic/production.jsonc' };
+		provisionCredential(newCredential(), output(), defaultPathOptions);
+		expect(run.mock.calls[0][1][0]).toBe(cli);
+	});
 	it('overrides inherited unsafe Wrangler logging settings for every subprocess', () => {
 		vi.stubEnv('WRANGLER_LOG_SANITIZE', 'false');
 		vi.stubEnv('WRANGLER_WRITE_LOGS', 'true');
