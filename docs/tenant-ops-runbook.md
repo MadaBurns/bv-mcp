@@ -268,7 +268,10 @@ export locations in ignored notes.
   exports, generated reports, PDFs, client-engagement output, or tenant databases.
 - erasure: deactivate the `sub_tenants` row, revoke tenant keys, stop scheduled
   scans, delete or tombstone per-tenant D1 data under the approved retention
-  policy, then record the operator action in the registry audit log.
+  policy, remove the tenant's `TENANT_DB_*` binding from the private overlay
+  (`.dev/wrangler.deploy.jsonc`) so the schema-drift deploy gate stops checking
+  a database that no longer exists and the next deploy does not fail on it,
+  then record the operator action in the registry audit log.
 - restore drill: at least once per release window that changes tenant schema or
   migrations, restore a synthetic tenant backup into a disposable D1 database,
   run the tenant schema/audit tests, and verify a queued scan can complete.
