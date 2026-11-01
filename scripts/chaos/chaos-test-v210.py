@@ -59,6 +59,32 @@ def _validate_api_key():
         pass
 
 results = []
+# Whether the most recent response was the free-tier quota refusal (HTTP 429 with JSON-RPC -32029). Every
+# request updates it. This suite runs unauthenticated by design, so a spent per-tool daily quota on the
+# caller's IP is an environment state, not a server defect: a check that fails while the last response was
+# that refusal (including a check that only inspects an earlier refused body) is reported SKIPPED-QUOTA.
+_quota_refused = False
+# Whether any response since the previous record() was that refusal: concurrent checks (18c) can see a
+# refused call followed by a good one from another thread.
+_quota_since_record = False
+
+
+def is_quota_refusal(status_code, body_text):
+    """True for the free-tier quota refusal: HTTP 429 carrying JSON-RPC error -32029."""
+    return status_code == 429 and "-32029" in (body_text or "")
+
+
+def note_response(status_code, body_text):
+    """Record whether this response was the quota refusal (see _quota_refused)."""
+    global _quota_refused, _quota_since_record
+    _quota_refused = is_quota_refusal(status_code, body_text)
+    _quota_since_record = _quota_since_record or _quota_refused
+
+
+def is_edge_waf_block(status_code, body_text):
+    """True for a Cloudflare edge WAF block page: an HTML 403 served before the request reaches the Worker."""
+    lowered = (body_text or "").lower()
+    return status_code == 403 and "<html" in lowered and "cloudflare" in lowered
 
 
 def _load_clients_helpers():
@@ -91,6 +117,12 @@ def record_skip(name, reason):
 
 
 def record(name, passed, detail=""):
+    global _quota_since_record
+    quota_involved = _quota_refused or _quota_since_record
+    _quota_since_record = False
+    if not passed and quota_involved:
+        print(f"  [SKIPPED-QUOTA] {name}  -- free-tier daily quota spent on this IP (429/-32029); rerun later or from another IP")
+        return
     status = "PASS" if passed else "FAIL"
     results.append((name, passed))
     msg = f"  [{status}] {name}"
@@ -135,6 +167,7 @@ def curl_json(method, path, body=None, headers=None, extra_args=None, include_he
             body_text = head + "\n\n" + normalize_mcp_text(rest)
         else:
             body_text = normalize_mcp_text(body_text)
+        note_response(status_code, body_text)
         return status_code, body_text, r.stdout
     except subprocess.TimeoutExpired:
         return 0, "TIMEOUT", ""
@@ -177,6 +210,7 @@ def curl_with_response_headers(method, path, body=None, headers=None):
         except FileNotFoundError:
             pass
 
+        note_response(status_code, body_text)
         return status_code, body_text, resp_headers
     except subprocess.TimeoutExpired:
         return 0, "TIMEOUT", {}
@@ -874,6 +908,8 @@ def test_nosend_dkim():
                 if match:
                     structured = json.loads(match.group(1))
                     return structured.get("checks", {}).get("dkim", {}).get("score")
+                if re.search(r"DKIM\s+N/A", text):
+                    return "N/A"
                 dkim_match = re.search(r"DKIM\s*\|\s*(\d+)", text)
                 if dkim_match:
                     return int(dkim_match.group(1))
@@ -887,19 +923,20 @@ def test_nosend_dkim():
             pass
         return None
 
-    # Scan brand-auditdbs.com (no-send domain → DKIM=100)
+    # Scan example.com: a live no-send domain (null MX "0 ." and "v=spf1 -all"). DKIM must not be penalised:
+    # the current scorer reports it N/A ("control does not apply"); older models scored it 100.
     status, body, _ = curl_json(
         "POST", "/mcp",
-        body=jsonrpc("tools/call", {"name": "scan_domain", "arguments": {"domain": "brand-auditdbs.com"}}, 20),
+        body=jsonrpc("tools/call", {"name": "scan_domain", "arguments": {"domain": "example.com"}}, 20),
         headers=mcp_headers(session_id),
     )
-    brand_auditdbs_dkim = extract_dkim_score(body)
+    no_send_dkim = extract_dkim_score(body)
     lowered = body.lower()
-    if brand_auditdbs_dkim is None and any(
+    if no_send_dkim is None and any(
             m in lowered for m in ("nxdomain", "does not exist", "not registered", "no such domain")):
-        record_skip("9a. brand-auditdbs.com DKIM score = 100",
+        record_skip("9a. example.com (no-send) DKIM not penalised (N/A or 100)",
                     "subject domain does not resolve; needs a live no-send domain")
-    elif brand_auditdbs_dkim is None:
+    elif no_send_dkim is None:
         try:
             data = json.loads(body)
             content = data.get("result", {}).get("content", [])
@@ -909,13 +946,13 @@ def test_nosend_dkim():
                 for line in t.split("\n"):
                     if "dkim" in line.lower():
                         snippet += line + " | "
-            record("9a. brand-auditdbs.com DKIM score = 100", False,
+            record("9a. example.com (no-send) DKIM not penalised (N/A or 100)", False,
                    f"could not extract. DKIM lines: {snippet[:300]}")
         except Exception as e:
-            record("9a. brand-auditdbs.com DKIM score = 100", False, f"parse error: {e}")
+            record("9a. example.com (no-send) DKIM not penalised (N/A or 100)", False, f"parse error: {e}")
     else:
-        record("9a. brand-auditdbs.com DKIM score = 100", brand_auditdbs_dkim == 100,
-               f"got DKIM score={brand_auditdbs_dkim}")
+        record("9a. example.com (no-send) DKIM not penalised (N/A or 100)", no_send_dkim in ("N/A", 100),
+               f"got DKIM score={no_send_dkim}")
 
     # Scan google.com (should NOT have DKIM=100)
     status, body, _ = curl_json(
@@ -1280,7 +1317,8 @@ def test_session_abuse():
         record(f"13b. Malformed session ({label}) → rejected", status in (400, 404),
                f"got {status}")
 
-    # 13b-inj. Injection attempts — treated as unknown session ids → 404
+    # 13b-inj. Injection attempts — rejected: an unknown session id (404), or blocked at the edge by the
+    # Cloudflare WAF (an HTML 403 that never reaches the Worker). Either way the request is refused.
     injection_ids = [
         ("' OR 1=1 --" + "0" * 52, "SQL injection"),
         ("<script>alert(1)</script>" + "0" * 39, "XSS attempt"),
@@ -1292,8 +1330,8 @@ def test_session_abuse():
             body=jsonrpc("ping", {}, 1),
             headers=mcp_headers(sid),
         )
-        record(f"13b. Injection session ({label}) → 404", status == 404,
-               f"got {status}")
+        record(f"13b. Injection session ({label}) → rejected (404 or edge WAF 403)",
+               status == 404 or is_edge_waf_block(status, body), f"got {status}")
 
     # 13c. Valid-format but nonexistent session → 404
     fake_session = "0" * 64
