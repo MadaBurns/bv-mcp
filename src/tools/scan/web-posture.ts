@@ -190,11 +190,15 @@ interface HostPages {
 	www?: CappedPage | null;
 }
 
-/** One capped GET per host. A null page means the fetch failed; the checks do not retry it. */
-async function fetchHomepages(domain: string, fetchFn: FetchFunction): Promise<HostPages> {
-	const apex = fetchPageCapped(`https://${domain}/`, fetchFn);
+/**
+ * One capped GET per host. A null page means the fetch failed; the checks do not retry it.
+ *
+ * `timeoutMs` is the per-fetch budget, and callers pass the section deadline (see `buildRunners`).
+ */
+async function fetchHomepages(domain: string, fetchFn: FetchFunction, timeoutMs: number): Promise<HostPages> {
+	const apex = fetchPageCapped(`https://${domain}/`, fetchFn, { timeout: timeoutMs });
 	if (domain.startsWith('www.')) return { apex: await apex };
-	const www = fetchPageCapped(`https://www.${domain}/`, fetchFn);
+	const www = fetchPageCapped(`https://www.${domain}/`, fetchFn, { timeout: timeoutMs });
 	return { apex: await apex, www: await www };
 }
 
@@ -304,14 +308,24 @@ async function loadCertPostureInput(domain: string, options: WebPostureOptions, 
 
 type CheckRunner = () => Promise<CheckResult>;
 
+/**
+ * `deadlineMs` is the section deadline, and it is the only clock a section fetch runs against.
+ *
+ * Every fetch here waits in {@link limitConcurrentFetches}, but the package checks start their own
+ * budget (`AbortSignal.timeout`) before they call it. Left at their 5 s defaults, a hop that waited
+ * behind slow fetches would reach its slot already aborted and read as the target failing. The
+ * section signal still ends everything at the deadline and drops whatever is still queued, so the
+ * budget handed to the checks is the deadline itself.
+ */
 function buildRunners(
 	domain: string,
 	fetchFn: FetchFunction,
 	signal: AbortSignal,
 	options: WebPostureOptions,
+	deadlineMs: number,
 ): Record<WebPostureCategory, CheckRunner> {
 	let homepages: Promise<HostPages> | undefined;
-	const pages = (): Promise<HostPages> => (homepages ??= fetchHomepages(domain, fetchFn));
+	const pages = (): Promise<HostPages> => (homepages ??= fetchHomepages(domain, fetchFn, deadlineMs));
 	const certPosture = async (): Promise<CheckResult> => {
 		const input = await loadCertPostureInput(domain, options, signal);
 		return checkCertPosture(domain, makeQueryDNS(options.dnsOptions), input ?? { certificate: null });
@@ -320,8 +334,8 @@ function buildRunners(
 		web_content: async () => checkWebContent(domain, fetchFn, { pages: await pages() }),
 		csp_quality: async () => checkCspQuality(domain, fetchFn, { pages: await pages() }),
 		hsts_preload: async () => checkHstsPreload(domain, fetchFn, { pages: await pages() }),
-		http_redirect: () => checkHttpRedirect(domain, fetchFn),
-		security_txt: () => checkSecurityTxt(domain, fetchFn),
+		http_redirect: () => checkHttpRedirect(domain, fetchFn, { timeout: deadlineMs }),
+		security_txt: () => checkSecurityTxt(domain, fetchFn, { timeout: deadlineMs }),
 		cert_posture: certPosture,
 	};
 }
@@ -402,7 +416,7 @@ export function startWebPosture(domain: string, options: WebPostureOptions = {})
 		WEB_POSTURE_MAX_CONCURRENT_FETCHES,
 		signal,
 	);
-	const runners = buildRunners(domain, fetchFn, signal, options);
+	const runners = buildRunners(domain, fetchFn, signal, options, deadlineMs);
 	const cutoff = whenAborted(signal);
 	const checks = WEB_POSTURE_CATEGORIES.map((category) => ({
 		category,
