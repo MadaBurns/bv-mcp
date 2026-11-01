@@ -1061,60 +1061,35 @@ describe('scanDomain force_refresh', () => {
 		});
 	}
 
-	it('bypasses per-check cache when forceRefresh is true', async () => {
+	it('does not reuse per-check results between scans, and force_refresh still bypasses the scan-level entry (SQ-498)', async () => {
 		mockAllChecksFn();
 		const { scanDomain } = await import('../src/tools/scan-domain');
+		const fetchCalls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
 
-		// First scan populates per-check caches
+		const before = fetchCalls();
 		const first = await scanDomain('force-refresh.com');
 		expect(first.cached).toBe(false);
+		const coldFetches = fetchCalls() - before;
+		expect(coldFetches).toBeGreaterThan(5);
 
-		// Clear only the top-level scan cache so we re-enter orchestration
+		// The scan-level entry (the 5-minute scan cache) is unchanged: a repeat is answered from it.
+		const afterCold = fetchCalls();
+		const repeat = await scanDomain('force-refresh.com');
+		expect(repeat.cached).toBe(true);
+		expect(fetchCalls()).toBe(afterCold);
+
+		// Clear only the scan-level entry. A scan no longer persists per-check results, so the
+		// checks execute again instead of being served from a per-check entry.
 		IN_MEMORY_CACHE.delete(buildScanCacheKey('force-refresh.com'));
+		const rescan = await scanDomain('force-refresh.com', undefined, { forceRefresh: false });
+		expect(rescan.cached).toBe(false);
+		expect(fetchCalls() - afterCold).toBeGreaterThan(5);
 
-		// Record how many fetch calls were made so far
-		const fetchCountBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-
-		// Without force_refresh, per-check caches are warm — should make few/no DNS queries
-		const second = await scanDomain('force-refresh.com', undefined, { forceRefresh: false });
-		expect(second.cached).toBe(false); // top-level was cleared, re-computed from per-check cache
-		const fetchCountAfterNormal = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-		const normalFetchCount = fetchCountAfterNormal - fetchCountBefore;
-
-		// Clear top-level again for force_refresh test
-		IN_MEMORY_CACHE.delete(buildScanCacheKey('force-refresh.com'));
-
-		// With force_refresh=true, per-check caches MUST be bypassed — all checks should re-execute
-		const third = await scanDomain('force-refresh.com', undefined, { forceRefresh: true });
-		expect(third.cached).toBe(false);
-		const fetchCountAfterForce = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-		const forceFetchCount = fetchCountAfterForce - fetchCountAfterNormal;
-
-		// force_refresh should make significantly more DNS queries than the cached run
-		// because all 16 checks re-execute instead of returning from per-check cache
-		expect(forceFetchCount).toBeGreaterThan(normalFetchCount);
-	});
-
-	it('uses per-check cache normally when forceRefresh is false', async () => {
-		mockAllChecksFn();
-		const { scanDomain } = await import('../src/tools/scan-domain');
-
-		// Run a fresh scan first
-		const first = await scanDomain('normal-cache.com');
-		expect(first.cached).toBe(false);
-
-		// Clear only the top-level scan cache key so scanDomain re-enters orchestration,
-		// but per-check caches remain populated
-		IN_MEMORY_CACHE.delete(buildScanCacheKey('normal-cache.com'));
-
-		// Second scan without forceRefresh should use per-check caches (no DNS queries)
-		const fetchBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-		const second = await scanDomain('normal-cache.com', undefined, { forceRefresh: false });
-		expect(second.cached).toBe(false); // top-level was cleared, but checks came from per-check cache
-		const fetchAfter = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-		// Should have made very few or no DNS queries since per-check caches are warm
-		// (at most a few for post-processing, not 16 checks worth)
-		expect(fetchAfter - fetchBefore).toBeLessThan(5);
+		// force_refresh bypasses the scan-level entry that the rescan just re-cached.
+		const afterRescan = fetchCalls();
+		const forced = await scanDomain('force-refresh.com', undefined, { forceRefresh: true });
+		expect(forced.cached).toBe(false);
+		expect(fetchCalls() - afterRescan).toBeGreaterThan(5);
 	});
 });
 
@@ -1149,7 +1124,7 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 		});
 	}
 
-	it('propagates custom cacheTtlSeconds to per-check cache writes via KV', async () => {
+	it('propagates custom cacheTtlSeconds to the scan-level KV write (and writes no per-check entries)', async () => {
 		mockAllChecksFn();
 		const mockKV = {
 			get: vi.fn().mockResolvedValue(null),
@@ -1158,16 +1133,14 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 		const { scanDomain } = await import('../src/tools/scan-domain');
 		await scanDomain('ttl-test.com', mockKV as unknown as KVNamespace, { cacheTtlSeconds: 600 });
 
-		// KV.put should have been called with expirationTtl: 600 for per-check entries
-		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
-		expect(perCheckPuts.length).toBeGreaterThan(0);
-		for (const call of perCheckPuts) {
-			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(600);
-		}
+		const putCalls = mockKV.put.mock.calls as unknown[][];
+		expect(putCalls.filter((call) => (call[0] as string).includes(':check:'))).toHaveLength(0);
+		const scanPuts = putCalls.filter((call) => call[0] === buildScanCacheKey('ttl-test.com'));
+		expect(scanPuts).toHaveLength(1);
+		expect((scanPuts[0][2] as { expirationTtl: number }).expirationTtl).toBe(600);
 	});
 
-	it('uses default 300s TTL when cacheTtlSeconds is not set', async () => {
+	it('uses default 300s TTL for the scan-level write when cacheTtlSeconds is not set', async () => {
 		mockAllChecksFn();
 		const mockKV = {
 			get: vi.fn().mockResolvedValue(null),
@@ -1176,12 +1149,9 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 		const { scanDomain } = await import('../src/tools/scan-domain');
 		await scanDomain('ttl-default.com', mockKV as unknown as KVNamespace);
 
-		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
-		expect(perCheckPuts.length).toBeGreaterThan(0);
-		for (const call of perCheckPuts) {
-			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(300);
-		}
+		const scanPuts = (mockKV.put.mock.calls as unknown[][]).filter((call) => call[0] === buildScanCacheKey('ttl-default.com'));
+		expect(scanPuts).toHaveLength(1);
+		expect((scanPuts[0][2] as { expirationTtl: number }).expirationTtl).toBe(300);
 	});
 });
 
@@ -1784,7 +1754,7 @@ describe('scanDomain — sentinel-skip on per-check path (Fix 2)', () => {
 		expect(computingPuts).toHaveLength(0);
 	});
 
-	it('still writes per-check results to KV (sentinel skip does not suppress caching)', async () => {
+	it('writes only the scan-level entry to KV: one put per cold scan, no per-check puts or gets (SQ-498)', async () => {
 		mockAllDns();
 		const mockKV = {
 			get: vi.fn().mockResolvedValue(null),
@@ -1795,10 +1765,11 @@ describe('scanDomain — sentinel-skip on per-check path (Fix 2)', () => {
 		const { scanDomain } = await import('../src/tools/scan-domain');
 		await scanDomain('sentinel-skip.com', mockKV as unknown as KVNamespace);
 
-		// Per-check cache writes (cache:<domain>:check:<category>) must still happen.
-		const perCheckPuts = mockKV.put.mock.calls.filter(
-			(call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes(':check:'),
-		);
-		expect(perCheckPuts.length).toBeGreaterThan(0);
+		// Previously ~19 scored + 6 web-posture `:check:` puts accompanied the scan-level write.
+		const putKeys = (mockKV.put.mock.calls as unknown[][]).map((call) => call[0]);
+		expect(putKeys).toEqual([buildScanCacheKey('sentinel-skip.com')]);
+		// The only KV read is the scan-level lookup; the per-check cache is no longer consulted.
+		const getKeys = (mockKV.get.mock.calls as unknown[][]).map((call) => call[0]);
+		expect(getKeys.filter((key) => String(key).includes(':check:'))).toHaveLength(0);
 	});
 });
