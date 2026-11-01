@@ -351,7 +351,7 @@ These live under the internal auth gate (`/internal/*`) and are called by bv-web
 | -------------- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------- |
 | **Price**      | $0                                       | $39/mo (provisioned by BlackVeil, not self-serve checkout) | [Contact us](https://blackveilsecurity.com) |
 | **Scans/day**  | 25 (anonymous, per IP); 50 with a free key | 500 per tool, 5,000 across all tools                       | 10,000+ per tool, 50,000 across all tools   |
-| **Checks/day** | Tool-specific limits                     | Tool-specific limits                                       | Contract limits                             |
+| **Checks/day** | Tool-specific limits                     | Tool-specific limits                                       | Tool-specific limits                        |
 | **Rate limit** | 50 req/min                               | None                                                       | None                                        |
 | **API access** | No                                       | Yes                                                        | Yes                                         |
 | **MCP access** | Yes                                      | Yes                                                        | Yes                                         |

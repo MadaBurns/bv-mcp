@@ -27,7 +27,10 @@ npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql
 no query uses (`country`, `domain`, `ip_masked`). D1 bills each index entry as a
 row written, on insert and again on the retention delete, so every logged call
 costs 3 index entries instead of 6 afterwards. It is idempotent (`DROP INDEX IF
-EXISTS`), so apply it to an existing database too, and apply it before a bulk
+EXISTS`), so apply it to an existing database too. Its targets are `bv-intelligence`
+(the live database until the [§3a cut-over](../operator-runbook.md#3a-moving-the-access-log-to-mcp-access-log-v1-sq-187-cut-over))
+and `mcp-access-log-v1` (after it). The saving lands only once 0002 has been applied
+to the database the `INTELLIGENCE_DB` binding currently resolves to. Apply it before a bulk
 copy so the copy does not pay for the dead indexes either. The file lists, per
 index, which query keeps or loses it.
 

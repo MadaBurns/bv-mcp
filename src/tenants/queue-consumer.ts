@@ -95,6 +95,7 @@ const FINDINGS_INSERT_SQL =
  * 500 rows each tick (starving the rest) and the fingerprint skip never fired.
  * An unmeasured scan (no captured score) keeps the last known score and grade.
  */
+// last_grade keeps a stale letter on an unmeasured scan: every reader must go through displayGradeFor (src/lib/ungraded-display.ts) and never trust it directly.
 const MARK_DOMAIN_SCANNED_SQL =
 	'UPDATE domains SET last_scanned_at = ?, last_score = COALESCE(?, last_score), last_grade = COALESCE(?, last_grade) WHERE domain = ?';
 const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
