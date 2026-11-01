@@ -121,10 +121,16 @@ export async function callReconScan(
 		// is absent. SQ-502: bv2-recon (bv-web-prod cloudflare/recon) has never served
 		// /osint/check, and the former 404 => benign shortcut turned that missing
 		// route into a permanent false "no threat-intelligence match" on all four
-		// callers.
+		// callers. SQ-514: that standing condition is recorded as its own
+		// `binding_route_absent` kind (excluded from the paging alert, still queryable)
+		// so it stays observable without paging; every other non-2xx stays `binding_5xx`.
 		if (!resp.ok) {
 			await disposeUnreadResponseBody(resp);
-			recordReconDegradation('binding_5xx', telemetry, { route: '/osint/check', status: resp.status, domain: target.domain });
+			recordReconDegradation(resp.status === 404 ? 'binding_route_absent' : 'binding_5xx', telemetry, {
+				route: '/osint/check',
+				status: resp.status,
+				domain: target.domain,
+			});
 			return null;
 		}
 		const parsed = ReconScanResponseSchema.safeParse(await readJsonResponseCapped(resp, RECON_MAX_BODY_BYTES));

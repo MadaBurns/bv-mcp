@@ -376,7 +376,10 @@ ORDER BY total_calls DESC`;
  * quota-guardrail concern queried/alerted separately, NOT a service-binding
  * failure), and `shard_below_benchmark_floor` (a per-profile accumulator shard's
  * expected cold-start warm-up while `PROFILE_ACCUMULATOR_SHARDING='profile'` — the
- * alert threshold is 1, so a single benign warm-up read would otherwise page).
+ * alert threshold is 1, so a single benign warm-up read would otherwise page), and
+ * `binding_route_absent` (a recon 404 on /osint/check — the standing "bv2-recon does
+ * not serve this route yet" condition, SQ-514; kept in AE so the day it stops
+ * appearing is visible, but not a page-worthy outage).
  * The filter keys on degradationType (blob1), NOT component (blob2) --
  * a new alertable signal must therefore use a non-excluded degradationType, not
  * merely a distinct component.
@@ -395,6 +398,7 @@ WHERE index1 = 'degradation'
   AND blob1 != 'quota_coordinator_fallback'
   AND blob1 != 'quota_shard_salt_missing'
   AND blob1 != 'shard_below_benchmark_floor'
+  AND blob1 != 'binding_route_absent'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
