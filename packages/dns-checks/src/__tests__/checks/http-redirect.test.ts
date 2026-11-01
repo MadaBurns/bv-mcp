@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { checkHttpRedirect } from '../../checks/check-http-redirect';
 import { analyzeHttpRedirects, nothingMeasured } from '../../checks/http-redirect-analysis';
+import { RobotsDisallowedError } from '../../robots-gate';
 import type { HostWalk, RedirectChain } from '../../checks/http-redirect-analysis';
 import type { CheckResult, FetchFunction } from '../../types';
 
@@ -274,6 +275,89 @@ describe('checkHttpRedirect', () => {
 			expect(result.findings[0].metadata?.missingControl).toBeUndefined();
 		});
 	});
+});
+
+describe('checkHttpRedirect — why a request did not answer (SQ-489)', () => {
+	/** CLEAN, except the request that follows the apex http redirect throws `error`. */
+	const failingFollowUp = (error: Error): FetchFunction =>
+		vi.fn(async (url: string) => {
+			if (url === 'http://example.com/') return new Response(null, { status: 301, headers: { location: 'https://example.com/landing' } });
+			if (url === 'https://example.com/landing') throw error;
+			const answer = CLEAN[url];
+			if (!answer) throw new TypeError(`unreachable ${url}`);
+			return new Response(null, { status: answer[0], headers: answer[1] ? { location: answer[1] } : {} });
+		}) as FetchFunction;
+	const interrupted = (result: CheckResult) => find(result, 'Redirect chain not fully assessed (apex)');
+
+	it('a timeout or abort is "not assessed within the time limit", with the deadline as the cause', async () => {
+		for (const name of ['TimeoutError', 'AbortError']) {
+			const result = await checkHttpRedirect(DOMAIN, failingFollowUp(new DOMException('stopped', name)));
+			const finding = interrupted(result);
+			expect(finding?.detail, name).toContain('not assessed within the time limit');
+			expect(finding?.detail, name).not.toMatch(/failed|network|TLS/);
+			expect(finding?.metadata, name).toMatchObject({ inconclusive: true, errorKind: 'deadline', cause: 'deadline' });
+			expect(result.metadata).toMatchObject({ apex: { http: { end: 'interrupted' } } });
+		}
+	});
+
+	it('a connection that fails on the wire is named a network or TLS failure', async () => {
+		const finding = interrupted(await checkHttpRedirect(DOMAIN, failingFollowUp(new TypeError('fetch failed'))));
+		expect(finding?.detail).toContain('failed with a network or TLS error');
+		expect(finding?.detail).not.toContain('time limit');
+		expect(finding?.metadata).toMatchObject({ errorKind: 'chain_interrupted', cause: 'network' });
+	});
+
+	it('a robots.txt disallow is named as such, not as a failure', async () => {
+		const finding = interrupted(await checkHttpRedirect(DOMAIN, failingFollowUp(new RobotsDisallowedError('https://example.com/landing'))));
+		expect(finding?.detail).toContain("robots.txt disallows it");
+		expect(finding?.detail).not.toMatch(/failed|time limit/);
+		expect(finding?.metadata).toMatchObject({ errorKind: 'robots_disallowed', cause: 'robots_disallowed' });
+	});
+
+	it('a URL the outbound-request guard refused is named as refused, not as a failure', async () => {
+		const finding = interrupted(await checkHttpRedirect(DOMAIN, failingFollowUp(new TypeError('Outbound fetch blocked: private address'))));
+		expect(finding?.detail).toContain('outbound-request guard refused the URL');
+		expect(finding?.detail).not.toMatch(/failed|time limit/);
+		expect(finding?.metadata).toMatchObject({ errorKind: 'request_refused', cause: 'request_refused' });
+	});
+
+	it('an expired budget wins over a generic error that only arrives after it', async () => {
+		const fetchFn = vi.fn(async (url: string) => {
+			if (url === 'http://example.com/') {
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				return new Response(null, { status: 301, headers: { location: 'https://example.com/landing' } });
+			}
+			throw new TypeError('fetch failed');
+		}) as FetchFunction;
+		const result = await checkHttpRedirect(DOMAIN, fetchFn, { timeout: 10 });
+		expect(interrupted(result)?.metadata).toMatchObject({ cause: 'deadline' });
+	});
+
+	it('a first request that hits the deadline is not assessed within the time limit, not an unreachable host', async () => {
+		const abort = vi.fn(async () => {
+			throw new DOMException('stopped', 'TimeoutError');
+		}) as FetchFunction;
+		const result = await checkHttpRedirect(DOMAIN, abort);
+		const finding = result.findings[0];
+		expect(finding.detail).toContain('not assessed within the time limit');
+		expect(finding.detail).not.toMatch(/failed|could not be fetched/);
+		expect(finding.metadata).toMatchObject({ errorKind: 'deadline', cause: 'deadline', inconclusive: true });
+		expect(finding.metadata?.missingControl).toBeUndefined();
+	});
+
+	it('words one unmeasured host by its cause: an unreachable www is still "not resolvable or not served", a timed-out one is not', async () => {
+		const timedOutWww = vi.fn(async (url: string) => {
+			if (url.includes('://www.')) throw new DOMException('stopped', 'TimeoutError');
+			const answer = CLEAN[url];
+			return new Response(null, { status: answer[0], headers: answer[1] ? { location: answer[1] } : {} });
+		}) as FetchFunction;
+		const timedOut = await checkHttpRedirect(DOMAIN, timedOutWww);
+		expect(titles(timedOut)).toContain('www host not assessed');
+		expect(titles(timedOut)).not.toContain('www host not resolvable or not served');
+		const unreachable = await run({ 'http://example.com/': [301, 'https://example.com/'], 'https://example.com/': [200] });
+		expect(titles(unreachable)).toContain('www host not resolvable or not served');
+	});
+
 });
 
 describe('analyzeHttpRedirects (pure)', () => {

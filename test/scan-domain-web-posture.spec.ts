@@ -416,6 +416,102 @@ describe('scan_domain webPosture — never delays or starves the scored result (
 	});
 });
 
+describe('scan_domain webPosture — http_redirect cause is never blamed on the target (SQ-489)', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	const SECTION_DEADLINE_MS = 7_250;
+	const delay = (ms: number): Promise<void> =>
+		new Promise((resolve) => {
+			setTimeout(resolve, ms);
+		});
+
+	/** `AbortSignal.timeout` runs on the platform clock; put it on the fake one so queue wait can be simulated. */
+	function timeoutSignalsOnFakeClock(): void {
+		vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+			return controller.signal;
+		});
+	}
+
+	/** Wrap the site stub: each URL `rule` names answers after its delay, or throws its error. */
+	function withRules(rule: (url: string) => { ms?: number; fail?: Error } | undefined, siteOptions: SiteOptions = {}): void {
+		const site = installSite(siteOptions);
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = urlOf(input);
+			const applied = isDohRequest(url) ? undefined : rule(url);
+			// Like a real fetch: an already-aborted signal rejects at once, and an abort ends the wait.
+			init?.signal?.throwIfAborted();
+			if (applied?.ms) await delay(applied.ms);
+			init?.signal?.throwIfAborted();
+			if (applied?.fail) throw applied.fail;
+			return site(input, init);
+		}) as typeof fetch;
+	}
+
+	const redirectResult = (section: { results: CheckResult[] }): CheckResult => section.results.find((r) => r.category === 'http_redirect')!;
+
+	it('a hop that waited in the shared fetch queue is still measured: all four chains end final', async () => {
+		timeoutSignalsOnFakeClock();
+		// Two slots are held for 6 s by a slow security.txt and a slow hstspreload.org status call, both queued
+		// ahead of the redirect hops that follow the first response. Every redirect hop itself answers in 50 ms.
+		const SLOW_MS = 6_000;
+		withRules((url) => {
+			const { hostname, pathname } = new URL(url);
+			return { ms: hostname === 'hstspreload.org' || pathname === '/.well-known/security.txt' ? SLOW_MS : 50 };
+		});
+		const { startWebPosture } = await import('../src/tools/scan/web-posture');
+		vi.useFakeTimers();
+		const { value: section } = await settleUnderFakeTime(startWebPosture(DOMAIN, { deadlineMs: SECTION_DEADLINE_MS }).section, 10, 30_000);
+
+		const redirects = redirectResult(section);
+		expect(redirects.metadata).toMatchObject({
+			apex: { http: { end: 'final' }, https: { end: 'final' } },
+			www: { http: { end: 'final' }, https: { end: 'final' } },
+		});
+		expect(redirects.findings.some((f) => f.metadata?.errorKind === 'chain_interrupted' || f.metadata?.cause === 'deadline')).toBe(false);
+		expect(redirects.checkStatus).not.toBe('timeout');
+		// security.txt waited as long and is held to the same rule: answered (404 -> absent), not a self-inflicted abort.
+		expect(section.results.find((r) => r.category === 'security_txt')?.findings.some((f) => f.metadata?.inconclusive === true)).toBe(false);
+	});
+
+	it('a follow-up hop that refuses the connection ends the chain as a network failure, not a deadline', async () => {
+		withRules((url) => (url === 'https://example.com/landing' ? { fail: new TypeError('fetch failed') } : undefined), {
+			httpRedirectTo: 'https://example.com/landing',
+		});
+		const { startWebPosture } = await import('../src/tools/scan/web-posture');
+		const section = await startWebPosture(DOMAIN, { deadlineMs: SECTION_DEADLINE_MS }).section;
+
+		const finding = redirectResult(section).findings.find((f) => f.title === 'Redirect chain not fully assessed (apex)');
+		expect(finding?.detail).toContain('failed with a network or TLS error');
+		expect(finding?.detail).not.toContain('time limit');
+		expect(finding?.metadata).toMatchObject({ inconclusive: true, errorKind: 'chain_interrupted', cause: 'network' });
+		expect(redirectResult(section).metadata).toMatchObject({ apex: { http: { end: 'interrupted' } } });
+	});
+
+	it('the section deadline firing mid-walk is "not assessed within the time limit", never the target failing', async () => {
+		timeoutSignalsOnFakeClock();
+		const site = installSite({ httpRedirectTo: 'https://example.com/landing' });
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = urlOf(input);
+			if (url === 'https://example.com/landing') return hangUntilAborted(init?.signal);
+			return site(input, init);
+		}) as typeof fetch;
+		const { startWebPosture } = await import('../src/tools/scan/web-posture');
+		vi.useFakeTimers();
+		const { value: section } = await settleUnderFakeTime(startWebPosture(DOMAIN, { deadlineMs: 1_000 }).section, 10, 30_000);
+
+		const redirects = redirectResult(section);
+		const detail = redirects.findings.map((f) => f.detail).join('\n');
+		expect(detail).toContain('time limit');
+		expect(detail).not.toMatch(/failed|could not be fetched/);
+		expect(redirects.findings.every((f) => f.severity === 'info' && f.metadata?.missingControl === undefined)).toBe(true);
+	});
+});
+
 describe('scan_domain webPosture — cert_posture from BV_CERTSTREAM /cert-meta', () => {
 	it('maps a CN-only issuer ("R11") to Let\'s Encrypt and compares it with CAA', async () => {
 		installSite();
@@ -479,6 +575,9 @@ describe('scan_domain webPosture — fetch routing', () => {
 		expect(fetched).toContain('http://example.com/');
 		expect(fetched.some((url) => url.startsWith('http://evil.example.net'))).toBe(false);
 		expect(webResult(result, 'http_redirect')).toBeDefined();
+		// The refused hop reads as our guard's refusal, never as the target failing (SQ-489).
+		const interrupted = webResult(result, 'http_redirect')?.findings.find((f) => f.metadata?.errorKind === 'request_refused');
+		expect(interrupted?.detail).toContain("outbound-request guard refused the URL");
 		// hstspreload.org was reached (through safeFetch), so the section did not abstain wholesale.
 		expect(fetched.some((url) => url.startsWith('https://hstspreload.org/api/v2/status'))).toBe(true);
 	});
