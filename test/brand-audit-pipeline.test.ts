@@ -36,7 +36,7 @@ function discoveryResult(seedDomain: string, candidates: string[]): CheckResult 
 	};
 }
 
-function tieredEmptyDiscoveryResult(seedDomain: string): CheckResult {
+function tieredEmptyDiscoveryResult(seedDomain: string, tierOverrides: Record<string, unknown> = {}): CheckResult {
 	return {
 		category: 'brand_discovery',
 		passed: true,
@@ -59,6 +59,7 @@ function tieredEmptyDiscoveryResult(seedDomain: string): CheckResult {
 							tier3FallbackTriggered: 0,
 							tier1Freshness: { overallStaleness: 'fresh' },
 							optOutsFiltered: 0,
+							...tierOverrides,
 						},
 					},
 				},
@@ -666,6 +667,27 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 			tier1Status: 'ok',
 			tier1Freshness: { overallStaleness: 'fresh' },
 		});
+	});
+
+	it('carries a well-formed tier1 degraded reason into the audit tiers block and drops a malformed one', async () => {
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+		const run = async (reason: unknown) => {
+			const discovery = tieredEmptyDiscoveryResult('example.com', { tier1Status: 'degraded', tier1DegradedReason: reason });
+			const result = await runBrandAuditPipeline(
+				'example.com',
+				{ env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'tiered' } },
+				{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery) as never, checkRdapLookup },
+			);
+			return result.findings.find((f) => f.metadata?.summary === true)?.metadata?.tiers as Record<string, unknown> | undefined;
+		};
+
+		const ok = await run('http_503:optout_service_unavailable');
+		expect(ok?.tier1Status).toBe('degraded');
+		expect(ok?.tier1DegradedReason).toBe('http_503:optout_service_unavailable');
+
+		const malformed = await run('Lookup failed for victim.example');
+		expect(malformed?.tier1Status).toBe('degraded');
+		expect(malformed).not.toHaveProperty('tier1DegradedReason');
 	});
 
 	it('stamps scoreAlertContext only on impersonationSurface findings whose tier-4 observation carries a string alertType and transition', async () => {
