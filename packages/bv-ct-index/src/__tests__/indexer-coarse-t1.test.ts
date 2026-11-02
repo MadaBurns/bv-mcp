@@ -71,7 +71,8 @@ function wrap<T extends object>(target: T, method: string, spy: (call: () => Pro
 /** Runs the cron at `nowMs` with `limits`, then every job it enqueued, metering the jobs' R2 puts and D1 writes. */
 async function planAndDrain(env: TestEnv, nowMs: number, limits: PlanLimits): Promise<{ jobs: CompactionJob[] } & Metered> {
 	const before = env.queue.sent.length;
-	await runCompactionCron(env, nowMs, limits);
+	// Exercise coarse output/rewrite behavior independently of the ordinary minimum-input policy.
+	await runCompactionCron(env, nowMs, limits, true);
 	const jobs = env.queue.sent.slice(before);
 	const metered: Metered = { puts: 0, rowsWritten: 0 };
 	const INDEX = wrap(env.INDEX, 'put', (call) => (metered.puts++, call()));
@@ -163,7 +164,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const cuts = await seedShards(env, base);
 		expect(cuts.length).toBeGreaterThanOrEqual(930);
 		await ingest(env, at(0, 2, 5), seenAgain(base));
-		// 02:32: the window [02:00, 02:15) is due, and nothing else is planned.
+		// Transitional recovery at 02:32 makes this isolated small fixture eligible without planning other tiers.
 		const { jobs, puts, rowsWritten } = await planAndDrain(env, at(0, 2, 32), { ...SEED_LIMITS, maxT1Ranges });
 		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1]]);
 		const jobCuts = jobs[0]!.cuts;
@@ -242,7 +243,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const all = [...base];
 		for (const [mm, tag] of [
 			[5, 'a'],
-			[20, 'b'],
+			[35, 'b'],
 		] as const) {
 			const batch = [...seenAgain(base.filter((_, i) => i % 2 === 0)), ...names(60, tag)];
 			all.push(...batch);
