@@ -24,6 +24,12 @@ describe('handlers/tools split modules load', () => {
 		expect(mod.TOOL_REGISTRY).toBeDefined();
 	});
 
+	it('direct-dispatch loads on its own and exposes dispatchDirectTool', async () => {
+		vi.resetModules();
+		const mod = await import('../src/handlers/direct-dispatch');
+		expect(mod.dispatchDirectTool).toBeDefined();
+	});
+
 	it('tools loads on its own and exposes handleToolsCall', async () => {
 		vi.resetModules();
 		const mod = await import('../src/handlers/tools');

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: TOOL_REGISTRY is one dispatch table; split by tool group only with a functional change
 
 // TOOL_REGISTRY: name -> cache key + execute for the individual check tools, split out of `handlers/tools.ts`.
 
