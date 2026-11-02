@@ -37,7 +37,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   - `src/mcp/execute.ts`: the access log, IP evidence encryption, request telemetry and response builders move into sibling modules.
   - `src/lib/ownership-attribution.ts`: split into `src/lib/ownership/` leaf modules.
 - Internal: the brand-audit deps-parity audit now checks the `brand_audit_single` registry entry on its own, so another tool's identical forwarding line can no longer hide a dropped dependency there. Comments that pointed at moved code now name the new files.
-- dns-checks stays at 1.62.2 and scoring model stays at 1.41.0; scoring rules and weights are unchanged.
+- dns-checks stayed at 1.62.2 and the scoring-model stamp remained 1.41.0. The score-bearing SQ-535 Worker policy is versioned accurately in v3.108.3; scoring weights were unchanged.
 
 ## [3.108.1] - 2026-11-02
 
