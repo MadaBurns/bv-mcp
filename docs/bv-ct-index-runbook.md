@@ -118,8 +118,8 @@ both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` ind
 run of the current generation.
 
 SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. It pairs
-fifteen-minute T0 windows with that quarter-hour expression and originally retained a ten-minute age floor. The statement-clock
-candidate below evaluates a two-minute floor; hourly `:17` recovery, job row/input caps and read-memory budgets remain unchanged.
+fifteen-minute T0 windows with that quarter-hour expression and a ten-minute age floor. The statement-clock/two-minute-floor
+candidate below was rejected; hourly `:17` recovery, job row/input caps and read-memory budgets remain unchanged.
 A five-minute paired cadence was evaluated but did not meet the
 all-success latency gate, so it is not retained. Reader preparation and codec improvements remain independent of cadence.
 
@@ -131,20 +131,27 @@ peak gate with **2/28 HTTP 503 responses and p95 1594.84 ms**, so it is not reta
 fifteen-minute windows and creation-hour grouping. Compaction outputs keep job-time timestamps; downstream grouping rules and the existing
 oversized-single-input exception are unchanged; no latency improvement or cost neutrality is established.
 
-The next #1147 candidate changes only the T0 catalog scheduling clock and age floor. Production `runs.created_at` uses
-canonical UTC D1 statement time after both R2 puts complete, inside the existing atomic catalog batch. This is not an exact
-transaction-commit timestamp: separate statements may straddle a boundary, and database/planner clock skew or a delayed commit
-still requires full recovery. R2 attempt keys, `index_started_at`, `fresh_through` and ledger dates retain invocation time.
-Explicit valid clock overrides remain deterministic; invalid Date instants fail before binding or acknowledgement effects.
-The existing string column and object encoding need no migration.
+The next #1147 experiment changed T0 catalog scheduling from invocation time to canonical UTC D1 statement time after both
+R2 puts, and lowered the age floor from ten to two minutes. It kept phase-zero windows, creation-hour grouping and cadence.
+Statement time was not an exact transaction-commit timestamp; separate statements, clock skew or delayed publication could
+still leave an old window for the next full `:17`. Earlier eligibility did not establish an actual residency bound.
 
-With the original phase-zero windows and a two-minute floor, a canonical tick advances the cutoff one fifteen-minute window
-relative to the prior ten-minute setting. This is eligibility, not a bound on actual residency. A forward change can leave an
-entire old window until the next full `:17`; those rows remain readable. **Before retaining this candidate, prove its actual
-new-version full recovery and drain, then pass the unchanged caller controls and peak gate.** Record D1 clock bounds, catalog
-counts, compaction outputs/GETs/PUTs and queue health. Clock rebucketing and earlier expiry processing can change rewrite costs;
-same-input T0 simulations do not establish cost neutrality or downstream equivalence. Failed acceptance restores the prior
-clock/floor while retaining the independently verified reader limiter.
+The candidate's 2026-11-02 `19:17` UTC full recovery planned **102 jobs over 2,183 inputs**. All 102 unique jobs completed as
+applied; the compact queue drained and the eligible T0 cutoff was clear. Caller refusal and positive controls passed. The
+same-hour `19:31` peak then returned **27/28 HTTP 200 responses**, with **one HTTP 503 `ct_index_timeout`** and nearest-rank
+**p95 1418.15 ms**. The unchanged gate requires every response to succeed as well as p95 below 1500 ms, so this candidate
+was rejected despite its successful recovery and passing p95. No retry or relaxed threshold substitutes for that failed gate.
+
+The prior production version was restored natively and independently verified at 100% on 2026-11-02 at `19:36` UTC; the main
+MCP version and settings were unchanged. Source restoration returns the CT implementation to the pre-experiment baseline
+(`e744fb57`): invocation-time T0 catalog timestamps, a ten-minute floor, UTC-aligned fifteen-minute windows and creation-hour
+grouping. The independent six-slot reader limiter and catalog-retry regressions remain. No schema, object encoding, binding,
+secret or registered trigger change is part of this restoration. Live latency acceptance remains open (#1147).
+
+Recovery and the peak sample do not establish cost neutrality, downstream rewrite equivalence or a guaranteed residency
+improvement. Completion-reported GETs and output descriptors omit failed or retried object operations; daily ledger deltas
+include concurrent ingestion and compaction, and invocation CPU/wall metrics are not invoice totals or causal attribution.
+Record actual queue health and catalog counts separately. The existing lack of an automatic daily spend ceiling remains.
 
 On a forward phase-zero to phase-seven rollout, the first ordinary window can omit a seven-minute fragment from its
 planning range. Those inputs remain readable. **Before retaining a future phase candidate, verify the first new full `:17` catch-up
