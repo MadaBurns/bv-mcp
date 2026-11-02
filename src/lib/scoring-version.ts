@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: ~808 lines are the scoring-model version history; code is ~50 lines
 
 /**
  * Scoring-model version + config fingerprint, stamped into scan output for
