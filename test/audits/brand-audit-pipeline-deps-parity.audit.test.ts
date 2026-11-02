@@ -27,11 +27,13 @@ import { describe, it, expect } from 'vitest';
 import queueSource from '../../src/queue/brand-audit-consumer.ts?raw';
 import toolsSource from '../../src/handlers/tools.ts?raw';
 import registrySource from '../../src/handlers/tool-registry.ts?raw';
+import directDispatchSource from '../../src/handlers/direct-dispatch.ts?raw';
 
-// The brand_audit_single execute closure lives in tool-registry.ts (TOOL_REGISTRY); the
-// discover_brand_domains branch stays in tools.ts. The patterns below are checked against
-// both modules together, so the audit keeps covering the handler side after the split.
-const handlerSource = `${toolsSource}\n${registrySource}`;
+// The brand_audit_single execute closure lives in tool-registry.ts (TOOL_REGISTRY); its tier
+// gates stay in tools.ts, and the arms for tools outside the registry live in
+// direct-dispatch.ts. The patterns below are checked against all three modules together, so the
+// audit keeps covering the handler side after the split.
+const handlerSource = `${toolsSource}\n${registrySource}\n${directDispatchSource}`;
 
 /**
  * Each entry: a field on BrandAuditPipelineDeps that is sourced from a
@@ -121,14 +123,14 @@ const INTENTIONALLY_ASYMMETRIC: Array<{
 ];
 
 describe('brand-audit pipeline deps-surface parity audit', () => {
-	it('census: both handler modules are present in the audited source', () => {
+	it('census: every handler module is present in the audited source', () => {
 		// A missing or empty module would make every handler-side pattern below fail or
 		// (for the intentionally-absent checks) pass vacuously.
 		expect(toolsSource).toContain('export async function handleToolsCall');
+		expect(toolsSource).toContain("name === 'brand_audit_single'");
 		expect(registrySource).toContain('export const TOOL_REGISTRY');
 		expect(registrySource).toContain('brand_audit_single');
-		expect(handlerSource).toContain(toolsSource);
-		expect(handlerSource).toContain(registrySource);
+		expect(directDispatchSource).toContain('export async function dispatchDirectTool');
 	});
 
 	for (const dep of REQUIRED_DEPS) {
