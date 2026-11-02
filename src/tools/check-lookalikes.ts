@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: checkLookalikesCore is one phase-ordered probe (Phase 0 seed NS/MX → Phase 1 NS existence → Phase 2 detail probe → ownership/findings); decompose it with the next functional change, behind characterization tests
 
 /**
  * Lookalike domain detection tool.
