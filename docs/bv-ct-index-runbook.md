@@ -1,22 +1,23 @@
 # bv-ct-index operator runbook
 
-Operator-run. Nothing here is run by CI or by an agent. `bv-ct-index` is the owned Certificate Transparency names index that
+Operator-authorized; nothing here runs automatically in CI. Provisioning scratch resources, changing credentials and activating
+the production binding require explicit approval for those actions. `bv-ct-index` is the owned Certificate Transparency names index that
 replaces the third-party-backed `BV_CERTSTREAM` source for `discover_subdomains` and SAN correlation (US-12). What it is and how it
 works: [`packages/bv-ct-index/README.md`](../packages/bv-ct-index/README.md). The short deploy reference:
 [`packages/bv-ct-index/DEPLOY.md`](../packages/bv-ct-index/DEPLOY.md).
 
 Run every command from the **repo root**. Node 22 and `npm ci` at the root first.
 
-## Where things stand (recorded 2026-10-17)
+## Historical provisioning record (2026-10-17)
 
 The sidecar Worker is **already live**, as a version that predates the query API: version `f8b4a245`, deployed 2026-10-17 06:40Z, `index_started_at`
 `2026-10-17T06:46:25Z`. Resources that exist: R2 bucket `bv-ct-index`, D1 `bv-ct-index-cursors`, queues `bv-ct-index-entries` and
 `bv-ct-index-compact`. It tails forward from that start time, so the index is young (see "Coverage" in the package README).
 
-So on this account the remaining steps are **5 (redeploy with the API), 6, 7 and 8**: health, the benchmark and latency gate,
-then the `BV_CERTSTREAM` repoint. Steps 1 to 4 are the provisioning record, and the recipe for any fresh account.
+This is historical evidence, not a current deployment inventory. Re-read the live deployment, secrets **names**, health and
+consumer service bindings before deciding which steps remain. Steps 1 to 4 are the provisioning record and fresh-account recipe.
 
-`BV_CERTSTREAM` still points at the old service until step 8. Until then bv-mcp behaviour is unchanged.
+The production overlay removed the foreign service binding; absence is expected until step 8. Never restore the old service.
 
 ## 1. Re-verify the name is free (fresh account only)
 
@@ -52,18 +53,19 @@ Two rules differ from older sidecar runbooks:
 Optional: create the R2 bucket with the same location hint the benchmark bucket reported (`bench/RUNBOOK.md` step 1), so the
 benchmark numbers match production.
 
-## 3. The admin key
+## 3. Separate administration from caller-specific reads
 
-One shared secret authenticates bv-mcp to the sidecar. It must be the same value in both places:
+The admin key is for administration. Query routes require the caller's own read key and matching `X-BV-Caller` identity:
 
 | Side     | Name                      | Where                                                              |
 | -------- | ------------------------- | ------------------------------------------------------------------ |
-| sidecar  | `CT_INDEX_ADMIN_KEY`      | Worker `bv-ct-index` secret                                        |
-| bv-mcp   | `BV_CERTSTREAM_ADMIN_KEY` | bv-mcp secret (bv-mcp falls back to `BV_INTERNAL_DEV_KEY` if unset) |
+| sidecar administration | `CT_INDEX_ADMIN_KEY` | Worker `bv-ct-index` secret; never use for query acceptance |
+| sidecar bv-mcp reads | `CT_INDEX_KEY_BV_MCP` | Dedicated read secret on Worker `bv-ct-index` |
+| bv-mcp reads | `BV_CERTSTREAM_ADMIN_KEY` | Same dedicated read value; legacy slot name does not grant admin authority |
 
-Keep the value in your password manager first and never echo it. If you still hold the value bv-mcp's `BV_CERTSTREAM_ADMIN_KEY`
-already has, reuse it: then step 8 changes no secret and rollback is a pure binding flip. If you generate a new value, the old
-service needs the old key back on rollback, so keep the old one too.
+Keep values in approved private storage and never echo them. Do not assume an existing MCP secret has the right read authority.
+Validate a successful read with `X-BV-Caller: bv-mcp` and a rejected read with a different caller before activation. Provision or
+rotate the paired read key only as an explicitly authorized action; retain a rollback plan before changing either slot.
 
 **On a first deploy of a NEW Worker, `wrangler secret put` fails** ("This Worker does not exist yet, so secrets cannot be set in
 advance", measured on the 2026-10-17 first deploy). Pass the secret to the deploy instead, from a file outside the repo (this keeps
@@ -81,9 +83,8 @@ rm -f "$HOME/ct-index-first-deploy.env"
 are listed explicitly because `npm run deploy:ct-index -- <flag>` would hand the flag to the last command in a chain, and running
 the inner `npm run deploy -- <flag>` yourself is unambiguous.)
 
-**Later rotations** can use `printf %s "$NEW_KEY" | npx wrangler secret put CT_INDEX_ADMIN_KEY --name bv-ct-index`, followed by
-the same value into bv-mcp (step 8). Rotate both sides back to back: a mismatch makes every `/enumerate` call 401, and bv-mcp then
-falls through to crt.sh.
+An admin-key rotation changes only the sidecar's admin slot. A bv-mcp read-key rotation changes `CT_INDEX_KEY_BV_MCP` and the
+legacy-named MCP slot together (step 8). A mismatch rejects reads and forces fallback. Preserve all unrelated secrets on deploy.
 
 ## 4. First deploy (fresh account only)
 
@@ -96,7 +97,7 @@ checks; prefer deploying the sidecar.
 
 ## 5. Redeploy with the API
 
-The live version `f8b4a245` predates the query API. From a clean checkout at the tag or commit you intend to ship, with
+If the live version predates the intended query API, deploy from a clean checkout at the tag or commit you intend to ship, with
 `BV_CT_INDEX_D1_ID` exported. A clean checkout has no `packages/bv-ct-index/.wrangler.migrate.jsonc` (it is gitignored), so the
 first command regenerates it from the tracked test config, the same `sed` that `npm run provision:ct-index` prints in step 2.
 Regenerate it on every redeploy rather than reusing an old copy, so it carries the current triggers and bindings.
@@ -347,15 +348,22 @@ npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-ind
 ```
 
 ```bash
-# Terminal 1 (leave running). .dev.vars is gitignored; delete it afterwards.
-printf 'CT_INDEX_ADMIN_KEY=%s\n' "$CT_INDEX_ADMIN_KEY" > packages/bv-ct-index/.dev.vars
+# Terminal 1 (leave running). Use a private preview-only read key, never the production admin key.
+# In the gitignored remote-dev config, include CT_INDEX_KEY_BV_MCP in secrets.required:
+# Wrangler filters .dev.vars / --env-file entries to the names declared there.
+# These ephemeral preview credentials authenticate only the remote-dev instance; they rotate no production secrets.
+umask 077
+printf 'CT_INDEX_ADMIN_KEY=%s\nCT_INDEX_KEY_BV_MCP=%s\n' "$CT_PREVIEW_ADMIN_KEY" "$CT_PREVIEW_READ_KEY" > packages/bv-ct-index/.dev.vars
 npx wrangler dev --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc
 
 # Terminal 2, between :30 and :45: 7 domains x 4 samples
+umask 077
+mkdir -p .dev
+printf 'authorization: Bearer %s\nX-BV-Caller: bv-mcp\n' "$CT_PREVIEW_READ_KEY" > .dev/ct-index-preview.headers
 for d in govt.nz amazonaws.com microsoft.com blackveilsecurity.com example.co.nz spacex.com x.com; do
   for i in 1 2 3 4; do
     curl -sS -o /dev/null -w "%{time_total} %{http_code} $d\n" \
-      -H "authorization: Bearer $CT_INDEX_ADMIN_KEY" "http://localhost:8787/enumerate?domain=$d"
+      -H @.dev/ct-index-preview.headers "http://localhost:8787/enumerate?domain=$d"
   done
 done | tee latency.txt
 sort -n latency.txt | awk '{ t[NR] = $1 } END { i = int(0.95 * NR); if (i < 0.95 * NR) i++; print "n=" NR " p95_s=" t[i] }'
@@ -366,6 +374,13 @@ Pass: **p95 under 1.5 s and every status 200, `amazonaws.com` and `microsoft.com
 (operator ruling, 2026-10-26). A `503` with `ct_index_timeout` means the API's own 1500 ms budget tripped, which is a failure of this
 gate. The laptop round trip is inside the number, so it is conservative. The in-Worker figure is the one the
 benchmark reports. Record the result with `story_log` on US-12.
+
+Before counting samples, prove a known-domain read returns 200 with the matching caller and 401 with a different caller.
+Authentication/setup failures are not latency samples. Keep failed acceptance runs as well as the rerun; a diagnostic route
+outside the API deadline is not an acceptance substitute. Remove preview credentials and stop the remote-dev session afterward.
+
+Doctrine-dependent handling follows bv-cc `2e2fc95` (2026-10-28): verify ownership, preserve secrets, obtain explicit approval
+for provisioning and activation, and keep unavailable coverage explicit.
 
 This remote-dev path was written without being run against the account (the documentation ticket had no account access). If `wrangler dev
 --remote` refuses this config (for example over the queue bindings), do not work around it by giving the sidecar a `workers.dev`

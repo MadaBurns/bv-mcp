@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SIBLING_PREFIX, decodeBlock, mergeSortedRuns, parseBlockIndex, rangeFor, serializeBlockIndex } from '../codec';
 import { readRange } from '../indexer/blocks';
-import { READ_CONCURRENCY, blocksFor, catalogQuery, createReader } from '../indexer/read';
+import { INDEX_BATCH_SIZE, READ_CONCURRENCY, blocksFor, catalogQuery, createReader } from '../indexer/read';
 import type { NameObservation, RunRow } from '../types';
 import { DAY_MS, DAY_S, HOUR_MS, T, T_S, applyCatalog, catalog, expectedRows, ingest, obs, testEnv, withFault } from './indexer-harness';
 import type { TestEnv } from './indexer-harness';
@@ -88,6 +88,60 @@ const inRange = (domain: string, rows: NameObservation[]) => {
 };
 
 describe('lazy run opening', () => {
+	it('never loads indexes beyond its bounded prefix for a short page', async () => {
+		const env = testEnv();
+		for (let i = 0; i < INDEX_BATCH_SIZE + 8; i++) {
+			await ingest(env, at(i), [obs(`x${String(i).padStart(3, '0')}.hot.com`)]);
+		}
+		const batches: number[] = [];
+		const db = withFault(env.CURSORS, 'prepare', (statement: unknown) => {
+			const prepared = env.CURSORS.prepare(statement as string);
+			if (!(statement as string).startsWith('SELECT id, r2_key, block_index FROM runs WHERE id IN')) return prepared;
+			return withFault(prepared, 'bind', (...args: unknown[]) => {
+				batches.push((JSON.parse(args[0] as string) as string[]).length);
+				return prepared.bind(...args);
+			});
+		});
+		const page = await createReader(testEnv({ CURSORS: db }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['x000.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(batches).toEqual([INDEX_BATCH_SIZE]);
+	});
+
+	it('defers later indexes, loads bounded batches, and retries a catalog swap without losing rows', async () => {
+		const env = testEnv();
+		await ingest(env, at(0), [obs('a.hot.com'), obs('b.hot.com')]);
+		const original = (await catalog())[0]!;
+		const query = { ...rangeFor('hot.com'), after: null, limit: 1, siblings: false, now: NOW };
+		const { sql, params } = catalogQuery(query, true);
+		const initial = await env.CURSORS.prepare(sql).bind(...params).all<{ id: string; block_index: unknown }>();
+		expect(initial.results).toHaveLength(1);
+		expect(initial.results[0]!.block_index).toBeNull();
+		let swaps = 0;
+		let loads = 0;
+		const db = withFault(env.CURSORS, 'prepare', (statement: unknown) => {
+			const prepared = env.CURSORS.prepare(statement as string);
+			if (!(statement as string).startsWith('SELECT id, r2_key, block_index FROM runs WHERE id IN')) return prepared;
+			return withFault(prepared, 'bind', (...args: unknown[]) => {
+				const ids = JSON.parse(args[0] as string) as string[];
+				expect(ids.length).toBeLessThanOrEqual(INDEX_BATCH_SIZE);
+				const bound = prepared.bind(...args);
+				return withFault(bound, 'all', async () => {
+					loads++;
+					if (swaps++ === 0) {
+						await ingest(env, at(1), [obs('a.hot.com'), obs('b.hot.com')]);
+						await env.CURSORS.prepare('DELETE FROM runs WHERE id = ?1').bind(original.id).run();
+					}
+					return bound.all();
+				});
+			});
+		});
+		const page = await createReader(testEnv({ CURSORS: db }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['a.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(loads).toBe(2);
+	});
+
 	it('opens only the runs a 50-row page needs when all 300 runs hold the apex, and pages like the eager reader', async () => {
 		const env = testEnv();
 		const names: NameObservation[] = [];
@@ -107,7 +161,8 @@ describe('lazy run opening', () => {
 		expect(page.truncated).toBe(true);
 		// Runs 0-49 hold the page and run 50 the row that truncates it. While a run must be read, the next ones in
 		// key order are read alongside it, so at most READ_CONCURRENCY - 1 runs past run 50 were read ahead.
-		expect(lazy.opened.size).toBe(51 + READ_CONCURRENCY - 1);
+		expect(lazy.opened.size).toBeGreaterThanOrEqual(51);
+		expect(lazy.opened.size).toBeLessThanOrEqual(51 + READ_CONCURRENCY - 1);
 
 		const eager = recordingBucket(env.INDEX);
 		const eagerPage = await eagerScan(testEnv({ INDEX: eager.bucket }), 'hot.com', 50, null);

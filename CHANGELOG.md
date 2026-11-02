@@ -8,6 +8,13 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.2] - 2026-11-02
+
+### Fixed
+
+- Owned CT index reads defer later runs' block indexes in bounded batches, preserving merge order, cursor behavior and catalog-swap retries while reducing metadata transferred for short pages. API deadlines and R2 read concurrency remain unchanged. Production consumer activation still requires both runbook gates.
+- Private assessment runners adopt the reporting contract with bounded captures, immutable diagnostic receipts and withholding after newly observed rate limits. Offline reconciliation preserves the original receipts; capped sitemap reviews remain explicitly deferred.
+
 ## [3.108.1] - 2026-11-02
 
 ### Fixed
