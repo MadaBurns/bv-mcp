@@ -2,7 +2,7 @@
 //
 // Audit test: every binding-backed field on BrandAuditPipelineDeps that has an
 // env-sourced runtime option must be forwarded by BOTH call sites — the
-// synchronous brand_audit_single execute closure in src/handlers/tools.ts AND
+// synchronous brand_audit_single execute closure in src/handlers/tool-registry.ts AND
 // the queue-consumer's processBrandAuditMessage in src/queue/brand-audit-consumer.ts.
 //
 // History: two latent forwarding gaps shipped silently because no test pinned
@@ -25,7 +25,15 @@
 
 import { describe, it, expect } from 'vitest';
 import queueSource from '../../src/queue/brand-audit-consumer.ts?raw';
-import handlerSource from '../../src/handlers/tools.ts?raw';
+import toolsSource from '../../src/handlers/tools.ts?raw';
+import registrySource from '../../src/handlers/tool-registry.ts?raw';
+import directDispatchSource from '../../src/handlers/direct-dispatch.ts?raw';
+
+// The brand_audit_single execute closure lives in tool-registry.ts (TOOL_REGISTRY); its tier
+// gates stay in tools.ts, and the arms for tools outside the registry live in
+// direct-dispatch.ts. The patterns below are checked against all three modules together, so the
+// audit keeps covering the handler side after the split.
+const handlerSource = `${toolsSource}\n${registrySource}\n${directDispatchSource}`;
 
 /**
  * Each entry: a field on BrandAuditPipelineDeps that is sourced from a
@@ -35,7 +43,7 @@ import handlerSource from '../../src/handlers/tools.ts?raw';
  * processBrandAuditMessage where the dep is conditionally spread into
  * singleDeps. The shape is `...(deps.<name> ? { <name>: deps.<name> } : {}),`.
  *
- * `handlerPattern` matches the line in src/handlers/tools.ts's brand_audit_single
+ * `handlerPattern` matches the line in src/handlers/tool-registry.ts's brand_audit_single
  * execute closure where the dep is passed into brandAuditSingle's deps arg.
  * Two shapes accepted because the closure mixes both styles:
  *   - `<name>: ro?.<name>` (unconditional pass-through, used for certstream/whois)
@@ -115,6 +123,16 @@ const INTENTIONALLY_ASYMMETRIC: Array<{
 ];
 
 describe('brand-audit pipeline deps-surface parity audit', () => {
+	it('census: every handler module is present in the audited source', () => {
+		// A missing or empty module would make every handler-side pattern below fail or
+		// (for the intentionally-absent checks) pass vacuously.
+		expect(toolsSource).toContain('export async function handleToolsCall');
+		expect(toolsSource).toContain("name === 'brand_audit_single'");
+		expect(registrySource).toContain('export const TOOL_REGISTRY');
+		expect(registrySource).toContain('brand_audit_single');
+		expect(directDispatchSource).toContain('export async function dispatchDirectTool');
+	});
+
 	for (const dep of REQUIRED_DEPS) {
 		it(`forwards \`${dep.name}\` from the queue consumer's singleDeps construction`, () => {
 			expect(queueSource).toMatch(dep.queuePattern);

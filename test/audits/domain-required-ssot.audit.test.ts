@@ -1,9 +1,27 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import handlersSource from '../../src/handlers/tools.ts?raw';
 import { toolRequiresDomain } from '../../src/handlers/tools';
 import { TOOLS } from '../../src/schemas/tool-definitions';
+
+// The domain-required derivation lives in tool-sets.ts; tools.ts re-exports it, tool-registry.ts
+// holds the registry and direct-dispatch.ts holds the arms for tools outside it. A legacy
+// hand-maintained list must be absent from every module of the split, not just the original file.
+const HANDLER_MODULES = [
+	'../../src/handlers/tools.ts',
+	'../../src/handlers/tool-sets.ts',
+	'../../src/handlers/tool-registry.ts',
+	'../../src/handlers/direct-dispatch.ts',
+];
+const handlerSources = import.meta.glob(
+	[
+		'../../src/handlers/tools.ts',
+		'../../src/handlers/tool-sets.ts',
+		'../../src/handlers/tool-registry.ts',
+		'../../src/handlers/direct-dispatch.ts',
+	],
+	{ query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
 
 function schemaRequiresDomain(tool: (typeof TOOLS)[number]): boolean {
 	const required = tool.inputSchema.required;
@@ -11,8 +29,19 @@ function schemaRequiresDomain(tool: (typeof TOOLS)[number]): boolean {
 }
 
 describe('domain-required SSOT audit', () => {
+	it('census: the glob sees every handler module, so the absence check below is not vacuous', () => {
+		expect(Object.keys(handlerSources).sort()).toEqual([...HANDLER_MODULES].sort());
+		for (const [path, source] of Object.entries(handlerSources)) {
+			expect(source.length, `${path} resolved to an empty source`).toBeGreaterThan(0);
+		}
+		expect(handlerSources['../../src/handlers/tool-sets.ts']).toContain('DOMAIN_REQUIRED_TOOLS');
+		expect(handlerSources['../../src/handlers/direct-dispatch.ts']).toContain('export async function dispatchDirectTool');
+	});
+
 	it('derives domain-required behavior from tool schemas', () => {
-		expect(handlersSource).not.toContain('DOMAIN_OPTIONAL_TOOLS');
+		for (const [path, source] of Object.entries(handlerSources)) {
+			expect(source, `${path} must not reintroduce a hand-maintained DOMAIN_OPTIONAL_TOOLS list`).not.toContain('DOMAIN_OPTIONAL_TOOLS');
+		}
 
 		for (const tool of TOOLS) {
 			expect(toolRequiresDomain(tool.name)).toBe(schemaRequiresDomain(tool));
