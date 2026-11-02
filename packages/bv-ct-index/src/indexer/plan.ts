@@ -4,7 +4,7 @@
  * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick plans T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
  * first takes the weekly generation snapshot (generations.ts) and also plans the other tiers:
  *
- * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
+ * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~2 min ago, in jobs of at most
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
  *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
  *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
@@ -65,7 +65,7 @@ export const FULL_PLAN_MINUTE = 17;
 /** T0 runs are compacted in windows of this length... */
 export const T0_WINDOW_MS = 15 * 60_000;
 /** ...once the window has been over for this long. */
-export const T0_MIN_AGE_MS = 10 * 60_000;
+export const T0_MIN_AGE_MS = 2 * 60_000;
 export const GROUP_SHARDS = 8;
 export const GROUP_MAX_SHARDS = 24;
 /** The sibling keyspace is ['s\x00', 's\x01'): no output run spans its edges, so every run holds one kind. */

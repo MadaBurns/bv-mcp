@@ -11,7 +11,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 ### Fixed
 
 - Owned CT index read/decode preparation shares its six-slot bound across the initial catalog scan and its single retry, including abandoned reads (#1147).
-- Restore the prior UTC-aligned T0 planner and creation-hour grouping after the phase/coalescing experiment failed the peak gate with 2/28 HTTP 503 responses and p95 1594.84 ms. The quarter-hour trigger, fifteen-minute window, ten-minute age floor and existing limits remain unchanged. Live latency acceptance remains open (#1147).
+- Reject the phase/coalescing experiment after its peak gate failed with 2/28 HTTP 503 responses and p95 1594.84 ms; restore UTC-aligned T0 windows and creation-hour grouping. The quarter-hour trigger, fifteen-minute width and existing limits are preserved. Live latency acceptance remains open (#1147).
+- Timestamp new T0 catalog rows at D1 statement execution after both object writes, while preserving invocation-based object keys, freshness metadata and ledger dates. A two-minute scheduling-floor candidate keeps the original calendar windows, grouping and cadence; retention still requires measured recovery, cost and peak-latency acceptance (#1147).
 
 ## [3.108.3] - 2026-11-02
 

@@ -162,8 +162,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const env = testEnv();
 		const cuts = await seedShards(env, base);
 		expect(cuts.length).toBeGreaterThanOrEqual(930);
-		await ingest(env, at(0, 2, 5), seenAgain(base));
-		// 02:32: the window [02:00, 02:15) is due, and nothing else is planned.
+		await ingest(env, at(0, 2, 20), seenAgain(base));
+		// 02:32: the window [02:15, 02:30) is due, and nothing else is planned.
 		const { jobs, puts, rowsWritten } = await planAndDrain(env, at(0, 2, 32), { ...SEED_LIMITS, maxT1Ranges });
 		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1]]);
 		const jobCuts = jobs[0]!.cuts;
@@ -208,7 +208,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(update.some((row) => row.key === boundary.key)).toBe(true);
 		const reader = createReader(env, () => at(0, 2, 32));
 		const lookups = [boundary.name, base.find((row) => inEmpty(row.key))!.name, base.find((row) => row.key < boundary.key)!.name];
-		await ingest(env, at(0, 2, 5), update);
+		await ingest(env, at(0, 2, 20), update);
 		const before = await Promise.all(lookups.map((name) => reader.scan(name, { limit: 100 })));
 
 		const { jobs } = await planAndDrain(env, at(0, 2, 32), limits);
@@ -241,8 +241,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const limits = { ...SEED_LIMITS, maxT1Ranges: 8 };
 		const all = [...base];
 		for (const [mm, tag] of [
-			[5, 'a'],
-			[20, 'b'],
+			[20, 'a'],
+			[35, 'b'],
 		] as const) {
 			const batch = [...seenAgain(base.filter((_, i) => i % 2 === 0)), ...names(60, tag)];
 			all.push(...batch);
@@ -278,7 +278,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		// One filter entry per row ('com\x01apex<i>'), all in one coarse range: no T3 shards, so only the fixed cuts.
 		const count = KEY_FILTER_MAX_ENTRIES + 500;
 		const rows = Array.from({ length: count }, (_, i) => obs(`n${i}.apex${i}.com`)).sort(byKey);
-		await ingest(env, at(0, 2, 5), rows);
+		await ingest(env, at(0, 2, 20), rows);
 		await planAndDrain(env, at(0, 2, 32), SEED_LIMITS);
 		const { results } = await env.CURSORS.prepare(
 			'SELECT rows, key_filter IS NOT NULL AS filtered FROM runs WHERE tier = 1 ORDER BY key_lo',
@@ -327,7 +327,7 @@ describe('the T1 roll-up of a coarse range wider than a job (SQ-518)', () => {
 			for (const mm of minutes) {
 				const batch = [...seenAgain(base.filter((_, i) => (i + hour + mm) % 3 === 0)), ...names(30, `h${hour}m${mm}x`)];
 				all.push(...batch);
-				await ingest(env, at(0, hour, mm), batch);
+				await ingest(env, at(0, hour, mm + 15), batch);
 				await planAndDrain(env, at(0, hour, mm + 27), limits);
 			}
 			const { results: before } = await env.CURSORS.prepare(

@@ -47,14 +47,14 @@ async function readAll(env: TestEnv, nowMs: number): Promise<NameObservation[]> 
 describe('T0 -> T1 every 15 minutes', () => {
 	it('accepts the previous fast :32 tick as older-window T0-only recovery during trigger propagation', async () => {
 		const env = testEnv();
-		await ingest(env, at(0, 0, 5), batchAt('old-a'));
+		await ingest(env, at(0, 0, 20), batchAt('old-a'));
 		await cronAndDrain(env, at(0, 0, 32));
-		await ingest(env, at(0, 0, 20), batchAt('old-b'));
+		await ingest(env, at(0, 0, 35), batchAt('old-b'));
 		await cronAndDrain(env, at(0, 0, 47));
 		const oldT1 = (await catalog()).filter((run) => run.tier === 1).map((run) => run.id);
 		expect(oldT1).toHaveLength(2);
 		await ingest(env, at(0, 0, 50), batchAt('missed-previous-hour'));
-		for (const minute of [1, 6, 11, 25]) await ingest(env, at(0, 1, minute), batchAt(`transition-${minute}`));
+		for (const minute of [1, 6, 11, 40]) await ingest(env, at(0, 1, minute), batchAt(`transition-${minute}`));
 		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
 			.bind(new Date(at(-8, 0, 0)).toISOString()).run();
 		const before = env.queue.sent.length;
@@ -70,15 +70,15 @@ describe('T0 -> T1 every 15 minutes', () => {
 		expect(lines.some((line) => line.event === 'ct_cron_unmatched')).toBe(false);
 		for (const job of jobs) expect(await runCompactionJob(env, job, undefined, at(0, 1, 32))).toBe('applied');
 		expect((await catalog()).filter((run) => run.tier === 0).map((run) => run.r2_key)).toEqual([
-			expect.stringContaining(`/${at(0, 1, 25)}-`),
+			expect.stringContaining(`/${at(0, 1, 40)}-`),
 		]);
 	});
 
 	it('keeps previous fast :17 full recovery, all-tier planning, and the due generation snapshot', async () => {
 		const env = testEnv();
-		await ingest(env, at(0, 0, 5), batchAt('old-a'));
+		await ingest(env, at(0, 0, 20), batchAt('old-a'));
 		await cronAndDrain(env, at(0, 0, 32));
-		await ingest(env, at(0, 0, 20), batchAt('old-b'));
+		await ingest(env, at(0, 0, 35), batchAt('old-b'));
 		await cronAndDrain(env, at(0, 0, 47));
 		for (const minute of [45, 55]) await ingest(env, at(0, 0, minute), batchAt(`missed-${minute}`));
 		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
@@ -92,11 +92,11 @@ describe('T0 -> T1 every 15 minutes', () => {
 		expect(await env.CURSORS.prepare("SELECT v FROM meta WHERE k = 'current_generation'").first('v')).toBe('2');
 	});
 
-	it('restores the paired quarter-hour schedule and window with the same age floor', () => {
+	it('keeps the paired quarter-hour schedule and window with a two-minute age floor', () => {
 		expect(COMPACTION_CRON).toBe('2,17,32,47 * * * *');
 		expect(TRANSITIONAL_COMPACTION_CRON).toBe('2,7,12,17,22,27,32,37,42,47,52,57 * * * *');
 		expect(T0_WINDOW_MS).toBe(15 * 60_000);
-		expect(T0_MIN_AGE_MS).toBe(10 * 60_000);
+		expect(T0_MIN_AGE_MS).toBe(2 * 60_000);
 	});
 
 	it('plans only the window that just came due between :17 ticks, and every tier and any older T0 run at :17', async () => {
@@ -107,40 +107,37 @@ describe('T0 -> T1 every 15 minutes', () => {
 			names.push(...batch);
 			await ingest(env, nowMs, batch);
 		};
-		await add(at(0, 1, 5), 'a');
-		await add(at(0, 1, 20), 'b');
-		await add(at(0, 1, 35), 'c');
-		await add(at(0, 1, 50), 'd');
+		await add(at(0, 1, 20), 'a');
+		await add(at(0, 1, 35), 'b');
+		await add(at(0, 1, 50), 'c');
+		await add(at(0, 2, 5), 'd');
 		const t0 = new Map((await catalog()).map((run) => [run.r2_key.split('/')[2]!.split('-')[0]!, run.id]));
 		const id = (nowMs: number) => t0.get(String(nowMs))!;
 
-		// 01:32: the window [01:00, 01:15) has been over for 10 min, and nothing else is planned.
+		// 01:32: the window [01:15, 01:30) has been over for 2 min, and nothing else is planned.
 		const first = await cronAndDrain(env, at(0, 1, 32));
-		expect(first.jobs.map((job) => [job.tier, job.inputs])).toEqual([[1, [id(at(0, 1, 5))]]]);
+		expect(first.jobs.map((job) => [job.tier, job.inputs])).toEqual([[1, [id(at(0, 1, 20))]]]);
 		expect(first.outcomes).toEqual(['applied']);
 		expect(first.snapshot).toBeNull();
 		// A late T0 run in a window already planned waits for the next :17 tick.
-		await add(at(0, 1, 10), 'late');
-		const late = (await catalog()).find((run) => run.tier === 0 && run.r2_key.includes(`/${at(0, 1, 10)}-`))!.id;
-		expect((await cronAndDrain(env, at(0, 1, 47))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 20))]]);
-		expect((await cronAndDrain(env, at(0, 2, 2))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 35))]]);
+		await add(at(0, 1, 25), 'late');
+		const late = (await catalog()).find((run) => run.tier === 0 && run.r2_key.includes(`/${at(0, 1, 25)}-`))!.id;
+		expect((await cronAndDrain(env, at(0, 1, 47))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 35))]]);
+		expect((await cronAndDrain(env, at(0, 2, 2))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 50))]]);
 
-		// 02:17 plans the window [01:45, 02:00) with the late run, and rolls up the T1 runs of 01:32 and 01:47 (the
+		// 02:17 plans [02:00, 02:15) and the late prior-hour run as separate hour groups, and rolls up 01:32/01:47 (the
 		// 02:02 one belongs to this hour). Every T1 run here spans the name range below the sibling keyspace.
 		const full = await cronAndDrain(env, at(0, 2, 17));
-		expect(full.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([
-			[1, 2],
-			[1, 2],
-		]);
-		expect(full.jobs[0]!.inputs).toEqual([id(at(0, 1, 50)), late].sort());
-		expect(full.outcomes).toEqual(['applied', 'applied']);
-		expect((await catalog()).map((run) => run.tier)).toEqual([1, 1, 1]);
+		expect(full.jobs.map((job) => [job.tier, job.inputs.length]).sort()).toEqual([[1, 1], [1, 1], [1, 2]]);
+		expect(full.jobs.map((job) => job.inputs)).toEqual(expect.arrayContaining([[id(at(0, 2, 5))], [late]]));
+		expect(full.outcomes).toEqual(['applied', 'applied', 'applied']);
+		expect((await catalog()).map((run) => run.tier)).toEqual([1, 1, 1, 1]);
 		expect(await readAll(env, at(0, 2, 17))).toEqual(expectedRows(names, Math.floor(at(0, 2, 17) / 1000)));
 
-		// 03:17 rolls the three into one; a tick between :17s with no T0 plans nothing.
+		// 03:17 rolls the four into one; a tick between :17s with no T0 plans nothing.
 		expect((await cronAndDrain(env, at(0, 3, 2))).jobs).toEqual([]);
 		const rolled = await cronAndDrain(env, at(0, 3, 17));
-		expect(rolled.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 3]]);
+		expect(rolled.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 4]]);
 		expect((await catalog()).map((run) => run.tier)).toEqual([1]);
 		expect((await cronAndDrain(env, at(0, 4, 17))).jobs).toEqual([]);
 		expect(await readAll(env, at(0, 4, 17))).toEqual(expectedRows(names, Math.floor(at(0, 4, 17) / 1000)));
@@ -153,14 +150,14 @@ describe('T0 -> T1 every 15 minutes', () => {
 
 	it('does not roll up the key-disjoint parts of one job, nor T1 runs from this hour', async () => {
 		const env = testEnv();
-		await ingest(env, at(0, 1, 5), batchAt('a', 300));
-		await ingest(env, at(0, 1, 6), batchAt('b', 300));
+		await ingest(env, at(0, 1, 20), batchAt('a', 300));
+		await ingest(env, at(0, 1, 21), batchAt('b', 300));
 		expect((await cronAndDrain(env, at(0, 1, 32), SMALL)).outcomes).toEqual(['applied']);
 		const parts = (await catalog()).filter((run) => run.tier === 1);
 		expect(parts.length).toBeGreaterThan(2);
 		expect((await cronAndDrain(env, at(0, 2, 17), SMALL)).jobs).toEqual([]);
 
-		await ingest(env, at(0, 2, 20), batchAt('c', 300));
+		await ingest(env, at(0, 2, 35), batchAt('c', 300));
 		expect((await cronAndDrain(env, at(0, 2, 47), SMALL)).outcomes).toEqual(['applied']);
 		// 02:47's output belongs to hour 02, so the 03:17 roll-up takes it with the 01:32 parts it overlaps.
 		const next = await cronAndDrain(env, at(0, 3, 17), SMALL);
