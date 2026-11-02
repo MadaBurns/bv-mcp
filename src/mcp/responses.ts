@@ -153,7 +153,7 @@ export function buildGatedToolResponse(
  * Reject a PUBLIC `/mcp` tools/call for an INTERNAL-ONLY tool (e.g. map_registrar_products).
  *
  * Returns the SAME unknown-tool result a nonexistent tool name produces via the
- * dispatch path (handlers/tools.ts `default` case) — a JSON-RPC success wrapping a
+ * dispatch path (handlers/direct-dispatch.ts `default` case) — a JSON-RPC success wrapping a
  * countless tool-error result (no tool count that would hint a hidden tool) — so the
  * tool's existence is NOT leaked on the public surface and no 403/UPGRADE_REQUIRED is
  * emitted. executeMcpRequest is the public path only; the internal path
@@ -169,7 +169,7 @@ export function buildInternalOnlyToolResponse(
 	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	// Byte-identical to the genuine unknown-tool wire payload (same countless message
-	// as handlers/tools.ts), so an internal-only tool is indistinguishable from a
+	// as handlers/direct-dispatch.ts), so an internal-only tool is indistinguishable from a
 	// nonexistent one — and neither response reveals a tool count that would hint a
 	// hidden tool exists (public tools/list = TOOLS.length − INTERNAL_ONLY_TOOLS.size).
 	const payload = jsonRpcSuccess(id, {

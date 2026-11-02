@@ -36,6 +36,21 @@ import directDispatchSource from '../../src/handlers/direct-dispatch.ts?raw';
 const handlerSource = `${toolsSource}\n${registrySource}\n${directDispatchSource}`;
 
 /**
+ * The brand_audit_single TOOL_REGISTRY entry alone, from its `\tbrand_audit_single: {` key to the next
+ * top-level entry. The forwarding checks run against this slice, not the whole handler source:
+ * `certstream: ro?.certstream` also appears in other registry entries (discover_brand_domains and an
+ * osint tool), so a whole-source match let a dropped forward in brand_audit_single pass unnoticed.
+ */
+function registryEntry(source: string, tool: string): string {
+	const start = source.indexOf(`\n\t${tool}: {`);
+	if (start === -1) return '';
+	const rest = source.slice(start + 1);
+	const next = rest.slice(1).search(/\n\t[a-z_]+: \{/);
+	return next === -1 ? rest : rest.slice(0, next + 1);
+}
+const brandAuditSingleEntry = registryEntry(registrySource, 'brand_audit_single');
+
+/**
  * Each entry: a field on BrandAuditPipelineDeps that is sourced from a
  * Cloudflare binding / env variable at request or queue dispatch time.
  *
@@ -133,18 +148,27 @@ describe('brand-audit pipeline deps-surface parity audit', () => {
 		expect(directDispatchSource).toContain('export async function dispatchDirectTool');
 	});
 
+	it('census: the brand_audit_single entry slice is found and is only that entry', () => {
+		// An empty slice would fail every forwarding check; a slice that ran past the entry would
+		// let another tool's forwarding satisfy them again.
+		expect(brandAuditSingleEntry.startsWith('\tbrand_audit_single: {')).toBe(true);
+		expect(brandAuditSingleEntry).toContain('execute');
+		expect(brandAuditSingleEntry).not.toMatch(/\n\t(discover_brand_domains|osint_[a-z_]+): \{/);
+		expect(brandAuditSingleEntry.length).toBeLessThan(registrySource.length / 4);
+	});
+
 	for (const dep of REQUIRED_DEPS) {
 		it(`forwards \`${dep.name}\` from the queue consumer's singleDeps construction`, () => {
 			expect(queueSource).toMatch(dep.queuePattern);
 		});
 
 		it(`forwards \`${dep.name}\` from the brand_audit_single handler's deps arg`, () => {
-			expect(handlerSource).toMatch(dep.handlerPattern);
+			expect(brandAuditSingleEntry).toMatch(dep.handlerPattern);
 		});
 	}
 
 	for (const dep of INTENTIONALLY_ASYMMETRIC) {
-		const presentSrc = dep.side === 'handler-only' ? handlerSource : queueSource;
+		const presentSrc = dep.side === 'handler-only' ? brandAuditSingleEntry : queueSource;
 		const absentSrc = dep.absentSourceTag === 'queue' ? queueSource : handlerSource;
 		const presentLabel = dep.side === 'handler-only' ? 'handler' : 'queue consumer';
 		const absentLabel = dep.absentSourceTag;
