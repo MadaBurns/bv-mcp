@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * The `2,7,12,17,22,27,32,37,42,47,52,57 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
+ * The `2,17,32,47 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
  * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick plans T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
  * first takes the weekly generation snapshot (generations.ts) and also plans the other tiers:
  *
- * - T0 -> T1: the T0 runs of the 5-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
+ * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
  *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
  *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
@@ -58,12 +58,12 @@ import type { CompactionJob } from './compact';
 import { maybeSnapshot } from './generations';
 
 /** T0 -> T1 is planned at every tick; everything else only at FULL_PLAN_MINUTE (SQ-402). */
-export const COMPACTION_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
+export const COMPACTION_CRON = '2,17,32,47 * * * *';
 /** Accepted during cron propagation only; never registered alongside the canonical schedule. */
-export const LEGACY_COMPACTION_CRON = '2,17,32,47 * * * *';
+export const TRANSITIONAL_COMPACTION_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
 export const FULL_PLAN_MINUTE = 17;
 /** T0 runs are compacted in windows of this length... */
-export const T0_WINDOW_MS = 5 * 60_000;
+export const T0_WINDOW_MS = 15 * 60_000;
 /** ...once the window has been over for this long. */
 export const T0_MIN_AGE_MS = 10 * 60_000;
 export const GROUP_SHARDS = 8;
@@ -364,7 +364,7 @@ const createdIn = (run: PlanRun, from: number, to: number) => {
  * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
  * not `full` plans only the T0 window that has just come due; a full tick also plans every older T0 run (one whose
  * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` widens only T0 eligibility
- * during legacy-cron propagation; it never enables the other tiers or snapshots.
+ * during previous-fast-cron propagation; it never enables the other tiers or snapshots.
  */
 export async function planCompactions(
 	db: D1Database,

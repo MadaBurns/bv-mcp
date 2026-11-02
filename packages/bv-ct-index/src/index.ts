@@ -10,7 +10,7 @@
 import { handleApiRequest } from './api/handler';
 import type { CompactionJob } from './indexer/compact';
 import { runCompactionBatch } from './indexer/compact';
-import { COMPACTION_CRON, LEGACY_COMPACTION_CRON, runCompactionCron } from './indexer/plan';
+import { COMPACTION_CRON, TRANSITIONAL_COMPACTION_CRON, runCompactionCron } from './indexer/plan';
 import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
@@ -92,11 +92,11 @@ export default {
 				break;
 			}
 			case COMPACTION_CRON:
-			case LEGACY_COMPACTION_CRON: {
-				const legacy = controller.cron === LEGACY_COMPACTION_CRON;
-				if (legacy) console.log(JSON.stringify({ event: 'ct_compaction_transition', cron: controller.cron }));
+			case TRANSITIONAL_COMPACTION_CRON: {
+				const transitional = controller.cron === TRANSITIONAL_COMPACTION_CRON;
+				if (transitional) console.log(JSON.stringify({ event: 'ct_compaction_transition', cron: controller.cron }));
 				// Logged so a tail shows what was enqueued: an `ok` cron with no line says nothing about the plan.
-				const { killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime, undefined, legacy);
+				const { killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime, undefined, transitional);
 				const tiers = [1, 2, 3].map((tier) => jobs.filter((job) => job.tier === tier).length);
 				const inputs = jobs.reduce((sum, job) => sum + job.inputs.length, 0);
 				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs }));

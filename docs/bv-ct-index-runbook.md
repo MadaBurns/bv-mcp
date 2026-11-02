@@ -117,16 +117,21 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. The current code
-pairs five-minute T0 windows with `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`; the ten-minute minimum age, hourly `:17` recovery,
-job row/input caps and read-memory budgets remain unchanged. Deploying this cadence changes recurring work and requires explicit
-operator approval. Change the window and cron together: a five-minute cron with fifteen-minute windows repeats work.
-The handler also recognizes the prior quarter-hour expression during propagation and recovers older eligible T0 windows;
-only an actual `:17` tick enables snapshots and the other tiers. Only the new expression is registered in configuration.
+SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. The retained default
+pairs fifteen-minute T0 windows with that quarter-hour expression; the ten-minute minimum age, hourly `:17` recovery,
+job row/input caps and read-memory budgets remain unchanged. A five-minute paired cadence was evaluated but did not meet the
+all-success latency gate, so it is not retained. Reader preparation and codec improvements remain independent of cadence.
 
-Check the first new five-minute tick after deploy: one `ct_compaction_plan` line
-whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
-then stay near 180 (about 32 min of ingest) instead of climbing past 400 after each :17.
+For rollback from the five-minute pilot, restore the actual quarter-hour trigger while dual-compatible code is still serving,
+allow fifteen minutes for trigger propagation, then deploy the matching fifteen-minute window. The handler also recognizes the
+prior five-minute expression during propagation and recovers older eligible T0 windows; only an actual `:17` tick enables
+snapshots and the other tiers. Only the quarter-hour expression is registered in configuration. Preserve the current caller read
+credential and any separately authorized main service binding: an older version may carry obsolete secret metadata, so deploy
+the matched source with current secrets inherited rather than blindly promoting an old artifact.
+
+Check the first quarter-hour tick after deploy: one `ct_compaction_plan` line whose `tiers` is `[n,0,0]` away from `:17`, and a
+`ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Measure actual T0 residency and queue age separately;
+a planning window is not a guarantee that all resident T0 runs are younger than that window.
 
 From SQ-491 on, a T0 -> T1 job closes its output at a coarse subset of the cuts (`coarseCuts` in `plan.ts`): at most 128
 coarse ranges (`MAX_T1_RANGES`), down from about 940 cut ranges. Its `ct_compaction_job_done` line shows about one output per
@@ -351,8 +356,7 @@ crons or consume the queues.
 **Run it at peak tier 0, between :30 and :45 past the hour**, and late in the UTC day if you can: that is when a read opens the most
 runs (every live tier-0 run, plus each range's live tier-1 runs: the last roll-up's output, and the runs stamped :02, :17 and :32 of
 this hour, which the roll-up leaves alone until the next :17). A run just after :17, or just after a drain,
-measures the easy case and does not count. With five-minute compaction, choose a pre-tick peak such as `:31`, `:36` or `:41`,
-finishing before the following `:32`, `:37` or `:42` tick. After a cadence transition, allow the first `:17` catch-up plan to drain
+measures the easy case and does not count. For the retained quarter-hour cadence, choose a pre-tick peak such as `:31`, finishing before the following `:32` tick. After a cadence transition, allow the first `:17` catch-up plan to drain
 older windows before measuring the new steady state. Record the tier-0 count with the result:
 
 ```bash
