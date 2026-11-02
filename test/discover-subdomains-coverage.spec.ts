@@ -917,6 +917,49 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 	describe('a partial owned index never suppresses the fallbacks through the cache (M1/M2)', () => {
 		const CACHE_KEY = 'cache:subdomains-lkg:example.com';
 
+		it('retains a stale owned index sample when both direct providers fail, with partial coverage and no fresh cache', async () => {
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const { kv, store } = makeKv();
+			const coverage = ownedCoverage(400, { freshThrough: daysAgo(1) });
+			const binding = enumerateBinding(['api.example.com'], coverage);
+			const asked = directBackends({
+				crtsh: () => Response.json({}, { status: 503 }),
+				certspotter: () => Response.json({}, { status: 503 }),
+			});
+
+			const result = await discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch }, undefined, {
+				cacheKv: kv,
+				deadlineMs: Date.now() + 24_000,
+			});
+
+			expect([...new Set(asked)]).toEqual(['crtsh', 'certspotter']);
+			expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+			expect(result.totalSubdomains).toBe(1);
+			expect(result.countBasis).toBe('floor');
+			expect(result.partial).toBe(true);
+			expect(result.sourceUnavailable).toBeFalsy();
+			expect(result.cached).toBeFalsy();
+			expect(store.has(CACHE_KEY)).toBe(false);
+			expect(result).not.toHaveProperty('enumerationComplete');
+			expect(certstreamSource(result)).toMatchObject({
+				outcome: 'ok',
+				contributed: true,
+				indexExhausted: false,
+				historyWindow: 'forward-from',
+				freshThrough: coverage.freshThrough,
+			});
+			expect(result.coverage?.degraded).toBe(true);
+			expect(result.coverage?.caveat).toContain(`fresh through ${coverage.freshThrough}`);
+			expect(result.coverage?.caveat).toContain('its answer is partial');
+			for (const source of ['crtsh', 'certspotter']) {
+				expect(result.coverage?.perSource.find((attempt) => attempt.source === source)).toMatchObject({
+					outcome: 'http_error',
+					httpStatus: 503,
+					contributed: false,
+				});
+			}
+		});
+
 		it('M1: a young index with BOTH direct sources down leaves NO fresh cache entry, and the next call asks crt.sh again', async () => {
 			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 			const { kv, store } = makeKv();

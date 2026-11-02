@@ -806,8 +806,16 @@
  *   `cert_posture`) behind the NON_SCORING_CATEGORIES engine filter; they carry zero weight and a result
  *   in one is byte-identical to its absence in the score. No weight, tier, grade band,
  *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.42.0 — Worker `scan_domain` downgrades unverifiable/revoked DKIM findings to info when both
+ *   no inbound mail and an SPF no-send policy are observed (SQ-535, 2026-11-02). SCORE-BEARING,
+ *   direction UP where DKIM has nonzero weight: report-level N/A does not remove the category from
+ *   canonical scoring. A synthetic real-check/post-processing fixture auto-detects `non_mail` and
+ *   moves DKIM 75 → 100 and overall 81/B → 90/A. Default `web_only` DKIM weight is zero, so that
+ *   profile's overall score is unchanged. Usable keys and domains that receive or authorize mail
+ *   keep their existing findings. No package check, weight, tier, grade band or profile detector
+ *   changes; dns-checks shipping inputs and its independent package/corpus versions are unchanged.
  */
-export const SCORING_MODEL_VERSION = '1.41.0';
+export const SCORING_MODEL_VERSION = '1.42.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

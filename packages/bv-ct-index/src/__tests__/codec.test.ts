@@ -411,6 +411,23 @@ describe('TSV escaping', () => {
 		expect(await decodeBlock(run.bytes)).toEqual([row, obs('y.example.com')]);
 	});
 
+	it('preserves empty and Unicode plain fields alongside escaped fields', async () => {
+		const rows = [
+			obs('a.example.test', { issuer: '' }),
+			obs('b.example.test', { issuer: 'Plain issuer Ω 证书 🔒' }),
+			obs('c.example.test', { issuer: nasty }),
+			obs('d.example.test', { issuer: 'Another plain issuer' }),
+		];
+		const run = await encodeRun(rows);
+		expect(await decodeBlock(run.bytes)).toEqual(rows);
+	});
+
+	it('still rejects a dangling backslash after a plain Unicode field', async () => {
+		const row = obs('x.example.test');
+		const line = [row.key, row.name, row.apex, row.firstSeen, row.notAfter, 'Plain Ω issuer' + String.fromCharCode(92), '0'].join('\t');
+		await expect(decodeBlock(await deflateText(`${line}\n`))).rejects.toThrow(RangeError);
+	});
+
 	it('refuses a row with an unknown escape or the wrong column count', async () => {
 		await expect(decodeBlock(await deflateText('com\x01example\texample.com\texample.com\t1\t2\tbad\\q\t0\n'))).rejects.toThrow(RangeError);
 		await expect(decodeBlock(await deflateText('com\x01example\texample.com\t1\n'))).rejects.toThrow(RangeError);

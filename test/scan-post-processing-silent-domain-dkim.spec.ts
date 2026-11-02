@@ -17,7 +17,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkDKIM } from '@blackveil/dns-checks';
-import { type CheckResult, buildCheckResult, createFinding } from '../src/lib/scoring';
+import {
+	type CheckResult,
+	buildCheckResult,
+	createFinding,
+	computeProfileAwareScanScore,
+	computeScanScore,
+	detectDomainContext,
+} from '../src/lib/scoring';
 
 /** Every selector resolves to a revoked key, as a wildcard `*._domainkey` does. */
 async function revokedEverywhereDkim(): Promise<CheckResult> {
@@ -64,6 +71,30 @@ describe('SQ-535 silent domain — revoked DKIM keys are not a HIGH', () => {
 		const revoked = dkim!.findings.find((f) => f.title === 'DKIM keys revoked')!;
 		expect(revoked.severity).toBe('info');
 		expect(revoked.detail).toContain('neither sends nor receives mail');
+	});
+
+	it('preserves evidence for the score-bearing Worker policy: real post-processing can change a non_mail grade despite report-level N/A', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+		const original = [noSendSpf(), nullMx(), await revokedEverywhereDkim()];
+		const beforeContext = detectDomainContext(original);
+		const before = computeScanScore(original, beforeContext);
+		const adjusted = await applyScanPostProcessing('example.com', original);
+		const afterContext = detectDomainContext(adjusted);
+		const after = computeScanScore(adjusted, afterContext);
+
+		// This is scan_domain's post-processing -> context detection -> canonical score sequence, with real metadata.
+		expect(beforeContext.profile).toBe('non_mail');
+		expect(afterContext.profile).toBe('non_mail');
+		expect(original.find((result) => result.category === 'dkim')!.score).toBe(75);
+		expect(adjusted.find((result) => result.category === 'dkim')!.score).toBe(100);
+		expect({ overall: before.overall, grade: before.grade }).toEqual({ overall: 81, grade: 'B' });
+		expect({ overall: after.overall, grade: after.grade }).toEqual({ overall: 90, grade: 'A' });
+
+		// Zero-weight web_only remains the score-neutral control; severity still changes through the same helper.
+		const webBefore = computeProfileAwareScanScore(original, { profile: 'web_only' });
+		const webAfter = computeProfileAwareScanScore(adjusted, { profile: 'web_only' });
+		expect(webAfter.score.overall).toBe(webBefore.score.overall);
+		expect(webAfter.score.grade).toBe(webBefore.score.grade);
 	});
 
 	it('a single revoked selector on a silent domain is downgraded too', async () => {
