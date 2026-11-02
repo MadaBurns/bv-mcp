@@ -21,7 +21,7 @@ config) and [`cloudflare.config.ts`](./cloudflare.config.ts) (deploy config); an
 (cron * * * * *) fan-out ──> queue bv-ct-index-tail ──> one tailer shard per message
 CT logs ──> tailer shards ──> queue bv-ct-index-entries ──> indexer ──> R2 sorted runs (tier 0) + D1 catalog
                                                                                           │
-                     (cron 2,17,32,47 * * * *) planner ──> queue bv-ct-index-compact ──> compaction jobs (tier 0 → 1 → 2 → 3)
+                     (cron 2,7,12,17,22,27,32,37,42,47,52,57 * * * *) planner ──> queue bv-ct-index-compact ──> compaction jobs
                                                                                           │
 bv-mcp  ──(service binding BV_CERTSTREAM)──> fetch: /enumerate /sans /cert-meta ──> IndexReader (D1 range select + R2 range GETs)
 ```

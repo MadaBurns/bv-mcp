@@ -117,8 +117,12 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-From SQ-402 on, the deploy also moves the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`: T0 -> T1 is planned every
-15 minutes and everything else at :17 as before. Check it on the first :32 or :47 after the deploy: one `ct_compaction_plan` line
+SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. The current code
+pairs five-minute T0 windows with `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`; the ten-minute minimum age, hourly `:17` recovery,
+job row/input caps and read-memory budgets remain unchanged. Deploying this cadence changes recurring work and requires explicit
+operator approval. Change the window and cron together: a five-minute cron with fifteen-minute windows repeats work.
+
+Check the first new five-minute tick after deploy: one `ct_compaction_plan` line
 whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
 then stay near 180 (about 32 min of ingest) instead of climbing past 400 after each :17.
 
@@ -345,7 +349,9 @@ crons or consume the queues.
 **Run it at peak tier 0, between :30 and :45 past the hour**, and late in the UTC day if you can: that is when a read opens the most
 runs (every live tier-0 run, plus each range's live tier-1 runs: the last roll-up's output, and the runs stamped :02, :17 and :32 of
 this hour, which the roll-up leaves alone until the next :17). A run just after :17, or just after a drain,
-measures the easy case and does not count. Record the tier-0 count with the result:
+measures the easy case and does not count. With five-minute compaction, choose a pre-tick peak such as `:31`, `:36` or `:41`,
+finishing before the following `:32`, `:37` or `:42` tick. After a cadence transition, allow the first `:17` catch-up plan to drain
+older windows before measuring the new steady state. Record the tier-0 count with the result:
 
 ```bash
 npx wrangler d1 execute bv-ct-index-cursors --remote --config packages/bv-ct-index/.wrangler.migrate.jsonc \
@@ -425,9 +431,10 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   indexing.
 - **Sidecar deploy**: `npx wrangler rollback --name bv-ct-index`. **Exception:** once `CERT_DETAILS` has been on (section 9b),
   never roll back to a version older than the one that added it. Older versions cannot read the stored details.
-  **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The planner cron stays
-  `2,17,32,47 * * * *`, and the old code's `case '17 * * * *'` matches none of those four firings, so all compaction stops.
-  After any rollback, watch `wrangler tail` across a :02, :17, :32 or :47 firing: the sign that compaction stopped is that NO
+  **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The schedule can retain the newer
+  trigger string, while dispatch matches the exact `COMPACTION_CRON` string compiled into the code. A mismatch
+  disables **all** compaction ticks, including `:17`, while ingestion continues. Restore matching code, T0 window length and
+  actual trigger string together. After any rollback, watch `wrangler tail` across a configured firing: the sign that compaction stopped is that NO
   `ct_compaction_plan` line appears. Do not rely on a `ct_cron_unmatched` line: the current code logs one for any schedule it
   has no case for, but a rolled-back version older than SQ-412 logs nothing at all. After a rollback past SQ-402, re-deploy
   the triggers from that version's commit, or roll forward instead.

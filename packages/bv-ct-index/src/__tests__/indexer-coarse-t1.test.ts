@@ -163,8 +163,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const cuts = await seedShards(env, base);
 		expect(cuts.length).toBeGreaterThanOrEqual(930);
 		await ingest(env, at(0, 2, 5), seenAgain(base));
-		// 02:32: the window [02:00, 02:15) is due, and nothing else is planned.
-		const { jobs, puts, rowsWritten } = await planAndDrain(env, at(0, 2, 32), { ...SEED_LIMITS, maxT1Ranges });
+		// 02:22: the window [02:05, 02:10) is due, and nothing else is planned.
+		const { jobs, puts, rowsWritten } = await planAndDrain(env, at(0, 2, 22), { ...SEED_LIMITS, maxT1Ranges });
 		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1]]);
 		const jobCuts = jobs[0]!.cuts;
 		expect(jobCuts).toEqual(coarseCuts(cuts, maxT1Ranges));
@@ -172,7 +172,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		for (const run of t1) expect(withinOneRange(run, jobCuts), run.r2_key).toBe(true);
 		// One run per range that holds rows; the sibling keyspace holds none.
 		expect(t1.length).toBe(new Set(base.map((row) => rangeOf(jobCuts, row.key))).size);
-		return { cuts: cuts.length, runs: t1.length, puts, rowsWritten, reads: await readAll(env, at(0, 2, 32)) };
+		return { cuts: cuts.length, runs: t1.length, puts, rowsWritten, reads: await readAll(env, at(0, 2, 22)) };
 	}
 
 	it('closes one T0 -> T1 job over ~940 cuts into at most MAX_T1_RANGES runs, and reads match the full-cut path', async ({ task }) => {
@@ -188,7 +188,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(coarse.rowsWritten).toBeGreaterThan(0);
 		expect(coarse.rowsWritten).toBeLessThan(full.rowsWritten / 4);
 		expect(coarse.reads).toEqual(full.reads);
-		expect(coarse.reads).toEqual(expectedRows([...base, ...seenAgain(base)], Math.floor(at(0, 2, 32) / 1000)));
+		expect(coarse.reads).toEqual(expectedRows([...base, ...seenAgain(base)], Math.floor(at(0, 2, 22) / 1000)));
 	});
 
 	it('puts a key at a coarse cut in the range it opens, writes no run for a coarse range without T0 rows, and lookups match', async () => {
@@ -206,12 +206,12 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const inEmpty = (key: string) => key >= emptyLo && key < emptyHi;
 		const update = seenAgain(base.filter((row) => !inEmpty(row.key)));
 		expect(update.some((row) => row.key === boundary.key)).toBe(true);
-		const reader = createReader(env, () => at(0, 2, 32));
+		const reader = createReader(env, () => at(0, 2, 22));
 		const lookups = [boundary.name, base.find((row) => inEmpty(row.key))!.name, base.find((row) => row.key < boundary.key)!.name];
 		await ingest(env, at(0, 2, 5), update);
 		const before = await Promise.all(lookups.map((name) => reader.scan(name, { limit: 100 })));
 
-		const { jobs } = await planAndDrain(env, at(0, 2, 32), limits);
+		const { jobs } = await planAndDrain(env, at(0, 2, 22), limits);
 		expect(jobs.map((job) => job.cuts)).toEqual([coarse]);
 		const t1 = await runsOf(1);
 		expect(t1.length).toBeLessThanOrEqual(limits.maxT1Ranges);
@@ -220,7 +220,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(t1.every((run) => withinOneRange(run, coarse) && run.rows > 0)).toBe(true);
 		expect(t1.some((run) => inEmpty(run.key_lo) || inEmpty(run.key_hi))).toBe(false);
 		expect(t1.find((run) => run.key_lo <= boundary.key && boundary.key <= run.key_hi)!.key_lo).toBe(boundary.key);
-		const now = Math.floor(at(0, 2, 32) / 1000);
+		const now = Math.floor(at(0, 2, 22) / 1000);
 		const after = await Promise.all(lookups.map((name) => reader.scan(name, { limit: 100 })));
 		expect(after).toEqual(before);
 		expect(after.map((page) => page.names)).toEqual(
@@ -231,7 +231,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 				),
 			),
 		);
-		expect(await readAll(env, at(0, 2, 32))).toEqual(expectedRows([...base, ...update], now));
+		expect(await readAll(env, at(0, 2, 22))).toEqual(expectedRows([...base, ...update], now));
 	});
 
 	it('the roll-up and T1 -> T2 write coarse T1 runs back at every cut, and T2 needs no re-cut', async () => {
@@ -248,8 +248,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 			all.push(...batch);
 			await ingest(env, at(0, 2, mm), batch);
 		}
-		await planAndDrain(env, at(0, 2, 32), limits);
-		await planAndDrain(env, at(0, 2, 47), limits);
+		await planAndDrain(env, at(0, 2, 22), limits);
+		await planAndDrain(env, at(0, 2, 37), limits);
 		const coarseRuns = await runsOf(1);
 		expect(coarseRuns.some((run) => !withinOneRange(run, cuts))).toBe(true);
 
@@ -279,7 +279,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const count = KEY_FILTER_MAX_ENTRIES + 500;
 		const rows = Array.from({ length: count }, (_, i) => obs(`n${i}.apex${i}.com`)).sort(byKey);
 		await ingest(env, at(0, 2, 5), rows);
-		await planAndDrain(env, at(0, 2, 32), SEED_LIMITS);
+		await planAndDrain(env, at(0, 2, 22), SEED_LIMITS);
 		const { results } = await env.CURSORS.prepare(
 			'SELECT rows, key_filter IS NOT NULL AS filtered FROM runs WHERE tier = 1 ORDER BY key_lo',
 		).all<{ rows: number; filtered: number }>();
@@ -287,10 +287,10 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 			[KEY_FILTER_MAX_ENTRIES, 1],
 			[500, 1],
 		]);
-		const reader = createReader(env, () => at(0, 2, 32));
+		const reader = createReader(env, () => at(0, 2, 22));
 		for (const i of [0, count - 1]) {
 			const row = rows.find((candidate) => candidate.name === `n${i}.apex${i}.com`)!;
-			expect((await reader.scan(`apex${i}.com`, { limit: 10 })).names).toEqual(expectedRows([row], Math.floor(at(0, 2, 32) / 1000)));
+			expect((await reader.scan(`apex${i}.com`, { limit: 10 })).names).toEqual(expectedRows([row], Math.floor(at(0, 2, 22) / 1000)));
 		}
 	});
 });
@@ -328,7 +328,7 @@ describe('the T1 roll-up of a coarse range wider than a job (SQ-518)', () => {
 				const batch = [...seenAgain(base.filter((_, i) => (i + hour + mm) % 3 === 0)), ...names(30, `h${hour}m${mm}x`)];
 				all.push(...batch);
 				await ingest(env, at(0, hour, mm), batch);
-				await planAndDrain(env, at(0, hour, mm + 27), limits);
+				await planAndDrain(env, at(0, hour, mm + 17), limits);
 			}
 			const { results: before } = await env.CURSORS.prepare(
 				'SELECT id, generation, tier, key_lo, key_hi, r2_key, rows, created_at FROM runs WHERE tier = 1',

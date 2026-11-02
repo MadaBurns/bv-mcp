@@ -15,6 +15,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 - Owned CT index reads defer later runs' block indexes in bounded batches and prepare required blocks in completion order, preserving merge order, cursor behavior and catalog-swap retries while reducing metadata transfer and head-of-line stalls. API deadlines and six-slot read/decode bounds remain unchanged. Production consumer activation still requires both runbook gates.
 - Private assessment runners adopt the reporting contract with bounded captures, immutable diagnostic receipts and withholding after newly observed rate limits. Offline reconciliation preserves the original receipts; capped sitemap reviews remain explicitly deferred.
 - CT compaction benchmarking can measure the exact production windowed reader and shared memory budgets; serial-block and whole-object comparisons remain separate diagnostics with their original receipts. Production acceptance thresholds are unchanged.
+- CT compaction pairs five-minute T0 windows with five-minute planning, preserving the ten-minute age floor, hourly catch-up and existing job/memory caps. Deployment requires explicit approval for the recurring-work change and live queue/latency acceptance before consumer activation. Plain codec fields avoid unnecessary escape-regex work without changing validation or format.
 
 ## [3.108.1] - 2026-11-02
 

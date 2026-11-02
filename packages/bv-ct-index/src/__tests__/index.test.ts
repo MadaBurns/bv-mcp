@@ -20,12 +20,12 @@ describe('bv-ct-index Worker', () => {
 		expect(typeof worker.queue).toBe('function');
 	});
 
-	it('logs ct_cron_unmatched, and plans nothing, for a schedule no case matches', async () => {
+	it.each(['17 * * * *', '2,17,32,47 * * * *'])('logs ct_cron_unmatched for an unmatched or rolled-back cron %s', async (cron) => {
 		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 		try {
-			await worker.scheduled({ cron: '17 * * * *', scheduledTime: Date.now(), noRetry: () => undefined }, testEnv());
+			await worker.scheduled({ cron, scheduledTime: Date.now(), noRetry: () => undefined }, testEnv());
 			const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
-			expect(lines).toEqual([{ event: 'ct_cron_unmatched', cron: '17 * * * *' }]);
+			expect(lines).toEqual([{ event: 'ct_cron_unmatched', cron }]);
 		} finally {
 			log.mockRestore();
 		}
