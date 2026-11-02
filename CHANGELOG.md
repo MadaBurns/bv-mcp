@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- Owned CT index read/decode preparation shares its six-slot bound across the initial catalog scan and its single retry, including abandoned reads. T0 compaction keeps fifteen-minute windows, the quarter-hour cadence and ten-minute age floor, aligns the window phase to seven minutes, and coalesces eligible inputs across UTC creation hours under existing caps. Forward rollout requires a verified first full `:17` catch-up and drain. Offline regressions pass; latency and cost improvements remain unproven, and live acceptance is pending after the retained baseline failed with 2/28 HTTP 503 responses and p95 1573.98 ms (#1147).
+
 ## [3.108.3] - 2026-11-02
 
 ### Fixed
