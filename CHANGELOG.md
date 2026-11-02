@@ -8,11 +8,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.3] - 2026-11-02
+
+### Fixed
+
+- Silent-domain revoked DKIM findings become informational and not applicable. Scoring model 1.42.0 records the score-bearing scan post-processing change: profiles with nonzero DKIM weight can gain score or grade; default web-only scoring is unchanged. Standalone checks and dns-checks 1.62.2 shipping inputs are unchanged.
+- Owned CT index reads defer later runs' block indexes in bounded batches and prepare required blocks in completion order, preserving merge order, cursor behavior and catalog-swap retries while reducing metadata transfer and head-of-line stalls. API deadlines and six-slot read/decode bounds remain unchanged. Production consumer activation still requires both runbook gates.
+- Private assessment runners adopt the reporting contract with bounded captures, immutable diagnostic receipts and withholding after newly observed rate limits. Offline reconciliation preserves the original receipts; capped sitemap reviews remain explicitly deferred.
+- CT compaction benchmarking can measure the exact production windowed reader and shared memory budgets; serial-block and whole-object comparisons remain separate diagnostics with their original receipts. Production acceptance thresholds are unchanged.
+- CT compaction pairs five-minute T0 windows with five-minute planning, preserving the ten-minute age floor, hourly catch-up and existing job/memory caps. The approved production pilot monitors queue health and latency; consumer activation is separately authorized and does not establish latency acceptance. Plain codec fields avoid unnecessary escape-regex work without changing validation or format.
+
+### Changed
+
+- Tool registration and direct dispatch, scan orchestration, MCP telemetry/access logging and ownership attribution are split into focused modules while retaining their existing exports and behavior. Brand-audit dependency parity now checks its own registry entry so an identical forwarding line from another tool cannot mask a missing dependency.
+
 ## [3.108.2] - 2026-11-02
 
 ### Fixed
 
-- `scan_domain`: a domain with a null MX and an SPF policy that authorizes no sender (`v=spf1 -all`) neither sends nor receives mail, so revoking every DKIM key (`v=DKIM1; p=`, often a wildcard `*._domainkey`) is the correct posture for it. The dkim category was already N/A for such a domain, but "DKIM keys revoked" (or a per-selector "Revoked DKIM key") was still listed as HIGH. Those findings are now `info` and marked not applicable. No grade changes, because the category is not scored for these domains. A usable key keeps its rating, including a weak one, and so does a domain that receives mail or authorizes a sender.
+- `scan_domain`: a domain with a null MX and an SPF policy that authorizes no sender (`v=spf1 -all`) neither sends nor receives mail, so revoking every DKIM key (`v=DKIM1; p=`, often a wildcard `*._domainkey`) is the correct posture for it. The dkim category was already N/A for such a domain, but "DKIM keys revoked" (or a per-selector "Revoked DKIM key") was still listed as HIGH. Those findings are now `info` and marked not applicable. Correction recorded in v3.108.3: report-level N/A does not exclude DKIM from canonical scoring, so nonzero-weight profiles can gain score or grade. A usable key keeps its rating, including a weak one, and so does a domain that receives mail or authorizes a sender.
 
 ### Changed
 
@@ -23,7 +37,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   - `src/mcp/execute.ts`: the access log, IP evidence encryption, request telemetry and response builders move into sibling modules.
   - `src/lib/ownership-attribution.ts`: split into `src/lib/ownership/` leaf modules.
 - Internal: the brand-audit deps-parity audit now checks the `brand_audit_single` registry entry on its own, so another tool's identical forwarding line can no longer hide a dropped dependency there. Comments that pointed at moved code now name the new files.
-- dns-checks stays at 1.62.2 and scoring model stays at 1.41.0; scoring rules and weights are unchanged.
+- dns-checks stayed at 1.62.2 and the scoring-model stamp remained 1.41.0. The score-bearing SQ-535 Worker policy is versioned accurately in v3.108.3; scoring weights were unchanged.
 
 ## [3.108.1] - 2026-11-02
 

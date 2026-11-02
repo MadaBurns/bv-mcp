@@ -2,14 +2,15 @@
 /**
  * The read seam (types.ts IndexReader) over the sorted runs of `meta.current_generation`.
  *
- * A scan is ONE D1 query (`catalogQuery`) for the current generation's runs whose [key_lo, key_hi] overlaps the key
- * range and whose key filter admits it, with their block indexes. The runs are then k-way merged across tiers the way
+ * A scan starts with one D1 query (`catalogQuery`) for the current generation's runs whose [key_lo, key_hi] overlaps the key
+ * range and whose key filter admits it, with predecessor block indexes; later indexes load in bounded batches when needed. The runs are then k-way merged across tiers the way
  * `mergeSortedRuns` merges them (rows sharing a key fold in input order, expired rows drop), but lazily (SQ-402): a
  * block's first key bounds every key it holds, so a run's next block is read, with one R2 range GET, only once that
  * bound is at or below the smallest row already read, and the merge stops at `limit` rows plus the one that says the
  * page is truncated. A page therefore reads the runs that hold its rows, not every run the range overlaps (a big apex
  * overlaps thousands of T1 runs). While a run must be read, the next runs in bound order are read alongside it, so up
- * to READ_CONCURRENCY GETs are in flight and runs that hold the same first key are read together.
+ * to READ_CONCURRENCY read/decode preparations are retained. Required preparations finish in completion order, so a slow
+ * first run does not stall the other slots; rows still wait for every lower or equal bound before emitting.
  *
  * Errors: any D1 or R2 fault throws, so the API answers 503 and never an empty page. One exception is retried:
  * a compaction job deletes its input objects right after swapping the catalog, so a scan that read the catalog
@@ -38,6 +39,7 @@ import { MissingRunObjectError, readRange } from './blocks';
 import { CURRENT_GENERATION_SQL, DEFAULT_GENERATION } from './catalog';
 
 export const READ_CONCURRENCY = 6;
+export const INDEX_BATCH_SIZE = 32;
 
 export interface ScanQuery {
 	lo: string;
@@ -50,9 +52,10 @@ export interface ScanQuery {
 }
 
 interface CatalogRun {
+	id: string;
 	r2_key: string;
 	key_lo: string;
-	block_index: ArrayBuffer | ArrayBufferView | number[];
+	block_index: ArrayBuffer | ArrayBufferView | number[] | null;
 }
 
 /**
@@ -97,13 +100,16 @@ interface Source {
 	/** Position among the scan's runs: rows sharing a key fold in this order, as in `mergeSortedRuns`. */
 	readonly input: number;
 	readonly r2Key: string;
-	readonly blocks: readonly BlockIndexEntry[];
+	readonly id: string;
+	blocks: readonly BlockIndexEntry[] | null;
 	/** The next block to read; blocks.length once the run has nothing left in range. */
 	next: number;
 	/** No unread key of the run in range is below this: the scan start or the next block's first key, whichever is higher. */
 	bound: string;
-	/** The GET of block `next`, once started. */
-	read: Promise<Uint8Array> | null;
+	/** The bounded read/decode preparation of block `next`, once started. */
+	read: Promise<RunRow[]> | null;
+	/** A failed preparation remains ordered by its lower bound, but holds no preparation slot. */
+	failure: { error: unknown } | null;
 	/** The rows of the block being merged that are in range, ascending; rows[at] is the run's current row. */
 	rows: RunRow[];
 	at: number;
@@ -153,6 +159,7 @@ class LazyMerge {
 
 	constructor(
 		private readonly bucket: R2Bucket,
+		private readonly db: D1Database,
 		private readonly query: ScanQuery,
 		sources: readonly Source[],
 	) {
@@ -184,28 +191,80 @@ class LazyMerge {
 		return merged;
 	}
 
-	/** Reads the front run's next block, with the next runs in bound order alongside it. */
+	/** Prepares at most six blocks and consumes whichever required preparation finishes first. */
 	private async readFront(): Promise<void> {
-		const front = this.pending[0]!;
+		await this.loadIndexes();
+		const front = this.pending[0];
+		if (front === undefined || front.blocks === null) return;
+		if (front.failure !== null) throw front.failure.error;
 		this.startRead(front);
 		for (const source of this.pending) {
 			if (this.reading >= READ_CONCURRENCY) break;
 			this.startRead(source);
 		}
-		const bytes = await front.read!;
-		this.pending.shift();
+		// Prepare successes out of order; failures wait until their source is the ordered pending front.
+		// Equal lower bounds are all required before emitting; finishing them out of order keeps the slots busy
+		// when the first run is slow, without weakening the merge's <= emission barrier.
+		const bound = this.ready[0] === undefined ? front.bound : rowOf(this.ready[0]).key;
+		const required = this.pending.filter((source) =>
+			source.read !== null && source.bound <= bound && (source.failure === null || source === front),
+		);
+		const completed = await Promise.race(required.map((source) => source.read!.then(
+			(rows) => ({ ok: true as const, source, rows }),
+			(error: unknown) => ({ ok: false as const, source, error }),
+		)));
+		if (!completed.ok) {
+			// A lower-bound read may yet shrink the ready barrier below this failed source. Only the ordered
+			// front is indispensable now; retain later failures until they reach that position.
+			if (completed.source === front) throw completed.error;
+			return;
+		}
+		const { source, rows } = completed;
 		this.reading--;
-		front.read = null;
-		front.next++;
-		front.rows = this.inRange(front, await decodeBlock(bytes));
-		front.at = 0;
-		this.place(front);
+		source.next++;
+		try {
+			source.rows = this.inRange(source, rows);
+		} catch (error) {
+			source.failure = { error };
+			source.read = null;
+			if (source === front) throw error;
+			return;
+		}
+		this.pending.splice(this.pending.indexOf(source), 1);
+		source.read = null;
+		source.at = 0;
+		this.place(source);
+	}
+
+	/** Load a bounded prefix by immutable run ID; a vanished input restarts the catalog scan. */
+	private async loadIndexes(): Promise<void> {
+		if (this.pending[0]?.blocks !== null) return;
+		const deferred = this.pending.slice(0, INDEX_BATCH_SIZE).filter((source) => source.blocks === null);
+		if (deferred.length === 0) return;
+		const { results } = await this.db
+			.prepare('SELECT id, r2_key, block_index FROM runs WHERE id IN (SELECT value FROM json_each(?1))')
+			.bind(JSON.stringify(deferred.map((source) => source.id)))
+			.all<CatalogRun>();
+		const indexes = new Map(results.map((run) => [run.id, run]));
+		for (const source of deferred) {
+			const run = indexes.get(source.id);
+			if (run === undefined || run.r2_key !== source.r2Key || run.block_index === null) throw new MissingRunObjectError(source.r2Key);
+			source.blocks = blocksFor(parseBlockIndex(run.block_index), this.query.after ?? this.query.lo, this.query.hi);
+			if (source.blocks.length === 0) this.pending.splice(this.pending.indexOf(source), 1);
+			else if (source.blocks[0]!.firstKey > source.bound) source.bound = source.blocks[0]!.firstKey;
+		}
+		this.pending.sort((a, b) => (beforeByBound(a, b) ? -1 : beforeByBound(b, a) ? 1 : 0));
 	}
 
 	private startRead(source: Source): void {
-		if (source.read !== null) return;
+		if (source.read !== null || source.blocks === null || source.failure !== null) return;
 		const entry = source.blocks[source.next]!;
-		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length);
+		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length).then(decodeBlock).catch((error: unknown) => {
+			source.failure = { error };
+			source.read = null;
+			this.reading--;
+			throw error;
+		});
 		// A read the merge never reaches (it stopped at `limit`) must not surface as an unhandled rejection.
 		source.read.catch(() => undefined);
 		this.reading++;
@@ -218,7 +277,7 @@ class LazyMerge {
 		for (const row of rows) {
 			if (this.beforeStart(row.key)) continue;
 			if (row.key > this.query.hi) {
-				source.next = source.blocks.length;
+				source.next = source.blocks!.length;
 				break;
 			}
 			assertAscending(source, last, row.key);
@@ -244,8 +303,8 @@ class LazyMerge {
 			return;
 		}
 		source.rows = [];
-		if (source.next >= source.blocks.length) return;
-		source.bound = source.blocks[source.next]!.firstKey;
+		if (source.next >= source.blocks!.length) return;
+		source.bound = source.blocks![source.next]!.firstKey;
 		insertSorted(this.pending, source, beforeByBound);
 	}
 }
@@ -291,13 +350,13 @@ function rangeBound(hi: string): string {
  * [lo, bound), a superset of what the overlap test keeps, so each branch reads index rows of overlapping runs only;
  * runs from before migration 0005 have no split and are read by key_lo.
  */
-export function catalogQuery(query: ScanQuery): { sql: string; params: unknown[] } {
+export function catalogQuery(query: ScanQuery, deferIndexes = false): { sql: string; params: unknown[] } {
 	const bound = rangeBound(query.hi);
 	const filter = filterTerm(query.lo);
 	const current = `generation = ${CURRENT_GENERATION_SQL}`;
 	const turns = [JSON.stringify([...pathSplitKeys(query.lo, 1), query.lo]), JSON.stringify(pathSplitKeys(bound, 0))];
 	return {
-		sql: `SELECT r2_key, key_lo, block_index FROM runs WHERE rowid IN (
+		sql: `SELECT id, r2_key, key_lo, ${deferIndexes ? 'CASE WHEN key_lo <= ?2 THEN block_index ELSE NULL END' : 'block_index'} AS block_index FROM runs WHERE rowid IN (
 				SELECT rowid FROM runs WHERE ${current} AND key_split > ?3 AND key_split <= ?4
 				UNION ALL SELECT rowid FROM runs WHERE ${current} AND key_split IN (SELECT value FROM json_each(?5)) AND key_hi >= ?3
 				UNION ALL SELECT rowid FROM runs WHERE ${current} AND key_split IN (SELECT value FROM json_each(?6)) AND key_lo < ?4
@@ -308,11 +367,11 @@ export function catalogQuery(query: ScanQuery): { sql: string; params: unknown[]
 }
 
 async function scanOnce(env: Env, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
-	const catalogRuns = catalogQuery(query);
+	const catalogRuns = catalogQuery(query, true);
 	const { results } = await env.CURSORS.prepare(catalogRuns.sql)
 		.bind(...catalogRuns.params)
 		.all<CatalogRun>();
-	return readPage(new LazyMerge(env.INDEX, query, sourcesOf(results, query)), query);
+	return readPage(new LazyMerge(env.INDEX, env.CURSORS, query, sourcesOf(results, query)), query);
 }
 
 /** The merge inputs of a scan: each catalog run of the scan's kind with a block that can hold keys in range. */
@@ -329,10 +388,10 @@ function sourceOf(run: CatalogRun, query: ScanQuery, input: number): Source | nu
 	// A run holds one kind only, and name ranges never reach into the sibling keyspace.
 	if (run.key_lo.startsWith(SIBLING_PREFIX) !== query.siblings) return null;
 	const start = query.after ?? query.lo;
-	const blocks = blocksFor(parseBlockIndex(run.block_index), start, query.hi);
-	if (blocks.length === 0) return null;
-	const bound = blocks[0]!.firstKey > start ? blocks[0]!.firstKey : start;
-	return { input, r2Key: run.r2_key, blocks, next: 0, bound, read: null, rows: [], at: 0 };
+	const blocks = run.block_index === null ? null : blocksFor(parseBlockIndex(run.block_index), start, query.hi);
+	if (blocks?.length === 0) return null;
+	const bound = blocks === null ? run.key_lo : blocks[0]!.firstKey > start ? blocks[0]!.firstKey : start;
+	return { input, id: run.id, r2Key: run.r2_key, blocks, next: 0, bound, read: null, failure: null, rows: [], at: 0 };
 }
 
 /** Up to `limit` live rows, and whether another live row follows them. */

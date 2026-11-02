@@ -24,6 +24,8 @@ import {
 	siblingKey,
 	SIBLING_PREFIX,
 } from '../../src/codec';
+import { windowedBlockReader } from '../../src/indexer/blocks';
+import { MAX_WINDOW_BYTES, MIN_WINDOW_BYTES, READ_BUDGET_BYTES } from '../../src/indexer/compact';
 import type { BlockIndexEntry } from '../../src/types';
 import { queryDomain, rng, runObservations } from './synth';
 
@@ -307,7 +309,7 @@ async function query(env: Env, url: URL, request: Request): Promise<Response> {
 async function merge(env: Env, url: URL): Promise<Response> {
 	const inputs = intParam(url, 'inputs', 4, 1, 16);
 	const fetchMode = url.searchParams.get('fetch') ?? 'block';
-	if (fetchMode !== 'block' && fetchMode !== 'object') throw new RangeError('fetch must be block or object');
+	if (fetchMode !== 'block' && fetchMode !== 'object' && fetchMode !== 'window') throw new RangeError('fetch must be block, object or window');
 	const write = url.searchParams.get('write') !== '0';
 	const now = Math.floor(Date.now() / 1000);
 	const started = performance.now();
@@ -322,6 +324,7 @@ async function merge(env: Env, url: URL): Promise<Response> {
 	// Accounted (not measured) bytes held by the inputs: the open compressed block, or the whole object in
 	// fetch=object mode, plus the decoded block at DECODED_ROW_HEAP_BYTES per row.
 	const held = runs.map(() => 0);
+	const windowBytes = Math.min(MAX_WINDOW_BYTES, Math.max(MIN_WINDOW_BYTES, Math.floor(READ_BUDGET_BYTES / runs.length)));
 	let peakInputBytes = 0;
 	let blockReads = 0;
 	const account = (input: number, bytes: number) => {
@@ -334,16 +337,39 @@ async function merge(env: Env, url: URL): Promise<Response> {
 	async function* input(run: CatalogRun, at: number) {
 		const entries = parseBlockIndex(run.block_index);
 		let whole: Uint8Array | undefined;
+		let compressedHeld = 0;
+		let decodedHeld = 0;
+		const bucket = {
+			get: async (key: string, options: R2GetOptions) => {
+				const object = await env.BENCH.get(key, options);
+				if (object === null) return null;
+				return {
+					arrayBuffer: async () => {
+						const bytes = await object.arrayBuffer();
+						// The previous cached window and the newly read window briefly coexist during replacement.
+						account(at, compressedHeld + bytes.byteLength + decodedHeld);
+						compressedHeld = bytes.byteLength;
+						return bytes;
+					},
+				};
+			},
+		} as unknown as R2Bucket;
+		const windowRead = windowedBlockReader(bucket, run.r2_key, entries, windowBytes, () => blockReads++);
 		if (fetchMode === 'object') {
 			const object = await env.BENCH.get(run.r2_key);
 			if (!object) throw new Error(`R2 object missing: ${run.r2_key}`);
 			whole = new Uint8Array(await object.arrayBuffer());
 		}
 		for (const entry of entries) {
-			const bytes = whole ? whole.subarray(entry.offset, entry.offset + entry.length) : await rangeGet(env, run.r2_key, entry);
-			if (!whole) blockReads++;
+			const bytes = whole
+				? whole.subarray(entry.offset, entry.offset + entry.length)
+				: fetchMode === 'window'
+					? await windowRead(entry)
+					: await rangeGet(env, run.r2_key, entry);
+			if (fetchMode === 'block') blockReads++;
 			const rows = await decodeBlock(bytes);
-			account(at, (whole ? whole.byteLength : bytes.byteLength) + rows.length * DECODED_ROW_HEAP_BYTES);
+			decodedHeld = rows.length * DECODED_ROW_HEAP_BYTES;
+			account(at, (whole ? whole.byteLength : fetchMode === 'window' ? compressedHeld : bytes.byteLength) + decodedHeld);
 			yield* rows;
 		}
 		account(at, 0);
@@ -368,6 +394,8 @@ async function merge(env: Env, url: URL): Promise<Response> {
 	const peakBytesEstimate = peakInputBytes + 2 * encoded.bytes.byteLength;
 	return json({
 		fetch: fetchMode,
+		productionReadPath: fetchMode === 'window',
+		windowBytes: fetchMode === 'window' ? windowBytes : null,
 		inputs: runs.length,
 		inputRows,
 		inputBytes: runs.reduce((s, run) => s + run.bytes, 0),

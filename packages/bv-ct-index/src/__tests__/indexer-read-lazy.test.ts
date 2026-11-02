@@ -6,9 +6,9 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { SIBLING_PREFIX, decodeBlock, mergeSortedRuns, parseBlockIndex, rangeFor, serializeBlockIndex } from '../codec';
+import { SIBLING_PREFIX, decodeBlock, encodeRun, mergeSortedRuns, parseBlockIndex, rangeFor, serializeBlockIndex } from '../codec';
 import { readRange } from '../indexer/blocks';
-import { READ_CONCURRENCY, blocksFor, catalogQuery, createReader } from '../indexer/read';
+import { INDEX_BATCH_SIZE, READ_CONCURRENCY, blocksFor, catalogQuery, createReader } from '../indexer/read';
 import type { NameObservation, RunRow } from '../types';
 import { DAY_MS, DAY_S, HOUR_MS, T, T_S, applyCatalog, catalog, expectedRows, ingest, obs, testEnv, withFault } from './indexer-harness';
 import type { TestEnv } from './indexer-harness';
@@ -88,6 +88,148 @@ const inRange = (domain: string, rows: NameObservation[]) => {
 };
 
 describe('lazy run opening', () => {
+	it('refills six bounded slots behind a slow shared-bound first run without emitting early', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 12; i++) await ingest(env, at(i), [obs('a.hot.com', { issuer: `issuer-${i}` }), obs(`x${i}.hot.com`)]);
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => { release = resolve; });
+		let refilled!: () => void;
+		const refill = new Promise<void>((resolve) => { refilled = resolve; });
+		let gets = 0;
+		let active = 0;
+		let maxActive = 0;
+		let settled = false;
+		const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+			const call = ++gets;
+			maxActive = Math.max(maxActive, ++active);
+			try {
+				if (call === 1) await blocked;
+				if (call === READ_CONCURRENCY + 1) refilled();
+				return await env.INDEX.get(...args as [string, R2GetOptions]);
+			} finally { active--; }
+		});
+		const scanning = createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit: 3 });
+		scanning.then(() => { settled = true; }, () => { settled = true; });
+		try {
+			expect(await Promise.race([refill.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000))])).toBe(true);
+			expect(settled).toBe(false);
+			expect(maxActive).toBeLessThanOrEqual(READ_CONCURRENCY);
+		} finally { release(); }
+		const page = await scanning;
+		expect({ names: page.names, cursor: page.cursor }).toEqual(await eagerScan(env, 'hot.com', 3, null));
+		expect(gets).toBe(12);
+	});
+
+	it('defers a failed later run when an earlier slow run shrinks the ready barrier', async () => {
+		const env = testEnv();
+		await ingest(env, at(0), [obs('a.foreign.com'), obs('z.hot.com')]);
+		await ingest(env, at(1), [obs('a.foreign.com'), obs('b.hot.com'), obs('c.hot.com')]);
+		await ingest(env, at(2), [obs('y.hot.com')]);
+		const runs = await env.CURSORS.prepare('SELECT id, r2_key FROM runs ORDER BY created_at').all<{ id: string; r2_key: string }>();
+		const slowKey = runs.results[1]!.r2_key;
+		const failureKey = runs.results[2]!.r2_key;
+		// A valid two-block run first reads an out-of-range predecessor, then advances to the known y block.
+		const predecessor = await encodeRun([obs('a.foreign.com')]);
+		const later = await encodeRun([obs('y.hot.com')]);
+		const bytes = new Uint8Array(predecessor.bytes.byteLength + later.bytes.byteLength);
+		bytes.set(predecessor.bytes);
+		bytes.set(later.bytes, predecessor.bytes.byteLength);
+		await env.INDEX.put(failureKey, bytes);
+		const blockIndex = [...predecessor.blockIndex, ...later.blockIndex.map((block) => ({ ...block, offset: block.offset + predecessor.bytes.byteLength }))];
+		await env.CURSORS.prepare('UPDATE runs SET key_lo = ?1, key_split = NULL, block_index = ?2 WHERE id = ?3')
+			.bind(obs('a.foreign.com').key, serializeBlockIndex(blockIndex), runs.results[2]!.id).run();
+		const scanning = async (limit: number) => {
+			let release!: () => void;
+			const blocked = new Promise<void>((resolve) => { release = resolve; });
+			let laterGets = 0;
+			const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+				if (args[0] === slowKey) await blocked;
+				if (args[0] === failureKey && ++laterGets === 2) {
+					// The fast predecessor can become ready at z before y fails; b/c remain blocked until afterwards.
+					await new Promise<void>((resolve) => setTimeout(resolve, 30));
+					setTimeout(release, 30);
+					throw new Error('later y preparation failed');
+				}
+				return env.INDEX.get(...args as [string, R2GetOptions]);
+			});
+			try { return await createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit }); }
+			finally { release(); }
+		};
+		const page = await scanning(1);
+		expect(page.names.map((row) => row.name)).toEqual(['b.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect({ names: page.names, cursor: page.cursor }).toEqual(await eagerScan(env, 'hot.com', 1, null));
+		await expect(scanning(3)).rejects.toThrow('later y preparation failed');
+	});
+
+	it('ignores a failed speculative preparation beyond the page boundary', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 8; i++) await ingest(env, at(i), [obs(`x${i}.hot.com`)]);
+		let gets = 0;
+		const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+			if (++gets === 3) throw new Error('unused speculative read failed');
+			return env.INDEX.get(...args as [string, R2GetOptions]);
+		});
+		const page = await createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['x0.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(gets).toBeGreaterThanOrEqual(3);
+	});
+
+	it('never loads indexes beyond its bounded prefix for a short page', async () => {
+		const env = testEnv();
+		for (let i = 0; i < INDEX_BATCH_SIZE + 8; i++) {
+			await ingest(env, at(i), [obs(`x${String(i).padStart(3, '0')}.hot.com`)]);
+		}
+		const batches: number[] = [];
+		const db = withFault(env.CURSORS, 'prepare', (statement: unknown) => {
+			const prepared = env.CURSORS.prepare(statement as string);
+			if (!(statement as string).startsWith('SELECT id, r2_key, block_index FROM runs WHERE id IN')) return prepared;
+			return withFault(prepared, 'bind', (...args: unknown[]) => {
+				batches.push((JSON.parse(args[0] as string) as string[]).length);
+				return prepared.bind(...args);
+			});
+		});
+		const page = await createReader(testEnv({ CURSORS: db }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['x000.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(batches).toEqual([INDEX_BATCH_SIZE]);
+	});
+
+	it('defers later indexes, loads bounded batches, and retries a catalog swap without losing rows', async () => {
+		const env = testEnv();
+		await ingest(env, at(0), [obs('a.hot.com'), obs('b.hot.com')]);
+		const original = (await catalog())[0]!;
+		const query = { ...rangeFor('hot.com'), after: null, limit: 1, siblings: false, now: NOW };
+		const { sql, params } = catalogQuery(query, true);
+		const initial = await env.CURSORS.prepare(sql).bind(...params).all<{ id: string; block_index: unknown }>();
+		expect(initial.results).toHaveLength(1);
+		expect(initial.results[0]!.block_index).toBeNull();
+		let swaps = 0;
+		let loads = 0;
+		const db = withFault(env.CURSORS, 'prepare', (statement: unknown) => {
+			const prepared = env.CURSORS.prepare(statement as string);
+			if (!(statement as string).startsWith('SELECT id, r2_key, block_index FROM runs WHERE id IN')) return prepared;
+			return withFault(prepared, 'bind', (...args: unknown[]) => {
+				const ids = JSON.parse(args[0] as string) as string[];
+				expect(ids.length).toBeLessThanOrEqual(INDEX_BATCH_SIZE);
+				const bound = prepared.bind(...args);
+				return withFault(bound, 'all', async () => {
+					loads++;
+					if (swaps++ === 0) {
+						await ingest(env, at(1), [obs('a.hot.com'), obs('b.hot.com')]);
+						await env.CURSORS.prepare('DELETE FROM runs WHERE id = ?1').bind(original.id).run();
+					}
+					return bound.all();
+				});
+			});
+		});
+		const page = await createReader(testEnv({ CURSORS: db }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['a.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(loads).toBe(2);
+	});
+
 	it('opens only the runs a 50-row page needs when all 300 runs hold the apex, and pages like the eager reader', async () => {
 		const env = testEnv();
 		const names: NameObservation[] = [];
@@ -107,7 +249,8 @@ describe('lazy run opening', () => {
 		expect(page.truncated).toBe(true);
 		// Runs 0-49 hold the page and run 50 the row that truncates it. While a run must be read, the next ones in
 		// key order are read alongside it, so at most READ_CONCURRENCY - 1 runs past run 50 were read ahead.
-		expect(lazy.opened.size).toBe(51 + READ_CONCURRENCY - 1);
+		expect(lazy.opened.size).toBeGreaterThanOrEqual(51);
+		expect(lazy.opened.size).toBeLessThanOrEqual(51 + READ_CONCURRENCY - 1);
 
 		const eager = recordingBucket(env.INDEX);
 		const eagerPage = await eagerScan(testEnv({ INDEX: eager.bucket }), 'hot.com', 50, null);

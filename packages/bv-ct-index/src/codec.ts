@@ -319,6 +319,7 @@ function escapeField(value: string): string {
 }
 
 function unescapeField(value: string): string {
+	if (!value.includes('\\')) return value;
 	return value.replace(/\\([\s\S]?)/g, (_, c: string) => {
 		const plain = UNESCAPES[c];
 		if (plain === undefined) throw new RangeError(`bad escape in run row: ${JSON.stringify(value)}`);

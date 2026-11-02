@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * The `2,17,32,47 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
+ * The `2,7,12,17,22,27,32,37,42,47,52,57 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
  * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick plans T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
  * first takes the weekly generation snapshot (generations.ts) and also plans the other tiers:
  *
- * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
+ * - T0 -> T1: the T0 runs of the 5-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
  *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
  *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
@@ -58,10 +58,12 @@ import type { CompactionJob } from './compact';
 import { maybeSnapshot } from './generations';
 
 /** T0 -> T1 is planned at every tick; everything else only at FULL_PLAN_MINUTE (SQ-402). */
-export const COMPACTION_CRON = '2,17,32,47 * * * *';
+export const COMPACTION_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
+/** Accepted during cron propagation only; never registered alongside the canonical schedule. */
+export const LEGACY_COMPACTION_CRON = '2,17,32,47 * * * *';
 export const FULL_PLAN_MINUTE = 17;
 /** T0 runs are compacted in windows of this length... */
-export const T0_WINDOW_MS = 15 * 60_000;
+export const T0_WINDOW_MS = 5 * 60_000;
 /** ...once the window has been over for this long. */
 export const T0_MIN_AGE_MS = 10 * 60_000;
 export const GROUP_SHARDS = 8;
@@ -361,13 +363,15 @@ const createdIn = (run: PlanRun, from: number, to: number) => {
 /**
  * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
  * not `full` plans only the T0 window that has just come due; a full tick also plans every older T0 run (one whose
- * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs.
+ * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` widens only T0 eligibility
+ * during legacy-cron propagation; it never enables the other tiers or snapshots.
  */
 export async function planCompactions(
 	db: D1Database,
 	nowMs: number,
 	limits: PlanLimits = DEFAULT_PLAN_LIMITS,
 	full = true,
+	recoverT0 = false,
 ): Promise<CompactionJob[]> {
 	const generation = await currentGeneration(db);
 	const { results } = await db
@@ -377,7 +381,7 @@ export async function planCompactions(
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
 	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
 	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
-	const windowStart = full ? -Infinity : windowEnd - T0_WINDOW_MS;
+	const windowStart = full || recoverT0 ? -Infinity : windowEnd - T0_WINDOW_MS;
 	// T0 runs span the whole keyspace, so a T1 job takes cuts across all of it: the coarse subset (SQ-491).
 	const t1Cuts = coarseCuts(plan.cuts, limits.maxT1Ranges);
 	for (const runs of groupBy(
@@ -408,7 +412,7 @@ async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cut
 }
 
 /**
- * The T1 roll-up (SQ-402): every T0 window adds one T1 run per coarse range per job, about 14 an hour, and a read of
+ * The T1 roll-up (SQ-402): every T0 window adds one T1 run per coarse range per job, and a read of
  * a key opens each of them. So every hour, a range's overlapping T1 runs from earlier hours of the day (the last
  * roll-up's output among them) merge into one T1 run, in jobs bounded like T1 -> T2. A range then holds about one
  * T1 run per job since the last full hour, plus one or two; the day's T1 -> T2 job still takes them all. A component
@@ -476,11 +480,16 @@ export interface CronOutcome {
 }
 
 /** The COMPACTION_CRON branch of `scheduled`; `nowMs` is the tick's scheduled time, whose minute says if it is full. */
-export async function runCompactionCron(env: Env, nowMs: number, limits: PlanLimits = DEFAULT_PLAN_LIMITS): Promise<CronOutcome> {
+export async function runCompactionCron(
+	env: Env,
+	nowMs: number,
+	limits: PlanLimits = DEFAULT_PLAN_LIMITS,
+	recoverT0 = false,
+): Promise<CronOutcome> {
 	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
 	const full = new Date(nowMs).getUTCMinutes() === FULL_PLAN_MINUTE;
 	const snapshot = full ? await maybeSnapshot(env, nowMs) : null;
-	const jobs = await planCompactions(env.CURSORS, nowMs, limits, full);
+	const jobs = await planCompactions(env.CURSORS, nowMs, limits, full, recoverT0);
 	await sendJobs(env.COMPACT, jobs);
 	return { killed: false, snapshot, jobs };
 }
