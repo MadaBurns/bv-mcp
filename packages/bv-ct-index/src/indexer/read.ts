@@ -9,7 +9,8 @@
  * bound is at or below the smallest row already read, and the merge stops at `limit` rows plus the one that says the
  * page is truncated. A page therefore reads the runs that hold its rows, not every run the range overlaps (a big apex
  * overlaps thousands of T1 runs). While a run must be read, the next runs in bound order are read alongside it, so up
- * to READ_CONCURRENCY GETs are in flight and runs that hold the same first key are read together.
+ * to READ_CONCURRENCY read/decode preparations are retained. Required preparations finish in completion order, so a slow
+ * first run does not stall the other slots; rows still wait for every lower or equal bound before emitting.
  *
  * Errors: any D1 or R2 fault throws, so the API answers 503 and never an empty page. One exception is retried:
  * a compaction job deletes its input objects right after swapping the catalog, so a scan that read the catalog
@@ -105,8 +106,10 @@ interface Source {
 	next: number;
 	/** No unread key of the run in range is below this: the scan start or the next block's first key, whichever is higher. */
 	bound: string;
-	/** The GET of block `next`, once started. */
-	read: Promise<Uint8Array> | null;
+	/** The bounded read/decode preparation of block `next`, once started. */
+	read: Promise<RunRow[]> | null;
+	/** A failed preparation remains ordered by its lower bound, but holds no preparation slot. */
+	failure: { error: unknown } | null;
 	/** The rows of the block being merged that are in range, ascending; rows[at] is the run's current row. */
 	rows: RunRow[];
 	at: number;
@@ -188,24 +191,49 @@ class LazyMerge {
 		return merged;
 	}
 
-	/** Reads the front run's next block, with the next runs in bound order alongside it. */
+	/** Prepares at most six blocks and consumes whichever required preparation finishes first. */
 	private async readFront(): Promise<void> {
 		await this.loadIndexes();
 		const front = this.pending[0];
 		if (front === undefined || front.blocks === null) return;
+		if (front.failure !== null) throw front.failure.error;
 		this.startRead(front);
 		for (const source of this.pending) {
 			if (this.reading >= READ_CONCURRENCY) break;
 			this.startRead(source);
 		}
-		const bytes = await front.read!;
-		this.pending.shift();
+		// Prepare successes out of order; failures wait until their source is the ordered pending front.
+		// Equal lower bounds are all required before emitting; finishing them out of order keeps the slots busy
+		// when the first run is slow, without weakening the merge's <= emission barrier.
+		const bound = this.ready[0] === undefined ? front.bound : rowOf(this.ready[0]).key;
+		const required = this.pending.filter((source) =>
+			source.read !== null && source.bound <= bound && (source.failure === null || source === front),
+		);
+		const completed = await Promise.race(required.map((source) => source.read!.then(
+			(rows) => ({ ok: true as const, source, rows }),
+			(error: unknown) => ({ ok: false as const, source, error }),
+		)));
+		if (!completed.ok) {
+			// A lower-bound read may yet shrink the ready barrier below this failed source. Only the ordered
+			// front is indispensable now; retain later failures until they reach that position.
+			if (completed.source === front) throw completed.error;
+			return;
+		}
+		const { source, rows } = completed;
 		this.reading--;
-		front.read = null;
-		front.next++;
-		front.rows = this.inRange(front, await decodeBlock(bytes));
-		front.at = 0;
-		this.place(front);
+		source.next++;
+		try {
+			source.rows = this.inRange(source, rows);
+		} catch (error) {
+			source.failure = { error };
+			source.read = null;
+			if (source === front) throw error;
+			return;
+		}
+		this.pending.splice(this.pending.indexOf(source), 1);
+		source.read = null;
+		source.at = 0;
+		this.place(source);
 	}
 
 	/** Load a bounded prefix by immutable run ID; a vanished input restarts the catalog scan. */
@@ -229,9 +257,14 @@ class LazyMerge {
 	}
 
 	private startRead(source: Source): void {
-		if (source.read !== null || source.blocks === null) return;
+		if (source.read !== null || source.blocks === null || source.failure !== null) return;
 		const entry = source.blocks[source.next]!;
-		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length);
+		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length).then(decodeBlock).catch((error: unknown) => {
+			source.failure = { error };
+			source.read = null;
+			this.reading--;
+			throw error;
+		});
 		// A read the merge never reaches (it stopped at `limit`) must not surface as an unhandled rejection.
 		source.read.catch(() => undefined);
 		this.reading++;
@@ -358,7 +391,7 @@ function sourceOf(run: CatalogRun, query: ScanQuery, input: number): Source | nu
 	const blocks = run.block_index === null ? null : blocksFor(parseBlockIndex(run.block_index), start, query.hi);
 	if (blocks?.length === 0) return null;
 	const bound = blocks === null ? run.key_lo : blocks[0]!.firstKey > start ? blocks[0]!.firstKey : start;
-	return { input, id: run.id, r2Key: run.r2_key, blocks, next: 0, bound, read: null, rows: [], at: 0 };
+	return { input, id: run.id, r2Key: run.r2_key, blocks, next: 0, bound, read: null, failure: null, rows: [], at: 0 };
 }
 
 /** Up to `limit` live rows, and whether another live row follows them. */

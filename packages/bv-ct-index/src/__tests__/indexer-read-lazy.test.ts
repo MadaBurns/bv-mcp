@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { SIBLING_PREFIX, decodeBlock, mergeSortedRuns, parseBlockIndex, rangeFor, serializeBlockIndex } from '../codec';
+import { SIBLING_PREFIX, decodeBlock, encodeRun, mergeSortedRuns, parseBlockIndex, rangeFor, serializeBlockIndex } from '../codec';
 import { readRange } from '../indexer/blocks';
 import { INDEX_BATCH_SIZE, READ_CONCURRENCY, blocksFor, catalogQuery, createReader } from '../indexer/read';
 import type { NameObservation, RunRow } from '../types';
@@ -88,6 +88,94 @@ const inRange = (domain: string, rows: NameObservation[]) => {
 };
 
 describe('lazy run opening', () => {
+	it('refills six bounded slots behind a slow shared-bound first run without emitting early', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 12; i++) await ingest(env, at(i), [obs('a.hot.com', { issuer: `issuer-${i}` }), obs(`x${i}.hot.com`)]);
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => { release = resolve; });
+		let refilled!: () => void;
+		const refill = new Promise<void>((resolve) => { refilled = resolve; });
+		let gets = 0;
+		let active = 0;
+		let maxActive = 0;
+		let settled = false;
+		const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+			const call = ++gets;
+			maxActive = Math.max(maxActive, ++active);
+			try {
+				if (call === 1) await blocked;
+				if (call === READ_CONCURRENCY + 1) refilled();
+				return await env.INDEX.get(...args as [string, R2GetOptions]);
+			} finally { active--; }
+		});
+		const scanning = createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit: 3 });
+		scanning.then(() => { settled = true; }, () => { settled = true; });
+		try {
+			expect(await Promise.race([refill.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000))])).toBe(true);
+			expect(settled).toBe(false);
+			expect(maxActive).toBeLessThanOrEqual(READ_CONCURRENCY);
+		} finally { release(); }
+		const page = await scanning;
+		expect({ names: page.names, cursor: page.cursor }).toEqual(await eagerScan(env, 'hot.com', 3, null));
+		expect(gets).toBe(12);
+	});
+
+	it('defers a failed later run when an earlier slow run shrinks the ready barrier', async () => {
+		const env = testEnv();
+		await ingest(env, at(0), [obs('a.foreign.com'), obs('z.hot.com')]);
+		await ingest(env, at(1), [obs('a.foreign.com'), obs('b.hot.com'), obs('c.hot.com')]);
+		await ingest(env, at(2), [obs('y.hot.com')]);
+		const runs = await env.CURSORS.prepare('SELECT id, r2_key FROM runs ORDER BY created_at').all<{ id: string; r2_key: string }>();
+		const slowKey = runs.results[1]!.r2_key;
+		const failureKey = runs.results[2]!.r2_key;
+		// A valid two-block run first reads an out-of-range predecessor, then advances to the known y block.
+		const predecessor = await encodeRun([obs('a.foreign.com')]);
+		const later = await encodeRun([obs('y.hot.com')]);
+		const bytes = new Uint8Array(predecessor.bytes.byteLength + later.bytes.byteLength);
+		bytes.set(predecessor.bytes);
+		bytes.set(later.bytes, predecessor.bytes.byteLength);
+		await env.INDEX.put(failureKey, bytes);
+		const blockIndex = [...predecessor.blockIndex, ...later.blockIndex.map((block) => ({ ...block, offset: block.offset + predecessor.bytes.byteLength }))];
+		await env.CURSORS.prepare('UPDATE runs SET key_lo = ?1, key_split = NULL, block_index = ?2 WHERE id = ?3')
+			.bind(obs('a.foreign.com').key, serializeBlockIndex(blockIndex), runs.results[2]!.id).run();
+		const scanning = async (limit: number) => {
+			let release!: () => void;
+			const blocked = new Promise<void>((resolve) => { release = resolve; });
+			let laterGets = 0;
+			const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+				if (args[0] === slowKey) await blocked;
+				if (args[0] === failureKey && ++laterGets === 2) {
+					// The fast predecessor can become ready at z before y fails; b/c remain blocked until afterwards.
+					await new Promise<void>((resolve) => setTimeout(resolve, 30));
+					setTimeout(release, 30);
+					throw new Error('later y preparation failed');
+				}
+				return env.INDEX.get(...args as [string, R2GetOptions]);
+			});
+			try { return await createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit }); }
+			finally { release(); }
+		};
+		const page = await scanning(1);
+		expect(page.names.map((row) => row.name)).toEqual(['b.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect({ names: page.names, cursor: page.cursor }).toEqual(await eagerScan(env, 'hot.com', 1, null));
+		await expect(scanning(3)).rejects.toThrow('later y preparation failed');
+	});
+
+	it('ignores a failed speculative preparation beyond the page boundary', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 8; i++) await ingest(env, at(i), [obs(`x${i}.hot.com`)]);
+		let gets = 0;
+		const bucket = withFault(env.INDEX, 'get', async (...args: unknown[]) => {
+			if (++gets === 3) throw new Error('unused speculative read failed');
+			return env.INDEX.get(...args as [string, R2GetOptions]);
+		});
+		const page = await createReader(testEnv({ INDEX: bucket }), () => NOW_MS).scan('hot.com', { limit: 1 });
+		expect(page.names.map((row) => row.name)).toEqual(['x0.hot.com']);
+		expect(page.truncated).toBe(true);
+		expect(gets).toBeGreaterThanOrEqual(3);
+	});
+
 	it('never loads indexes beyond its bounded prefix for a short page', async () => {
 		const env = testEnv();
 		for (let i = 0; i < INDEX_BATCH_SIZE + 8; i++) {
