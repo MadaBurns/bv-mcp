@@ -6,8 +6,13 @@ import { resetSessions } from '../src/lib/session';
 import { fireAndForget, getLogger } from '../src/lib/log';
 import type { JsonRpcRequest } from '../src/lib/json-rpc';
 
-const sourceFiles = import.meta.glob('../src/mcp/execute.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
-const executeSource = sourceFiles['../src/mcp/execute.ts'];
+// The access-log code lives in access-log.ts / ip-evidence.ts since the execute.ts split; scan all three.
+const sourceFiles = import.meta.glob('../src/mcp/{execute,access-log,ip-evidence}.ts', {
+	query: '?raw',
+	import: 'default',
+	eager: true,
+}) as Record<string, string>;
+const executeSource = Object.values(sourceFiles).join('\n');
 
 function createFakeD1() {
 	const run = vi.fn(async () => ({ success: true }));
@@ -464,6 +469,12 @@ describe('MCP access log retention', () => {
 });
 
 describe('MCP access log privacy guardrails', () => {
+	it('scans every module that holds access-log code (census, so the not.toContain checks cannot pass vacuously)', () => {
+		expect(Object.keys(sourceFiles).sort()).toEqual(['../src/mcp/access-log.ts', '../src/mcp/execute.ts', '../src/mcp/ip-evidence.ts']);
+		expect(executeSource).toContain('ACCESS_LOG_COLUMNS');
+		expect(executeSource).toContain('encryptIpEvidence');
+	});
+
 	it('does not define or insert raw ip_address for MCP access logging', () => {
 		expect(executeSource).not.toContain('ip_address');
 		expect(executeSource).not.toMatch(/\.bind\(\s*options\.ip\b/);
