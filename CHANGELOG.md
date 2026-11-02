@@ -20,7 +20,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Changed
 
-- Tool registration and direct dispatch, scan orchestration, MCP telemetry/access logging and ownership attribution are split into focused modules while retaining their existing exports and behavior.
+- Tool registration and direct dispatch, scan orchestration, MCP telemetry/access logging and ownership attribution are split into focused modules while retaining their existing exports and behavior. Brand-audit dependency parity now checks its own registry entry so an identical forwarding line from another tool cannot mask a missing dependency.
 
 ## [3.108.1] - 2026-11-02
 
