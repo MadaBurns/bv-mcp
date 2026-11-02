@@ -15,7 +15,7 @@
 #   5. npm run deploy:prod                       (skipped with --skip-deploy, e.g. a re-run after a
 #                                                 publish failure; the step-6 verify still runs)
 #   6. verify-release.sh X.Y.Z --before-publish  (live prod must serve X.Y.Z)
-#   7. npm run build, then mcp-publisher login with the key from the MAIN checkout's .dev.vars
+#   7. Skip if the registry already has X.Y.Z (a re-run). Else npm run build, then mcp-publisher login with the key from the MAIN checkout's .dev.vars
 #      (written to a mode-600 temp file, never printed), npm run publish:registry, logout.
 #   8. verify-release.sh X.Y.Z                   (adds registry + GitHub Release)
 #
@@ -103,25 +103,31 @@ if [ "$SKIP_DEPLOY" = "1" ]; then
 	step "5. deploy:prod SKIPPED (--skip-deploy)"
 else
 	step "5. npm run deploy:prod"
-	npm run deploy:prod || die "deploy:prod (nothing was published to the registry)"
+	npm run deploy:prod || die "deploy:prod (nothing was published to the registry). If cf said \"last updated via the script API\", see bv-mcp-release SKILL.md \"cf strict conflict\"; deploy that way, then re-run with --skip-deploy"
 fi
 
 step "6. verify live prod before publishing"
 bash "$VERIFY" "$VERSION" --before-publish || die "verify-release --before-publish (registry NOT published; prod may still be propagating — re-run with --skip-deploy)"
 
 step "7. MCP Registry publish"
-npm run build >/dev/null || die "npm run build (publish:registry's integrity gate needs a current dist)"
-KEYDIR="$(mktemp -d)"
-trap 'rm -rf "$KEYDIR"; mcp-publisher logout >/dev/null 2>&1 || true' EXIT
-umask 077
-awk -F= '$1=="MCP_PUBLISHER_KEY"{v=$0; sub(/^[^=]*=/,"",v); gsub(/^"|"$/,"",v); printf "%s", v}' "$MAIN/.dev.vars" > "$KEYDIR/k"
-case "$(cat "$KEYDIR/k")" in
-	*[!0-9a-fA-F]* | "") die "MCP_PUBLISHER_KEY in .dev.vars is absent or not hex" 2 ;;
-esac
-mcp-publisher validate || die "mcp-publisher validate"
-mcp-publisher login dns --domain blackveilsecurity.com --private-key "$(cat "$KEYDIR/k")" >/dev/null || die "mcp-publisher login dns"
-rm -f "$KEYDIR/k"
-npm run publish:registry || die "publish:registry (prod IS on $VERSION; registry may be behind — benign, re-run with --skip-deploy)"
+REG_URL="https://registry.modelcontextprotocol.io/v0/servers/com.blackveilsecurity%2Fdns/versions/$VERSION?cb=$(date +%s)"
+REG_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$REG_URL")"
+if [ "$REG_CODE" = "200" ]; then
+	echo "registry already has $VERSION (re-run) - skipping publish"
+else
+	npm run build >/dev/null || die "npm run build (publish:registry's integrity gate needs a current dist)"
+	KEYDIR="$(mktemp -d)"
+	trap 'rm -rf "$KEYDIR"; mcp-publisher logout >/dev/null 2>&1 || true' EXIT
+	umask 077
+	awk -F= '$1=="MCP_PUBLISHER_KEY"{v=$0; sub(/^[^=]*=/,"",v); gsub(/^"|"$/,"",v); printf "%s", v}' "$MAIN/.dev.vars" > "$KEYDIR/k"
+	case "$(cat "$KEYDIR/k")" in
+		*[!0-9a-fA-F]* | "") die "MCP_PUBLISHER_KEY in .dev.vars is absent or not hex" 2 ;;
+	esac
+	mcp-publisher validate || die "mcp-publisher validate"
+	mcp-publisher login dns --domain blackveilsecurity.com --private-key "$(cat "$KEYDIR/k")" >/dev/null || die "mcp-publisher login dns"
+	rm -f "$KEYDIR/k"
+	npm run publish:registry || die "publish:registry (prod IS on $VERSION; registry may be behind — benign, re-run with --skip-deploy)"
+fi
 
 step "8. full verification"
 sleep 20
