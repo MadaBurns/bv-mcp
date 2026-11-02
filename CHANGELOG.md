@@ -12,10 +12,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- Silent-domain revoked DKIM findings become informational and not applicable. Scoring model 1.42.0 records the score-bearing scan post-processing change: profiles with nonzero DKIM weight can gain score or grade; default web-only scoring is unchanged. Standalone checks and dns-checks 1.62.2 shipping inputs are unchanged.
 - Owned CT index reads defer later runs' block indexes in bounded batches and prepare required blocks in completion order, preserving merge order, cursor behavior and catalog-swap retries while reducing metadata transfer and head-of-line stalls. API deadlines and six-slot read/decode bounds remain unchanged. Production consumer activation still requires both runbook gates.
 - Private assessment runners adopt the reporting contract with bounded captures, immutable diagnostic receipts and withholding after newly observed rate limits. Offline reconciliation preserves the original receipts; capped sitemap reviews remain explicitly deferred.
 - CT compaction benchmarking can measure the exact production windowed reader and shared memory budgets; serial-block and whole-object comparisons remain separate diagnostics with their original receipts. Production acceptance thresholds are unchanged.
-- CT compaction pairs five-minute T0 windows with five-minute planning, preserving the ten-minute age floor, hourly catch-up and existing job/memory caps. Deployment requires explicit approval for the recurring-work change and live queue/latency acceptance before consumer activation. Plain codec fields avoid unnecessary escape-regex work without changing validation or format.
+- CT compaction pairs five-minute T0 windows with five-minute planning, preserving the ten-minute age floor, hourly catch-up and existing job/memory caps. The approved production pilot monitors queue health and latency; consumer activation is separately authorized and does not establish latency acceptance. Plain codec fields avoid unnecessary escape-regex work without changing validation or format.
+
+### Changed
+
+- Tool registration and direct dispatch, scan orchestration, MCP telemetry/access logging and ownership attribution are split into focused modules while retaining their existing exports and behavior.
 
 ## [3.108.1] - 2026-11-02
 

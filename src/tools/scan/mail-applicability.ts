@@ -363,9 +363,10 @@ const UNVERIFIABLE_DKIM_KEY_TITLE_PREFIXES = ['DKIM keys revoked', 'Revoked DKIM
 /**
  * A domain with a null MX and an SPF policy that authorizes no sender neither
  * receives nor sends mail. Revoking every DKIM key is the correct posture for it,
- * so a "keys revoked" finding is not a risk. The dkim category is already N/A
- * under that domain's non_mail/web_only profile, so this changes severity and
- * wording only, never a grade. A usable key (even a weak one) keeps its rating,
+ * so a "keys revoked" finding is not a risk. Report-level N/A does not remove DKIM
+ * from canonical scoring: non_mail and explicit profiles with nonzero DKIM weight
+ * can gain score; default web_only has zero DKIM weight. Scoring model 1.42.0
+ * records this Worker policy change. A usable key (even a weak one) keeps its rating,
  * because a factorable key can still be used to forge mail.
  */
 function adjustRevokedDkimForSilentDomain(results: CheckResult[]): CheckResult[] {
