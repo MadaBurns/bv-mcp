@@ -142,6 +142,9 @@ export async function applyScanPostProcessing(
 	if (hasNoSendPolicy && !declaresNoInboundMail) {
 		results = adjustForNoSendDomain(results);
 	}
+	if (hasNoSendPolicy && declaresNoInboundMail) {
+		results = adjustRevokedDkimForSilentDomain(results);
+	}
 
 	// BIMI applicability wording (TEXT ONLY — severity and score untouched).
 	// `adjustBimiForNonMailDomain` above only runs on the non-mail branch, so a
@@ -830,6 +833,39 @@ function escalateDmarcForImpersonation(results: CheckResult[]): CheckResult[] {
 				};
 			}
 			return finding;
+		});
+		return rebuildUnlessAbstained(result, adjusted);
+	});
+}
+
+/**
+ * SQ-535: titles `check-dkim` gives a selector whose key cannot verify a signature,
+ * meaning an empty `p=` (revoked) or no `p=` at all, plus their aggregate.
+ * test/scan-post-processing-silent-domain-dkim.spec.ts drives the real check, so a
+ * renamed title fails that spec instead of silently re-arming the HIGH.
+ */
+const UNVERIFIABLE_DKIM_KEY_TITLE_PREFIXES = ['DKIM keys revoked', 'Revoked DKIM key:', 'DKIM key record has no public key:'];
+
+/**
+ * A domain with a null MX and an SPF policy that authorizes no sender neither
+ * receives nor sends mail. Revoking every DKIM key is the correct posture for it,
+ * so a "keys revoked" finding is not a risk. The dkim category is already N/A
+ * under that domain's non_mail/web_only profile, so this changes severity and
+ * wording only, never a grade. A usable key (even a weak one) keeps its rating,
+ * because a factorable key can still be used to forge mail.
+ */
+function adjustRevokedDkimForSilentDomain(results: CheckResult[]): CheckResult[] {
+	return results.map((result) => {
+		if (result.category !== 'dkim') return result;
+		const adjusted = result.findings.map((finding: Finding) => {
+			const unverifiable = UNVERIFIABLE_DKIM_KEY_TITLE_PREFIXES.some((prefix) => finding.title.startsWith(prefix));
+			if (!unverifiable || (finding.severity !== 'critical' && finding.severity !== 'high')) return finding;
+			return {
+				...finding,
+				severity: 'info' as const,
+				detail: `${finding.detail} (expected — null MX and an SPF policy that authorizes no sender mean this domain neither sends nor receives mail, so revoked DKIM keys are the correct posture)`,
+				...notApplicableMetadata(finding),
+			};
 		});
 		return rebuildUnlessAbstained(result, adjusted);
 	});
