@@ -365,7 +365,7 @@ const createdIn = (run: PlanRun, from: number, to: number) => {
 /**
  * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
  * not `full` accumulates all older eligible T0 runs into size-aware chunks; a full tick bypasses the minimum (including a run whose
- * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` widens only T0 eligibility
+ * job was lost), and also plans the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` bypasses only the T0 minimum
  * during previous-quarter-hour-cron propagation; outside :17 it never enables the other tiers or snapshots.
  */
 export async function planCompactions(
@@ -472,7 +472,7 @@ export async function sendJobs(queue: Queue<CompactionJob>, jobs: readonly Compa
 	let chunk: CompactionJob[] = [];
 	let bytes = 0;
 	for (const job of jobs) {
-		const size = JSON.stringify(job).length;
+		const size = new TextEncoder().encode(JSON.stringify(job)).byteLength;
 		if (chunk.length > 0 && (chunk.length === SEND_BATCH_MESSAGES || bytes + size > SEND_BATCH_BYTES)) {
 			await queue.sendBatch(chunk.map((body) => ({ body })));
 			chunk = [];
@@ -485,6 +485,8 @@ export async function sendJobs(queue: Queue<CompactionJob>, jobs: readonly Compa
 }
 
 export interface CronOutcome {
+	/** UUID of this scheduler invocation; attribution only, never part of a job digest. */
+	planId: string;
 	killed: boolean;
 	/** The new generation, when this run took the weekly snapshot. */
 	snapshot: number | null;
@@ -498,10 +500,11 @@ export async function runCompactionCron(
 	limits: PlanLimits = DEFAULT_PLAN_LIMITS,
 	recoverT0 = false,
 ): Promise<CronOutcome> {
-	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
+	const planId = crypto.randomUUID();
+	if (await isKilled(env.CURSORS)) return { planId, killed: true, snapshot: null, jobs: [] };
 	const full = new Date(nowMs).getUTCMinutes() === FULL_PLAN_MINUTE;
 	const snapshot = full ? await maybeSnapshot(env, nowMs) : null;
-	const jobs = await planCompactions(env.CURSORS, nowMs, limits, full, recoverT0);
+	const jobs = (await planCompactions(env.CURSORS, nowMs, limits, full, recoverT0)).map((job) => ({ ...job, planId }));
 	await sendJobs(env.COMPACT, jobs);
-	return { killed: false, snapshot, jobs };
+	return { planId, killed: false, snapshot, jobs };
 }

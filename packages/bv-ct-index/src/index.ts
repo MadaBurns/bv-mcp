@@ -96,10 +96,10 @@ export default {
 				const transitional = controller.cron === TRANSITIONAL_COMPACTION_CRON;
 				if (transitional) console.log(JSON.stringify({ event: 'ct_compaction_transition', cron: controller.cron }));
 				// Logged so a tail shows what was enqueued: an `ok` cron with no line says nothing about the plan.
-				const { killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime, undefined, transitional);
+				const { planId, killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime, undefined, transitional);
 				const tiers = [1, 2, 3].map((tier) => jobs.filter((job) => job.tier === tier).length);
 				const inputs = jobs.reduce((sum, job) => sum + job.inputs.length, 0);
-				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs }));
+				console.log(JSON.stringify({ event: 'ct_compaction_plan', planId, killed, snapshot, jobs: jobs.length, tiers, inputs }));
 				break;
 			}
 			default:

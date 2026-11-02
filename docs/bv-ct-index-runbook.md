@@ -138,6 +138,12 @@ This candidate is **pending a new operator-controlled live gate**. Before retent
 CAS behavior and matched trigger rollback, verify exact serving version/bindings, observe an actual full `:17` with
 completed jobs and drain, then run the unchanged prospective same-hour31/45 peak: all28 responses HTTP200 and p95<1500 ms,
 with refused-caller and known-positive controls. Record queue health, catalog counts, GET/PUT/CPU and attribution limits.
+Attribute recovery by the canonical full scheduled trace's UUID `planId`, then match `(planId, job.id)` on start/done logs
+and require `job.now = floor(scheduledTime / 1000)`. Ordinary `:22/:27` jobs can overlap the observation window and must
+not be counted as full-plan completions. Legacy queued jobs without a tag remain executable but cannot establish this
+candidate's recovery proof. The transitional quarter-hour `:17` still performs full planning/snapshot by existing behavior;
+classify it separately and require the canonical schedule for acceptance. Same-second canonical/transitional invocations
+have distinct plan IDs even when semantic job IDs match. Tags never change object keys, data bytes or swap guards.
 Do not retry a failed peak or reuse earlier recovery as this candidate's proof. Rollback restores matched quarter-hour
 code **and registered triggers**; accept transitional strings only during propagation and verify canonical execution.
 This paragraph records source readiness, not deployment or latency acceptance.
