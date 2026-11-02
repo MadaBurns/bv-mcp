@@ -129,6 +129,38 @@ describe('size-aware five-minute T0 planning', () => {
 		expect(env.queue.sent.at(-1)!.tier).toBe(2);
 	});
 
+	it('does not plan due overlapping higher-tier work at an ordinary tick, with a full-plan positive control', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 1), batchAt('first'));
+		await cronAndDrain(env, at(0, 0, 17));
+		await ingest(env, at(0, 0, 20), batchAt('second'));
+		await cronAndDrain(env, at(0, 1, 17));
+		const now = at(0, 2, 2);
+		const full = await planCompactions(env.CURSORS, now, DEFAULT_PLAN_LIMITS, true);
+		expect(full.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 2]]);
+		expect((await cronAndDrain(env, now)).jobs).toEqual([]);
+	});
+
+	it('does not roll up key-disjoint parts or current-hour T1 outputs, but later overlapping outputs roll up', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 1, 5), batchAt('a', 300));
+		await ingest(env, at(0, 1, 6), batchAt('b', 300));
+		expect((await cronAndDrain(env, at(0, 1, 17), SMALL)).outcomes).toEqual(['applied']);
+		const parts = (await catalog()).filter((run) => run.tier === 1);
+		expect(parts.length).toBeGreaterThan(2);
+		expect((await cronAndDrain(env, at(0, 2, 17), SMALL)).jobs).toEqual([]);
+		await ingest(env, at(0, 2, 20), batchAt('c', 300));
+		const recovery = await runCompactionCron(env, at(0, 2, 47), DEFAULT_PLAN_LIMITS, true);
+		expect(recovery.jobs).toHaveLength(1);
+		for (const job of recovery.jobs) expect(await runCompactionJob(env, job, SMALL, at(0, 2, 47))).toBe('applied');
+		// A full plan in the same hour still excludes the new T1 outputs from its roll-up.
+		expect(await planCompactions(env.CURSORS, at(0, 2, 52), DEFAULT_PLAN_LIMITS, true)).toEqual([]);
+		const next = await cronAndDrain(env, at(0, 3, 17), SMALL);
+		expect(next.jobs.map((job) => job.tier)).toEqual([1]);
+		expect(next.jobs[0]!.inputs.length).toBeGreaterThan(parts.length);
+		expect(next.jobs[0]!.inputs).toEqual(expect.arrayContaining(parts.map((run) => run.id)));
+	});
+
 	it('keeps canonical eligibility half-open across all 288 UTC five-minute ticks and jitter', async () => {
 		const env = testEnv();
 		for (const jitter of [-1, 0, 1, 55_548]) for (let tick = 0; tick < 288; tick++) {
