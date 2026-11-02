@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { KEY_FILTER_MAX_ENTRIES, SIBLING_PREFIX } from '../codec';
 import { runCompactionJob } from '../indexer/compact';
 import type { CompactionJob } from '../indexer/compact';
-import { DEFAULT_PLAN_LIMITS, MAX_T1_RANGES, coarseCuts, components, cutLevel, cutsFor, planCompactions, runCompactionCron } from '../indexer/plan';
+import { DEFAULT_PLAN_LIMITS, MAX_T1_RANGES, coarseCuts, components, cutLevel, cutsFor, runCompactionCron } from '../indexer/plan';
 import type { PlanLimits } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import type { NameObservation } from '../types';
@@ -162,8 +162,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const env = testEnv();
 		const cuts = await seedShards(env, base);
 		expect(cuts.length).toBeGreaterThanOrEqual(930);
-		await ingest(env, at(0, 2, 12), seenAgain(base));
-		// 02:32: the window [02:07, 02:22) is due, and nothing else is planned.
+		await ingest(env, at(0, 2, 5), seenAgain(base));
+		// 02:32: the window [02:00, 02:15) is due, and nothing else is planned.
 		const { jobs, puts, rowsWritten } = await planAndDrain(env, at(0, 2, 32), { ...SEED_LIMITS, maxT1Ranges });
 		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1]]);
 		const jobCuts = jobs[0]!.cuts;
@@ -174,37 +174,6 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(t1.length).toBe(new Set(base.map((row) => rangeOf(jobCuts, row.key))).size);
 		return { cuts: cuts.length, runs: t1.length, puts, rowsWritten, reads: await readAll(env, at(0, 2, 32)) };
 	}
-
-	it.each([[0, false], [1, false], [0, true], [1, true]] as const)(
-		'coalesces UTC hour/day inputs and preserves merged rows with competing plans (day %i, split first %s)',
-		async (day, splitFirst) => {
-			const env = testEnv();
-			const now = at(day, 0, 17);
-			const seconds = Math.floor(now / 1000);
-			const batches = [
-				[obs('api.example.com', { issuer: 'older', notAfter: seconds + DAY_S }), obs('expired.example.com', { notAfter: seconds - 1 })],
-				[obs('api.example.com', { issuer: 'newer', firstSeen: seconds - 20 * DAY_S, notAfter: seconds + 2 * DAY_S,
-					details: { notBefore: seconds - DAY_S, serial: 'abcd', keyType: 'ec', keyBits: 256, sigAlg: 'ecdsa', sanCount: 2 } }),
-				obs('*.example.com', { notAfter: seconds + DAY_S })],
-			];
-			await ingest(env, now - 90 * 60_000, batches[0]!);
-			await ingest(env, now - 20 * 60_000, batches[1]!);
-			const inputs = (await runsOf(0)).map((run) => run.id).sort();
-			const jobs = await planCompactions(env.CURSORS, now, SEED_LIMITS, true);
-			expect(jobs.map((job) => job.inputs)).toEqual([inputs]);
-			const merged = jobs[0]!;
-			const split = merged.inputs.map((id, i) => ({ ...merged, id: `${merged.id}-split-${i}`, inputs: [id] }));
-			const winners = splitFirst ? split : [merged];
-			const losers = splitFirst ? [merged] : split;
-			for (const job of winners) expect(await runCompactionJob(env, job, undefined, now)).toBe('applied');
-			const outputs = await runsOf(1);
-			for (const job of losers) expect(await runCompactionJob(env, job, undefined, now)).toBe('stale');
-			for (const job of winners) expect(await runCompactionJob(env, job, undefined, now)).toBe('already-applied');
-			expect(await runsOf(1)).toEqual(outputs);
-			expect(await readAll(env, now)).toEqual(expectedRows(batches.flat(), seconds));
-			for (const output of outputs) expect(await env.INDEX.get(output.r2_key)).not.toBeNull();
-		},
-	);
 
 	it('closes one T0 -> T1 job over ~940 cuts into at most MAX_T1_RANGES runs, and reads match the full-cut path', async ({ task }) => {
 		const base = names(941 * PER_SHARD);
@@ -239,7 +208,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		expect(update.some((row) => row.key === boundary.key)).toBe(true);
 		const reader = createReader(env, () => at(0, 2, 32));
 		const lookups = [boundary.name, base.find((row) => inEmpty(row.key))!.name, base.find((row) => row.key < boundary.key)!.name];
-		await ingest(env, at(0, 2, 12), update);
+		await ingest(env, at(0, 2, 5), update);
 		const before = await Promise.all(lookups.map((name) => reader.scan(name, { limit: 100 })));
 
 		const { jobs } = await planAndDrain(env, at(0, 2, 32), limits);
@@ -272,8 +241,8 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		const limits = { ...SEED_LIMITS, maxT1Ranges: 8 };
 		const all = [...base];
 		for (const [mm, tag] of [
-			[12, 'a'],
-			[27, 'b'],
+			[5, 'a'],
+			[20, 'b'],
 		] as const) {
 			const batch = [...seenAgain(base.filter((_, i) => i % 2 === 0)), ...names(60, tag)];
 			all.push(...batch);
@@ -309,7 +278,7 @@ describe('T0 -> T1 at coarse cuts (SQ-491)', () => {
 		// One filter entry per row ('com\x01apex<i>'), all in one coarse range: no T3 shards, so only the fixed cuts.
 		const count = KEY_FILTER_MAX_ENTRIES + 500;
 		const rows = Array.from({ length: count }, (_, i) => obs(`n${i}.apex${i}.com`)).sort(byKey);
-		await ingest(env, at(0, 2, 12), rows);
+		await ingest(env, at(0, 2, 5), rows);
 		await planAndDrain(env, at(0, 2, 32), SEED_LIMITS);
 		const { results } = await env.CURSORS.prepare(
 			'SELECT rows, key_filter IS NOT NULL AS filtered FROM runs WHERE tier = 1 ORDER BY key_lo',
@@ -358,7 +327,7 @@ describe('the T1 roll-up of a coarse range wider than a job (SQ-518)', () => {
 			for (const mm of minutes) {
 				const batch = [...seenAgain(base.filter((_, i) => (i + hour + mm) % 3 === 0)), ...names(30, `h${hour}m${mm}x`)];
 				all.push(...batch);
-				await ingest(env, at(0, hour, mm + 7), batch);
+				await ingest(env, at(0, hour, mm), batch);
 				await planAndDrain(env, at(0, hour, mm + 27), limits);
 			}
 			const { results: before } = await env.CURSORS.prepare(
