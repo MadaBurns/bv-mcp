@@ -730,7 +730,7 @@ export async function discoverBrandDomains(
 	// the cost of what runs after it (remaining signals, aggregation, RDAP enrichment) has
 	// not been measured here, so the value is left unchanged. Known consequence: the
 	// synchronous `discover_brand_domains` tool path sets a 24s deadline
-	// (DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS in src/handlers/tools.ts), which is always
+	// (DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS in src/handlers/tool-registry.ts), which is always
 	// below this gate, so that path skips this arm with `skipped_deadline` whenever it would
 	// otherwise run.
 	const RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS = 70_000;
