@@ -8,6 +8,23 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.2] - 2026-11-02
+
+### Fixed
+
+- `scan_domain`: a domain with a null MX and an SPF policy that authorizes no sender (`v=spf1 -all`) neither sends nor receives mail, so revoking every DKIM key (`v=DKIM1; p=`, often a wildcard `*._domainkey`) is the correct posture for it. The dkim category was already N/A for such a domain, but "DKIM keys revoked" (or a per-selector "Revoked DKIM key") was still listed as HIGH. Those findings are now `info` and marked not applicable. No grade changes, because the category is not scored for these domains. A usable key keeps its rating, including a weak one, and so does a domain that receives mail or authorizes a sender.
+
+### Changed
+
+- Internal refactor, no behaviour change: oversized source files are split into smaller sibling modules, and each original path still exports every name it did before.
+  - `src/tools/scan/post-processing.ts`: mail applicability, CDN heuristics, provider inference and result rebuilding move into sibling modules.
+  - `src/handlers/tools.ts`: the tool registry, tool sets and runtime types move into `tool-registry.ts`, `tool-sets.ts` and `tool-types.ts`; the direct-dispatch block moves token-for-token into `direct-dispatch.ts` as `dispatchDirectTool`, pinned by characterization tests.
+  - `src/tools/scan-domain.ts`: check dispatch, retry, early results, adaptive weights and types move into `src/tools/scan/`.
+  - `src/mcp/execute.ts`: the access log, IP evidence encryption, request telemetry and response builders move into sibling modules.
+  - `src/lib/ownership-attribution.ts`: split into `src/lib/ownership/` leaf modules.
+- Internal: the brand-audit deps-parity audit now checks the `brand_audit_single` registry entry on its own, so another tool's identical forwarding line can no longer hide a dropped dependency there. Comments that pointed at moved code now name the new files.
+- dns-checks stays at 1.62.2 and scoring model stays at 1.41.0; scoring rules and weights are unchanged.
+
 ## [3.108.1] - 2026-11-02
 
 ### Fixed
