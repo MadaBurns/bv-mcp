@@ -12,7 +12,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 - Owned CT index read/decode preparation shares its six-slot bound across the initial catalog scan and its single retry, including abandoned reads (#1147).
 - Reject the phase/coalescing experiment after its peak gate failed with 2/28 HTTP 503 responses and p95 1594.84 ms; restore UTC-aligned T0 windows and creation-hour grouping. The quarter-hour trigger, fifteen-minute width and existing limits are preserved. Live latency acceptance remains open (#1147).
-- Timestamp new T0 catalog rows at D1 statement execution after both object writes, while preserving invocation-based object keys, freshness metadata and ledger dates. A two-minute scheduling-floor candidate keeps the original calendar windows, grouping and cadence; retention still requires measured recovery, cost and peak-latency acceptance (#1147).
+- Reject the D1-statement-clock/two-minute-floor CT candidate after its peak returned 27/28 HTTP 200 responses, one HTTP 503 timeout and p95 1418.15 ms. Its full recovery applied all 102 jobs over 2,183 inputs and drained the compact queue, but the unchanged all-success gate failed. Restore invocation-time T0 catalog timestamps and the ten-minute age floor; preserve the independent six-slot reader limiter, calendar windows, grouping and cadence. The prior production version was verified restored at 100%; main MCP settings remained unchanged. Live latency acceptance and cost attribution remain open (#1147).
 
 ## [3.108.3] - 2026-11-02
 
