@@ -66,15 +66,6 @@ export const FULL_PLAN_MINUTE = 17;
 export const T0_WINDOW_MS = 15 * 60_000;
 /** ...once the window has been over for this long. */
 export const T0_MIN_AGE_MS = 10 * 60_000;
-/** Align window ends to the canonical tick minus the age floor, without changing window width or trigger count. */
-export const T0_WINDOW_PHASE_MS =
-	((FULL_PLAN_MINUTE * 60_000 - T0_MIN_AGE_MS) % T0_WINDOW_MS + T0_WINDOW_MS) % T0_WINDOW_MS;
-
-/** Last complete T0 window end whose rows are at least T0_MIN_AGE_MS old at the scheduled timestamp. */
-export function t0WindowEnd(nowMs: number): number {
-	return Math.floor((nowMs - T0_MIN_AGE_MS - T0_WINDOW_PHASE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS + T0_WINDOW_PHASE_MS;
-}
-
 export const GROUP_SHARDS = 8;
 export const GROUP_MAX_SHARDS = 24;
 /** The sibling keyspace is ['s\x00', 's\x01'): no output run spans its edges, so every run holds one kind. */
@@ -373,8 +364,7 @@ const createdIn = (run: PlanRun, from: number, to: number) => {
  * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
  * not `full` plans only the T0 window that has just come due; a full tick also plans every older T0 run (one whose
  * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` widens only T0 eligibility
- * during previous-fast-cron propagation; it never enables the other tiers or snapshots. A phase transition can leave a
- * fragment outside the first ordinary window: verify the new source's full :17 recovery and drain before retention.
+ * during previous-fast-cron propagation; it never enables the other tiers or snapshots.
  */
 export async function planCompactions(
 	db: D1Database,
@@ -390,11 +380,16 @@ export async function planCompactions(
 		.all<PlanRun>();
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
 	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
-	const windowEnd = t0WindowEnd(nowMs);
+	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
 	const windowStart = full || recoverT0 ? -Infinity : windowEnd - T0_WINDOW_MS;
 	// T0 runs span the whole keyspace, so a T1 job takes cuts across all of it: the coarse subset (SQ-491).
 	const t1Cuts = coarseCuts(plan.cuts, limits.maxT1Ranges);
-	await planChunks(plan, 1, tier(0).filter((run) => createdIn(run, windowStart, windowEnd)), t1Cuts);
+	for (const runs of groupBy(
+		tier(0).filter((run) => createdIn(run, windowStart, windowEnd)),
+		(run) => run.created_at.slice(0, 13),
+	).values()) {
+		await planChunks(plan, 1, runs, t1Cuts);
+	}
 	if (!full) return plan.jobs;
 	await planRollUp(plan, tier(1), nowMs);
 	await planT2(plan, tier(1), nowMs);
