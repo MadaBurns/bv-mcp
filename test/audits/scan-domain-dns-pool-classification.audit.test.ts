@@ -3,7 +3,7 @@
 /**
  * `CHECKS_WITHOUT_DNS_POOL` drift guard (#952/SQ-15 repair).
  *
- * `safeCheck`'s per-check timer extension in `src/tools/scan-domain.ts` must be
+ * `safeCheck`'s per-check timer extension in `src/tools/scan/check-retry.ts` must be
  * withheld from any `CHECK_DISPATCH` entry that ignores its 2nd (`dnsOptions`)
  * parameter — such a check never calls `dnsSemaphore.run()`, so extending its
  * deadline by the pool's queued time silently relaxes a budget nothing on that

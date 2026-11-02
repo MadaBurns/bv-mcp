@@ -693,7 +693,7 @@ interface RegistrarOutcome {
 /**
  * Failure reasons — from EITHER side of the lookup — that describe a TRANSIENT
  * condition. A result carrying one is stamped `partial: true` so the direct
- * `rdap_lookup` registry path (`handlers/tools.ts`, cache predicate `!r.partial`,
+ * `rdap_lookup` registry path (`handlers/tool-registry.ts`, cache predicate `!r.partial`,
  * TTL 3600s) does not pin a flake for an hour as if it were a deterministic
  * answer (#931 review, widened in #943).
  *
@@ -720,7 +720,7 @@ interface RegistrarOutcome {
  *
  * 1. `caller_aborted` is a fact about OUR OWN clock, never about the domain.
  *    The synchronous tool path arms `RDAP_LOOKUP_SYNC_BUDGET_MS` (24s) as both
- *    the caller `AbortSignal` and `deadlineMs` (wired in `src/handlers/tools.ts`
+ *    the caller `AbortSignal` and `deadlineMs` (wired in `src/handlers/tool-registry.ts`
  *    at the `rdap_lookup` registry entry), so a slow-but-healthy registry that
  *    overruns our budget produces this reason. Caching that for an hour would
  *    publish our timeout as the registry's answer.

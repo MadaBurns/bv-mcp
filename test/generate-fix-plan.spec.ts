@@ -415,7 +415,7 @@ describe('evaluateFixPlan: a category that failed transiently is not turned into
 	/**
 	 * F2 (review round 1): `buildFixtures()` above uses `buildDnsErrorResult`-shaped
 	 * transients (`metadata.errorKind: 'dns_error'`). But the ORCHESTRATOR's own
-	 * transient producer — `safeCheck()` in `src/tools/scan-domain.ts`, which is
+	 * transient producer — `safeCheck()` in `src/tools/scan/check-retry.ts`, which is
 	 * what actually runs for any check with no top-level internal DNS-error
 	 * handling of its own — sets `checkStatus: 'error' | 'timeout'` and NEVER sets
 	 * `errorKind`. A fix gated only on `errorKind` would miss every

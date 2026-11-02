@@ -359,8 +359,9 @@ function whenAborted(signal: AbortSignal): Promise<null> {
 
 /**
  * Share the in-flight run for the same key, writing nothing to KV or memory (SQ-498; the same rule
- * as scan-domain's `runDedupedCheck`, which this module cannot import without a cycle). Two
- * concurrent scans of one domain in an isolate therefore run each web posture check once.
+ * as `runDedupedCheck` in scan/check-retry.ts). This copy predates that function's move out of
+ * scan-domain.ts, when importing it here would have been a cycle; check-retry.ts does not import this
+ * module. Two concurrent scans of one domain in an isolate therefore run each web posture check once.
  */
 function dedupedRunner(domain: string, category: WebPostureCategory, run: CheckRunner, options: WebPostureOptions): CheckRunner {
 	return () => runWithCache(buildCheckCacheKey(domain, category), run, undefined, undefined, options.forceRefresh, () => false, true);
