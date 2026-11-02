@@ -121,6 +121,8 @@ SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, plan
 pairs five-minute T0 windows with `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`; the ten-minute minimum age, hourly `:17` recovery,
 job row/input caps and read-memory budgets remain unchanged. Deploying this cadence changes recurring work and requires explicit
 operator approval. Change the window and cron together: a five-minute cron with fifteen-minute windows repeats work.
+The handler also recognizes the prior quarter-hour expression during propagation and recovers older eligible T0 windows;
+only an actual `:17` tick enables snapshots and the other tiers. Only the new expression is registered in configuration.
 
 Check the first new five-minute tick after deploy: one `ct_compaction_plan` line
 whose `tiers` is `[n,0,0]`, and a `ct_compaction_job_done` line per job (`outputs`, `putMs`, `ms`, `outcome`). Tier-0 runs should
@@ -433,7 +435,9 @@ CertSpotter behind it. That is why the p95 gate in step 7 exists.
   never roll back to a version older than the one that added it. Older versions cannot read the stored details.
   **Cron schedule (SQ-402, SQ-412):** a rollback restores the old code, not the schedule. The schedule can retain the newer
   trigger string, while dispatch matches the exact `COMPACTION_CRON` string compiled into the code. A mismatch
-  disables **all** compaction ticks, including `:17`, while ingestion continues. Restore matching code, T0 window length and
+  in older code can disable **all** compaction ticks, including `:17`, while ingestion continues. The transition-compatible
+  version accepts both expressions. To return to a pre-compatible version, restore the old trigger while compatible code is
+  still running, observe propagation and old-schedule execution, then restore the old code/window. Restore matching code, T0 window length and
   actual trigger string together. After any rollback, watch `wrangler tail` across a configured firing: the sign that compaction stopped is that NO
   `ct_compaction_plan` line appears. Do not rely on a `ct_cron_unmatched` line: the current code logs one for any schedule it
   has no case for, but a rolled-back version older than SQ-412 logs nothing at all. After a rollback past SQ-402, re-deploy

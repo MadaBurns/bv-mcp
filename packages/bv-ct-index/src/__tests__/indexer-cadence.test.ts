@@ -7,7 +7,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCompactionBatch, runCompactionJob, PUT_CONCURRENCY } from '../indexer/compact';
 import type { JobStats } from '../indexer/compact';
-import { COMPACTION_CRON, T0_MIN_AGE_MS, T0_WINDOW_MS, runCompactionCron } from '../indexer/plan';
+import worker from '../index';
+import { currentGeneration } from '../indexer/catalog';
+import { COMPACTION_CRON, LEGACY_COMPACTION_CRON, T0_MIN_AGE_MS, T0_WINDOW_MS, runCompactionCron } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import type { NameObservation } from '../types';
 import {
@@ -43,6 +45,52 @@ async function readAll(env: TestEnv, nowMs: number): Promise<NameObservation[]> 
 }
 
 describe('T0 -> T1 every 5 minutes', () => {
+	it('accepts the legacy :32 tick as older-window T0-only recovery during trigger propagation', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 5), batchAt('old-a'));
+		await cronAndDrain(env, at(0, 0, 22));
+		await ingest(env, at(0, 0, 10), batchAt('old-b'));
+		await cronAndDrain(env, at(0, 0, 27));
+		const oldT1 = (await catalog()).filter((run) => run.tier === 1).map((run) => run.id);
+		expect(oldT1).toHaveLength(2);
+		for (const minute of [1, 6, 16, 25]) await ingest(env, at(0, 1, minute), batchAt(`transition-${minute}`));
+		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
+			.bind(new Date(at(-8, 0, 0)).toISOString()).run();
+		const before = env.queue.sent.length;
+		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		await worker.scheduled({ cron: LEGACY_COMPACTION_CRON, scheduledTime: at(0, 1, 32), noRetry: () => undefined }, env);
+		const jobs = env.queue.sent.slice(before);
+		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 3]]);
+		expect(jobs[0]!.inputs.some((id) => oldT1.includes(id))).toBe(false);
+		expect(jobs[0]!.now).toBe(Math.floor(at(0, 1, 32) / 1000));
+		expect(await currentGeneration(env.CURSORS)).toBe(1);
+		const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+		expect(lines.some((line) => line.event === 'ct_compaction_transition' && line.cron === LEGACY_COMPACTION_CRON)).toBe(true);
+		expect(lines.some((line) => line.event === 'ct_cron_unmatched')).toBe(false);
+		for (const job of jobs) expect(await runCompactionJob(env, job, undefined, at(0, 1, 32))).toBe('applied');
+		expect((await catalog()).filter((run) => run.tier === 0).map((run) => run.r2_key)).toEqual([
+			expect.stringContaining(`/${at(0, 1, 25)}-`),
+		]);
+	});
+
+	it('keeps legacy :17 full recovery, all-tier planning, and the due generation snapshot', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 5), batchAt('old-a'));
+		await cronAndDrain(env, at(0, 0, 22));
+		await ingest(env, at(0, 0, 10), batchAt('old-b'));
+		await cronAndDrain(env, at(0, 0, 27));
+		for (const minute of [45, 55]) await ingest(env, at(0, 0, minute), batchAt(`missed-${minute}`));
+		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
+			.bind(new Date(at(-8, 0, 0)).toISOString()).run();
+		const before = env.queue.sent.length;
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		await worker.scheduled({ cron: LEGACY_COMPACTION_CRON, scheduledTime: at(1, 1, 17), noRetry: () => undefined }, env);
+		const jobs = env.queue.sent.slice(before);
+		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 2], [2, 2]]);
+		expect(jobs.every((job) => job.generation === 2)).toBe(true);
+		expect(await env.CURSORS.prepare("SELECT v FROM meta WHERE k = 'current_generation'").first('v')).toBe('2');
+	});
+
 	it('advances a distinct eligible five-minute window at each tick without replanning undrained inputs', async () => {
 		const env = testEnv();
 		expect(COMPACTION_CRON).toBe('2,7,12,17,22,27,32,37,42,47,52,57 * * * *');

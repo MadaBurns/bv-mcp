@@ -20,7 +20,7 @@ describe('bv-ct-index Worker', () => {
 		expect(typeof worker.queue).toBe('function');
 	});
 
-	it.each(['17 * * * *', '2,17,32,47 * * * *'])('logs ct_cron_unmatched for an unmatched or rolled-back cron %s', async (cron) => {
+	it.each(['17 * * * *', '7 * * * *'])('logs ct_cron_unmatched for an unknown cron %s', async (cron) => {
 		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 		try {
 			await worker.scheduled({ cron, scheduledTime: Date.now(), noRetry: () => undefined }, testEnv());
