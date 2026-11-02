@@ -324,6 +324,11 @@ Both gates must pass before step 8. If either fails, **STOP**: that is the contr
 story. It deploys a throwaway `bv-ct-index-bench` Worker with its own bucket and database and deletes them at the end. Pass criteria,
 from that file:
 
+Measure the merge with `fetch=window`, which imports production's `windowedBlockReader` and shared memory budgets. Keep
+`fetch=block` and `fetch=object` as separately reported diagnostics: the former serializes individual block GETs and does not
+represent production compaction. Retain any failed diagnostic receipts. Changing the measurement to the shipped reader does
+not change the CPU, wall-time or memory thresholds below; a failed production-window measurement still blocks activation.
+
 | Measure                                   | Pass     | Hard ceiling |
 | ----------------------------------------- | -------- | ------------ |
 | Query p95, in-Worker, placement off       | < 600 ms | 1500 ms      |

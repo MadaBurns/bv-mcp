@@ -3,7 +3,7 @@
 US-12 de-risk step (SQ-352). It measures two things on throwaway resources before `BV_CERTSTREAM` is repointed at the `bv-ct-index` sidecar (runbook step 7a):
 
 - **Read path:** the latency of one query. A query is one D1 overlap SELECT on the real catalog schema, then up to 9 single-block R2 range GETs (at most 6 in flight), then decoding those blocks.
-- **Compaction:** the time and memory of `mergeSortedRuns` over 4 runs holding about 800k rows in total, as a compaction job would run it inside a Worker.
+- **Compaction:** the time and memory of `mergeSortedRuns` over 4 runs holding about 800k rows in total. `fetch=window` uses the production compactor's contiguous-block reader and shared window budgets; `block` and `object` retain the original diagnostic baselines.
 
 Everything this runbook creates is scratch: the Worker `bv-ct-index-bench`, the R2 bucket `bv-ct-index-bench` and the D1 database `bv-ct-index-bench`. Step 6 deletes all three. None of it touches the `bv-ct-index` sidecar or its resources.
 
@@ -16,7 +16,11 @@ Everything this runbook creates is scratch: the Worker `bv-ct-index-bench`, the 
 | Merge wall time (`curl` `time_total`)                                              | < 30 s   | 30 s                 |
 | Merge memory (`peakBytesEstimate`), and the tail `outcome` is not `exceededMemory` | < 100 MB | 128 MB isolate limit |
 
-If a measure misses its hard ceiling, that triggers the contract's "Reopen if" clause. Record the numbers on the US-12 story either way.
+The merge pass criteria apply to `fetch=window` with four overlapping inputs and placement off. This mode reuses `windowedBlockReader` and imports the production `READ_BUDGET_BYTES`, `MIN_WINDOW_BYTES` and `MAX_WINDOW_BYTES`: a 16 MiB job budget, clamped to 64 KiB–1 MiB per open input. Four overlapping seeded runs correspond to four production chains, so each receives a 1 MiB window. The benchmark retains the same codec merge and output writer. It does not exercise the production planner, catalog swap, or queue delivery; those need their separate integration checks.
+
+`fetch=block` deliberately issues one GET per block; `fetch=object` retains each whole compressed input. They are diagnostics, not the production read strategy. Record their failures as failures of those modes; never overwrite or describe them as passing. Selecting the shared production window reader corrects implementation parity and does not change the 30 s CPU/wall or 100 MB memory bars.
+
+If a production-window measure misses its hard ceiling, that triggers the contract's "Reopen if" clause. Record the numbers on the US-12 story either way.
 
 ## Read this first
 
@@ -78,6 +82,7 @@ Then, in the first terminal:
 
 ```bash
 curl -sS -H "authorization: Bearer $BENCH_KEY" -w '\ncurl_total_s=%{time_total}\n' "$BENCH_URL/query?n=500" | tee query-A.json
+curl -sS -X POST -H "authorization: Bearer $BENCH_KEY" -w '\ncurl_total_s=%{time_total}\n' "$BENCH_URL/merge?inputs=4&fetch=window" | tee merge-A-window.json
 curl -sS -X POST -H "authorization: Bearer $BENCH_KEY" -w '\ncurl_total_s=%{time_total}\n' "$BENCH_URL/merge?inputs=4&fetch=block" | tee merge-A-block.json
 curl -sS -X POST -H "authorization: Bearer $BENCH_KEY" -w '\ncurl_total_s=%{time_total}\n' "$BENCH_URL/merge?inputs=4&fetch=object" | tee merge-A-object.json
 ```
@@ -102,8 +107,8 @@ To read the output:
   - `colo`: the colo the Worker ran in.
 - `merge-A-*.json` gives:
   - `outputRows` and `outputBytes`: what the merge wrote.
-  - `blockReads`: the number of R2 range GETs. `fetch=block` reads one block per GET, about 1,450 GETs. `fetch=object` reads each run with a single GET.
-  - `peakBytesEstimate`: memory held at the peak. It is counted by the bench, not measured from the heap: input blocks or whole objects, the decoded rows at 274 B per row, and twice the output, because `finish()` concatenates. An `exceededMemory` outcome in the tail is the authoritative failure.
+  - `blockReads`: the number of range GETs. `fetch=window` counts the actual whole-window GETs, using the production reader. `fetch=block` reads one block per GET, about 1,450 GETs. `fetch=object` reads each run with a single whole-object GET, excluded from this range-GET counter. `productionReadPath` identifies window mode; `windowBytes` records its production-derived budget.
+  - `peakBytesEstimate`: memory held at the peak. It is counted by the bench, not measured from the heap: input blocks, whole objects, or actual retained production windows, the decoded rows at 274 B per row, and twice the output, because `finish()` concatenates. Window mode accounts actual response bytes, including the brief overlap between an old cached window and its replacement. This remains an estimate, not a heap measurement. An `exceededMemory` outcome in the tail is the authoritative failure.
   - The merge's true times are the tail's `cpuTime` and the `curl` `time_total`, not the in-Worker clock.
 
 A client-side check of single-query latency includes the round trip to the Worker:
@@ -130,7 +135,7 @@ Then repeat step 4 with the tail written to `tail-B.jsonl` and the outputs to `q
 
 ## 6. Record, then DELETE everything
 
-Record the figures on the US-12 story with `story_log`: query p95, p99 and max for A and B, then merge cpuTime, wall time and peak bytes for both fetch modes, then `d1Nul`, the bucket location and the colos. Then tear everything down:
+Record the figures on the US-12 story with `story_log`: query p95, p99 and max for A and B, then merge cpuTime, wall time and peak bytes for window mode and both diagnostic modes, then `d1Nul`, the bucket location and the colos. Then tear everything down:
 
 ```bash
 curl -sS -X POST -H "authorization: Bearer $BENCH_KEY" "$BENCH_URL/cleanup"   # expect remainingObjects: 0
