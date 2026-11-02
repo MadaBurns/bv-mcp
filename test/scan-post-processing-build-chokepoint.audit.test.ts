@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import postProcessingSource from '../src/tools/scan/post-processing.ts?raw';
+
+// The post-processing stage spans these modules (split out of post-processing.ts in
+// SQ-535). Each one is named so a rename or a new module fails loudly instead of
+// silently leaving code outside the census.
+const MODULES = ['post-processing', 'mail-applicability', 'cdn-heuristics', 'provider-inference', 'result-rebuild'];
+const SOURCES = import.meta.glob('../src/tools/scan/*.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const sourceOf = (module: string) => SOURCES[`../src/tools/scan/${module}.ts`];
 
 /**
  * #994 tripwire — a two-argument `buildCheckResult(category, findings)` call
@@ -9,7 +15,7 @@ import postProcessingSource from '../src/tools/scan/post-processing.ts?raw';
  * exists so a NEW rebuild site added tomorrow cannot re-open the same hole
  * silently, in a path no behavioural test happens to cover.
  *
- * The rule: inside `src/tools/scan/post-processing.ts`, `buildCheckResult` may be
+ * The rule: inside the post-processing modules (`MODULES` below), `buildCheckResult` may be
  * called from exactly ONE place — `rebuildPreservingSignals`, which forwards
  * `controlPresent` / `recordPresent` / `metadata` from the source result. Any
  * other call must carry an explicit `bv-signals-checked:` marker stating why
@@ -17,15 +23,21 @@ import postProcessingSource from '../src/tools/scan/post-processing.ts?raw';
  * omission.
  */
 describe('post-processing buildCheckResult chokepoint (#994)', () => {
-	const lines = postProcessingSource.split('\n');
+	it('every post-processing module is in the census', () => {
+		for (const module of MODULES) expect(sourceOf(module), `${module}.ts`).toBeTypeOf('string');
+	});
+
 	// Skip COMMENT lines. A census that counts prose reads a docblock explaining the
 	// rule as a violation of it — this audit's first run tripped on its own three
 	// explanatory comments, and an audit that cries wolf gets its marker pasted in
 	// everywhere, which is how the rule dies.
 	const isComment = (text: string) => /^\s*(\/\/|\/\*|\*)/.test(text);
-	const callLines = lines
-		.map((text, index) => ({ text, line: index + 1 }))
-		.filter(({ text }) => /\bbuildCheckResult\s*\(/.test(text) && !isComment(text));
+	const callLines = MODULES.flatMap((module) => {
+		const lines = (sourceOf(module) ?? '').split('\n');
+		return lines
+			.map((text, index) => ({ module, lines, text, line: index + 1 }))
+			.filter(({ text }) => /\bbuildCheckResult\s*\(/.test(text) && !isComment(text));
+	});
 
 	it('positive control: the audit can see buildCheckResult calls at all', () => {
 		// A zero here would make every assertion below vacuously green.
@@ -33,7 +45,7 @@ describe('post-processing buildCheckResult chokepoint (#994)', () => {
 	});
 
 	it('every buildCheckResult call is either the chokepoint or explicitly signals-checked', () => {
-		const offenders = callLines.filter(({ text, line }) => {
+		const offenders = callLines.filter(({ lines, text, line }) => {
 			// The chokepoint itself.
 			if (text.includes('buildCheckResult(source.category, adjusted, source.controlPresent, source.recordPresent, source.metadata)')) {
 				return false;
@@ -44,7 +56,7 @@ describe('post-processing buildCheckResult chokepoint (#994)', () => {
 		});
 
 		expect(
-			offenders.map(({ line, text }) => `post-processing.ts:${line}  ${text.trim()}`),
+			offenders.map(({ module, line, text }) => `${module}.ts:${line}  ${text.trim()}`),
 			'A rebuild here must go through rebuildPreservingSignals (#994), or carry a `// bv-signals-checked: <why>` comment on the line above.',
 		).toEqual([]);
 	});
@@ -52,7 +64,7 @@ describe('post-processing buildCheckResult chokepoint (#994)', () => {
 	it('the chokepoint helper still forwards all three signals', () => {
 		// Guards the other direction: an edit that keeps the helper's NAME but drops
 		// an argument would make the rule above pass while re-creating the defect.
-		expect(postProcessingSource).toContain(
+		expect(sourceOf('result-rebuild')).toContain(
 			'return buildCheckResult(source.category, adjusted, source.controlPresent, source.recordPresent, source.metadata);',
 		);
 	});
