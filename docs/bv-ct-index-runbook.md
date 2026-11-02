@@ -122,6 +122,22 @@ pairs fifteen-minute T0 windows with that quarter-hour expression; the ten-minut
 job row/input caps and read-memory budgets remain unchanged. A five-minute paired cadence was evaluated but did not meet the
 all-success latency gate, so it is not retained. Reader preparation and codec improvements remain independent of cadence.
 
+The #1147 candidate keeps that cadence and width, but aligns window ends to phase 7 minutes past each quarter hour:
+`end = floor((now - age - phase) / width) * width + phase`, with a ten-minute age floor. At nominal ticks the cutoff
+is ten minutes old rather than seventeen; delayed ticks can be older. Eligible T0 inputs are chunked together across UTC
+creation-hour boundaries, preserving the existing age ordering, input/row caps and coarse cuts. Output timestamps remain
+the job time; downstream hourly roll-up and daily grouping remain unchanged. These changes do not establish lower latency
+or cost neutrality, and the existing oversized-single-input exception is unchanged.
+
+On a forward phase-zero to phase-seven rollout, the first ordinary window can omit a seven-minute fragment from its
+planning range. Those inputs remain readable. **Before retaining the candidate, verify the first new full `:17` catch-up
+plan includes all older eligible T0 inputs and its jobs drain successfully.** Record queue age, actual object GET/PUT and
+CPU costs, then run both acceptance gates against the new source. Keep current secrets when rolling back to phase zero.
+
+Read preparation uses one six-slot read-and-decode limiter across the initial catalog scan and its single catalog retry.
+Abandoned preparations retain their slots until they settle; retry rows cannot exceed that request-wide bound or leak
+rows from the abandoned catalog. This does not cancel in-flight R2 reads or extend the API deadline.
+
 For rollback from the five-minute pilot, restore the actual quarter-hour trigger while dual-compatible code is still serving,
 allow fifteen minutes for trigger propagation, then deploy the matching fifteen-minute window. The handler also recognizes the
 prior five-minute expression during propagation and recovers older eligible T0 windows; only an actual `:17` tick enables
@@ -391,6 +407,10 @@ Pass: **p95 under 1.5 s and every status 200, `amazonaws.com` and `microsoft.com
 (operator ruling, 2026-10-26). A `503` with `ct_index_timeout` means the API's own 1500 ms budget tripped, which is a failure of this
 gate. The laptop round trip is inside the number, so it is conservative. The in-Worker figure is the one the
 benchmark reports. Record the result with `story_log` on US-12.
+
+The retained-baseline #1147 measurement failed: **2 of 28 requests returned 503 and p95 was 1573.98 ms**. Keep that
+failure with the evidence. Live acceptance of the phase/coalescing/retry candidate is pending; passing offline regressions,
+a binding activation, or a smaller planner job count does not satisfy either gate.
 
 Before counting samples, prove a known-domain read returns 200 with the matching caller and 401 with a different caller.
 Authentication/setup failures are not latency samples. Keep failed acceptance runs as well as the rerun; a diagnostic route

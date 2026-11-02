@@ -87,7 +87,115 @@ const inRange = (domain: string, rows: NameObservation[]) => {
 	return rows.filter((row) => row.key >= lo && row.key <= hi);
 };
 
+/** A catalog swap while five abandoned preparations remain held at an R2 boundary. */
+async function heldCatalogRetry(stage: 'get' | 'body', retryFailure?: 'missing' | 'read-error') {
+	const old = await encodeRun([obs('abandoned.example.test')]);
+	const fresh = await encodeRun([obs('fresh.example.test')]);
+	let catalogs = 0;
+	let active = 0;
+	let maxActive = 0;
+	const started: string[] = [];
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const db = {
+		prepare() {
+			return {
+				bind() { return this; },
+				async all() {
+					const first = ++catalogs === 1;
+					const run = first ? old : fresh;
+					return {
+						results: Array.from({ length: READ_CONCURRENCY }, (_, i) => ({
+							id: `${first ? 'old' : 'fresh'}-${i}`,
+							r2_key: `${first ? 'old' : 'fresh'}-${i}`,
+							key_lo: run.blockIndex[0]!.firstKey,
+							block_index: serializeBlockIndex(run.blockIndex),
+						})),
+					};
+				},
+			};
+		},
+	} as unknown as D1Database;
+	const bucket = {
+		async get(key: string, options: { range: { offset: number; length: number } }) {
+			started.push(key);
+			maxActive = Math.max(maxActive, ++active);
+			if (key === 'old-0' || (key === 'fresh-0' && retryFailure === 'missing')) {
+				active--;
+				return null;
+			}
+			if (key === 'fresh-0' && retryFailure === 'read-error') {
+				active--;
+				throw new Error('fresh range read failed');
+			}
+			const abandoned = key.startsWith('old-');
+			const bytes = abandoned ? old.bytes : fresh.bytes;
+			try {
+				if (stage === 'get' && abandoned) await held;
+				else await Promise.resolve();
+				return {
+					async arrayBuffer() {
+						try {
+							if (stage === 'body' && abandoned) await held;
+							else await Promise.resolve();
+							return bytes.slice(options.range.offset, options.range.offset + options.range.length).buffer;
+						} finally { if (stage === 'body') active--; }
+					},
+				};
+			} finally { if (stage === 'get') active--; }
+		},
+	} as unknown as R2Bucket;
+	const scanning = createReader(testEnv({ CURSORS: db, INDEX: bucket }), () => NOW_MS).scan('example.test', { limit: 10 });
+	scanning.catch(() => undefined);
+	return { scanning, release, started, catalogs: () => catalogs, active: () => active, maxActive: () => maxActive };
+}
+
 describe('lazy run opening', () => {
+	it.each(['get', 'body'] as const)('shares six slots with a catalog retry while abandoned R2 %s reads remain held', async (stage) => {
+		const fixture = await heldCatalogRetry(stage);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const page = await Promise.race([
+				fixture.scanning,
+				new Promise<never>((_resolve, reject) => {
+					timeout = setTimeout(() => reject(new Error('retry waited for abandoned reads')), 1_000);
+				}),
+			]);
+			expect(page.names.map((row) => row.name)).toEqual(['fresh.example.test']);
+			expect(page.truncated).toBe(false);
+			expect(page.cursor).toBeNull();
+			expect(fixture.catalogs()).toBe(2);
+			expect(fixture.started.filter((key) => key.startsWith('fresh-'))).toHaveLength(READ_CONCURRENCY);
+			expect(fixture.active()).toBe(READ_CONCURRENCY - 1);
+			expect(fixture.maxActive()).toBeLessThanOrEqual(READ_CONCURRENCY);
+		} finally {
+			if (timeout !== undefined) clearTimeout(timeout);
+			fixture.release();
+			await fixture.scanning.catch(() => undefined);
+		}
+	});
+
+	it.each(['missing', 'read-error'] as const)('preserves a retry-front %s failure without a third catalog scan', async (failure) => {
+		const fixture = await heldCatalogRetry('body', failure);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const scanning = Promise.race([
+				fixture.scanning,
+				new Promise<never>((_resolve, reject) => {
+					timeout = setTimeout(() => reject(new Error('retry waited for abandoned reads')), 1_000);
+				}),
+			]);
+			const message = failure === 'missing' ? 'run object missing from R2: fresh-0' : 'fresh range read failed';
+			await expect(scanning).rejects.toThrow(message);
+			expect(fixture.catalogs()).toBe(2);
+			expect(fixture.maxActive()).toBeLessThanOrEqual(READ_CONCURRENCY);
+		} finally {
+			if (timeout !== undefined) clearTimeout(timeout);
+			fixture.release();
+			await fixture.scanning.catch(() => undefined);
+		}
+	});
+
 	it('refills six bounded slots behind a slow shared-bound first run without emitting early', async () => {
 		const env = testEnv();
 		for (let i = 0; i < 12; i++) await ingest(env, at(i), [obs('a.hot.com', { issuer: `issuer-${i}` }), obs(`x${i}.hot.com`)]);
