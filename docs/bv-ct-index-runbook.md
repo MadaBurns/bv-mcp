@@ -117,9 +117,10 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. The retained default
-pairs fifteen-minute T0 windows with that quarter-hour expression; the ten-minute minimum age, hourly `:17` recovery,
-job row/input caps and read-memory budgets remain unchanged. A five-minute paired cadence was evaluated but did not meet the
+SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. It pairs
+fifteen-minute T0 windows with that quarter-hour expression and originally retained a ten-minute age floor. The statement-clock
+candidate below evaluates a two-minute floor; hourly `:17` recovery, job row/input caps and read-memory budgets remain unchanged.
+A five-minute paired cadence was evaluated but did not meet the
 all-success latency gate, so it is not retained. Reader preparation and codec improvements remain independent of cadence.
 
 An evaluated #1147 candidate kept that cadence and width, but aligned window ends to phase 7 minutes past each quarter hour:
@@ -127,8 +128,23 @@ An evaluated #1147 candidate kept that cadence and width, but aligned window end
 was ten minutes old rather than seventeen; delayed ticks could be older. It chunked eligible T0 inputs together across UTC
 creation-hour boundaries, preserving the existing age ordering, input/row caps and coarse cuts. The experiment failed the
 peak gate with **2/28 HTTP 503 responses and p95 1594.84 ms**, so it is not retained. The planner again uses UTC-aligned
-fifteen-minute windows and creation-hour grouping. Output timestamps, downstream grouping and the existing
+fifteen-minute windows and creation-hour grouping. Compaction outputs keep job-time timestamps; downstream grouping rules and the existing
 oversized-single-input exception are unchanged; no latency improvement or cost neutrality is established.
+
+The next #1147 candidate changes only the T0 catalog scheduling clock and age floor. Production `runs.created_at` uses
+canonical UTC D1 statement time after both R2 puts complete, inside the existing atomic catalog batch. This is not an exact
+transaction-commit timestamp: separate statements may straddle a boundary, and database/planner clock skew or a delayed commit
+still requires full recovery. R2 attempt keys, `index_started_at`, `fresh_through` and ledger dates retain invocation time.
+Explicit valid clock overrides remain deterministic; invalid Date instants fail before binding or acknowledgement effects.
+The existing string column and object encoding need no migration.
+
+With the original phase-zero windows and a two-minute floor, a canonical tick advances the cutoff one fifteen-minute window
+relative to the prior ten-minute setting. This is eligibility, not a bound on actual residency. A forward change can leave an
+entire old window until the next full `:17`; those rows remain readable. **Before retaining this candidate, prove its actual
+new-version full recovery and drain, then pass the unchanged caller controls and peak gate.** Record D1 clock bounds, catalog
+counts, compaction outputs/GETs/PUTs and queue health. Clock rebucketing and earlier expiry processing can change rewrite costs;
+same-input T0 simulations do not establish cost neutrality or downstream equivalence. Failed acceptance restores the prior
+clock/floor while retaining the independently verified reader limiter.
 
 On a forward phase-zero to phase-seven rollout, the first ordinary window can omit a seven-minute fragment from its
 planning range. Those inputs remain readable. **Before retaining a future phase candidate, verify the first new full `:17` catch-up
