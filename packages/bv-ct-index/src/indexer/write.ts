@@ -176,7 +176,7 @@ async function putRun(
 	env: Env,
 	r2Key: string,
 	rows: NameObservation[] | SiblingObservation[],
-	createdAt: string,
+	createdAt: string | null,
 ): Promise<D1PreparedStatement | null> {
 	if (rows.length === 0) return null;
 	const run = await encodeRun(rows, { filterBitsPerEntry: T0_KEY_FILTER_BITS });
@@ -184,7 +184,8 @@ async function putRun(
 	// The generation is resolved in the statement itself (see catalog.ts).
 	return env.CURSORS.prepare(
 		`INSERT INTO runs (id, generation, tier, key_lo, key_hi, r2_key, rows, bytes, block_index, created_at, key_filter, key_split)
-		 SELECT g || ':' || ?1, g, 0, ?2, ?3, ?1, ?4, ?5, ?6, ?7, ?8, ?9 FROM (SELECT ${CURRENT_GENERATION_SQL} AS g)`,
+		 SELECT g || ':' || ?1, g, 0, ?2, ?3, ?1, ?4, ?5, ?6, COALESCE(?7, strftime('%Y-%m-%dT%H:%M:%fZ','now')), ?8, ?9
+		 FROM (SELECT ${CURRENT_GENERATION_SQL} AS g)`,
 	).bind(
 		r2Key,
 		run.keyLo,
@@ -206,8 +207,12 @@ export interface IndexOutcome {
 	rejected: number;
 }
 
-/** Consumes one `bv-ct-index-entries` batch. `nowMs` is the clock (tests pin it). */
-export async function indexEntries(batch: MessageBatch<unknown>, env: Env, nowMs = Date.now()): Promise<IndexOutcome> {
+/** Explicit clocks pin fixtures; production timestamps catalog rows at D1 statement execution after both R2 puts. */
+export async function indexEntries(batch: MessageBatch<unknown>, env: Env, nowMs?: number): Promise<IndexOutcome> {
+	const invocationMs = nowMs ?? Date.now();
+	// Validate before any binding calls or acknowledgements; epoch zero is a valid explicit override.
+	const createdAt = new Date(invocationMs).toISOString();
+	const catalogCreatedAt = nowMs === undefined ? null : createdAt;
 	const db = env.CURSORS;
 	if (await isKilled(db)) {
 		batch.retryAll({ delaySeconds: KILLED_RETRY_DELAY_SECONDS });
@@ -239,18 +244,17 @@ export async function indexEntries(batch: MessageBatch<unknown>, env: Env, nowMs
 	}
 	if (rejected > 0) console.error(`bv-ct-index indexer: dropped ${rejected} invalid observation(s) or message(s)`);
 
-	const createdAt = new Date(nowMs).toISOString();
-	const stem = `${RUNS_PREFIX}t0/${nowMs}-${crypto.randomUUID()}`;
+	const stem = `${RUNS_PREFIX}t0/${invocationMs}-${crypto.randomUUID()}`;
 	const inserts = [
-		await putRun(env, `${stem}.names.run`, names, createdAt),
-		await putRun(env, `${stem}.siblings.run`, siblings, createdAt),
+		await putRun(env, `${stem}.names.run`, names, catalogCreatedAt),
+		await putRun(env, `${stem}.siblings.run`, siblings, catalogCreatedAt),
 	].filter((statement): statement is D1PreparedStatement => statement !== null);
 
 	await db.batch([
 		...inserts,
 		db.prepare("INSERT OR IGNORE INTO meta (k, v) VALUES ('index_started_at', ?1)").bind(createdAt),
 		db.prepare("INSERT INTO meta (k, v) VALUES ('fresh_through', ?1) ON CONFLICT (k) DO UPDATE SET v = MAX(v, excluded.v)").bind(createdAt),
-		ledgerStatement(db, nowMs, { r2ClassA: inserts.length, r2ClassB: 0, d1Rows: inserts.length + 3 }),
+		ledgerStatement(db, invocationMs, { r2ClassA: inserts.length, r2ClassB: 0, d1Rows: inserts.length + 3 }),
 	]);
 	batch.ackAll();
 	return { killed: false, names: names.length, siblings: siblings.length, rejected };
