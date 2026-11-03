@@ -46,10 +46,8 @@ import {
 } from './catalog';
 
 export interface CompactionJob {
-	/** Digest of semantic fields only (plan.ts); observability planId never changes output keys or swaps. */
+	/** A digest of every other field (plan.ts), so one plan's retries share output keys and different plans never do. */
 	id: string;
-	/** Optional invocation attribution; legacy queued jobs have none. Never part of the semantic job digest. */
-	planId?: string;
 	/** The generation the inputs were planned in; the swap is refused once another generation is current. */
 	generation: number;
 	/** Output tier. */
@@ -81,7 +79,6 @@ export function parseCompactionJob(body: unknown): CompactionJob | null {
 	const job = body as Record<string, unknown>;
 	const strings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === 'string');
 	if (typeof job.id !== 'string' || !Number.isSafeInteger(job.generation) || !Number.isSafeInteger(job.now)) return null;
-	if ('planId' in job && (typeof job.planId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(job.planId))) return null;
 	if (job.tier !== 1 && job.tier !== 2 && job.tier !== 3) return null;
 	if (!strings(job.inputs) || (job.inputs as string[]).length === 0 || !strings(job.cuts)) return null;
 	return body as CompactionJob;
@@ -359,11 +356,11 @@ export async function runCompactionBatch(batch: MessageBatch<unknown>, env: Env)
 			console.error(`bv-ct-index compaction: dropping malformed job message ${message.id}`);
 		} else {
 			// Logged before the work, so an invocation that dies on a CPU or memory limit still names its job.
-			console.log(JSON.stringify({ event: 'ct_compaction_job', planId: job.planId, id: job.id, now: job.now, tier: job.tier, inputs: job.inputs.length }));
+			console.log(JSON.stringify({ event: 'ct_compaction_job', id: job.id, tier: job.tier, inputs: job.inputs.length }));
 			const stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 };
 			const outcome = await runCompactionJob(env, job, undefined, undefined, stats);
 			// After the work: output count and put time say where a job's wall time goes (SQ-402).
-			console.log(JSON.stringify({ event: 'ct_compaction_job_done', planId: job.planId, id: job.id, now: job.now, tier: job.tier, outcome, ...stats }));
+			console.log(JSON.stringify({ event: 'ct_compaction_job_done', id: job.id, tier: job.tier, outcome, ...stats }));
 			if (outcome !== 'applied') console.log(`bv-ct-index compaction: job ${job.id} (tier ${job.tier}) ${outcome}`);
 		}
 		message.ack();
