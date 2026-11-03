@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.4] - 2026-11-03
+
 ### Fixed
 
 - `check_agent_discovery` now also queries the DNS-SD name `_<protocol>._agents.<domain>` (mcp, a2a and https, or only the requested protocol). Before this change a live, DNSSEC-signed record at `_mcp._agents.agenticweb.wiki` (measured 2026-11-04 via Cloudflare and Google DoH) was reported as "No BANDAID agent-discovery records found" with `passed: true`, score 100 and `confidence: deterministic`. An empty read is now titled "No agent-discovery records observed", is scoped to the names queried, and is declared `confidence: heuristic`. The tool is not part of `scan_domain`, so no scores change.
