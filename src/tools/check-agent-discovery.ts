@@ -128,7 +128,16 @@ function parseSvcb(owner: string, data: string): ParsedSvcb | null {
 	return { owner, priority, target, params };
 }
 
-/** Candidate discovery owner-names per draft-02, narrowed by protocol/name. */
+/** Protocols swept at the DNS-SD name `_<proto>._agents.<domain>` when no protocol is given. */
+const AGENT_PROTOCOLS: readonly AgentProtocol[] = ['mcp', 'a2a', 'https'];
+
+/**
+ * Candidate discovery owner-names per draft-02, narrowed by protocol/name.
+ *
+ * Includes the DNS-SD form `_<proto>._agents.<domain>`: publishers use it in the
+ * wild (live `_mcp._agents.agenticweb.wiki`, measured 2026-11-04), and without it a
+ * real, DNSSEC-signed record read as "no records".
+ */
 function discoveryNames(domain: string, protocol?: AgentProtocol, name?: string): string[] {
 	if (name) {
 		const names = [`${name}.${domain}`];
@@ -136,7 +145,9 @@ function discoveryNames(domain: string, protocol?: AgentProtocol, name?: string)
 		return names;
 	}
 	const names = [`_agents.${domain}`, `_index._agents.${domain}`];
+	const protocols = protocol ? [protocol] : AGENT_PROTOCOLS;
 	if (protocol) names.push(`_index._${protocol}._agents.${domain}`);
+	for (const p of protocols) names.push(`_${p}._agents.${domain}`);
 	return names;
 }
 
@@ -290,15 +301,18 @@ export async function checkAgentDiscovery(
 		return buildDnsErrorResult(CATEGORY, 'agent discovery', new Error(`DNS query failed: all ${names.length} SVCB discovery lookups for ${domain} errored`)) as CheckResult;
 	}
 
-	// No discovery records at all — benign, informational.
+	// No discovery records at the names queried — benign, informational. Only those
+	// names were measured: agent-discovery naming is still an unadopted draft, so a
+	// record at another owner name is not ruled out. Declared heuristic, never
+	// deterministic (same treatment as DKIM's "among tested selectors").
 	if (records.length === 0) {
 		findings.push(
 			createFinding(
 				CATEGORY,
-				'No BANDAID agent-discovery records found',
+				'No agent-discovery records observed',
 				'info',
-				`No SVCB agent-discovery records were published under the draft-02 names for ${domain} (${names.join(', ')}). The domain does not participate in DNS-based agent discovery.`,
-				{ namesQueried: names },
+				`No SVCB agent-discovery records were observed for ${domain} at the names queried (${names.join(', ')}). Records published under other names are not ruled out.`,
+				{ namesQueried: names, confidence: 'heuristic' },
 			),
 		);
 		return buildCheckResult(CATEGORY, findings) as CheckResult;

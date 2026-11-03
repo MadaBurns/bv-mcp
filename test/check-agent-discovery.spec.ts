@@ -82,8 +82,54 @@ describe('checkAgentDiscovery', () => {
 
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/No BANDAID agent-discovery records/i);
+		expect(result.findings[0].title).toMatch(/No agent-discovery records observed/i);
 		expect(result.passed).toBe(true);
+	});
+
+	it('does not claim certainty from an empty read: absence is heuristic and scoped to the names queried', async () => {
+		mockAgentFetch({ svcb: {} });
+		const result = await run();
+
+		const finding = result.findings[0];
+		// Only the names we queried were measured; a record at any other owner name is
+		// not ruled out, so the absence must not be presented as deterministic.
+		expect(finding.metadata?.confidence).toBe('heuristic');
+		expect(finding.detail).not.toMatch(/does not participate/i);
+		expect(finding.metadata?.namesQueried).toEqual(
+			expect.arrayContaining(['_mcp._agents.example.com', '_a2a._agents.example.com', '_https._agents.example.com']),
+		);
+	});
+
+	it('finds a record published at the DNS-SD protocol name _<proto>._agents (live agenticweb.wiki shape)', async () => {
+		// Shape of the live record measured 2026-11-04 via Cloudflare + Google DoH:
+		// _mcp._agents.agenticweb.wiki SVCB "1 agenticweb.wiki. mandatory=alpn,port alpn=mcp port=443", AD=true.
+		// Pre-fix the tool never queried _mcp._agents.<domain> and reported "no records" at score 100.
+		mockAgentFetch({
+			svcb: { '_mcp._agents.agenticweb.wiki': ['1 agenticweb.wiki. mandatory=alpn,port alpn=mcp port=443'] },
+			adByName: { '_mcp._agents.agenticweb.wiki': true },
+		});
+		const result = await run('agenticweb.wiki');
+
+		expect(result.findings.some((f) => /1 agent-discovery record\(s\) published/i.test(f.title))).toBe(true);
+		expect(result.findings.some((f) => /are DNSSEC-anchored/i.test(f.title))).toBe(true);
+		expect(result.findings.some((f) => /No agent-discovery records/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+	});
+
+	it('queries the DNS-SD protocol name for the requested protocol only when protocol is given', async () => {
+		mockAgentFetch({
+			svcb: { '_a2a._agents.example.com': ['1 agent.example.com. alpn="a2a"'] },
+			ad: true,
+		});
+		const scoped = await run('example.com', { protocol: 'a2a' });
+		expect(scoped.findings.some((f) => /record\(s\) published/i.test(f.title))).toBe(true);
+
+		mockAgentFetch({
+			svcb: { '_a2a._agents.example.com': ['1 agent.example.com. alpn="a2a"'] },
+			ad: true,
+		});
+		const otherProtocol = await run('example.com', { protocol: 'mcp' });
+		expect(otherProtocol.findings.some((f) => /No agent-discovery records observed/i.test(f.title))).toBe(true);
 	});
 
 	it('abstains instead of claiming no records when every discovery query fails', async () => {
@@ -94,7 +140,7 @@ describe('checkAgentDiscovery', () => {
 		// `records.length === 0` produced an affirmative "The domain does not
 		// participate in DNS-based agent discovery" at score 100 / `passed: true` (#900).
 		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
-		expect(result.findings.some((f) => /No BANDAID/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /No agent-discovery records/i.test(f.title))).toBe(false);
 		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
 	});
 
@@ -110,7 +156,7 @@ describe('checkAgentDiscovery', () => {
 		// The guard counts ANSWERED queries, so a single NODATA response is enough to
 		// make "no records published" a real measurement rather than an abstention.
 		expect(result.checkStatus).not.toBe('error');
-		expect(result.findings.some((f) => /No BANDAID/i.test(f.title))).toBe(true);
+		expect(result.findings.some((f) => /No agent-discovery records/i.test(f.title))).toBe(true);
 	});
 
 	it('flags HIGH when discovery records exist but the zone is NOT DNSSEC-anchored', async () => {
@@ -241,6 +287,6 @@ describe('checkAgentDiscovery', () => {
 		const result = await run('example.com', { protocol: 'mcp' });
 
 		expect(result.findings.some((f) => /record\(s\) published/i.test(f.title))).toBe(true);
-		expect(result.findings.some((f) => /No BANDAID/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /No agent-discovery records/i.test(f.title))).toBe(false);
 	});
 });
