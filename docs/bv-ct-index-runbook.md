@@ -117,12 +117,44 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
+### PUT-resilient fixed-eight candidate — pending (#1147)
+
+This new source candidate combines the published fixed-eight planner with bounded immutable-output PUT retries. It is the
+**full fixed-eight-plus-PUT-retry change from the restored quarter-hour baseline**, not a PUT-only production change. It is
+**not deployed or accepted**; the known baseline remains serving with the quarter-hour trigger until a separately approved trial.
+The earlier fixed-eight trial below remains rejected.
+
+The candidate registers only the minute tailer and `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`. It keeps five-minute
+phase-zero cutoffs, the two-minute floor, UTC creation-hour grouping and an eight-input ordinary T0 minimum. Cap-closed
+chunks and oversized singletons still progress; full/recovery ticks bypass the minimum. T0 catalog timestamps use D1 UTC
+statement time after both R2 puts. The hourly full `:17`, data formats, CAS guards, row/input targets and exceptions,
+ENTRIES100/30/3, six preparation slots and API 1500 ms deadline are unchanged.
+
+Immutable output PUTs retry only the verified PUT InternalError 10001 class, at most three attempts per output, with
+1,100 ms then 2,200 ms backoffs before the two extra attempts. A 429 or another error class is not retried by this policy.
+Retries reuse the same immutable key and bytes. Output descriptors, actual PUT attempts and actual extra attempts are
+reported separately; `putMs` includes the output chain and backoff, not pure request latency. Successful publication records
+actual PUT attempts in the ledger; failed or in-flight work remains incompletely attributed. These source controls do not
+establish that the platform error is fixed, that costs are neutral, or that CPU/heap headroom exists. There is no automatic
+daily spend ceiling.
+
+Before retaining this candidate, pin its actual merged source and serving version, verify the matched trigger and unchanged
+main/settings/bindings, then observe a canonical full `:17` with UUID `planId` and `job.now = floor(scheduledTime / 1000)`.
+Require every unique full job to apply, no unhandled compact exceptions/errors, separate ordinary `:22/:27` completion/drain,
+positive catalog/clock controls and zero compact backlog with the eligible cutoff clear. Finite handled-retry observations
+are cost evidence; they do not waive an unhandled error. After these full/drain proof gates pass, run one prospective
+same-hour `:31` or `:45` peak while the bounded capture continues: all 28 responses must be HTTP 200, with p95 strictly
+below 1500 ms, known-positive and refused-caller controls, no 429 and before/after metadata parity. Before **retention**,
+require the capture to close cleanly through the actual full-plan fifteen-minute cost window, review the work/cost evidence,
+and verify the owner-authenticated main-service product path after the peak. Preserve every failure; do not retry a failed
+peak or reuse an earlier recovery as this new candidate proof.
+
 ### Size-aware five-minute candidate — rejected (#1147)
 
 The five-minute candidate used phase-zero cutoffs, a two-minute floor and an eight-input ordinary T0 minimum. It accumulated
 older eligible T0 runs by UTC creation hour; cap-closed chunks and full/recovery ticks bypassed the minimum. It also used
 UTC D1 statement time after both R2 puts for T0 `created_at`, without changing object-attempt keys or metadata clocks.
-The candidate is not retained. This source restores the matched quarter-hour trigger and fifteen-minute windows, invocation-time
+The candidate is not retained. Its subsequent source restoration reinstated the matched quarter-hour trigger and fifteen-minute windows, invocation-time
 T0 catalog timestamps and the ten-minute age floor. The independent six-slot reader limiter remains.
 
 The 2026-11-03 `04:17` UTC canonical full plan contained **109 jobs over 2,450 inputs**. A compact-queue job raised an

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * Fewer live runs for a read to open (SQ-402): T0 -> T1 every 15 min, the hourly T1 roll-up, and compaction
+ * Fewer live runs for a read to open (SQ-402): T0 -> T1 every 5 min, the hourly T1 roll-up, and compaction
  * output puts that run in parallel.
  */
 
@@ -9,7 +9,7 @@ import { runCompactionBatch, runCompactionJob, PUT_CONCURRENCY } from '../indexe
 import type { JobStats } from '../indexer/compact';
 import worker from '../index';
 import { currentGeneration } from '../indexer/catalog';
-import { COMPACTION_CRON, TRANSITIONAL_COMPACTION_CRON, T0_MIN_AGE_MS, T0_WINDOW_MS, runCompactionCron } from '../indexer/plan';
+import { COMPACTION_CRON, TRANSITIONAL_COMPACTION_CRON, T0_MIN_AGE_MS, T0_WINDOW_MS, runCompactionCron, planCompactions, DEFAULT_PLAN_LIMITS } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import type { NameObservation } from '../types';
 import {
@@ -25,6 +25,7 @@ import {
 	obs,
 	testEnv,
 	withFault,
+	scanAll,
 } from './indexer-harness';
 import type { TestEnv } from './indexer-harness';
 
@@ -44,130 +45,133 @@ async function readAll(env: TestEnv, nowMs: number): Promise<NameObservation[]> 
 	return (await createReader(env, () => nowMs).scan('com', { limit: 100_000 })).names;
 }
 
-describe('T0 -> T1 every 15 minutes', () => {
-	it('accepts the previous fast :32 tick as older-window T0-only recovery during trigger propagation', async () => {
+describe('size-aware five-minute T0 planning', () => {
+	it('pairs the canonical trigger and window, retaining only the quarter-hour transition', () => {
+		expect(COMPACTION_CRON).toBe('2,7,12,17,22,27,32,37,42,47,52,57 * * * *');
+		expect(TRANSITIONAL_COMPACTION_CRON).toBe('2,17,32,47 * * * *');
+		expect(T0_WINDOW_MS).toBe(5 * 60_000);
+		expect(T0_MIN_AGE_MS).toBe(2 * 60_000);
+	});
+
+	it.each([1, 2, 3, 4, 5, 6, 7])('defers %i inputs across ordinary windows, but full recovery never starves them', async (count) => {
 		const env = testEnv();
-		await ingest(env, at(0, 0, 5), batchAt('old-a'));
-		await cronAndDrain(env, at(0, 0, 32));
-		await ingest(env, at(0, 0, 20), batchAt('old-b'));
-		await cronAndDrain(env, at(0, 0, 47));
-		const oldT1 = (await catalog()).filter((run) => run.tier === 1).map((run) => run.id);
-		expect(oldT1).toHaveLength(2);
-		await ingest(env, at(0, 0, 50), batchAt('missed-previous-hour'));
-		for (const minute of [1, 6, 11, 25]) await ingest(env, at(0, 1, minute), batchAt(`transition-${minute}`));
-		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
-			.bind(new Date(at(-8, 0, 0)).toISOString()).run();
-		const before = env.queue.sent.length;
-		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-		await worker.scheduled({ cron: TRANSITIONAL_COMPACTION_CRON, scheduledTime: at(0, 1, 32), noRetry: () => undefined }, env);
-		const jobs = env.queue.sent.slice(before);
-		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1], [1, 3]]);
-		expect(jobs.flatMap((job) => job.inputs).some((id) => oldT1.includes(id))).toBe(false);
-		expect(jobs[0]!.now).toBe(Math.floor(at(0, 1, 32) / 1000));
-		expect(await currentGeneration(env.CURSORS)).toBe(1);
-		const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
-		expect(lines.some((line) => line.event === 'ct_compaction_transition' && line.cron === TRANSITIONAL_COMPACTION_CRON)).toBe(true);
-		expect(lines.some((line) => line.event === 'ct_cron_unmatched')).toBe(false);
-		for (const job of jobs) expect(await runCompactionJob(env, job, undefined, at(0, 1, 32))).toBe('applied');
-		expect((await catalog()).filter((run) => run.tier === 0).map((run) => run.r2_key)).toEqual([
-			expect.stringContaining(`/${at(0, 1, 25)}-`),
-		]);
+		for (let i = 0; i < count; i++) await ingest(env, at(0, 0, i), batchAt(`held-${i}`));
+		for (const minute of [22, 27, 32, 37, 42, 47, 52, 57]) expect((await cronAndDrain(env, at(0, 0, minute))).jobs).toEqual([]);
+		const full = await cronAndDrain(env, at(0, 1, 17));
+		expect(full.jobs.map((job) => job.inputs.length)).toEqual([count]);
+		expect(full.outcomes).toEqual(['applied']);
+		expect((await catalog()).filter((run) => run.tier === 0)).toEqual([]);
 	});
 
-	it('keeps previous fast :17 full recovery, all-tier planning, and the due generation snapshot', async () => {
-		const env = testEnv();
-		await ingest(env, at(0, 0, 5), batchAt('old-a'));
-		await cronAndDrain(env, at(0, 0, 32));
-		await ingest(env, at(0, 0, 20), batchAt('old-b'));
-		await cronAndDrain(env, at(0, 0, 47));
-		for (const minute of [45, 55]) await ingest(env, at(0, 0, minute), batchAt(`missed-${minute}`));
-		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)")
-			.bind(new Date(at(-8, 0, 0)).toISOString()).run();
-		const before = env.queue.sent.length;
-		vi.spyOn(console, 'log').mockImplementation(() => undefined);
-		await worker.scheduled({ cron: TRANSITIONAL_COMPACTION_CRON, scheduledTime: at(1, 1, 17), noRetry: () => undefined }, env);
-		const jobs = env.queue.sent.slice(before);
-		expect(jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 2], [2, 2]]);
-		expect(jobs.every((job) => job.generation === 2)).toBe(true);
-		expect(await env.CURSORS.prepare("SELECT v FROM meta WHERE k = 'current_generation'").first('v')).toBe('2');
-	});
-
-	it('restores the paired quarter-hour schedule and window with the same age floor', () => {
-		expect(COMPACTION_CRON).toBe('2,17,32,47 * * * *');
-		expect(TRANSITIONAL_COMPACTION_CRON).toBe('2,7,12,17,22,27,32,37,42,47,52,57 * * * *');
-		expect(T0_WINDOW_MS).toBe(15 * 60_000);
-		expect(T0_MIN_AGE_MS).toBe(10 * 60_000);
-	});
-
-	it('plans only the window that just came due between :17 ticks, and every tier and any older T0 run at :17', async () => {
+	it('combines eight old windows within one UTC creation hour, preserving pages and cursors', async () => {
 		const env = testEnv();
 		const names: NameObservation[] = [];
-		const add = async (nowMs: number, tag: string) => {
-			const batch = batchAt(tag);
-			names.push(...batch);
-			await ingest(env, nowMs, batch);
-		};
-		await add(at(0, 1, 5), 'a');
-		await add(at(0, 1, 20), 'b');
-		await add(at(0, 1, 35), 'c');
-		await add(at(0, 1, 50), 'd');
-		const t0 = new Map((await catalog()).map((run) => [run.r2_key.split('/')[2]!.split('-')[0]!, run.id]));
-		const id = (nowMs: number) => t0.get(String(nowMs))!;
-
-		// 01:32: the window [01:00, 01:15) has been over for 10 min, and nothing else is planned.
-		const first = await cronAndDrain(env, at(0, 1, 32));
-		expect(first.jobs.map((job) => [job.tier, job.inputs])).toEqual([[1, [id(at(0, 1, 5))]]]);
-		expect(first.outcomes).toEqual(['applied']);
-		expect(first.snapshot).toBeNull();
-		// A late T0 run in a window already planned waits for the next :17 tick.
-		await add(at(0, 1, 10), 'late');
-		const late = (await catalog()).find((run) => run.tier === 0 && run.r2_key.includes(`/${at(0, 1, 10)}-`))!.id;
-		expect((await cronAndDrain(env, at(0, 1, 47))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 20))]]);
-		expect((await cronAndDrain(env, at(0, 2, 2))).jobs.map((job) => job.inputs)).toEqual([[id(at(0, 1, 35))]]);
-
-		// 02:17 plans the window [01:45, 02:00) with the late run, and rolls up the T1 runs of 01:32 and 01:47 (the
-		// 02:02 one belongs to this hour). Every T1 run here spans the name range below the sibling keyspace.
-		const full = await cronAndDrain(env, at(0, 2, 17));
-		expect(full.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([
-			[1, 2],
-			[1, 2],
-		]);
-		expect(full.jobs[0]!.inputs).toEqual([id(at(0, 1, 50)), late].sort());
-		expect(full.outcomes).toEqual(['applied', 'applied']);
-		expect((await catalog()).map((run) => run.tier)).toEqual([1, 1, 1]);
-		expect(await readAll(env, at(0, 2, 17))).toEqual(expectedRows(names, Math.floor(at(0, 2, 17) / 1000)));
-
-		// 03:17 rolls the three into one; a tick between :17s with no T0 plans nothing.
-		expect((await cronAndDrain(env, at(0, 3, 2))).jobs).toEqual([]);
-		const rolled = await cronAndDrain(env, at(0, 3, 17));
-		expect(rolled.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 3]]);
-		expect((await catalog()).map((run) => run.tier)).toEqual([1]);
-		expect((await cronAndDrain(env, at(0, 4, 17))).jobs).toEqual([]);
-		expect(await readAll(env, at(0, 4, 17))).toEqual(expectedRows(names, Math.floor(at(0, 4, 17) / 1000)));
-
-		// T1 -> T2 waits for the day to end; a weekly snapshot waits for a :17 tick.
-		expect((await cronAndDrain(env, at(1, 0, 17))).jobs.map((job) => job.tier)).toEqual([2]);
-		expect((await cronAndDrain(env, at(8, 0, 2))).snapshot).toBeNull();
-		expect((await cronAndDrain(env, at(8, 0, 17))).snapshot).toBe(2);
+		for (let i = 0; i < 8; i++) {
+			const rows = batchAt(`batch-${i}`);
+			names.push(...rows);
+			await ingest(env, at(0, 0, i * 5), rows);
+		}
+		const result = await cronAndDrain(env, at(0, 1, 2));
+		expect(result.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 8]]);
+		expect(result.snapshot).toBeNull();
+		expect(await scanAll(createReader(env, () => at(0, 1, 2)), 'com', 7)).toEqual(expectedRows(names, at(0, 1, 2) / 1000));
+		// Ordinary ticks do not roll up the previous hour's T1, even though it is due.
+		expect((await cronAndDrain(env, at(0, 1, 7))).jobs).toEqual([]);
 	});
 
-	it('does not roll up the key-disjoint parts of one job, nor T1 runs from this hour', async () => {
+	it('keeps small old-hour remnants separate until full recovery', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 4; i++) {
+			await ingest(env, at(0, 0, i), batchAt(`old-${i}`));
+			await ingest(env, at(0, 1, i), batchAt(`new-${i}`));
+		}
+		expect((await cronAndDrain(env, at(0, 1, 12))).jobs).toEqual([]);
+		const full = await cronAndDrain(env, at(0, 1, 17));
+		expect(full.jobs.map((job) => job.inputs.length)).toEqual([4, 4]);
+	});
+
+	it('progresses row-closed chunks and an oversized singleton while deferring the small tail', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 3; i++) await ingest(env, at(0, 0, i), batchAt(`rows-${i}`, 3));
+		const limits = { ...DEFAULT_PLAN_LIMITS, maxRows: 5 };
+		const planned = await planCompactions(env.CURSORS, at(0, 0, 12), limits, false);
+		expect(planned.map((job) => job.inputs.length)).toEqual([1, 1]);
+		await env.CURSORS.prepare('DELETE FROM runs').run();
+		await ingest(env, at(0, 0, 0), batchAt('oversized', 6));
+		expect((await planCompactions(env.CURSORS, at(0, 0, 12), limits, false)).map((job) => job.inputs.length)).toEqual([1]);
+	});
+
+	it('progresses an input-bound chunk below eight without raising its configured cap', async () => {
+		const env = testEnv();
+		for (let i = 0; i < 5; i++) await ingest(env, at(0, 0, i), batchAt(`input-${i}`));
+		const jobs = await planCompactions(env.CURSORS, at(0, 0, 12), { ...DEFAULT_PLAN_LIMITS, maxInputs: 4 }, false);
+		expect(jobs.map((job) => job.inputs.length)).toEqual([4]);
+	});
+
+	it('accepts quarter-hour propagation as T0-only recovery without threshold or generation snapshot', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 1), batchAt('old'));
+		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)").bind(new Date(at(-8, 0, 0)).toISOString()).run();
+		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		await worker.scheduled({ cron: TRANSITIONAL_COMPACTION_CRON, scheduledTime: at(0, 1, 32), noRetry: () => undefined }, env);
+		expect(env.queue.sent.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 1]]);
+		expect(await currentGeneration(env.CURSORS)).toBe(1);
+		expect(log.mock.calls.some(([line]) => String(line).includes('ct_compaction_transition'))).toBe(true);
+	});
+
+	it('keeps full :17 generation snapshots and downstream day-tier planning', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 1), batchAt('old'));
+		await cronAndDrain(env, at(0, 0, 17));
+		await env.CURSORS.prepare("INSERT INTO meta (k, v) VALUES ('generation_started_at', ?1)").bind(new Date(at(-8, 0, 0)).toISOString()).run();
+		await worker.scheduled({ cron: TRANSITIONAL_COMPACTION_CRON, scheduledTime: at(1, 0, 17), noRetry: () => undefined }, env);
+		expect(await currentGeneration(env.CURSORS)).toBe(2);
+		expect(env.queue.sent.at(-1)!.tier).toBe(2);
+	});
+
+	it('does not plan due overlapping higher-tier work at an ordinary tick, with a full-plan positive control', async () => {
+		const env = testEnv();
+		await ingest(env, at(0, 0, 1), batchAt('first'));
+		await cronAndDrain(env, at(0, 0, 17));
+		await ingest(env, at(0, 0, 20), batchAt('second'));
+		await cronAndDrain(env, at(0, 1, 17));
+		const now = at(0, 2, 2);
+		const full = await planCompactions(env.CURSORS, now, DEFAULT_PLAN_LIMITS, true);
+		expect(full.map((job) => [job.tier, job.inputs.length])).toEqual([[1, 2]]);
+		expect((await cronAndDrain(env, now)).jobs).toEqual([]);
+	});
+
+	it('does not roll up key-disjoint parts or current-hour T1 outputs, but later overlapping outputs roll up', async () => {
 		const env = testEnv();
 		await ingest(env, at(0, 1, 5), batchAt('a', 300));
 		await ingest(env, at(0, 1, 6), batchAt('b', 300));
-		expect((await cronAndDrain(env, at(0, 1, 32), SMALL)).outcomes).toEqual(['applied']);
+		expect((await cronAndDrain(env, at(0, 1, 17), SMALL)).outcomes).toEqual(['applied']);
 		const parts = (await catalog()).filter((run) => run.tier === 1);
 		expect(parts.length).toBeGreaterThan(2);
 		expect((await cronAndDrain(env, at(0, 2, 17), SMALL)).jobs).toEqual([]);
-
 		await ingest(env, at(0, 2, 20), batchAt('c', 300));
-		expect((await cronAndDrain(env, at(0, 2, 47), SMALL)).outcomes).toEqual(['applied']);
-		// 02:47's output belongs to hour 02, so the 03:17 roll-up takes it with the 01:32 parts it overlaps.
+		const recovery = await runCompactionCron(env, at(0, 2, 47), DEFAULT_PLAN_LIMITS, true);
+		expect(recovery.jobs).toHaveLength(1);
+		for (const job of recovery.jobs) expect(await runCompactionJob(env, job, SMALL, at(0, 2, 47))).toBe('applied');
+		// A full plan in the same hour still excludes the new T1 outputs from its roll-up.
+		expect(await planCompactions(env.CURSORS, at(0, 2, 52), DEFAULT_PLAN_LIMITS, true)).toEqual([]);
 		const next = await cronAndDrain(env, at(0, 3, 17), SMALL);
 		expect(next.jobs.map((job) => job.tier)).toEqual([1]);
 		expect(next.jobs[0]!.inputs.length).toBeGreaterThan(parts.length);
 		expect(next.jobs[0]!.inputs).toEqual(expect.arrayContaining(parts.map((run) => run.id)));
 	});
+
+	it('keeps canonical eligibility half-open across all 288 UTC five-minute ticks and jitter', async () => {
+		const env = testEnv();
+		for (const jitter of [-1, 0, 1, 55_548]) for (let tick = 0; tick < 288; tick++) {
+			const nominal = at(0, 0, 2) + tick * T0_WINDOW_MS;
+			const end = Math.floor((nominal + jitter - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
+			await env.CURSORS.prepare('DELETE FROM runs').run();
+			await env.CURSORS.batch([end - 1, end].map((stamp, i) => env.CURSORS.prepare('INSERT INTO runs (id, generation, tier, key_lo, key_hi, rows, created_at) VALUES (?1, 1, 0, ?2, ?2, 1, ?3)').bind(`edge-${i}`, 'com\x01example\x01host', new Date(stamp).toISOString())));
+			const jobs = await planCompactions(env.CURSORS, nominal + jitter, DEFAULT_PLAN_LIMITS, false, true);
+			expect(jobs.flatMap((job) => job.inputs)).toEqual(['edge-0']);
+		}
+	}, 60_000);
 });
 
 describe('compaction output puts', () => {

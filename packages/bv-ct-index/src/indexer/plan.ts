@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * The `2,17,32,47 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
- * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick plans T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
+ * The `2,7,12,17,22,27,32,37,42,47,52,57 * * * *` cron (COMPACTION_CRON): the compaction planner, which reads the catalog of the current
+ * generation and enqueues jobs (compact.ts) to `COMPACT`. Every tick considers size-aware T0 -> T1; the :17 tick (FULL_PLAN_MINUTE)
  * first takes the weekly generation snapshot (generations.ts) and also plans the other tiers:
  *
- * - T0 -> T1: the T0 runs of the 15-min window (T0_WINDOW_MS) that ended at least ~10 min ago, in jobs of at most
+ * - T0 -> T1: eligible T0 runs before the 5-min cutoff (T0_WINDOW_MS), at least ~2 min old, in jobs of at most
  *   MAX_JOB_INPUTS runs and MAX_JOB_ROWS rows (`boundedChunks`); the :17 tick also takes any older T0 run, e.g.
  *   one whose job was lost. Every T0 run spans the whole keyspace, so each one is a run that every read opens: an
- *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A job that has not swapped by the
- *   next :17 tick, ~15 min after the :02 tick planned it, is planned again; the guard lets one swap through. Its
+ *   hourly plan left up to ~435 of them live, a 15-min one about 180 (SQ-402). A pending job may be planned again by a later tick;
+ *   the catalog guard permits only one overlapping swap. Duplicate attempts can still incur reads and output writes. Its
  *   output closes at a coarse subset of the cuts only (`coarseCuts`, SQ-491), at most MAX_T1_RANGES ranges a job
  *   (compact.ts also closes a run at its size target and at its key filter's limit).
  * - T1 roll-up (:17): per key range, the overlapping T1 runs created earlier today before this hour, merged into
@@ -57,15 +57,17 @@ import { DAY_MS, HOUR_MS, currentGeneration, isKilled } from './catalog';
 import type { CompactionJob } from './compact';
 import { maybeSnapshot } from './generations';
 
-/** T0 -> T1 is planned at every tick; everything else only at FULL_PLAN_MINUTE (SQ-402). */
-export const COMPACTION_CRON = '2,17,32,47 * * * *';
+/** T0 -> T1 is considered at every tick; everything else only at FULL_PLAN_MINUTE (SQ-402). */
+export const COMPACTION_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
 /** Accepted during cron propagation only; never registered alongside the canonical schedule. */
-export const TRANSITIONAL_COMPACTION_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
+export const TRANSITIONAL_COMPACTION_CRON = '2,17,32,47 * * * *';
 export const FULL_PLAN_MINUTE = 17;
 /** T0 runs are compacted in windows of this length... */
-export const T0_WINDOW_MS = 15 * 60_000;
+export const T0_WINDOW_MS = 5 * 60_000;
 /** ...once the window has been over for this long. */
-export const T0_MIN_AGE_MS = 10 * 60_000;
+export const T0_MIN_AGE_MS = 2 * 60_000;
+/** Ordinary T0 chunks accumulate across windows; full/recovery ticks always progress. */
+export const MIN_T0_INPUTS = 8;
 export const GROUP_SHARDS = 8;
 export const GROUP_MAX_SHARDS = 24;
 /** The sibling keyspace is ['s\x00', 's\x01'): no output run spans its edges, so every run holds one kind. */
@@ -362,9 +364,9 @@ const createdIn = (run: PlanRun, from: number, to: number) => {
 
 /**
  * Plans every compaction job that is due at `nowMs` in the current generation. Pure catalog reads. A tick that is
- * not `full` plans only the T0 window that has just come due; a full tick also plans every older T0 run (one whose
- * job was lost), the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` widens only T0 eligibility
- * during previous-fast-cron propagation; it never enables the other tiers or snapshots.
+ * not `full` accumulates all older eligible T0 runs into size-aware chunks; a full tick bypasses the minimum (including a run whose
+ * job was lost), and also plans the T1 roll-up and the T1 -> T2, re-cut and T3 jobs. `recoverT0` bypasses only the T0 minimum
+ * during previous-quarter-hour-cron propagation; outside :17 it never enables the other tiers or snapshots.
  */
 export async function planCompactions(
 	db: D1Database,
@@ -381,14 +383,24 @@ export async function planCompactions(
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
 	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
 	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
-	const windowStart = full || recoverT0 ? -Infinity : windowEnd - T0_WINDOW_MS;
+	const windowStart = -Infinity;
 	// T0 runs span the whole keyspace, so a T1 job takes cuts across all of it: the coarse subset (SQ-491).
 	const t1Cuts = coarseCuts(plan.cuts, limits.maxT1Ranges);
 	for (const runs of groupBy(
 		tier(0).filter((run) => createdIn(run, windowStart, windowEnd)),
 		(run) => run.created_at.slice(0, 13),
 	).values()) {
-		await planChunks(plan, 1, runs, t1Cuts);
+		const chunks = boundedChunks(runs, plan.limits);
+		for (let i = 0; i < chunks.length; i++) {
+			const chunk = chunks[i]!;
+			// A nonfinal chunk closed at an unchanged input/row bound. Never defer that progress or an oversized singleton.
+			if (
+				full || recoverT0 || chunk.length >= MIN_T0_INPUTS || i < chunks.length - 1 ||
+				rowsOf(chunk) >= limits.maxRows || chunk.length >= limits.maxInputs
+			) {
+				plan.jobs.push(await makeJob(plan.generation, 1, chunk, t1Cuts, plan.now));
+			}
+		}
 	}
 	if (!full) return plan.jobs;
 	await planRollUp(plan, tier(1), nowMs);
@@ -460,7 +472,7 @@ export async function sendJobs(queue: Queue<CompactionJob>, jobs: readonly Compa
 	let chunk: CompactionJob[] = [];
 	let bytes = 0;
 	for (const job of jobs) {
-		const size = JSON.stringify(job).length;
+		const size = new TextEncoder().encode(JSON.stringify(job)).byteLength;
 		if (chunk.length > 0 && (chunk.length === SEND_BATCH_MESSAGES || bytes + size > SEND_BATCH_BYTES)) {
 			await queue.sendBatch(chunk.map((body) => ({ body })));
 			chunk = [];
@@ -473,6 +485,8 @@ export async function sendJobs(queue: Queue<CompactionJob>, jobs: readonly Compa
 }
 
 export interface CronOutcome {
+	/** UUID of this scheduler invocation; attribution only, never part of a job digest. */
+	planId: string;
 	killed: boolean;
 	/** The new generation, when this run took the weekly snapshot. */
 	snapshot: number | null;
@@ -486,10 +500,11 @@ export async function runCompactionCron(
 	limits: PlanLimits = DEFAULT_PLAN_LIMITS,
 	recoverT0 = false,
 ): Promise<CronOutcome> {
-	if (await isKilled(env.CURSORS)) return { killed: true, snapshot: null, jobs: [] };
+	const planId = crypto.randomUUID();
+	if (await isKilled(env.CURSORS)) return { planId, killed: true, snapshot: null, jobs: [] };
 	const full = new Date(nowMs).getUTCMinutes() === FULL_PLAN_MINUTE;
 	const snapshot = full ? await maybeSnapshot(env, nowMs) : null;
-	const jobs = await planCompactions(env.CURSORS, nowMs, limits, full, recoverT0);
+	const jobs = (await planCompactions(env.CURSORS, nowMs, limits, full, recoverT0)).map((job) => ({ ...job, planId }));
 	await sendJobs(env.COMPACT, jobs);
-	return { killed: false, snapshot, jobs };
+	return { planId, killed: false, snapshot, jobs };
 }
