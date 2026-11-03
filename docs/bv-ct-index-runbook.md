@@ -142,10 +142,12 @@ Before retaining this candidate, pin its actual merged source and serving versio
 main/settings/bindings, then observe a canonical full `:17` with UUID `planId` and `job.now = floor(scheduledTime / 1000)`.
 Require every unique full job to apply, no unhandled compact exceptions/errors, separate ordinary `:22/:27` completion/drain,
 positive catalog/clock controls and zero compact backlog with the eligible cutoff clear. Finite handled-retry observations
-are cost evidence; they do not waive an unhandled error. Keep an unbroken, bounded capture through the actual closed cost
-window. Only then run one prospective same-hour `:31` or `:45` peak with all 28 HTTP 200 responses, p95 strictly below
-1500 ms, known-positive and refused-caller controls, no 429 and before/after metadata parity. Preserve every failure;
-do not retry a failed peak or reuse an earlier recovery as this new candidate proof.
+are cost evidence; they do not waive an unhandled error. After these full/drain proof gates pass, run one prospective
+same-hour `:31` or `:45` peak while the bounded capture continues: all 28 responses must be HTTP 200, with p95 strictly
+below 1500 ms, known-positive and refused-caller controls, no 429 and before/after metadata parity. Before **retention**,
+require the capture to close cleanly through the actual full-plan fifteen-minute cost window, review the work/cost evidence,
+and verify the owner-authenticated main-service product path after the peak. Preserve every failure; do not retry a failed
+peak or reuse an earlier recovery as this new candidate proof.
 
 ### Size-aware five-minute candidate — rejected (#1147)
 
