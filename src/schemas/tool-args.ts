@@ -338,7 +338,7 @@ export const CheckAgentDiscoveryArgs = z
 			.transform((v) => v.toLowerCase().trim())
 			.pipe(z.enum(['a2a', 'mcp', 'https']))
 			.optional()
-			.describe('Scope discovery to a single agent protocol index (_index._{protocol}._agents). Omit to sweep the zone.'),
+			.describe('Scope discovery to a single agent protocol (_index._{protocol}._agents and _{protocol}._agents). Omit to sweep every protocol.'),
 		name: z.string().min(1).max(63).optional().describe('Resolve a single named agent ({name}.{domain}) instead of enumerating the zone.'),
 		verify_cap: z
 			.boolean()
