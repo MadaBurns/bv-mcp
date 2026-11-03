@@ -117,37 +117,32 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-### PUT-resilient fixed-eight candidate — pending (#1147)
+### PUT-resilient fixed-eight trial — not accepted (#1147)
 
-This new source candidate combines the published fixed-eight planner with bounded immutable-output PUT retries. It is the
-**full fixed-eight-plus-PUT-retry change from the restored quarter-hour baseline**, not a PUT-only production change. It is
-**not deployed or accepted**; the known baseline remains serving with the quarter-hour trigger until a separately approved trial.
-The earlier fixed-eight trial below remains rejected.
+The merged candidate combined the five-minute/two-minute statement-clock planner and fixed eight-input ordinary minimum
+with bounded immutable-output PUT retries. It was the **full fixed-eight-plus-PUT-retry change from the quarter-hour
+baseline**, not a PUT-only production change. Its trial was rejected at the pre-full entry gate: the queue observation
+reported **backlog count 4**, rather than the frozen zero-backlog requirement. **No peak benchmark requests were made**.
+This rejection supplies no latency result and does not establish a runtime failure. The candidate is not retained or accepted.
 
-The candidate registers only the minute tailer and `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`. It keeps five-minute
-phase-zero cutoffs, the two-minute floor, UTC creation-hour grouping and an eight-input ordinary T0 minimum. Cap-closed
-chunks and oversized singletons still progress; full/recovery ticks bypass the minimum. T0 catalog timestamps use D1 UTC
-statement time after both R2 puts. The hourly full `:17`, data formats, CAS guards, row/input targets and exceptions,
-ENTRIES100/30/3, six preparation slots and API 1500 ms deadline are unchanged.
+This source restores the matched quarter-hour implementation, configuration, CT tests and root cadence audit to the known
+baseline. Fifteen-minute windows, the ten-minute age floor and invocation-time T0 timestamps return; the independent six-slot
+reader fix remains. The actual quarter-hour trigger was verified restored at `06:44:13.345` UTC on 2026-11-03. The full
+fifteen-minute propagation interval ends at `06:59:13.345` UTC; native baseline-version restoration is still pending.
+Source restoration is not proof of the version serving in production. Verify matched code and registered triggers separately.
 
-Immutable output PUTs retry only the verified PUT InternalError 10001 class, at most three attempts per output, with
-1,100 ms then 2,200 ms backoffs before the two extra attempts. A 429 or another error class is not retried by this policy.
-Retries reuse the same immutable key and bytes. Output descriptors, actual PUT attempts and actual extra attempts are
-reported separately; `putMs` includes the output chain and backoff, not pure request latency. Successful publication records
-actual PUT attempts in the ledger; failed or in-flight work remains incompletely attributed. These source controls do not
-establish that the platform error is fixed, that costs are neutral, or that CPU/heap headroom exists. There is no automatic
-daily spend ceiling.
+The unaccepted candidate retried only the verified PUT InternalError 10001 class, at most three attempts per immutable
+output, with 1,100/2,200 ms backoffs; 429/10058 and other errors remained non-retryable under that policy. It kept each output
+lease through backoff and counted output descriptors, actual PUT attempts and extra attempts separately. These offline
+controls do not establish a production fix, causal cost neutrality or CPU/heap headroom. Failed, retried, in-flight and
+uncaptured work remains incompletely attributed, and there is no automatic daily spend ceiling.
 
-Before retaining this candidate, pin its actual merged source and serving version, verify the matched trigger and unchanged
-main/settings/bindings, then observe a canonical full `:17` with UUID `planId` and `job.now = floor(scheduledTime / 1000)`.
-Require every unique full job to apply, no unhandled compact exceptions/errors, separate ordinary `:22/:27` completion/drain,
-positive catalog/clock controls and zero compact backlog with the eligible cutoff clear. Finite handled-retry observations
-are cost evidence; they do not waive an unhandled error. After these full/drain proof gates pass, run one prospective
-same-hour `:31` or `:45` peak while the bounded capture continues: all 28 responses must be HTTP 200, with p95 strictly
-below 1500 ms, known-positive and refused-caller controls, no 429 and before/after metadata parity. Before **retention**,
-require the capture to close cleanly through the actual full-plan fifteen-minute cost window, review the work/cost evidence,
-and verify the owner-authenticated main-service product path after the peak. Preserve every failure; do not retry a failed
-peak or reuse an earlier recovery as this new candidate proof.
+Preserve this entry-gate failure and its zero-call peak evidence separately from the earlier runtime/error and latency
+trials below. Any future candidate must establish its own canonical full/drain proof, then pass one prospective same-hour
+`:31` or `:45` peak while capture continues: all 28 responses HTTP 200, p95 strictly below 1500 ms, known-positive and
+refused-caller controls, no 429 and before/after metadata parity. Closed-window cost/work review and the post-peak
+owner-authenticated main-service product path remain required before retention. Do not reuse an earlier recovery or
+retry a failed peak to declare this trial accepted.
 
 ### Size-aware five-minute candidate — rejected (#1147)
 
