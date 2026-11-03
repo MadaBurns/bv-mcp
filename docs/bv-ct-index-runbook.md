@@ -127,9 +127,12 @@ T0 catalog timestamps and the ten-minute age floor. The independent six-slot rea
 
 The 2026-11-03 `04:17` UTC canonical full plan contained **109 jobs over 2,450 inputs**. A compact-queue job raised an
 exception, then retried and completed as applied with **10 outputs and 20 completion-reported GETs**. The cause is unknown.
-A successful retry does not satisfy the unchanged error-free full-recovery gate. **No peak benchmark requests were made**;
-this trial has no latency result. Production rollback verification is pending: restoring source alone does not restore the
-registered trigger or prove which version is serving. Restore matched quarter-hour code **and actual registered triggers**,
+All 109 unique full-plan jobs ultimately completed as applied. A successful retry does not satisfy the unchanged error-free full-recovery gate. **No peak benchmark requests were made**;
+this trial has no latency result. A separate ordinary `04:22` plan also had a compact-queue exception, received at
+`04:22:29.986` UTC (CPU 5,216 ms, wall 27,589 ms); its cause is likewise unknown and it is not counted as a full-plan error.
+The actual quarter-hour trigger was verified restored at `04:22:28.790` UTC. After the required fifteen-minute propagation
+interval, the earliest baseline-version restoration is `04:37:28.790` UTC; version restoration remains pending. Restoring
+source alone does not prove which version is serving. Restore matched quarter-hour code **and actual registered triggers**,
 allow the propagation interval, then verify serving version, queue settings, bindings and unchanged main MCP separately.
 
 Preserve all earlier instrumentation failures and their zero-call peak evidence. In particular, the earlier `01:17` daily
@@ -139,8 +142,8 @@ and the local supervisor/authentication failures likewise cannot establish a lat
 
 The bounded offline model reduced one late first-page query from **52 to 19 GETs**, while compaction GETs increased
 **269 to 278**, output PUTs **39 to 48**, and planner SELECT executions **62 to 173**. These are modeled counts, not
-production invoices or proof of CPU, heap, latency or workload headroom. Completion GETs/output descriptors omit failed,
-retried, in-flight and uncaptured operations; global ledger changes do not establish causal candidate cost. There is no
+production invoices or proof of CPU, heap, latency or workload headroom. Completion GETs/output descriptors do not fully account for failed attempts, retries,
+in-flight and uncaptured work; global ledger changes do not establish causal candidate cost. There is no
 claim of cost neutrality and no automatic daily spend ceiling. Existing row/input targets and exceptions, the API 1500 ms
 deadline, six preparation slots, data formats and ENTRIES100/30/3 remain unchanged. Prior latency failures below remain rejected.
 
