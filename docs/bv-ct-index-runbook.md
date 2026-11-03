@@ -117,36 +117,32 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-### Size-aware five-minute candidate — live acceptance pending (#1147)
+### Size-aware five-minute candidate — rejected (#1147)
 
-The current source candidate registers only the minute tailer and `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`.
-It uses five-minute phase-zero cutoffs with a two-minute floor. Ordinary ticks accumulate **all** T0 runs older than the
-cutoff, grouped by UTC creation hour, and defer bounded chunks with fewer than eight inputs. A chunk closed by the
-existing input/row cap still progresses, including an oversized singleton; full `:17` and transitional quarter-hour
-recovery bypass the minimum. Ordinary ticks do not plan higher-tier roll-ups or generation snapshots.
-T0 `created_at` uses UTC D1 statement time after both R2 puts; this is not exact commit time. Object attempt keys,
-`index_started_at`, `fresh_through` and ledger epoch retain invocation time. Explicit test clocks remain deterministic.
-The existing row/input caps and exceptions, API 1500 ms deadline, six preparation slots, formats and ENTRIES100/30/3 remain unchanged.
+The five-minute candidate used phase-zero cutoffs, a two-minute floor and an eight-input ordinary T0 minimum. It accumulated
+older eligible T0 runs by UTC creation hour; cap-closed chunks and full/recovery ticks bypassed the minimum. It also used
+UTC D1 statement time after both R2 puts for T0 `created_at`, without changing object-attempt keys or metadata clocks.
+The candidate is not retained. This source restores the matched quarter-hour trigger and fifteen-minute windows, invocation-time
+T0 catalog timestamps and the ten-minute age floor. The independent six-slot reader limiter remains.
 
-The bounded high-publication offline model reduced a late first-page query from **52 to19 GETs**, while compaction GETs
-increased **269 to278**, output PUTs **39 to48**, and planner SELECT executions **62 to173**. `.first()` metadata is
-unavailable and remains unknown; local row counters are not production invoices. CPU, heap, production latency and workload
-headroom are unproven. The model fixes the eight-input threshold in advance; it does not authorize tuning after a failure.
-There is no claim of cost neutrality and no automatic daily spend ceiling.
+The 2026-11-03 `04:17` UTC canonical full plan contained **109 jobs over 2,450 inputs**. A compact-queue job raised an
+exception, then retried and completed as applied with **10 outputs and 20 completion-reported GETs**. The cause is unknown.
+A successful retry does not satisfy the unchanged error-free full-recovery gate. **No peak benchmark requests were made**;
+this trial has no latency result. Production rollback verification is pending: restoring source alone does not restore the
+registered trigger or prove which version is serving. Restore matched quarter-hour code **and actual registered triggers**,
+allow the propagation interval, then verify serving version, queue settings, bindings and unchanged main MCP separately.
 
-This candidate is **pending a new operator-controlled live gate**. Before retention, independently review overlapping-job
-CAS behavior and matched trigger rollback, verify exact serving version/bindings, observe an actual full `:17` with
-completed jobs and drain, then run the unchanged prospective same-hour31/45 peak: all28 responses HTTP200 and p95<1500 ms,
-with refused-caller and known-positive controls. Record queue health, catalog counts, GET/PUT/CPU and attribution limits.
-Attribute recovery by the canonical full scheduled trace's UUID `planId`, then match `(planId, job.id)` on start/done logs
-and require `job.now = floor(scheduledTime / 1000)`. Ordinary `:22/:27` jobs can overlap the observation window and must
-not be counted as full-plan completions. Legacy queued jobs without a tag remain executable but cannot establish this
-candidate's recovery proof. The transitional quarter-hour `:17` still performs full planning/snapshot by existing behavior;
-classify it separately and require the canonical schedule for acceptance. Same-second canonical/transitional invocations
-have distinct plan IDs even when semantic job IDs match. Tags never change object keys, data bytes or swap guards.
-Do not retry a failed peak or reuse earlier recovery as this candidate's proof. Rollback restores matched quarter-hour
-code **and registered triggers**; accept transitional strings only during propagation and verify canonical execution.
-This paragraph records source readiness, not deployment or latency acceptance.
+Preserve all earlier instrumentation failures and their zero-call peak evidence. In particular, the earlier `01:17` daily
+full plan had **1,124 jobs over 4,994 inputs**; its old capture stopped after **850 unique applied jobs** with no exceptions
+observed in that partial capture. Full completion was not verified, so it cannot establish acceptance. Other failed captures
+and the local supervisor/authentication failures likewise cannot establish a latency result.
+
+The bounded offline model reduced one late first-page query from **52 to 19 GETs**, while compaction GETs increased
+**269 to 278**, output PUTs **39 to 48**, and planner SELECT executions **62 to 173**. These are modeled counts, not
+production invoices or proof of CPU, heap, latency or workload headroom. Completion GETs/output descriptors omit failed,
+retried, in-flight and uncaptured operations; global ledger changes do not establish causal candidate cost. There is no
+claim of cost neutrality and no automatic daily spend ceiling. Existing row/input targets and exceptions, the API 1500 ms
+deadline, six preparation slots, data formats and ENTRIES100/30/3 remain unchanged. Prior latency failures below remain rejected.
 
 ### Rejected experiments and restored baseline history
 

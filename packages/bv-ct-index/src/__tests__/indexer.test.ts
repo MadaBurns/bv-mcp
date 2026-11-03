@@ -256,7 +256,7 @@ describe('kill switch', () => {
 		const batch = await ingest(env, nextDay, [obs('new.example.com')]);
 		expect(batch.retriedAll).toEqual({ delaySeconds: KILLED_RETRY_DELAY_SECONDS });
 		expect(batch.ackedAll).toBe(false);
-		expect(await runCompactionCron(env, nextDay)).toEqual({ planId: expect.any(String), killed: true, snapshot: null, jobs: [] });
+		expect(await runCompactionCron(env, nextDay)).toEqual({ killed: true, snapshot: null, jobs: [] });
 		expect(await runCompactionJob(env, plannedBeforeKill[0]!, undefined, nextDay)).toBe('killed');
 		expect((await catalog()).map((run) => run.tier)).toEqual([0]);
 		expect(await objectKeys()).toHaveLength(1);
