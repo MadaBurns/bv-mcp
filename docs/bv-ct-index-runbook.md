@@ -128,7 +128,8 @@ This rejection supplies no latency result and does not establish a runtime failu
 This source restores the matched quarter-hour implementation, configuration, CT tests and root cadence audit to the known
 baseline. Fifteen-minute windows, the ten-minute age floor and invocation-time T0 timestamps return; the independent six-slot
 reader fix remains. The actual quarter-hour trigger was verified restored at `06:44:13.345` UTC on 2026-11-03. The full
-fifteen-minute propagation interval ends at `06:59:13.345` UTC; native baseline-version restoration is still pending.
+fifteen-minute propagation interval was due to end at `06:59:13.345` UTC. At source-restoration preparation (`06:47` UTC), native
+baseline-version restoration was pending; consult #1147 for subsequent serving-state verification.
 Source restoration is not proof of the version serving in production. Verify matched code and registered triggers separately.
 
 The unaccepted candidate retried only the verified PUT InternalError 10001 class, at most three attempts per immutable
