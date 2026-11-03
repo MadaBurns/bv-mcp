@@ -71,6 +71,8 @@ export const MAX_WINDOW_BYTES = 1024 * 1024;
 
 export interface CompactionLimits {
 	targetRawBytes: number;
+	/** Test clock seam; production uses a bounded timer while retaining the output lease. */
+	putRetrySleep?: (ms: number) => Promise<void>;
 }
 
 export type JobOutcome = 'applied' | 'already-applied' | 'stale' | 'killed';
@@ -118,12 +120,20 @@ export const PUT_CONCURRENCY = 6;
  */
 export const PUT_BUDGET_BYTES = 4 * 1024 * 1024;
 
+/** Only the exact R2 PUT failure observed in #1147 is retryable. Unknown failures retain queue retry semantics. */
+const RETRYABLE_PUT_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)';
+const PUT_RETRY_BACKOFF_MS = [100, 250] as const;
+const putRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** What a job did, for its `ct_compaction_job_done` log line. */
 export interface JobStats {
 	outputs: number;
+	/** Actual output PUT calls, including bounded retries; absent on legacy callers. */
+	putAttempts?: number;
+	putRetries?: number;
 	/** Range GETs of input blocks. */
 	gets: number;
-	/** Summed duration of the output puts (they overlap, so this can exceed `ms`). */
+	/** Summed output PUT-chain elapsed time, including backoff (chains overlap, so this can exceed `ms`). */
 	putMs: number;
 	/** Job duration. */
 	ms: number;
@@ -141,8 +151,10 @@ const filterEntryLimit = (tier: number) => (tier === 1 ? KEY_FILTER_MAX_ENTRIES 
 /** Writes a merge's output as a sequence of runs, closing one at each cut, kind change, size target or filter limit. */
 class OutputSink {
 	readonly outputs: OutputRun[] = [];
-	/** Summed duration of the puts. */
+	/** Summed output PUT-chain elapsed time, including retry backoff. */
 	putMs = 0;
+	putAttempts = 0;
+	putRetries = 0;
 	private writer: RunWriter | null = null;
 	private sibling = false;
 	private rawBytes = 0;
@@ -163,6 +175,8 @@ class OutputSink {
 		private readonly cuts: readonly string[],
 		private readonly targetRawBytes: number,
 		private readonly maxFilterEntries: number,
+		private readonly sleep: (ms: number) => Promise<void>,
+		private readonly retryContext: Pick<CompactionJob, 'id' | 'planId' | 'now'>,
 	) {}
 
 	async add(row: RunRow): Promise<void> {
@@ -232,10 +246,38 @@ class OutputSink {
 		}
 	}
 
+	private async putWithRetry(r2Key: string, bytes: Uint8Array): Promise<void> {
+		for (let attempt = 0; ; attempt++) {
+			this.putAttempts++;
+			if (attempt > 0) {
+				this.putRetries++;
+				console.warn(JSON.stringify({
+					event: 'ct_compaction_put_retry',
+					...this.retryContext,
+					category: 'r2-put-internal-10001',
+					phase: 'attempt',
+					nextAttempt: attempt + 1,
+					delayMs: PUT_RETRY_BACKOFF_MS[attempt - 1],
+				}));
+			}
+			try {
+				await this.bucket.put(r2Key, bytes);
+				return;
+			} catch (error: unknown) {
+				if (
+					!(error instanceof Error) || error.name !== 'Error' ||
+					error.message !== RETRYABLE_PUT_MESSAGE || attempt >= PUT_RETRY_BACKOFF_MS.length
+				) throw error;
+				await this.sleep(PUT_RETRY_BACKOFF_MS[attempt]!);
+			}
+		}
+	}
+
 	private startPut(r2Key: string, bytes: Uint8Array): void {
 		const started = Date.now();
-		const put: Promise<void> = this.bucket
-			.put(r2Key, bytes)
+		// A closed writer never mutates these bytes again. Every attempt uses the identical key, view and options
+		// (none). The whole retry chain stays in `puts` and `putBytes`, including backoff: no extra slot or buffer.
+		const put: Promise<void> = this.putWithRetry(r2Key, bytes)
 			.then(() => {
 				this.putMs += Date.now() - started;
 			})
@@ -272,9 +314,10 @@ export async function runCompactionJob(
 	job: CompactionJob,
 	limits: CompactionLimits = { targetRawBytes: TARGET_RAW_BYTES },
 	nowMs = Date.now(),
-	stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 },
+	stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0, putAttempts: 0, putRetries: 0 },
 ): Promise<JobOutcome> {
 	const startedMs = Date.now();
+	Object.assign(stats, { outputs: 0, gets: 0, putMs: 0, ms: 0, putAttempts: 0, putRetries: 0 });
 	const db = env.CURSORS;
 	if (await isKilled(db)) return 'killed';
 	const inputKeys = job.inputs.map(r2KeyOfRunId);
@@ -304,7 +347,7 @@ export async function runCompactionJob(
 			);
 		}
 	});
-	const sink = new OutputSink(env.INDEX, outputPrefix, job.cuts, limits.targetRawBytes, filterEntryLimit(job.tier));
+	const sink = new OutputSink(env.INDEX, outputPrefix, job.cuts, limits.targetRawBytes, filterEntryLimit(job.tier), limits.putRetrySleep ?? putRetrySleep, { id: job.id, planId: job.planId, now: job.now });
 	for await (const row of mergeSortedRuns(layers, job.now)) await sink.add(row);
 	const outputs = await sink.finish();
 
@@ -334,10 +377,10 @@ export async function runCompactionJob(
 	);
 	// Last data statement: its guard still sees every input, because SQLite evaluates the uncorrelated subquery once.
 	statements.push(db.prepare(`DELETE FROM runs WHERE id IN (SELECT value FROM json_each(?1)) AND ${guard}`).bind(...guardArgs));
-	statements.push(ledgerStatement(db, nowMs, { r2ClassA: outputs.length, r2ClassB: gets, d1Rows: outputs.length + inputs.length + 1 }));
+	statements.push(ledgerStatement(db, nowMs, { r2ClassA: sink.putAttempts, r2ClassB: gets, d1Rows: outputs.length + inputs.length + 1 }));
 	const results = await db.batch(statements);
 	const swapped = results[outputs.length]!.meta.changes === job.inputs.length;
-	Object.assign(stats, { outputs: outputs.length, gets, putMs: sink.putMs, ms: Date.now() - startedMs });
+	Object.assign(stats, { outputs: outputs.length, putAttempts: sink.putAttempts, putRetries: sink.putRetries, gets, putMs: sink.putMs, ms: Date.now() - startedMs });
 
 	// Swapped: the inputs are garbage unless a retained generation still lists them. Not swapped: a concurrent run
 	// of the same job won (its outputs are ours, byte for byte) or another job consumed an input; this attempt's
@@ -360,7 +403,7 @@ export async function runCompactionBatch(batch: MessageBatch<unknown>, env: Env)
 		} else {
 			// Logged before the work, so an invocation that dies on a CPU or memory limit still names its job.
 			console.log(JSON.stringify({ event: 'ct_compaction_job', planId: job.planId, id: job.id, now: job.now, tier: job.tier, inputs: job.inputs.length }));
-			const stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 };
+			const stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0, putAttempts: 0, putRetries: 0 };
 			const outcome = await runCompactionJob(env, job, undefined, undefined, stats);
 			// After the work: output count and put time say where a job's wall time goes (SQ-402).
 			console.log(JSON.stringify({ event: 'ct_compaction_job_done', planId: job.planId, id: job.id, now: job.now, tier: job.tier, outcome, ...stats }));
