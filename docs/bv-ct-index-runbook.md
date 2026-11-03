@@ -126,14 +126,17 @@ The candidate is not retained. This source restores the matched quarter-hour tri
 T0 catalog timestamps and the ten-minute age floor. The independent six-slot reader limiter remains.
 
 The 2026-11-03 `04:17` UTC canonical full plan contained **109 jobs over 2,450 inputs**. A compact-queue job raised an
-exception, then retried and completed as applied with **10 outputs and 20 completion-reported GETs**. The cause is unknown.
+exception, then retried and completed as applied with **10 outputs and 20 completion-reported GETs**.
 All 109 unique full-plan jobs ultimately completed as applied. A successful retry does not satisfy the unchanged error-free full-recovery gate. **No peak benchmark requests were made**;
 this trial has no latency result. A separate ordinary `04:22` plan also had a compact-queue exception, received at
-`04:22:29.986` UTC (CPU 5,216 ms, wall 27,589 ms); its cause is likewise unknown and it is not counted as a full-plan error.
+`04:22:29.986` UTC (CPU 5,216 ms, wall 27,589 ms); it is not counted as a full-plan error. Authenticated dashboard
+evidence identifies both recorded errors on the candidate as **PUT InternalError, code 10001**, at `17:18:16.194` and
+`17:22:29.054` NZDT. This identifies the reported operation/error class, not the underlying cause; no retry fix is established.
 The actual quarter-hour trigger was verified restored at `04:22:28.790` UTC. After the required fifteen-minute propagation
-interval, the earliest baseline-version restoration is `04:37:28.790` UTC; version restoration remains pending. Restoring
-source alone does not prove which version is serving. Restore matched quarter-hour code **and actual registered triggers**,
-allow the propagation interval, then verify serving version, queue settings, bindings and unchanged main MCP separately.
+interval, the native version restoration completed successfully. Post-restore readbacks at `04:37:51` UTC verified the known
+baseline version at **100%**, the quarter-hour trigger and unchanged main MCP; the current-secrets platform guard was
+retained. An earlier timing-guard attempt at `04:37:26` UTC made zero API calls. Restoring source alone is not serving proof:
+rollback must restore matched code **and actual registered triggers**, allow propagation, and verify both independently.
 
 Preserve all earlier instrumentation failures and their zero-call peak evidence. In particular, the earlier `01:17` daily
 full plan had **1,124 jobs over 4,994 inputs**; its old capture stopped after **850 unique applied jobs** with no exceptions
