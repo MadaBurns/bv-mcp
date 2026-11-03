@@ -58,15 +58,68 @@ describe('immutable compaction PUT retry', () => {
 		expect(stats.putRetries).toBe(seen.size * failures);
 		const events = warn.mock.calls.map(([line]) => JSON.parse(String(line)));
 		expect(events).toHaveLength(stats.putRetries!);
-		expect(events.every(event => event.event === 'ct_compaction_put_retry' && event.phase === 'attempt' && event.id === job.id && event.planId === job.planId && event.now === job.now && event.category === 'r2-put-internal-10001' && [2, 3].includes(event.nextAttempt) && [100, 250].includes(event.delayMs))).toBe(true);
+		expect(events.every(event => event.event === 'ct_compaction_put_retry' && event.phase === 'attempt' && event.id === job.id && event.planId === job.planId && event.now === job.now && event.category === 'r2-put-internal-10001' && [2, 3].includes(event.nextAttempt) && [1100, 2200].includes(event.delayMs))).toBe(true);
 		expect(events.every(event => Object.keys(event).sort().join(',') === 'category,delayMs,event,id,nextAttempt,now,phase,planId')).toBe(true);
-		expect(sleeps.filter(x => x === 100)).toHaveLength(seen.size);
-		expect(sleeps.filter(x => x === 250)).toHaveLength(failures === 2 ? seen.size : 0);
+		expect(sleeps.filter(x => x === 1100)).toHaveLength(seen.size);
+		expect(sleeps.filter(x => x === 2200)).toHaveLength(failures === 2 ? seen.size : 0);
 		const after = await env.CURSORS.prepare('SELECT SUM(r2_class_a) AS n FROM ops_ledger').first<{
 			n: number;
 		}>();
 		expect(after!.n - before!.n).toBe(stats.putAttempts);
 		expect((await catalog()).every(x => x.tier === 1)).toBe(true);
+	});
+	it('paces same-key ambiguous committed writes beyond the documented one-write-per-second window', async () => {
+		const env = testEnv();
+		for (const minute of [5, 6]) await ingest(env, at(1, minute), [obs('single.example.com')]);
+		const { jobs } = await runCompactionCron(env, at(2, 17));
+		expect(jobs).toHaveLength(1);
+		let logicalMs = 0;
+		const timestamps: number[] = [];
+		const enforceSameKeyRate = (now: number, previous: number) => {
+			if (now - previous < 1000) throw new Error('put: Too Many Requests (10058)');
+		};
+		const wrapped = withFault(env.INDEX, 'put', async (...args: unknown[]) => {
+			const [key, bytes] = args as [string, Uint8Array];
+			if (timestamps.length) enforceSameKeyRate(logicalMs, timestamps[timestamps.length - 1]!);
+			timestamps.push(logicalMs);
+			const stored = await env.INDEX.put(key, bytes); // The failure is ambiguous: storage already committed.
+			if (timestamps.length < 3) throw new Error(MESSAGE);
+			return stored;
+		});
+		expect(await runCompactionJob(testEnv({ INDEX: wrapped }), jobs[0]!, {
+			...SMALL, putRetrySleep: async ms => { logicalMs += ms; },
+		}, at(2, 17))).toBe('applied');
+		const safeSpacing = (times: number[]) => times.every((time, i) => i === 0 || time - times[i - 1]! >= 1000);
+		expect(timestamps).toEqual([0, 1100, 3300]);
+		expect(safeSpacing(timestamps)).toBe(true);
+		// Negative control: the rejected original policy violates the same-key pacing oracle.
+		expect(safeSpacing([0, 100, 350])).toBe(false);
+		expect(() => enforceSameKeyRate(100, 0)).toThrow('(10058)');
+	});
+	it('propagates a 10058 after one handled 10001 without a third PUT or D1 publication', async () => {
+		const env = testEnv();
+		for (const minute of [5, 6]) await ingest(env, at(1, minute), [obs('single.example.com')]);
+		const { jobs } = await runCompactionCron(env, at(2, 17));
+		const before = await catalog();
+		const limited = new Error('put: Too Many Requests (10058)');
+		let calls = 0;
+		const wrapped = withFault(env.INDEX, 'put', async (...args: unknown[]) => {
+			if (++calls === 1) {
+				await env.INDEX.put(...(args as [string, Uint8Array]));
+				throw new Error(MESSAGE);
+			}
+			throw limited;
+		});
+		const batchCall = vi.fn(async () => { throw new Error('Unexpected catalog mutation'); });
+		const delays: number[] = [];
+		await expect(runCompactionJob(testEnv({ INDEX: wrapped, CURSORS: withFault(env.CURSORS, 'batch', batchCall) }), jobs[0]!, {
+			...SMALL, putRetrySleep: async ms => { delays.push(ms); },
+		}, at(2, 17))).rejects.toBe(limited);
+		expect(calls).toBe(2);
+		expect(delays).toEqual([1100]);
+		expect(batchCall).not.toHaveBeenCalled();
+		expect(await catalog()).toEqual(before);
+		for (const run of before) expect(await env.INDEX.head(run.r2_key)).not.toBeNull();
 	});
 	it('holds all six output leases through backoff instead of admitting six more outputs', async () => {
 		const { env, job } = await setup();
@@ -192,13 +245,13 @@ describe('immutable compaction PUT retry', () => {
 		const wrapped = withFault(env.INDEX, 'put', async (...args: unknown[]) => { const key = args[0] as string; counts.set(key, (counts.get(key) ?? 0) + 1); throw error; });
 		await expect(runCompactionJob(testEnv({ INDEX: wrapped }), job, { ...SMALL, putRetrySleep: async (ms) => { delays.push(ms); } }, at(2, 17))).rejects.toBe(error);
 		expect(Math.max(...counts.values())).toBe(3);
-		expect(delays.every(ms => ms === 100 || ms === 250)).toBe(true);
+		expect(delays.every(ms => ms === 1100 || ms === 2200)).toBe(true);
 		expect(await catalog()).toEqual(before);
 		expect((await env.CURSORS.prepare('SELECT * FROM ops_ledger').all()).results).toEqual(ledger.results);
 		for (const run of before)
 			expect(await env.INDEX.head(run.r2_key)).not.toBeNull();
 	});
-	it.each([new Error('put: We encountered an internal error. Please try again. (10002)'), new Error('get: We encountered an internal error. Please try again. (10001)'), new TypeError(MESSAGE), new RangeError(MESSAGE), { message: MESSAGE, code: 10001 }, new Error('Network connection lost.'), new Error('put: Permission denied (10001)')])('does not retry unverified error shapes %#', async (error) => {
+	it.each([new Error('put: We encountered an internal error. Please try again. (10002)'), new Error('get: We encountered an internal error. Please try again. (10001)'), new TypeError(MESSAGE), new RangeError(MESSAGE), { message: MESSAGE, code: 10001 }, new Error('Network connection lost.'), new Error('put: Permission denied (10001)'), new Error('put: Too Many Requests (10058)')])('does not retry unverified error shapes %#', async (error) => {
 		const { env, job } = await setup();
 		const before = await catalog();
 		const sleep = vi.fn(async () => { });

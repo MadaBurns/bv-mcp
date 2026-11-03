@@ -122,7 +122,10 @@ export const PUT_BUDGET_BYTES = 4 * 1024 * 1024;
 
 /** Only the exact R2 PUT failure observed in #1147 is retryable. Unknown failures retain queue retry semantics. */
 const RETRYABLE_PUT_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)';
-const PUT_RETRY_BACKOFF_MS = [100, 250] as const;
+// R2 limits writes to one per second per object key. A 10001 may follow an already-stored object, so
+// even the first replay waits beyond that window; this does not coordinate independent duplicate jobs.
+// https://developers.cloudflare.com/r2/platform/limits/ — 10058/429 remains non-retryable here.
+const PUT_RETRY_BACKOFF_MS = [1100, 2200] as const;
 const putRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** What a job did, for its `ct_compaction_job_done` log line. */
