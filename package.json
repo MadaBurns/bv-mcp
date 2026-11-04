@@ -97,7 +97,7 @@
 		"drizzle:check": "npm run drizzle:check:registry && npm run drizzle:check:tenant"
 	},
 	"dependencies": {
-		"@blackveil/dns-checks": "^1.60.2",
+		"@blackveil/dns-checks": "^2.0.0",
 		"@streamparser/json-whatwg": "^0.0.26",
 		"@typesafe-ai/sdk": "^0.7.0",
 		"drizzle-orm": "0.45.4",
