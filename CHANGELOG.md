@@ -8,9 +8,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.109.0] - 2026-11-04
+
 ### Changed
 
-- **Scoring model 2.0.0 (score semantics change).** `@blackveil/dns-checks` moves to 2.0.0. The default tier split is core 75 / protective 25 and the hardening tier is empty: every former hardening category is now a protective category with an explicit per-profile importance, and the hardening pass-rate pool is removed. The flat verified-critical overall penalty and the email bonus are off by default (config keys remain and explicit overrides still apply). The 64 critical-gap and 94 partial-enforcement ceilings, the evidence gate, UNGRADED abstention and profile detection are unchanged. Grades move in both directions: domains that leaned on the bonus or hardening pass count tend to grade lower; domains held down by the flat penalty tend to grade higher. See `docs/scoring.md`.
+- **Scoring model 2.0.0 (score semantics change).** `@blackveil/dns-checks` moves to 2.0.0. The default tier split is core 75 / protective 25 and the hardening tier is empty: every former hardening category is now a protective category with an explicit per-profile importance, and the hardening pass-rate pool is removed. The flat verified-critical overall penalty and the email bonus are off by default (config keys remain and explicit overrides still apply). The 64 critical-gap and 94 partial-enforcement ceilings, the evidence gate, UNGRADED abstention and profile detection are unchanged. Most scores move down by a few points: the old hardening pool credited almost every domain in full, and its points are now earned at each domain's real pass rate on weighted categories. Domains that also received the email bonus move further. Some domains near a grade boundary change letter grade, including some at the bottom of D that now grade F. See `docs/scoring.md`.
 - `scan_domain` and `batch_scan` no longer apply the MCP-only post-scoring interaction-penalty layer; the returned score and grade equal the `@blackveil/dns-checks` package output. `interactionEffects` is retained in the output contract but is now always `[]`.
 
 ## [3.108.4] - 2026-11-03
