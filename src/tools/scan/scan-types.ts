@@ -6,10 +6,20 @@
  */
 
 import type { CheckResult, DomainContext, ScanScore } from '../../lib/scoring';
-import type { InteractionEffect } from '../../lib/category-interactions';
 import type { MaturityStage } from './maturity-staging';
 import type { ScanRuntimeOptions } from './post-processing';
 import type { WebPostureSection } from './web-posture';
+
+/**
+ * Shape of one `interactionEffects` entry. Scoring model 2.0.0 removed the
+ * post-scoring interaction-penalty layer, so the array is always empty; the
+ * type is kept so the published output contract does not change.
+ */
+export interface InteractionEffect {
+	ruleId: string;
+	penalty: number;
+	narrative: string;
+}
 
 export interface ScanDomainResult {
 	domain: string;
@@ -21,7 +31,7 @@ export interface ScanDomainResult {
 	timestamp: string;
 	scoringNote: string | null;
 	adaptiveWeightDeltas: Record<string, number> | null;
-	/** Category interaction effects applied as post-scoring adjustments. Empty when no interactions triggered. */
+	/** Always `[]` since scoring model 2.0.0 (the post-scoring interaction-penalty layer was removed). Kept for output-contract stability. */
 	interactionEffects: InteractionEffect[];
 	/**
 	 * Tri-state resolution signal:
