@@ -8,6 +8,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.108.4] - 2026-11-03
+
+### Fixed
+
+- `check_agent_discovery` now also queries the DNS-SD name `_<protocol>._agents.<domain>` (mcp, a2a and https, or only the requested protocol). Before this change a live, DNSSEC-signed record at `_mcp._agents.agenticweb.wiki` (measured 2026-11-04 via Cloudflare and Google DoH) was reported as "No BANDAID agent-discovery records found" with `passed: true`, score 100 and `confidence: deterministic`. An empty read is now titled "No agent-discovery records observed", is scoped to the names queried, and is declared `confidence: heuristic`. The tool is not part of `scan_domain`, so no scores change.
+- Reject the PUT-resilient fixed-eight CT trial at its pre-full entry gate: the queue observation reported backlog count 4 instead of the required zero, and no peak benchmark requests were made. This supplies no latency result and does not establish a runtime failure. Restore source/configuration/tests to the matched quarter-hour baseline while preserving the independent six-slot reader fix. The actual quarter-hour trigger was restored at 2026-11-03 06:44:13.345 UTC; At source-restoration preparation (06:47 UTC), native baseline-version restoration was pending until after the full propagation interval ending 06:59:13.345 UTC; consult #1147 for subsequent serving-state verification. The candidate is not retained or accepted; prior trial history and cost limitations remain (#1147).
+
+- Reject the size-aware five-minute CT candidate after its 2026-11-03 04:17 UTC full plan (109 jobs over 2,450 inputs) recorded a compact-queue exception. All 109 unique full-plan jobs ultimately applied, including the affected job on retry (10 outputs, 20 reported GETs), but the unchanged error-free recovery gate failed; no peak benchmark requests were made and latency remains unmeasured for this trial. Restore matched quarter-hour source/configuration and invocation-time T0 eligibility with a ten-minute floor. The actual quarter-hour trigger was restored at 04:22:28.790 UTC, and post-restore readbacks at 04:37:51 UTC verified the known baseline version at 100%, quarter-hour triggers and unchanged main MCP, retaining the current-secrets platform guard. Authenticated dashboard evidence classifies both recorded errors as PUT InternalError code 10001; the underlying cause and cost attribution remain unverified. Preserve earlier rejected trials and the independent six-slot reader fix (#1147).
+- Owned CT index read/decode preparation shares its six-slot bound across the initial catalog scan and its single retry, including abandoned reads (#1147).
+- Reject the phase/coalescing experiment after its peak gate failed with 2/28 HTTP 503 responses and p95 1594.84 ms; restore UTC-aligned T0 windows and creation-hour grouping. The quarter-hour trigger, fifteen-minute width and existing limits are preserved. Live latency acceptance remains open (#1147).
+- Reject the D1-statement-clock/two-minute-floor CT candidate after its peak returned 27/28 HTTP 200 responses, one HTTP 503 timeout and p95 1418.15 ms. Its full recovery applied all 102 jobs over 2,183 inputs and drained the compact queue, but the unchanged all-success gate failed. Restore invocation-time T0 catalog timestamps and the ten-minute age floor; preserve the independent six-slot reader limiter, calendar windows, grouping and cadence. The prior production version was verified restored at 100%; main MCP settings remained unchanged. Live latency acceptance and cost attribution remain open (#1147).
+
 ## [3.108.3] - 2026-11-02
 
 ### Fixed

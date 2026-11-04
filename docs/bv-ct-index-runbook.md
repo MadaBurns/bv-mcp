@@ -117,10 +117,114 @@ leave the catalog as compaction rewrites them. Rolling the code back after 0005 
 both columns NULL. It is slower: 0005 drops the `runs_generation_tier_range` index, so the old catalog query reads every
 run of the current generation.
 
-SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. The retained default
-pairs fifteen-minute T0 windows with that quarter-hour expression; the ten-minute minimum age, hourly `:17` recovery,
-job row/input caps and read-memory budgets remain unchanged. A five-minute paired cadence was evaluated but did not meet the
+### PUT-resilient fixed-eight trial — not accepted (#1147)
+
+The merged candidate combined the five-minute/two-minute statement-clock planner and fixed eight-input ordinary minimum
+with bounded immutable-output PUT retries. It was the **full fixed-eight-plus-PUT-retry change from the quarter-hour
+baseline**, not a PUT-only production change. Its trial was rejected at the pre-full entry gate: the queue observation
+reported **backlog count 4**, rather than the frozen zero-backlog requirement. **No peak benchmark requests were made**.
+This rejection supplies no latency result and does not establish a runtime failure. The candidate is not retained or accepted.
+
+This source restores the matched quarter-hour implementation, configuration, CT tests and root cadence audit to the known
+baseline. Fifteen-minute windows, the ten-minute age floor and invocation-time T0 timestamps return; the independent six-slot
+reader fix remains. The actual quarter-hour trigger was verified restored at `06:44:13.345` UTC on 2026-11-03. The full
+fifteen-minute propagation interval was due to end at `06:59:13.345` UTC. At source-restoration preparation (`06:47` UTC), native
+baseline-version restoration was pending; consult #1147 for subsequent serving-state verification.
+Source restoration is not proof of the version serving in production. Verify matched code and registered triggers separately.
+
+The unaccepted candidate retried only the verified PUT InternalError 10001 class, at most three attempts per immutable
+output, with 1,100/2,200 ms backoffs; 429/10058 and other errors remained non-retryable under that policy. It kept each output
+lease through backoff and counted output descriptors, actual PUT attempts and extra attempts separately. These offline
+controls do not establish a production fix, causal cost neutrality or CPU/heap headroom. Failed, retried, in-flight and
+uncaptured work remains incompletely attributed, and there is no automatic daily spend ceiling.
+
+Preserve this entry-gate failure and its zero-call peak evidence separately from the earlier runtime/error and latency
+trials below. Any future candidate must establish its own canonical full/drain proof, then pass one prospective same-hour
+`:31` or `:45` peak while capture continues: all 28 responses HTTP 200, p95 strictly below 1500 ms, known-positive and
+refused-caller controls, no 429 and before/after metadata parity. Closed-window cost/work review and the post-peak
+owner-authenticated main-service product path remain required before retention. Do not reuse an earlier recovery or
+retry a failed peak to declare this trial accepted.
+
+### Size-aware five-minute candidate — rejected (#1147)
+
+The five-minute candidate used phase-zero cutoffs, a two-minute floor and an eight-input ordinary T0 minimum. It accumulated
+older eligible T0 runs by UTC creation hour; cap-closed chunks and full/recovery ticks bypassed the minimum. It also used
+UTC D1 statement time after both R2 puts for T0 `created_at`, without changing object-attempt keys or metadata clocks.
+The candidate is not retained. Its subsequent source restoration reinstated the matched quarter-hour trigger and fifteen-minute windows, invocation-time
+T0 catalog timestamps and the ten-minute age floor. The independent six-slot reader limiter remains.
+
+The 2026-11-03 `04:17` UTC canonical full plan contained **109 jobs over 2,450 inputs**. A compact-queue job raised an
+exception, then retried and completed as applied with **10 outputs and 20 completion-reported GETs**.
+All 109 unique full-plan jobs ultimately completed as applied. A successful retry does not satisfy the unchanged error-free full-recovery gate. **No peak benchmark requests were made**;
+this trial has no latency result. A separate ordinary `04:22` plan also had a compact-queue exception, received at
+`04:22:29.986` UTC (CPU 5,216 ms, wall 27,589 ms); it is not counted as a full-plan error. Authenticated dashboard
+evidence identifies both recorded errors on the candidate as **PUT InternalError, code 10001**, at `17:18:16.194` and
+`17:22:29.054` NZDT. This identifies the reported operation/error class, not the underlying cause; no retry fix is established.
+The actual quarter-hour trigger was verified restored at `04:22:28.790` UTC. After the required fifteen-minute propagation
+interval, the native version restoration completed successfully. Post-restore readbacks at `04:37:51` UTC verified the known
+baseline version at **100%**, the quarter-hour trigger and unchanged main MCP; the current-secrets platform guard was
+retained. An earlier timing-guard attempt at `04:37:26` UTC made zero API calls. Restoring source alone is not serving proof:
+rollback must restore matched code **and actual registered triggers**, allow propagation, and verify both independently.
+
+Preserve all earlier instrumentation failures and their zero-call peak evidence. In particular, the earlier `01:17` daily
+full plan had **1,124 jobs over 4,994 inputs**; its old capture stopped after **850 unique applied jobs** with no exceptions
+observed in that partial capture. Full completion was not verified, so it cannot establish acceptance. Other failed captures
+and the local supervisor/authentication failures likewise cannot establish a latency result.
+
+The bounded offline model reduced one late first-page query from **52 to 19 GETs**, while compaction GETs increased
+**269 to 278**, output PUTs **39 to 48**, and planner SELECT executions **62 to 173**. These are modeled counts, not
+production invoices or proof of CPU, heap, latency or workload headroom. Completion GETs/output descriptors do not fully account for failed attempts, retries,
+in-flight and uncaptured work; global ledger changes do not establish causal candidate cost. There is no
+claim of cost neutrality and no automatic daily spend ceiling. Existing row/input targets and exceptions, the API 1500 ms
+deadline, six preparation slots, data formats and ENTRIES100/30/3 remain unchanged. Prior latency failures below remain rejected.
+
+### Rejected experiments and restored baseline history
+
+SQ-402 moved the compaction cron from `17 * * * *` to `2,17,32,47 * * * *`, planning T0 -> T1 every 15 minutes. It pairs
+fifteen-minute T0 windows with that quarter-hour expression and a ten-minute age floor. The statement-clock/two-minute-floor
+candidate below was rejected; hourly `:17` recovery, job row/input caps and read-memory budgets remain unchanged.
+A five-minute paired cadence was evaluated but did not meet the
 all-success latency gate, so it is not retained. Reader preparation and codec improvements remain independent of cadence.
+
+An evaluated #1147 candidate kept that cadence and width, but aligned window ends to phase 7 minutes past each quarter hour:
+`end = floor((now - age - phase) / width) * width + phase`, with a ten-minute age floor. At nominal ticks the cutoff
+was ten minutes old rather than seventeen; delayed ticks could be older. It chunked eligible T0 inputs together across UTC
+creation-hour boundaries, preserving the existing age ordering, input/row caps and coarse cuts. The experiment failed the
+peak gate with **2/28 HTTP 503 responses and p95 1594.84 ms**, so it is not retained. The planner again uses UTC-aligned
+fifteen-minute windows and creation-hour grouping. Compaction outputs keep job-time timestamps; downstream grouping rules and the existing
+oversized-single-input exception are unchanged; no latency improvement or cost neutrality is established.
+
+The next #1147 experiment changed T0 catalog scheduling from invocation time to canonical UTC D1 statement time after both
+R2 puts, and lowered the age floor from ten to two minutes. It kept phase-zero windows, creation-hour grouping and cadence.
+Statement time was not an exact transaction-commit timestamp; separate statements, clock skew or delayed publication could
+still leave an old window for the next full `:17`. Earlier eligibility did not establish an actual residency bound.
+
+The candidate's 2026-11-02 `19:17` UTC full recovery planned **102 jobs over 2,183 inputs**. All 102 unique jobs completed as
+applied; the compact queue drained and the eligible T0 cutoff was clear. Caller refusal and positive controls passed. The
+same-hour `19:31` peak then returned **27/28 HTTP 200 responses**, with **one HTTP 503 `ct_index_timeout`** and nearest-rank
+**p95 1418.15 ms**. The unchanged gate requires every response to succeed as well as p95 below 1500 ms, so this candidate
+was rejected despite its successful recovery and passing p95. No retry or relaxed threshold substitutes for that failed gate.
+
+The prior production version was restored natively and independently verified at 100% on 2026-11-02 at `19:36` UTC; the main
+MCP version and settings were unchanged. Source restoration returns the CT implementation to the pre-experiment baseline
+(`e744fb57`): invocation-time T0 catalog timestamps, a ten-minute floor, UTC-aligned fifteen-minute windows and creation-hour
+grouping. The independent six-slot reader limiter and catalog-retry regressions remain. No schema, object encoding, binding,
+secret or registered trigger change is part of this restoration. Live latency acceptance remains open (#1147).
+
+Recovery and the peak sample do not establish cost neutrality, downstream rewrite equivalence or a guaranteed residency
+improvement. Completion-reported GETs and output descriptors omit failed or retried object operations; daily ledger deltas
+include concurrent ingestion and compaction, and invocation CPU/wall metrics are not invoice totals or causal attribution.
+Record actual queue health and catalog counts separately. The existing lack of an automatic daily spend ceiling remains.
+
+On a forward phase-zero to phase-seven rollout, the first ordinary window can omit a seven-minute fragment from its
+planning range. Those inputs remain readable. **Before retaining a future phase candidate, verify the first new full `:17` catch-up
+plan includes all older eligible T0 inputs and its jobs drain successfully.** Record queue age, actual object GET/PUT and
+CPU costs, then run both acceptance gates against the new source. Keep current secrets when rolling back to phase zero;
+the reverse transition can overlap seven minutes of work, so preserve stale-input guards and verify a full recovery and drain.
+
+Read preparation uses one six-slot read-and-decode limiter across the initial catalog scan and its single catalog retry.
+Abandoned preparations retain their slots until they settle; retry rows cannot exceed that request-wide bound or leak
+rows from the abandoned catalog. This does not cancel in-flight R2 reads or extend the API deadline.
 
 For rollback from the five-minute pilot, restore the actual quarter-hour trigger while dual-compatible code is still serving,
 allow fifteen minutes for trigger propagation, then deploy the matching fifteen-minute window. The handler also recognizes the
@@ -391,6 +495,11 @@ Pass: **p95 under 1.5 s and every status 200, `amazonaws.com` and `microsoft.com
 (operator ruling, 2026-10-26). A `503` with `ct_index_timeout` means the API's own 1500 ms budget tripped, which is a failure of this
 gate. The laptop round trip is inside the number, so it is conservative. The in-Worker figure is the one the
 benchmark reports. Record the result with `story_log` on US-12.
+
+The retained-baseline #1147 measurement failed: **2 of 28 requests returned 503 and p95 was 1573.98 ms**. Keep that
+failure with the evidence. The phase/coalescing candidate also failed its peak gate (2/28 HTTP 503, p95 1594.84 ms) and
+was rejected. The request-wide retry limiter is retained as a correctness fix; passing offline regressions, a binding
+activation, or a smaller planner job count does not satisfy either live gate.
 
 Before counting samples, prove a known-domain read returns 200 with the matching caller and 401 with a different caller.
 Authentication/setup failures are not latency samples. Keep failed acceptance runs as well as the rerun; a diagnostic route

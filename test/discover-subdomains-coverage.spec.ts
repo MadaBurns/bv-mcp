@@ -917,6 +917,88 @@ describe('discover_subdomains — owned CT index (bv-ct-index) honest coverage (
 	describe('a partial owned index never suppresses the fallbacks through the cache (M1/M2)', () => {
 		const CACHE_KEY = 'cache:subdomains-lkg:example.com';
 
+		it.each([
+			{ label: 'young', ageDays: 30, stale: false },
+			{ label: 'stale', ageDays: 400, stale: true },
+		])('retains a $label owned floor when crt.sh times out and CertSpotter refuses the query (#1147)', async ({ ageDays, stale }) => {
+			const { DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS, discoverSubdomains, formatSubdomainDiscovery } =
+				await import('../src/tools/discover-subdomains');
+			const { kv, store } = makeKv();
+			const consulted: string[] = [];
+			const aborted: boolean[] = [];
+			vi.useFakeTimers();
+			try {
+				const coverage = ownedCoverage(ageDays, stale ? { freshThrough: daysAgo(1) } : {});
+				const binding = enumerateBinding(['api.example.com'], coverage);
+				globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+					const url = String(input instanceof Request ? input.url : input);
+					if (url.includes('crt.sh')) {
+						consulted.push('crtsh');
+						const signal = init?.signal;
+						if (!signal) throw new Error('crt.sh request is missing its abort signal');
+						// Exercise the real per-source timer and abort signal, rather than returning an HTTP error.
+						return new Promise<Response>((_resolve, reject) => {
+							signal.addEventListener(
+								'abort',
+								() => {
+									aborted.push(signal.aborted);
+									reject(new DOMException('Aborted', 'AbortError'));
+								},
+								{ once: true },
+							);
+						});
+					}
+					if (url.includes('certspotter.com')) {
+						consulted.push('certspotter');
+						return Response.json({ code: 'not_allowed_by_plan' }, { status: 403 });
+					}
+					return Response.json({ Status: 0, Answer: [] });
+				});
+
+				const pending = discoverSubdomains('example.com', { fetch: binding as unknown as typeof fetch }, undefined, {
+					cacheKv: kv,
+					deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+				});
+				await vi.advanceTimersByTimeAsync(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS);
+				const result = await pending;
+
+				expect(consulted.slice(0, 2)).toEqual(['crtsh', 'certspotter']);
+				expect(aborted.length).toBeGreaterThan(0);
+				expect(aborted.every(Boolean)).toBe(true);
+				expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+				expect(result.totalSubdomains).toBe(1);
+				expect(result.countBasis).toBe('floor');
+				expect(result.partial).toBe(true);
+				expect(result.sourceUnavailable).toBeFalsy();
+				expect(result.cached).toBeFalsy();
+				expect(store.has(CACHE_KEY)).toBe(false);
+				expect(result).not.toHaveProperty('enumerationComplete');
+				expect(certstreamSource(result)).toMatchObject({
+					outcome: 'ok',
+					contributed: true,
+					indexExhausted: false,
+					historyWindow: 'forward-from',
+					freshThrough: coverage.freshThrough,
+				});
+				expect(result.coverage?.perSource.find((attempt) => attempt.source === 'crtsh')).toMatchObject({
+					outcome: 'timeout',
+					contributed: false,
+				});
+				expect(result.coverage?.perSource.find((attempt) => attempt.source === 'certspotter')).toMatchObject({
+					outcome: 'provider_restricted',
+					httpStatus: 403,
+					apiErrorCode: 'not_allowed_by_plan',
+					contributed: false,
+				});
+				const output = formatSubdomainDiscovery(result, 'full');
+				expect(output).toContain('crtsh=timeout');
+				expect(output).toContain('HTTP 403');
+				expect(output).toContain('LOWER BOUND');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('retains a stale owned index sample when both direct providers fail, with partial coverage and no fresh cache', async () => {
 			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 			const { kv, store } = makeKv();

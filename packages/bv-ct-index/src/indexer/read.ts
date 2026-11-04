@@ -9,8 +9,8 @@
  * bound is at or below the smallest row already read, and the merge stops at `limit` rows plus the one that says the
  * page is truncated. A page therefore reads the runs that hold its rows, not every run the range overlaps (a big apex
  * overlaps thousands of T1 runs). While a run must be read, the next runs in bound order are read alongside it, so up
- * to READ_CONCURRENCY read/decode preparations are retained. Required preparations finish in completion order, so a slow
- * first run does not stall the other slots; rows still wait for every lower or equal bound before emitting.
+ * to READ_CONCURRENCY read/decode preparations are active across both catalog attempts. Required preparations finish in
+ * completion order, so a slow first run does not stall the other slots; rows still wait for every lower or equal bound before emitting.
  *
  * Errors: any D1 or R2 fault throws, so the API answers 503 and never an empty page. One exception is retried:
  * a compaction job deletes its input objects right after swapping the catalog, so a scan that read the catalog
@@ -35,7 +35,7 @@ import {
 } from '../codec';
 import type { Env } from '../index';
 import type { BlockIndexEntry, IndexReader, NameObservation, RunRow, SiblingObservation } from '../types';
-import { MissingRunObjectError, readRange } from './blocks';
+import { MissingRunObjectError, limiter, readRange } from './blocks';
 import { CURRENT_GENERATION_SQL, DEFAULT_GENERATION } from './catalog';
 
 export const READ_CONCURRENCY = 6;
@@ -162,6 +162,7 @@ class LazyMerge {
 		private readonly db: D1Database,
 		private readonly query: ScanQuery,
 		sources: readonly Source[],
+		private readonly prepare: ReturnType<typeof limiter>,
 	) {
 		for (const source of sources) insertSorted(this.pending, source, beforeByBound);
 	}
@@ -259,7 +260,7 @@ class LazyMerge {
 	private startRead(source: Source): void {
 		if (source.read !== null || source.blocks === null || source.failure !== null) return;
 		const entry = source.blocks[source.next]!;
-		source.read = readRange(this.bucket, source.r2Key, entry.offset, entry.length).then(decodeBlock).catch((error: unknown) => {
+		source.read = this.prepare(() => readRange(this.bucket, source.r2Key, entry.offset, entry.length).then(decodeBlock)).catch((error: unknown) => {
 			source.failure = { error };
 			source.read = null;
 			this.reading--;
@@ -366,12 +367,12 @@ export function catalogQuery(query: ScanQuery, deferIndexes = false): { sql: str
 	};
 }
 
-async function scanOnce(env: Env, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
+async function scanOnce(env: Env, query: ScanQuery, prepare: ReturnType<typeof limiter>): Promise<{ rows: RunRow[]; truncated: boolean }> {
 	const catalogRuns = catalogQuery(query, true);
 	const { results } = await env.CURSORS.prepare(catalogRuns.sql)
 		.bind(...catalogRuns.params)
 		.all<CatalogRun>();
-	return readPage(new LazyMerge(env.INDEX, env.CURSORS, query, sourcesOf(results, query)), query);
+	return readPage(new LazyMerge(env.INDEX, env.CURSORS, query, sourcesOf(results, query), prepare), query);
 }
 
 /** The merge inputs of a scan: each catalog run of the scan's kind with a block that can hold keys in range. */
@@ -406,11 +407,14 @@ async function readPage(merge: LazyMerge, query: ScanQuery): Promise<{ rows: Run
 }
 
 async function scanRange(env: Env, query: ScanQuery): Promise<{ rows: RunRow[]; truncated: boolean }> {
+	// Abandoned preparations may still be reading when a catalog swap starts the retry. They keep their slots
+	// until read + decode settles; the fresh attempt can use free slots without waiting for all old reads to drain.
+	const prepare = limiter(READ_CONCURRENCY);
 	try {
-		return await scanOnce(env, query);
+		return await scanOnce(env, query, prepare);
 	} catch (error) {
 		if (!(error instanceof MissingRunObjectError)) throw error;
-		return scanOnce(env, query);
+		return scanOnce(env, query, prepare);
 	}
 }
 
