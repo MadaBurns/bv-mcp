@@ -73,6 +73,8 @@ describe('DMARC impersonation escalation — full pipeline coherence', () => {
 		const clean = await runPipeline([mailMx(), pNoneDmarc(), cleanLookalikes()]);
 		const none = result.dmarc?.findings.find((f) => f.title === 'DMARC policy set to none');
 		expect(none?.severity).toBe('critical');
+		assert(typeof result.dmarcScore === 'number');
+		assert(typeof clean.dmarcScore === 'number');
 		expect(result.dmarcScore).toBeLessThan(clean.dmarcScore);
 	});
 
