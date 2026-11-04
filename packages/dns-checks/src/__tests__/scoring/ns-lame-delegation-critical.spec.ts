@@ -25,6 +25,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	DEFAULT_SCORING_CONFIG,
 	PROFILE_WEIGHTS,
 	buildCheckResult,
 	computeScanScore,
@@ -142,11 +143,22 @@ describe('the −15 critical penalty', () => {
 		expect(notShown.severity).toBe('critical');
 		expect(claimable.severity).toBe('critical');
 
-		const unstampedScore = computeScanScore(mailRoster(notShown), mailContext());
-		const verifiedScore = computeScanScore(mailRoster(claimable), mailContext());
+		// Scoring model 2.0.0 defaults `criticalOverallPenalty` to 0, so the −15 is exercised
+		// through the explicit override the published ScoringConfig surface still honours.
+		const withPenalty15 = {
+			...DEFAULT_SCORING_CONFIG,
+			thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, criticalOverallPenalty: 15 },
+		};
+		const unstampedScore = computeScanScore(mailRoster(notShown), mailContext(), withPenalty15);
+		const verifiedScore = computeScanScore(mailRoster(claimable), mailContext(), withPenalty15);
 
 		expect(verifiedCriticalCount(unstampedScore.findings)).toBe(0);
 		expect(verifiedCriticalCount(verifiedScore.findings)).toBe(1);
+
+		// Default config: the verified-critical count is still produced, but it no longer subtracts.
+		expect(computeScanScore(mailRoster(claimable), mailContext()).overall).toBe(
+			computeScanScore(mailRoster(notShown), mailContext()).overall,
+		);
 
 		// Guard the measurement itself: a fixture sitting on the 100 clamp would report a
 		// zero delta no matter what the engine did. `preCeiling` is

@@ -309,13 +309,11 @@ function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
  * never been routed through the ownership gate and emits `'medium'` regardless.
  * The Task 7 gate broke the DNS-derived path only; 7b restored it.
  *
- * This keys on `lookalikes` ONLY, deliberately matching the `impersonation_weak_dmarc`
- * interaction rule in `category-interactions.ts`, which scores `lookalikes <= 85`
- * (≈ "at least one medium-or-higher finding"). Keeping the label-escalation here and
- * the score-penalty there on the *same* signal is what prevents a critical label that
- * carries no score consequence. `shadow_domains` is a valid corroborator but is left
- * out of BOTH sides for now — adding it would require a parallel interaction rule to
- * stay coherent (see the note in category-interactions.ts).
+ * This keys on `lookalikes` ONLY (≈ "at least one medium-or-higher finding"). The
+ * `impersonation_weak_dmarc` score penalty that once shared this signal was removed
+ * with the post-scoring interaction layer (scoring model 2.0.0), so this is now a
+ * label-only escalation. `shadow_domains` is a valid corroborator but is left out
+ * for now.
  */
 function hasActiveImpersonation(results: CheckResult[]): boolean {
 	const lookalikes = results.find((result) => result.category === 'lookalikes');

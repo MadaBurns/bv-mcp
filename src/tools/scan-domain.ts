@@ -31,7 +31,6 @@ import {
 	type AdaptiveWeightsResponse,
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
-import { applyInteractionPenalties } from '../lib/category-interactions';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { buildScanCacheKey, cacheGet, cacheSet } from '../lib/cache';
 import type { DohPrimaryFailureTally, QueryDnsOptions } from '../lib/dns-types';
@@ -566,7 +565,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		// determinism — both the adaptive and non-adaptive paths must produce identical
 		// results regardless of whether the ProfileAccumulatorDO responds. The adaptive
 		// delta is surfaced via scoringNote/adaptiveWeightDeltas only.
-		let score: ScanScore = canonicalScore;
+		const score: ScanScore = canonicalScore;
 		let scoringNote: string | null = null;
 		let adaptiveWeightDeltas: Record<string, number> | null = null;
 
@@ -598,10 +597,6 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			}
 		}
 
-		// Apply category interaction penalties (post-scoring adjustment)
-		const { adjustedScore, effects: interactionEffects } = applyInteractionPenalties(score, runtimeOptions?.scoringConfig);
-		score = adjustedScore;
-
 		const rawMaturity = computeMaturityStage(checkResults, domainContext?.profile);
 		// An ungraded scan has no score to cap the stage with — leave the raw stage alone
 		// rather than coercing `null` to 0 (which would silently cap every ungraded scan).
@@ -617,7 +612,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			timestamp: new Date().toISOString(),
 			scoringNote,
 			adaptiveWeightDeltas,
-			interactionEffects,
+			// Published output contract: the field stays, always empty. The scoring-model 2.0.0
+			// package result is final — there is no post-scoring adjustment layer.
+			interactionEffects: [],
 		};
 
 		// POST telemetry to DO (best-effort, non-blocking).

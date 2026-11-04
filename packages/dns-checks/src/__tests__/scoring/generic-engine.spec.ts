@@ -4,6 +4,25 @@ import { describe, expect, it } from 'vitest';
 import { computeGenericScore } from '../../scoring/generic';
 import type { GenericScoringContext } from '../../scoring/generic';
 import { DEFAULT_SCORING_CONFIG } from '../../scoring/config';
+import type { ScoringConfig } from '../../scoring/config';
+
+/**
+ * The pre-2.0.0 policy as an EXPLICIT override (tier split 70/20/10, email bonus 5/3/2, critical
+ * penalty 15). Tests that exercise those mechanisms pass this so they keep proving the engine
+ * paths and the published override surface, while the default (2.0.0) behaviour is asserted
+ * separately.
+ */
+const PRE_2_0_POLICY: ScoringConfig = {
+	...DEFAULT_SCORING_CONFIG,
+	tierSplit: { core: 70, protective: 20, hardening: 10 },
+	thresholds: {
+		...DEFAULT_SCORING_CONFIG.thresholds,
+		emailBonusFull: 5,
+		emailBonusMid: 3,
+		emailBonusPartial: 2,
+		criticalOverallPenalty: 15,
+	},
+};
 
 /** Helper: build a minimal context with sensible defaults. */
 function buildContext(overrides: Partial<GenericScoringContext> = {}): GenericScoringContext {
@@ -63,9 +82,11 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// Core=70, Protective=20, Hardening=0, no email bonus
-			expect(result.overall).toBe(90);
-			expect(result.grade).toBe('A');
+			// 2.0.0 default split: Core=75, Protective=25, Hardening=0, no email bonus.
+			// (Was 90/A under the 70/20/10 split, where the empty hardening tier forfeited 10.)
+			expect(result.overall).toBe(100);
+			expect(result.grade).toBe('A+');
+			expect(result.tierBreakdown).toEqual({ core: 75, protective: 25, hardening: 0 });
 		});
 
 		it('reaches 100 when hardening also passes and email bonus applies', () => {
@@ -112,7 +133,7 @@ describe('computeGenericScore', () => {
 				hardeningPassed: { tlsrpt: true },
 			});
 
-			const result = computeGenericScore(ctx);
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			// Core=70, Protective=20, Hardening=10 (1/1 passed), email bonus=+5
 			// Total=100 (clamped)
 			expect(result.overall).toBe(100);
@@ -272,9 +293,11 @@ describe('computeGenericScore', () => {
 				hardeningPassed: {},
 			});
 
-			const result = computeGenericScore(ctx);
-			// SPF >= 57, DKIM not missing, DMARC present & score >= 90 → +5
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
+			// SPF >= 57, DKIM not missing, DMARC present & score >= 90 → +5 under the explicit override
 			expect(result.emailBonus).toBe(5);
+			// ...and 0 under the 2.0.0 default, where the bonus is zeroed but its code path remains.
+			expect(computeGenericScore(ctx).emailBonus).toBe(0);
 		});
 
 		it('uses custom emailBonusKeys when specified', () => {
@@ -304,7 +327,7 @@ describe('computeGenericScore', () => {
 				emailBonusKeys: { spf: 'my_spf', dkim: 'my_dkim', dmarc: 'my_dmarc' },
 			});
 
-			const result = computeGenericScore(ctx);
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			// All conditions met with custom keys → +5
 			expect(result.emailBonus).toBe(5);
 		});
@@ -330,7 +353,7 @@ describe('computeGenericScore', () => {
 				hardeningPassed: {},
 			});
 
-			const result = computeGenericScore(ctx);
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			expect(result.emailBonus).toBe(3);
 		});
 
@@ -355,7 +378,7 @@ describe('computeGenericScore', () => {
 				hardeningPassed: {},
 			});
 
-			const result = computeGenericScore(ctx);
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			expect(result.emailBonus).toBe(2);
 		});
 	});
@@ -444,7 +467,9 @@ describe('computeGenericScore', () => {
 				hardeningPassed: { tlsrpt: true, dane: false },
 			});
 
-			const result = computeGenericScore(ctx);
+			// The hardening tier is retired from the 2.0.0 defaults (hardening split 0) but the engine
+			// path stays for callers that keep a tier map and a split of their own.
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			// Only submitted hardening categories count. tlsrpt passes, dane fails.
 			// 1 of 2 passed → 10 * (1/2) = 5 points
 			// Core=70, Protective=0 (no protective categories), Hardening=5
@@ -475,11 +500,25 @@ describe('computeGenericScore', () => {
 				hardeningPassed: { tlsrpt: true },
 			});
 
-			const resultNone = computeGenericScore(ctxNone);
-			const resultOne = computeGenericScore(ctxOne);
+			const resultNone = computeGenericScore(ctxNone, PRE_2_0_POLICY);
+			const resultOne = computeGenericScore(ctxOne, PRE_2_0_POLICY);
 			// hardeningPassed is empty in ctxNone → 0 submitted → 0 hardening points
 			// hardeningPassed has tlsrpt:true in ctxOne → 1/1 passed → 10 points
 			expect(resultOne.overall - resultNone.overall).toBe(10);
+		});
+
+		it('2.0.0 default: a caller-supplied hardening key earns nothing and never yields NaN', () => {
+			const ctx = buildContext({
+				categoryScores: { spf: 100 },
+				tierMap: { spf: 'core', tlsrpt: 'hardening' },
+				weights: { spf: 10, tlsrpt: 1 },
+				hardeningPassed: { tlsrpt: true },
+			});
+			const withKey = computeGenericScore(ctx);
+			const wholly = computeGenericScore({ ...ctx, hardeningPassed: {} });
+			expect(withKey.tierBreakdown.hardening).toBe(0);
+			expect(Number.isNaN(withKey.overall)).toBe(false);
+			expect(withKey.overall).toBe(wholly.overall);
 		});
 	});
 
@@ -667,10 +706,10 @@ describe('computeGenericScore', () => {
 
 			const result = computeGenericScore(ctx);
 			// All core at 100 (spf explicit, dmarc/dkim absent → 100)
-			// corePct = (10+16+10)/36 = 1.0 → 70
-			// Protective: none → 20
-			// Total: 90
-			expect(result.overall).toBe(90);
+			// corePct = (10+16+10)/36 = 1.0 → 75
+			// Protective: none → 25
+			// Total: 100
+			expect(result.overall).toBe(100);
 		});
 
 		it('treats missing protective categories as 100%', () => {
@@ -693,10 +732,10 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// Core: no core categories → corePct=1 → 70
-			// Protective: http_security=50/100*3=1.5, mta_sts absent=100/100*3=3, total=4.5/6=0.75 → 15
-			// Total: 70+15 = 85
-			expect(result.overall).toBe(85);
+			// Core: no core categories → corePct=1 → 75
+			// Protective: http_security=50/100*3=1.5, mta_sts absent=100/100*3=3, total=4.5/6=0.75 → 18.75
+			// Total: 75+18.75 = 93.75 → 94
+			expect(result.overall).toBe(94);
 		});
 
 		it('scoring: reports the filled-100 keys in unmeasuredCategories rather than as a silent pass', () => {
@@ -748,7 +787,7 @@ describe('computeGenericScore', () => {
 			const result = computeGenericScore(ctx);
 			// providerModifier computed as metadata but excluded from overall score
 			expect(result.providerModifier).toBe(2);
-			expect(result.overall).toBe(90); // base only, no modifier applied
+			expect(result.overall).toBe(100); // base only, no modifier applied
 		});
 
 		it('computes negative modifier for low confidence (metadata only)', () => {
@@ -766,7 +805,7 @@ describe('computeGenericScore', () => {
 			const result = computeGenericScore(ctx);
 			// providerModifier computed as metadata but excluded from overall score
 			expect(result.providerModifier).toBe(-2);
-			expect(result.overall).toBe(90); // same as high confidence — deterministic
+			expect(result.overall).toBe(100); // same as high confidence — deterministic
 		});
 
 		it('returns 0 modifier when no providerConfidence provided', () => {
@@ -810,10 +849,24 @@ describe('computeGenericScore', () => {
 				findingSeverityCounts: { critical: 1, high: 0, medium: 0, low: 0, info: 0 },
 			});
 
-			const result = computeGenericScore(ctx);
+			// 2.0.0 default: the penalty is zeroed, so a counted critical finding no longer subtracts.
+			const byDefault = computeGenericScore(ctx);
+			expect(byDefault.criticalPenalty).toBe(0);
+			expect(byDefault.overall).toBe(100);
+
+			// An explicit override still applies (published ScoringConfig surface intact).
+			const result = computeGenericScore(ctx, PRE_2_0_POLICY);
 			expect(result.criticalPenalty).toBe(15);
 			// 70 + 20 - 15 = 75
 			expect(result.overall).toBe(75);
+
+			// A penalty-only override on the 2.0.0 defaults: 75 + 25 - 15 = 85.
+			const penaltyOnly = computeGenericScore(ctx, {
+				...DEFAULT_SCORING_CONFIG,
+				thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, criticalOverallPenalty: 15 },
+			});
+			expect(penaltyOnly.criticalPenalty).toBe(15);
+			expect(penaltyOnly.overall).toBe(85);
 		});
 
 		it('does not apply penalty when no critical findings', () => {
@@ -860,13 +913,19 @@ describe('computeGenericScore', () => {
 				hardeningPassed: { tlsrpt: true },
 			});
 
+			// Core: spf=(80/100)*10=8, dmarc=(100/100)*16=16, earned=24/26
+			// Protective: http=(60/100)*3=1.8, earned=1.8/3 = 0.6
+			// 2.0.0 default split 75/25/0: core 69.23, protective 15, hardening 0.
 			const result = computeGenericScore(ctx);
-			// Core: spf=(80/100)*10=8, dmarc=(100/100)*16=16, earned=24/26 → pct*70 = 64.6 → rounded
-			// Protective: http=(60/100)*3=1.8, earned=1.8/3 → pct*20 = 12
-			// Hardening: 1/1 passed → 10
-			expect(result.tierBreakdown.core).toBeCloseTo(64.6, 0);
-			expect(result.tierBreakdown.protective).toBeCloseTo(12, 0);
-			expect(result.tierBreakdown.hardening).toBe(10);
+			expect(result.tierBreakdown.core).toBeCloseTo(69.23, 1);
+			expect(result.tierBreakdown.protective).toBeCloseTo(15, 1);
+			expect(result.tierBreakdown.hardening).toBe(0);
+
+			// Pre-2.0.0 split as an explicit override: core 64.6, protective 12, hardening 1/1 → 10.
+			const legacy = computeGenericScore(ctx, PRE_2_0_POLICY);
+			expect(legacy.tierBreakdown.core).toBeCloseTo(64.6, 0);
+			expect(legacy.tierBreakdown.protective).toBeCloseTo(12, 0);
+			expect(legacy.tierBreakdown.hardening).toBe(10);
 		});
 	});
 
@@ -904,7 +963,7 @@ describe('computeGenericScore', () => {
 			});
 
 			const customConfig = {
-				...DEFAULT_SCORING_CONFIG,
+				...PRE_2_0_POLICY,
 				grades: { ...DEFAULT_SCORING_CONFIG.grades, a: 89 },
 			};
 

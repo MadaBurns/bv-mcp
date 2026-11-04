@@ -124,15 +124,16 @@ describe('web_only discriminates locked-down from spoofable non-senders', () => 
 		expect(locked.overall!).toBeGreaterThanOrEqual(unlocked.overall! + 8);
 	});
 
-	it('pins the exact contract values: lockdown 100, spoofable 89 on the synthetic rosters', () => {
+	it('pins the exact contract values: lockdown 100, spoofable 88 on the synthetic rosters', () => {
 		// The unlocked roster is otherwise PERFECT — real spoofable non-senders carry
 		// other flaws and land lower (fundhaus.app, 82/B pre-model, ≈ mid-70s / NIST C
-		// post-model). The 11-point spread is the ratified weights-only movement:
-		// spf+dmarc = 5/33 of the 70-point core tier, mx = 1/28 of protective.
+		// post-model). The 12-point spread is the ratified weights-only movement under the
+		// 2.0.0 split: spf+dmarc = 5/33 of the 75-point core tier (11.4), mx = 1/28 of the
+		// 25-point protective tier (0.9) → 87.75 → 88. (89 under the 70/20 split.)
 		const locked = computeScanScore(lockedDownRoster(), contextFor('web_only'));
 		const unlocked = computeScanScore(unlockedRoster(), contextFor('web_only'));
 		expect(locked.overall).toBe(100);
-		expect(unlocked.overall).toBe(89);
+		expect(unlocked.overall).toBe(88);
 	});
 
 	it('keeps a fully locked-down non-sender in the top band (the lockdown is rewarded, not just the gap punished)', () => {

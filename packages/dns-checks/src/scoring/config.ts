@@ -187,7 +187,10 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		cert_posture: 0,
 	},
 	profileWeights: deriveDefaultProfileWeights(),
-	tierSplit: { core: 70, protective: 20, hardening: 10 },
+	// Model 2.0.0: the binary hardening tier is retired (no category maps to it) and its 10
+	// points moved to protective. The `hardening` key stays: it is part of the published
+	// ScoringConfig surface and a custom tierMap may still use it.
+	tierSplit: { core: 75, protective: 25, hardening: 0 },
 	coreWeights: { dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8, authoritative_dns_infra: 0 },
 	protectiveWeights: {
 		subdomain_takeover: 4, http_security: 3, mta_sts: 3, subdomailing: 3, mx: 2,
@@ -200,11 +203,14 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 	},
 	thresholds: {
 		emailBonusImportance: 8,
-		emailBonusFull: 5,
-		emailBonusMid: 3,
-		emailBonusPartial: 2,
+		// Model 2.0.0 zeroes the email bonus and the verified-critical overall penalty. The keys
+		// and the engine paths stay: an explicit SCORING_CONFIG override still applies. The
+		// missing-control ceiling (criticalGapCeiling) carries the "worst case" signal alone.
+		emailBonusFull: 0,
+		emailBonusMid: 0,
+		emailBonusPartial: 0,
 		spfStrongThreshold: 57,
-		criticalOverallPenalty: 15,
+		criticalOverallPenalty: 0,
 		criticalGapCeiling: 64,
 		partialEnforcementCeiling: 94,
 		evidenceSufficiency: EVIDENCE_SUFFICIENCY_THRESHOLD,

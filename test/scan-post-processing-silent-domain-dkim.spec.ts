@@ -87,8 +87,8 @@ describe('SQ-535 silent domain — revoked DKIM keys are not a HIGH', () => {
 		expect(afterContext.profile).toBe('non_mail');
 		expect(original.find((result) => result.category === 'dkim')!.score).toBe(75);
 		expect(adjusted.find((result) => result.category === 'dkim')!.score).toBe(100);
-		expect({ overall: before.overall, grade: before.grade }).toEqual({ overall: 81, grade: 'B' });
-		expect({ overall: after.overall, grade: after.grade }).toEqual({ overall: 90, grade: 'A' });
+		expect({ overall: before.overall, grade: before.grade }).toEqual({ overall: 91, grade: 'A' });
+		expect({ overall: after.overall, grade: after.grade }).toEqual({ overall: 100, grade: 'A+' });
 
 		// Zero-weight web_only remains the score-neutral control; severity still changes through the same helper.
 		const webBefore = computeProfileAwareScanScore(original, { profile: 'web_only' });

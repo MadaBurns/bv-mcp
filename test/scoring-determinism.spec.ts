@@ -2,12 +2,11 @@
 
 import { describe, expect, it } from 'vitest';
 import { computeScanScore, buildCheckResult, createFinding, type CheckResult } from '../src/lib/scoring';
-import { applyInteractionPenalties } from '../src/lib/category-interactions';
 
 /**
  * Build a realistic scan result payload modeled after constructy.co.nz:
  * - mail_enabled profile
- * - DMARC ≥ 80, DNSSEC ≤ 40 (triggers weak_dnssec_enforcing_dmarc interaction)
+ * - DMARC ≥ 80, DNSSEC ≤ 40
  * - 2 high, 6 medium, 11 low findings (19 total non-info)
  */
 function buildRealisticCheckResults(): CheckResult[] {
@@ -92,10 +91,9 @@ describe('scoring determinism', () => {
 			// Deep-clone inputs to prevent any shared-state mutation
 			const cloned: CheckResult[] = JSON.parse(JSON.stringify(results));
 			const score = computeScanScore(cloned);
-			const { adjustedScore } = applyInteractionPenalties(score);
-			expect(adjustedScore.overall).not.toBeNull();
-			if (adjustedScore.overall === null) throw new Error('Expected a graded score');
-			scores.push(adjustedScore.overall);
+			expect(score.overall).not.toBeNull();
+			if (score.overall === null) throw new Error('Expected a graded score');
+			scores.push(score.overall);
 		}
 
 		// All 10 runs must produce the exact same score
@@ -154,10 +152,9 @@ describe('scoring determinism', () => {
 		for (let i = 0; i < 10; i++) {
 			const rotated = [...results.slice(i % results.length), ...results.slice(0, i % results.length)];
 			const score = computeScanScore(rotated);
-			const { adjustedScore } = applyInteractionPenalties(score);
-			expect(adjustedScore.overall).not.toBeNull();
-			if (adjustedScore.overall === null) throw new Error('Expected a graded score');
-			scores.push(adjustedScore.overall);
+			expect(score.overall).not.toBeNull();
+			if (score.overall === null) throw new Error('Expected a graded score');
+			scores.push(score.overall);
 		}
 
 		const unique = new Set(scores);

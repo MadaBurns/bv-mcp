@@ -116,11 +116,12 @@ describe('scoring', () => {
 			// ONLY spf ran (score 60, core weight 10). Every other core + protective category was
 			// never measured, so it is EXCLUDED (renormalized), NOT padded to a phantom 100 — the
 			// composite must reflect only what it measured.
-			// Core: renormalized over spf alone → 0.6 → 70 * 0.6 = 42pts.
-			// Protective: nothing ran → empty tier renormalizes to 100% → 20pts. Hardening: 0.
-			// Base = 62. No email bonus (no DKIM/DMARC). No verified-critical penalty (deterministic,
-			// not verified). No missing-control ceiling. Overall = 62.
-			expect(scan.overall).toBe(62);
+			// Scoring model 2.0.0: tierSplit 75/25/0 (hardening tier retired).
+			// Core: renormalized over spf alone → 0.6 → 75 * 0.6 = 45pts.
+			// Protective: nothing ran → empty tier renormalizes to 100% → 25pts.
+			// Base = 70. No email bonus (0 in 2.0.0). No verified-critical penalty (0 in 2.0.0).
+			// No missing-control ceiling. Overall = 70.
+			expect(scan.overall).toBe(70);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
 
@@ -145,14 +146,15 @@ describe('scoring', () => {
 			// Three-tier scoring: DMARC missing-control → effectiveScore 0 (core, weight 16).
 			// DNSSEC "ad flag missing" matches MISSING_CONTROL_REGEX + severity high + deterministic → effectiveScore 0.
 			// Core (all 5 ran; weights dmarc=16, dkim=10, spf=10, dnssec=10, ssl=8, max=54):
-			//   earned = 10(spf) + 0(dmarc) + 10(dkim) + 0(dnssec) + 8(ssl) = 28 → corePct=28/54≈0.519 → 36.3pts
+			//   earned = 10(spf) + 0(dmarc) + 10(dkim) + 0(dnssec) + 8(ssl) = 28 → corePct=28/54≈0.519 → 75 * 0.519 = 38.9pts
 			// Protective: only MTA-STS=80(3), NS=100(2), CAA=85(2) ran; every other protective
 			//   category was never measured and is EXCLUDED (not padded to 100), so protective
-			//   renormalizes over max=7: earned=6.1/7≈0.871 → 17.4pts.
-			// Hardening: 0 passed of 7 → 0pts. Base≈53.7 → round=54.
-			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 54 < 64.
-			expect(scan.overall).toBe(54);
-			expect(scan.grade).toBe('D');
+			//   renormalizes over max=7: earned=6.1/7≈0.871 → 25 * 0.871 = 21.8pts.
+			// Scoring model 2.0.0: tierSplit 75/25/0 — the hardening tier is retired (0pts, no longer
+			// a 0-of-N drag on the base). Base≈60.7 → round=61.
+			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 61 < 64.
+			expect(scan.overall).toBe(61);
+			expect(scan.grade).toBe('D+');
 		});
 
 		it('applies global critical penalty when critical finding is verified', () => {
@@ -167,10 +169,12 @@ describe('scoring', () => {
 			const scan = computeScanScore(results);
 			// ONLY subdomain_takeover ran (protective, score 60, weight 4). Every other protective
 			// category was never measured and is EXCLUDED (not padded to 100), so protective
-			// renormalizes over that single category: (60/100)*4 / 4 = 0.6 → 20*0.6 = 12pts.
-			// Core: nothing ran → empty tier renormalizes to 100% → 70pts. Hardening: 0.
-			// Base = 82. No email bonus (spf/dmarc absent). Verified critical penalty = 15 → 67.
-			expect(scan.overall).toBe(67);
+			// renormalizes over that single category: (60/100)*4 / 4 = 0.6 → 25*0.6 = 15pts.
+			// Core: nothing ran → empty tier renormalizes to 100% → 75pts (tierSplit 75/25/0).
+			// Base = 90. Scoring model 2.0.0 sets criticalOverallPenalty to 0, so a verified
+			// critical no longer subtracts a flat 15 from the overall (the finding still drives
+			// the category score to 60). Overall = 90.
+			expect(scan.overall).toBe(90);
 		});
 
 		it('includes critical count in summary', () => {
@@ -219,8 +223,19 @@ describe('scoring', () => {
 				]),
 			];
 
+			const baseline = computeScanScore([
+				buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+				buildCheckResult('mx', [createFinding('mx', 'Provider signature source unavailable', 'info', 'Fallback signatures used.')]),
+			]);
 			const scan = computeScanScore(results);
-			expect(scan.overall).toBeLessThan(100);
+			// Was `< 100`, which only held because the unmeasured hardening tier (retired in
+			// scoring model 2.0.0) capped every partial scan below 100. The intent — low provider
+			// confidence never RAISES the score above the equivalent baseline — is asserted directly.
+			expect(baseline.overall).not.toBeNull();
+			if (baseline.overall === null) throw new Error('Expected a graded baseline');
+			expect(scan.overall).not.toBeNull();
+			if (scan.overall === null) throw new Error('Expected a graded score');
+			expect(scan.overall).toBeLessThanOrEqual(baseline.overall);
 		});
 	});
 });

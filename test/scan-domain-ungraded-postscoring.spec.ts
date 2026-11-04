@@ -11,7 +11,7 @@
  * short-circuits that DO emit null (NXDOMAIN, unresolvable zone, scoring-bundle
  * failure) all return before this block. So the engine call is mocked, exactly as
  * `scan-domain-scoring-catch.spec.ts` mocks it to throw — the seam is the module
- * boundary; everything from `applyInteractionPenalties` onward is the real code.
+ * boundary; everything after the engine call (maturity cap, telemetry gate) is the real code.
  *
  * `computeMaturityStage` is mocked to a stage-4 raw result so the cap assertions
  * DISCRIMINATE: with a raw stage of 0 (what an empty-DNS fixture produces),
