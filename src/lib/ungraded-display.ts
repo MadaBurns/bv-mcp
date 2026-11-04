@@ -26,8 +26,7 @@
  * shared import was possible. That justification no longer holds: the package
  * exports the predicate as `isCheckMeasured` on the
  * `@blackveil/dns-checks/scoring` subpath this repo ALREADY consumes
- * (`src/lib/adaptive-weights.ts`, `src/lib/category-interactions.ts`,
- * `src/lib/scoring.ts`), so `isCompletedCheck` DELEGATES to it. The dependency
+ * (`src/lib/adaptive-weights.ts`, `src/lib/scoring.ts`), so `isCompletedCheck` DELEGATES to it. The dependency
  * direction is unchanged and correct — `src/` depends on the published package,
  * never the reverse. A change to what "completed" means is now made once, in the
  * package, and reaches this side automatically; the type union itself is

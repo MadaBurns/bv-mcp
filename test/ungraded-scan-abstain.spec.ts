@@ -372,34 +372,6 @@ describe('computeDrift / classifyDrift — ungraded side', () => {
 	});
 });
 
-describe('applyInteractionPenalties — ungraded score', () => {
-	// spf 0 + dmarc 0 fires `no_spf_no_dmarc` (-10) and dkim 0 + dmarc 0 fires
-	// `weak_dkim_permissive_dmarc` (-5). A fixture that triggers NOTHING would make
-	// the `effects: []` assertion below pass under any implementation.
-	const triggeringCategoryScores = { spf: 0, dmarc: 0, dkim: 0 } as unknown as ScanScore['categoryScores'];
-
-	it('returns the score untouched instead of computing null - penalty (NaN)', async () => {
-		const { applyInteractionPenalties } = await import('../src/lib/category-interactions');
-		const score = ungradedScore({ categoryScores: triggeringCategoryScores });
-		const { adjustedScore, effects } = applyInteractionPenalties(score);
-
-		expect(adjustedScore.overall).toBeNull();
-		expect(adjustedScore.grade).toBeNull();
-		expect(Number.isNaN(adjustedScore.overall as unknown as number)).toBe(false);
-		expect(effects).toEqual([]);
-	});
-
-	it('proves that same fixture DOES trigger penalties once the score is measured (control)', async () => {
-		const { applyInteractionPenalties } = await import('../src/lib/category-interactions');
-		const score = gradedScore({ overall: 60, grade: 'C', categoryScores: triggeringCategoryScores });
-		const { adjustedScore, effects } = applyInteractionPenalties(score);
-
-		// Without this the ungraded assertion above would be vacuous.
-		expect(effects.length).toBeGreaterThan(0);
-		expect(adjustedScore.overall).toBeLessThan(60);
-	});
-});
-
 describe('analyze_drift cached baseline — ungraded cached scan is rejected', () => {
 	function makeKv(seed: Record<string, unknown> = {}): KVNamespace {
 		const store = new Map<string, string>(Object.entries(seed).map(([k, v]) => [k, JSON.stringify(v)]));
