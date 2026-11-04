@@ -135,14 +135,19 @@ export function defineScoringModelSuite(s: ScoringModule): void {
 			expect(core.map(([k]) => k).sort()).toEqual(['authoritative_dns_infra', 'dkim', 'dmarc', 'dnssec', 'spf', 'ssl']);
 		});
 
-		it('has 17 protective categories (11 scored + the 6 non-scoring ones)', () => {
+		it('has 27 protective categories (21 scored incl. the 10 former hardening ones + the 6 non-scoring ones)', () => {
 			const protective = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'protective');
-			expect(protective).toHaveLength(17);
+			expect(protective).toHaveLength(27);
 		});
 
-		it('has 10 hardening categories', () => {
+		it('has no hardening categories (tier retired in 2.0.0) and lists the 10 former ones as protective', () => {
 			const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
-			expect(hardening).toHaveLength(10);
+			expect(hardening).toEqual([]);
+			for (const cat of [
+				'dane', 'ptr', 'bimi', 'tlsrpt', 'txt_hygiene', 'mx_reputation', 'srv', 'zone_hygiene', 'brand_discovery', 'dnskey_strength',
+			] as const) {
+				expect(CATEGORY_TIERS[cat]).toBe('protective');
+			}
 		});
 	});
 }

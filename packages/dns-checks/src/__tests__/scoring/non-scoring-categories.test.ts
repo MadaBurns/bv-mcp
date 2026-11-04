@@ -35,8 +35,13 @@ import { CheckCategorySchema } from '../../schemas/scoring';
 /** Listed literally, so a regression that drops a member from the set fails here rather than shrinking the loop. */
 const NON_SCORING: CheckCategory[] = ['web_content', 'csp_quality', 'hsts_preload', 'http_redirect', 'security_txt', 'cert_posture'];
 
-/** Scored categories absent from BASE, used to relabel the non-scoring results for the negative controls. */
-const SCORED_STAND_INS: CheckCategory[] = ['http_security', 'subdomain_takeover', 'dane_https', 'svcb_https', 'subdomailing', 'txt_hygiene'];
+/**
+ * Scored categories absent from BASE, used to relabel the non-scoring results for the negative
+ * controls. Each must carry real weight both in the no-context fallback tables and in the mail
+ * profile: since scoring model 2.0.0 the verified-critical overall penalty defaults to 0, so a
+ * weightless stand-in (dane_https, svcb_https, txt_hygiene) no longer moves the score by itself.
+ */
+const SCORED_STAND_INS: CheckCategory[] = ['http_security', 'subdomain_takeover', 'caa', 'ns', 'subdomailing', 'mta_sts'];
 
 /** A small, fully passing mail-domain scan. Five results, so six failing extras would flip profile detection to `minimal`. */
 const BASE: CheckResult[] = [

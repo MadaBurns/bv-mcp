@@ -182,22 +182,26 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	ns: 'protective',
 	lookalikes: 'protective',
 	shadow_domains: 'protective',
-	dane: 'hardening',
-	ptr: 'hardening',
-	bimi: 'hardening',
-	tlsrpt: 'hardening',
-	txt_hygiene: 'hardening',
-	mx_reputation: 'hardening',
-	srv: 'hardening',
-	zone_hygiene: 'hardening',
+	// Former hardening categories. Scoring model 2.0.0 moved them into the weighted protective
+	// tier: the binary, divisor-normalised hardening tier let a roster change (adding or
+	// dropping one check) move every other check's share. Their per-profile importance
+	// (PROFILE_WEIGHTS) now decides how much each counts; most are 0.
+	dane: 'protective',
+	ptr: 'protective',
+	bimi: 'protective',
+	tlsrpt: 'protective',
+	txt_hygiene: 'protective',
+	mx_reputation: 'protective',
+	srv: 'protective',
+	zone_hygiene: 'protective',
 	dane_https: 'protective',
 	svcb_https: 'protective',
 	subdomailing: 'protective',
-	brand_discovery: 'hardening',
+	brand_discovery: 'protective',
 	authoritative_dns_infra: 'core',
-	dnskey_strength: 'hardening',
-	// Non-scoring: 'protective', NEVER 'hardening'. The hardening tier is binary pass/fail and
-	// ignores weight, so a weight-0 hardening category would still move the score.
+	dnskey_strength: 'protective',
+	// Non-scoring: 'protective' with weight 0 in every table. Never 'hardening': that tier
+	// (kept in the published type, empty since 2.0.0) is binary pass/fail and ignores weight.
 	web_content: 'protective',
 	csp_quality: 'protective',
 	hsts_preload: 'protective',
