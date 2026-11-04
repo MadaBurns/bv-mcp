@@ -515,7 +515,9 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				expect(coreSum).toBe(54);
 			});
 
-			it('mail_enabled protective weights sum to 21', () => {
+			it('mail_enabled protective weights sum to 17', () => {
+				// 2.0.0: lookalikes and shadow_domains went 2 → 0 (21 → 17), so they stay in the
+				// list below as explicit zeroes. Earlier history:
 				// 20 → 21 with the lame-delegation CRITICAL escalation, which took `ns` from 2 to 3
 				// in the two mail profiles (`web_only`/`non_mail` were ALREADY 3 and are unchanged).
 				// The sum is a review convention, not a functional constraint: the protective tier
@@ -527,13 +529,43 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const protSum = (
 					['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const
 				).reduce((sum, k) => sum + p[k].importance, 0);
-				expect(protSum).toBe(21);
+				expect(protSum).toBe(17);
 			});
 
-			it('mail_enabled hardening weights are all 0', () => {
-				const p = PROFILE_WEIGHTS.mail_enabled;
-				for (const cat of ['dane', 'bimi', 'tlsrpt', 'txt_hygiene', 'mx_reputation', 'srv', 'zone_hygiene'] as const) {
+			it('mail profiles weigh only tlsrpt and dane (2 each) among the former hardening categories', () => {
+				for (const profile of ['mail_enabled', 'enterprise_mail'] as const) {
+					const p = PROFILE_WEIGHTS[profile];
+					expect(p.tlsrpt.importance).toBe(2);
+					expect(p.dane.importance).toBe(2);
+					for (const cat of ['ptr', 'dnskey_strength', 'bimi', 'txt_hygiene', 'mx_reputation', 'srv', 'zone_hygiene', 'brand_discovery'] as const) {
+						expect(p[cat].importance).toBe(0);
+					}
+				}
+			});
+
+			it('web_only, non_mail and minimal weigh every former hardening category 0', () => {
+				for (const profile of ['web_only', 'non_mail', 'minimal'] as const) {
+					for (const cat of [
+						'dane', 'ptr', 'bimi', 'tlsrpt', 'txt_hygiene', 'mx_reputation', 'srv', 'zone_hygiene', 'brand_discovery', 'dnskey_strength',
+					] as const) {
+						expect(PROFILE_WEIGHTS[profile][cat].importance).toBe(0);
+					}
+				}
+			});
+
+			it('authoritative_dns_infra keeps its former-hardening weights and raises dnskey_strength to 2', () => {
+				const p = PROFILE_WEIGHTS.authoritative_dns_infra;
+				expect(p.zone_hygiene.importance).toBe(10);
+				expect(p.dnskey_strength.importance).toBe(2);
+				for (const cat of ['dane', 'ptr', 'bimi', 'tlsrpt', 'txt_hygiene', 'mx_reputation', 'srv', 'brand_discovery'] as const) {
 					expect(p[cat].importance).toBe(0);
+				}
+			});
+
+			it('lookalikes and shadow_domains are importance 0 in every profile', () => {
+				for (const profile of Object.keys(PROFILE_WEIGHTS) as (keyof typeof PROFILE_WEIGHTS)[]) {
+					expect(PROFILE_WEIGHTS[profile].lookalikes.importance).toBe(0);
+					expect(PROFILE_WEIGHTS[profile].shadow_domains.importance).toBe(0);
 				}
 			});
 

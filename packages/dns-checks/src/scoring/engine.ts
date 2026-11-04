@@ -373,12 +373,13 @@ function buildGenericContext(
  * the concrete `CheckResult[]` and optional `DomainContext`.
  *
  * Three tiers:
- * - **Core** (default 70 points): Weighted accumulation of foundational categories (SPF, DMARC, DKIM, DNSSEC, SSL).
+ * - **Core** (default 75 points): Weighted accumulation of foundational categories (SPF, DMARC, DKIM, DNSSEC, SSL).
  *   `findingsIndicateMissingControl()` can zero a category's contribution from structured intent or deterministic/verified prose.
- * - **Protective** (default 20 points): Weighted accumulation of active defense categories.
- *   No `findingsIndicateMissingControl()` override.
- * - **Hardening** (default 10 points): Binary pass/fail — each category with score >= 50 contributes
- *   `tierSplit.hardening / hardeningCount` points. Never subtracts.
+ * - **Protective** (default 25 points): Weighted accumulation of active defense categories, including
+ *   the former hardening set (scoring model 2.0.0). No `findingsIndicateMissingControl()` override.
+ * - **Hardening** (default 0 points): Binary pass/fail, retained for the published config surface.
+ *   No `CATEGORY_TIERS` entry maps to it since model 2.0.0, so it is empty unless a caller supplies
+ *   its own tier map; an empty tier contributes 0 points and never NaN.
  *
  * When a `DomainContext` is provided, uses profile-specific weights partitioned by CATEGORY_TIERS,
  * critical gap categories, and email bonus eligibility instead of defaults.

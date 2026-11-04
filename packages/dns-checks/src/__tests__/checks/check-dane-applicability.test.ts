@@ -213,32 +213,38 @@ describe('#639 blast radius — scoring moves ONLY on the failure paths', () => 
 		return dane ? [...base, dane] : base;
 	}
 
-	// Isolate hardening applicability: the historical fixture gave core/protective zero weight.
+	// Isolate former-hardening applicability: the historical fixture gave core/protective zero
+	// weight. Since scoring model 2.0.0 dane/tlsrpt are protective, so they get explicit weight 1
+	// each (the profile tables weigh them 0 outside the mail profiles) and everything else stays 0.
 	const weights = structuredClone(getProfileWeights('non_mail'));
 	for (const weight of Object.values(weights)) weight.importance = 0;
+	weights.dane.importance = 1;
+	weights.tlsrpt.importance = 1;
 	const ctx: DomainContext = { profile: 'non_mail', signals: [], weights, detectedProvider: null };
 
 	it('leaves a cleanly-resolving non-mail domain BYTE-IDENTICAL (the not-applicable path still scores 100)', () => {
 		// This is the assertion the fix was accepted on: nothing about a domain whose DNS
-		// answered may move. DANE still earns its hardening point here — removing that is
-		// the separate, operator-gated weighting decision.
+		// answered may move. DANE is a weighted protective control since model 2.0.0:
+		// core 75 + protective 25 * (dane 100 + tlsrpt 85) / 200 = 98.1 -> 98 (was 96 under the
+		// binary hardening tier).
 		const before = computeScanScore(roster(mk('dane', 100)), ctx);
-		expect(before.overall).toBe(96);
+		expect(before.overall).toBe(98);
 		expect(before.categoryScores.dane).toBe(100);
 	});
 
-	it('excludes an INCONCLUSIVE dane from the hardening denominator rather than scoring it', () => {
+	it('excludes an INCONCLUSIVE dane from the protective denominator rather than scoring it', () => {
 		// The buildDnsErrorResult shape the wrapper now returns for a SERVFAIL / thrown
 		// lookup. The engine files `checkStatus: 'error'` as a transient failure, which
 		// drops the category from BOTH numerator and denominator (renormalised), and the
-		// category is reported n/a rather than zeroed.
+		// category is reported n/a rather than zeroed. Here the surviving tlsrpt (85) is the
+		// whole protective tier: 75 + 25 * 0.85 = 96.25 -> 96 against 98 with dane at 100.
 		const errored = mk('dane', 0, { passed: false, checkStatus: 'error', partial: true });
 		const after = computeScanScore(roster(errored), ctx);
 		const before = computeScanScore(roster(mk('dane', 100)), ctx);
 		assert(typeof before.overall === 'number');
 		assert(typeof after.overall === 'number');
 		expect(after.overall).toBeLessThan(before.overall);
-		expect(before.overall - after.overall).toBeLessThanOrEqual(1);
+		expect(before.overall - after.overall).toBeLessThanOrEqual(2);
 		expect(after.categoryScores.dane).toBeUndefined();
 	});
 

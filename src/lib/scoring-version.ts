@@ -814,8 +814,23 @@
  *   profile's overall score is unchanged. Usable keys and domains that receive or authorize mail
  *   keep their existing findings. No package check, weight, tier, grade band or profile detector
  *   changes; dns-checks shipping inputs and its independent package/corpus versions are unchanged.
+ * - 2.0.0 — Scoring 2.0 package (US-17 B1, @blackveil/dns-checks 2.0.0). SCORE-BEARING, both
+ *   directions. (a) The binary hardening tier is retired: every former hardening category (dane, ptr,
+ *   bimi, tlsrpt, txt_hygiene, mx_reputation, srv, zone_hygiene, brand_discovery, dnskey_strength)
+ *   is now `protective`, and the default `tierSplit` is core 75 / protective 25 / hardening 0 (the
+ *   `hardening` key stays on the published ScoringConfig). Removes the pass-count divisor that let
+ *   one extra roster check re-divide every other check's share. (b) Mail profiles (mail_enabled,
+ *   enterprise_mail) weigh tlsrpt 2 and dane 2; ptr, dnskey_strength, bimi, txt_hygiene,
+ *   mx_reputation, srv, zone_hygiene and brand_discovery are 0, so the MCP's two extra checks (ptr,
+ *   dnskey_strength) cannot move its score relative to the web product's 17-check roster. web_only,
+ *   non_mail and minimal weigh every moved category 0. authoritative_dns_infra keeps its existing
+ *   importances (zone_hygiene 10) and raises dnskey_strength 0 -> 2. (c) lookalikes and
+ *   shadow_domains are importance 0 in every profile. (d) Default `criticalOverallPenalty` 15 -> 0
+ *   and `emailBonusFull/Mid/Partial` 5/3/2 -> 0; the keys and code paths remain and an explicit
+ *   override still applies. `criticalGapCeiling` (64) and `partialEnforcementCeiling` (94) are
+ *   unchanged, so a verified missing DMARC control still caps at 64.
  */
-export const SCORING_MODEL_VERSION = '1.42.0';
+export const SCORING_MODEL_VERSION = '2.0.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

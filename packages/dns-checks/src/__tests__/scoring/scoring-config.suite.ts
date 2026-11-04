@@ -209,10 +209,25 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 			expect(Object.values(DEFAULT_SCORING_CONFIG.protectiveWeights).reduce((a, b) => a + b, 0)).toBe(23);
 		});
 
-		it('DEFAULT_SCORING_CONFIG has emailBonusFull/Mid/Partial', () => {
-			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusFull).toBe(5);
-			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusMid).toBe(3);
-			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusPartial).toBe(2);
+		it('DEFAULT_SCORING_CONFIG zeroes emailBonusFull/Mid/Partial and the critical overall penalty (2.0.0), keeping the ceilings', () => {
+			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusFull).toBe(0);
+			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusMid).toBe(0);
+			expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusPartial).toBe(0);
+			expect(DEFAULT_SCORING_CONFIG.thresholds.criticalOverallPenalty).toBe(0);
+			expect(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling).toBe(64);
+			expect(DEFAULT_SCORING_CONFIG.thresholds.partialEnforcementCeiling).toBe(94);
+		});
+
+		it('DEFAULT_SCORING_CONFIG tierSplit is 75/25/0 (2.0.0) and keeps the hardening key', () => {
+			expect(DEFAULT_SCORING_CONFIG.tierSplit).toEqual({ core: 75, protective: 25, hardening: 0 });
+		});
+
+		it('an explicit SCORING_CONFIG still overrides the zeroed bonus and penalty', () => {
+			const config = parseScoringConfig(
+				JSON.stringify({ thresholds: { emailBonusFull: 5, emailBonusMid: 3, emailBonusPartial: 2, criticalOverallPenalty: 15 } }),
+			);
+			expect(config.thresholds.emailBonusFull).toBe(5);
+			expect(config.thresholds.criticalOverallPenalty).toBe(15);
 		});
 
 		it('DEFAULT_SCORING_CONFIG has no E grade', () => {
@@ -242,7 +257,7 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 		it('parseScoringConfig rejects tierSplit not summing to 100', () => {
 			const bad = JSON.stringify({ tierSplit: { core: 80, protective: 20, hardening: 10 } });
 			const config = parseScoringConfig(bad);
-			expect(config.tierSplit.core).toBe(70);
+			expect(config.tierSplit.core).toBe(75);
 		});
 	});
 

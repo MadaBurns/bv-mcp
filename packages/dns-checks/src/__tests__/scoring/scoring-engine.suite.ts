@@ -103,13 +103,27 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				]),
 			]);
 
-			// Core: all never-run → excluded (empty tier renormalizes to 100%) → 70 points.
+			// Core: all never-run → excluded (empty tier renormalizes to 100%) → 75 points.
 			// Protective: ONLY subdomain_takeover ran (score=60, weight=4); every other protective
 			// category is never-run and excluded (NOT padded to 100 — that was the masking bug), so
-			// protective renormalizes over the single measured category: (60/100)*4 / 4 = 0.6 → 12.
-			// Base: 70 + 12 + 0 = 82; no email bonus (spf/dmarc absent); then -15 verified-critical = 67.
-			expect(scan.overall).toBeLessThanOrEqual(70);
-			expect(scan.overall).toBeGreaterThanOrEqual(64);
+			// protective renormalizes over the single measured category: (60/100)*4 / 4 = 0.6 → 15.
+			// Base: 75 + 15 = 90; no email bonus (spf/dmarc absent). Scoring model 2.0.0 defaults the
+			// verified-critical overall penalty to 0, so nothing subtracts: 90 (was 67 with the -15).
+			expect(scan.overall).toBe(90);
+
+			// An explicit override still applies the penalty: 90 - 15 = 75.
+			const withPenalty = computeScanScore(
+				[
+					buildCheckResult('subdomain_takeover', [
+						createFinding('subdomain_takeover', 'Verified takeover', 'critical', 'Fingerprint confirmed', {
+							verificationStatus: 'verified',
+						}),
+					]),
+				],
+				undefined,
+				{ ...DEFAULT_SCORING_CONFIG, thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, criticalOverallPenalty: 15 } },
+			);
+			expect(withPenalty.overall).toBe(75);
 		});
 
 		it('IMPORTANCE_WEIGHTS covers every CheckCategory value', () => {
@@ -468,15 +482,23 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 		});
 
 		describe('three-tier formula', () => {
-			it('perfect core + default protective yields ~95 with email bonus', () => {
+			it('perfect core + default protective yields 100 with no email bonus (2.0.0 defaults)', () => {
 				const results = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const).map((cat) =>
 					buildCheckResult(cat, [createFinding(cat, `${cat} configured`, 'info', 'All good')]),
 				);
 				const score = computeScanScore(results);
-				// Core=70 (all 100%), Protective=20 (all absent → 100%), Hardening=0 (no results)
-				// Email bonus: SPF strong + DKIM present + DMARC present → +5 (emailBonusFull)
-				// Total: 70 + 20 + 0 + 5 = 95
-				expect(score.overall).toBe(95);
+				// Core=75 (all 100%), Protective=25 (all absent → 100%), Hardening=0 (retired)
+				// Email bonus: zeroed by default → 0. Total: 75 + 25 = 100 (was 70+20+5 = 95).
+				expect(score.overall).toBe(100);
+
+				// An explicit override re-arms the bonus: split 70/20/10 forfeits the empty hardening
+				// 10, so 70 + 20 + 5 = 95 as before 2.0.0.
+				const legacy = computeScanScore(results, undefined, {
+					...DEFAULT_SCORING_CONFIG,
+					tierSplit: { core: 70, protective: 20, hardening: 10 },
+					thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, emailBonusFull: 5, emailBonusMid: 3, emailBonusPartial: 2 },
+				});
+				expect(legacy.overall).toBe(95);
 			});
 
 			it('hardening categories can only add points', () => {
@@ -492,7 +514,7 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				expect(scoreWith.overall).toBeGreaterThanOrEqual(scoreWithout.overall);
 			});
 
-			it('hardening pass adds bonus points', () => {
+			it('a passing former-hardening category with no weight adds nothing (tier retired in 2.0.0)', () => {
 				const coreResults = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const).map((cat) =>
 					buildCheckResult(cat, [createFinding(cat, `${cat} ok`, 'info', 'fine')]),
 				);
@@ -501,7 +523,8 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				const scoreWith = computeScanScore([...coreResults, hardeningPass]);
 				assert(typeof scoreWithout.overall === 'number');
 				assert(typeof scoreWith.overall === 'number');
-				expect(scoreWith.overall).toBeGreaterThan(scoreWithout.overall);
+				// No-context scoring weighs bimi 0 and the hardening tier is empty: no free points.
+				expect(scoreWith.overall).toBe(scoreWithout.overall);
 			});
 
 			it('new grade boundaries apply', () => {

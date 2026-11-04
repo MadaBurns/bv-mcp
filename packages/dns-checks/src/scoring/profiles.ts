@@ -63,15 +63,21 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		// already assign `ns` (both were ALREADY 3 and are deliberately left untouched — a
 		// flat package-wide "2→3" would have double-bumped them).
 		ns: { importance: 3 },
-		lookalikes: { importance: 2 },
-		shadow_domains: { importance: 2 },
+		// lookalikes/shadow_domains are 0 in every profile since model 2.0.0: neither scan
+		// roster submits them, and a nonzero weight was a latent coupling that would have moved
+		// the score the day a roster started to.
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
 		dane_https: { importance: 2 },
 		svcb_https: { importance: 1 },
-		// Hardening (all 0)
-		dane: { importance: 0 },
+		// Former hardening (protective since model 2.0.0). Only the two mail-transport
+		// controls weigh anything. ptr and dnskey_strength are 0 on purpose: the MCP scan
+		// submits those two checks and the web product's 17-check roster does not, so a
+		// nonzero weight would make the same domain grade differently per surface.
+		dane: { importance: 2 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
-		tlsrpt: { importance: 0 },
+		tlsrpt: { importance: 2 },
 		txt_hygiene: { importance: 0 },
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
@@ -103,15 +109,15 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		caa: { importance: 2 },
 		// 2 → 3 with the lame-delegation CRITICAL escalation — see `mail_enabled`.
 		ns: { importance: 3 },
-		lookalikes: { importance: 2 },
-		shadow_domains: { importance: 2 },
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
 		dane_https: { importance: 2 },
 		svcb_https: { importance: 1 },
-		// Hardening (all 0)
-		dane: { importance: 0 },
+		// Former hardening — see `mail_enabled` for why ptr and dnskey_strength stay 0.
+		dane: { importance: 2 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
-		tlsrpt: { importance: 0 },
+		tlsrpt: { importance: 2 },
 		txt_hygiene: { importance: 0 },
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
@@ -142,11 +148,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx: { importance: 1 },
 		caa: { importance: 3 },
 		ns: { importance: 3 },
-		lookalikes: { importance: 2 },
-		shadow_domains: { importance: 2 },
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
 		dane_https: { importance: 2 },
 		svcb_https: { importance: 1 },
-		// Hardening (all 0)
+		// Former hardening (all 0)
 		dane: { importance: 0 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
@@ -191,11 +197,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx: { importance: 1 },
 		caa: { importance: 3 },
 		ns: { importance: 3 },
-		lookalikes: { importance: 2 },
-		shadow_domains: { importance: 2 },
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
 		dane_https: { importance: 2 },
 		svcb_https: { importance: 1 },
-		// Hardening (all 0)
+		// Former hardening (all 0)
 		dane: { importance: 0 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
@@ -230,11 +236,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx: { importance: 1 },
 		caa: { importance: 1 },
 		ns: { importance: 1 },
-		lookalikes: { importance: 1 },
-		shadow_domains: { importance: 1 },
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
 		dane_https: { importance: 0 },
 		svcb_https: { importance: 0 },
-		// Hardening (all 0)
+		// Former hardening (all 0)
 		dane: { importance: 0 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
@@ -274,7 +280,9 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		dane_https: { importance: 0 },
 		svcb_https: { importance: 0 },
-		// Hardening
+		// Former hardening (protective since model 2.0.0). Existing importances are kept, so
+		// zone_hygiene stays a 10-weight critical control here; dnskey_strength is raised from
+		// 0 to 2 because key strength is a first-class property of an authoritative DNS operator.
 		dane: { importance: 0 },
 		ptr: { importance: 0 },
 		bimi: { importance: 0 },
@@ -284,7 +292,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 10 },
 		brand_discovery: { importance: 0 },
-		dnskey_strength: { importance: 0 },
+		dnskey_strength: { importance: 2 },
 		// Non-scoring (NON_SCORING_CATEGORIES, all 0)
 		web_content: { importance: 0 },
 		csp_quality: { importance: 0 },

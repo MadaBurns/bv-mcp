@@ -127,7 +127,7 @@ export interface GenericScanScore {
 	/** Points earned per tier. */
 	tierBreakdown: TierBreakdown;
 
-	/** Email bonus points added (default thresholds: 0, 2, 3, or 5). */
+	/** Email bonus points added (0 under the default config since 2.0.0; an override can set 2, 3 or 5). */
 	emailBonus: number;
 
 	/** Category keys that triggered the critical gap ceiling. */
@@ -250,6 +250,9 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 
 	// --- Hardening tier (binary pass/fail) ---
 	// Only keys present in hardeningPassed count — absent hardening categories are ignored.
+	// Since scoring model 2.0.0 no built-in category maps here and the default tierSplit gives
+	// it 0 points; the tier survives for the published API and caller-supplied tier maps.
+	// An empty tier contributes 0 without dividing (no NaN).
 	//
 	// Known asymmetry, deliberate for now: PARTIAL hardening transients renormalize within
 	// the tier (the denominator shrinks to the measured keys), but a WHOLLY-unmeasured tier
