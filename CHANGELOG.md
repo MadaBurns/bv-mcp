@@ -8,6 +8,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.109.1] - 2026-11-05
+
+Dependency-only patch release; no tool, scoring or behaviour changes.
+
+### Changed
+
+- Bumped runtime dependencies `hono` 4.13.14 → 4.13.16 (Worker and `bv-whois`) and `marked` 18.1.1 → 18.1.2 (#1375, #1376).
+- Bumped dev dependencies `typescript-eslint` 8.72.0 → 8.72.1 and `@types/node` 26.6.5 → 26.6.6 (#1377, #1378).
+
 ## [3.109.0] - 2026-11-04
 
 ### Changed
