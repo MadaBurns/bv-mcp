@@ -566,10 +566,18 @@ for (const path of authedPaths) {
 		if (c.req.method === 'POST' && (c.req.path === '/mcp' || c.req.path === '/mcp/messages')) {
 			const read = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 			c.set('mcpBodyReadResult', read);
-			if (!read.ok) return Response.json(read.payload, { status: read.status, headers: { 'Cache-Control': 'no-store' } });
+			if (!read.ok) {
+				const response = sseErrorResponse(read.payload!, read.status!, c.req.header('accept'));
+				response.headers.set('Cache-Control', 'no-store');
+				return response;
+			}
 			if (read.ok) {
 				const parsed = parseJsonRpcRequest(read.rawBody!);
-				if (!parsed.ok) return Response.json(parsed.payload, { status: parsed.status, headers: { 'Cache-Control': 'no-store' } });
+				if (!parsed.ok) {
+					const response = sseErrorResponse(parsed.payload!, parsed.status!, c.req.header('accept'));
+					response.headers.set('Cache-Control', 'no-store');
+					return response;
+				}
 				if (parsed.ok && parsed.isBatch && (parsed.body as unknown[]).some(isAccessContextToolCall)) {
 					return Response.json(
 						jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid request: access context requires a single request'),

@@ -783,7 +783,9 @@ describe('DNS Security MCP Server', () => {
 			expect(body.error.code).toBe(-32700);
 			const logged = consoleSpy.mock.calls.map((call) => String(call[0])).join('\n');
 			expect(logged).not.toContain('should-not-appear');
-			expect(logged).toContain('bodyPreviewRedacted');
+			// Parsing now precedes authentication; an unreadable diagnostic must
+			// return without ordinary request logging or stateful auth resolution.
+			expect(consoleSpy).not.toHaveBeenCalled();
 		});
 
 		it('rejects invalid JSON-RPC', async () => {

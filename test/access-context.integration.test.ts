@@ -6,7 +6,7 @@ const credential = 'synthetic-access-context-owner';
 const metadata = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_access_context', arguments: {} } };
 
 describe('read-only access context HTTP boundary', () => {
-	async function call(body: unknown, options: { token?: string; ip?: string; path?: string } = {}) {
+	async function call(body: unknown, options: { token?: string; ip?: string; path?: string; rawBody?: string } = {}) {
 		const touched = vi.fn(() => {
 			throw new Error('Unexpected side effect');
 		});
@@ -38,7 +38,7 @@ describe('read-only access context HTTP boundary', () => {
 						'CF-Connecting-IP': options.ip ?? '192.0.2.10',
 						...(options.token === '' ? {} : { Authorization: `Bearer ${options.token ?? credential}` }),
 					},
-					body: JSON.stringify(body),
+					body: options.rawBody ?? JSON.stringify(body),
 				}),
 				targetEnv,
 				ctx,
@@ -88,6 +88,14 @@ describe('read-only access context HTTP boundary', () => {
 			{ token: 'synthetic-unresolved-token' },
 		);
 		expect(result.response.status).toBe(413);
+	});
+	it('rejects truncated diagnostic JSON before stateful opaque authentication', async () => {
+		const result = await call(undefined, {
+			token: 'synthetic-unresolved-token',
+			rawBody: '{"method":"tools/call","params":{"name":"get_access_context"}',
+		});
+		expect(result.response.status).toBe(400);
+		expect(result.body.error.code).toBe(-32700);
 	});
 	it('uses the same read-only boundary on the legacy POST path', async () => {
 		const result = await call(metadata, { path: '/mcp/messages' });
