@@ -19,6 +19,9 @@ function makeExecutionContext(): ExecutionContext {
 			void promise;
 		},
 		passThroughOnException() {},
+		mapVirtualHost() {
+			throw new Error('Virtual host mapping is not supported by this cron test context');
+		},
 		exports: {} as ExecutionContext['exports'],
 		props: undefined,
 		tracing: {} as ExecutionContext['tracing'],
