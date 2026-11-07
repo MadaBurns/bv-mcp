@@ -46,6 +46,7 @@ import {
 	GetCaPoliciesArgs,
 	AssessCoverageArgs,
 	TOOL_SCHEMA_MAP,
+	GetAccessContextArgs,
 } from './tool-args';
 import { buildCheckResultOutputJsonSchema } from './check-result-output';
 
@@ -206,6 +207,14 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 
 /** All MCP tool definitions. */
 const TOOL_DEFS = {
+	get_access_context: {
+		description:
+			'Read the effective authentication context for this request: tier, owner-IP-gate disposition, a keyed pseudonymous principal reference, server version and observation time. Performs no target checks or quota/session/cache/job writes. An unavailable result is not anonymous/free fallback.',
+		schema: GetAccessContextArgs,
+		group: 'meta',
+		scanIncluded: false,
+		openWorld: false,
+	},
 	check_mx: {
 		description:
 			'Look up MX records for a domain. Identifies which mail servers receive inbound email for the domain and which email hosting provider is used (Google Workspace, Microsoft 365, Proofpoint, etc.). Use when asked which email provider hosts inbound mail for a domain, or to see MX record configuration.',
@@ -893,6 +902,7 @@ export type ToolName = keyof typeof TOOL_DEFS;
  * `test/tool-output-schema.spec.ts`).
  */
 export const NON_CHECK_RESULT_TOOLS = new Set<string>([
+	'get_access_context',
 	'scan_domain',
 	'batch_scan',
 	'batch_scan_start',

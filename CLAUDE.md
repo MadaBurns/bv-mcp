@@ -11,7 +11,7 @@ bottom). Trimmed 2026-09-11 and again 2026-10-26.
 
 Blackveil DNS — source-available DNS & email security scanner, built as a
 Cloudflare Worker.
-81 public tools (86 registered in `TOOL_DEFS`; 5 internal-only via
+82 public tools (87 registered in `TOOL_DEFS`; 5 internal-only via
 `INTERNAL_ONLY_TOOLS` — `map_registrar_products` + the four `identity_secops`
 M365 tools, withdrawn 3.63.0) exposed via MCP Streamable HTTP (JSON-RPC 2.0) at
 `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in

@@ -213,6 +213,8 @@ export const AGGREGATE_QUOTA_COUNTER = '__all_tools__';
  */
 export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string, number>>> = {
 	partner: {
+		// Metadata returns before metering; explicit inventory decision, not a quota operation.
+		get_access_context: Infinity,
 		scan_domain: 2_500_000,
 		scan: 2_500_000,
 		compare_baseline: 100_000,
@@ -952,8 +954,8 @@ export function tlsProbeBindings(
 	return { tlsProbeBinding: env.BV_TLS_PROBE, tlsProbeAuthToken: env.BV_TLS_PROBE_KEY };
 }
 
-/** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
-export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<ToolName>();
+/** No per-tool quota. Metadata is handled before all metering; other members remain per-IP governed. Audited by tool-quota-coverage. */
+export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<ToolName>(['get_access_context']);
 
 /**
  * Tools where the FLAT partner-tier limit (TIER_DAILY_LIMITS.partner) is the

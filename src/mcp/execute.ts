@@ -32,6 +32,7 @@ import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordina
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
+import { handleAccessContextRequest, isAccessContextToolCall } from './access-context';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -86,6 +87,8 @@ export type ProcessedRequestResult =
 	  };
 
 export interface ExecuteMcpRequestOptions {
+	/** Explicit read-only auth receipt seam; never inferred from legacy tool runtime options. */
+	accessContext?: { auth: import('../lib/tier-auth').TierAuthResult; pseudonymSecret?: string };
 	body: JsonRpcRequest;
 	accept?: string;
 	allowStreaming: boolean;
@@ -277,6 +280,29 @@ export interface ExecuteMcpRequestOptions {
 }
 
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
+	// Metadata never enters quota/session/cache/analytics or ordinary tool dispatch,
+	// including malformed-argument and unavailable-context paths.
+	if (isAccessContextToolCall(options.body)) {
+		if (options.batchMode) {
+			return {
+				kind: 'response',
+				payload: jsonRpcError(
+					options.body.id,
+					JSON_RPC_ERRORS.INVALID_REQUEST,
+					'Invalid request: access context must be called outside a batch.',
+				),
+				headers: { 'cache-control': 'no-store' },
+				httpStatus: 400,
+				useErrorEnvelope: true,
+			};
+		}
+		const context = options.accessContext;
+		const response = await handleAccessContextRequest(options.body, context?.auth ?? { authenticated: false, storageUnavailable: true }, {
+			serverVersion: options.serverVersion,
+			pseudonymSecret: context?.pseudonymSecret,
+		});
+		return { kind: 'response', ...response, useErrorEnvelope: response.httpStatus !== 200 };
+	}
 	const validationError = validateJsonRpcRequest(options.body);
 	if (validationError) {
 		emitRequestAnalytics(options, typeof options.body?.method === 'string' ? options.body.method : 'invalid', 'error', true);

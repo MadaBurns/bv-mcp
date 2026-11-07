@@ -169,6 +169,7 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 		// rows requires explicit update here.
 		const partner = TIER_TOOL_DAILY_LIMITS.partner ?? {};
 		const expectedKeys = new Set([
+			'get_access_context', // Explicit unmetered metadata inventory entry; execution bypasses counters.
 			'scan_domain',
 			'scan',
 			'compare_baseline',

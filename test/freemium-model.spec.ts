@@ -118,12 +118,13 @@ describe('Freemium Model Verification', () => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
 		});
+		const strictRequest = reqAnon.clone();
 		const resAnon = await worker.fetch(reqAnon, envDefault, createExecutionContext());
 		expect(resAnon.status).toBe(200);
 
 		// Case B: REQUIRE_AUTH=true -> Anon rejected
 		const envStrict = { ...env, REQUIRE_AUTH: 'true' } as Env;
-		const resStrict = await worker.fetch(reqAnon, envStrict, createExecutionContext());
+		const resStrict = await worker.fetch(strictRequest, envStrict, createExecutionContext());
 		expect(resStrict.status).toBe(401);
 
 		// Case C: REQUIRE_AUTH=true + Valid Key -> Allowed

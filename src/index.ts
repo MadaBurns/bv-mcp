@@ -66,6 +66,7 @@ import { displayGradeFor } from './lib/ungraded-display';
 import { SERVER_VERSION } from './lib/server-version';
 import { processAsyncBatchMessage } from './tools/batch-scan-async';
 import { executeMcpRequest } from './mcp/execute';
+import { handleAccessContextRequest, isAccessContextToolCall } from './mcp/access-context';
 import { classifyProtocolVersionHeader } from './mcp/dispatch';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { closeLegacyStream, enqueueLegacyMessage, hasActiveLegacyStream, openLegacySseStream } from './lib/legacy-sse';
@@ -420,7 +421,12 @@ import { AUTH_RESOLUTION_MINUTE_LIMIT, resolveTier } from './lib/tier-auth';
 /** Shared Hono app env (bindings + per-request variables). Exported so route handlers in `oauth/` can type `Context<AppEnv>` instead of casting `c.env`. */
 export type AppEnv = {
 	Bindings: BvMcpEnv;
-	Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean };
+	Variables: {
+		isAuthenticated: boolean;
+		tierAuthResult: TierAuthResult;
+		apiKeyInQuery: boolean;
+		mcpBodyReadResult?: Awaited<ReturnType<typeof readRequestBody>>;
+	};
 };
 const app = new Hono<AppEnv>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
@@ -553,6 +559,37 @@ for (const path of authedPaths) {
 	});
 
 	app.use(path, async (c, next) => {
+		// Recognize diagnostics before authentication: ordinary auth resolution can
+		// migrate state or consume trial/quota counters. Cache the bounded body for
+		// the transport, avoiding a tee whose cancellation can wait on its sibling.
+		let accessContextBody: JsonRpcRequest | undefined;
+		if (c.req.method === 'POST' && (c.req.path === '/mcp' || c.req.path === '/mcp/messages')) {
+			const read = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
+			c.set('mcpBodyReadResult', read);
+			if (!read.ok) {
+				const response = sseErrorResponse(read.payload!, read.status!, c.req.header('accept'));
+				response.headers.set('Cache-Control', 'no-store');
+				return response;
+			}
+			if (read.ok) {
+				const parsed = parseJsonRpcRequest(read.rawBody!);
+				if (!parsed.ok) {
+					const response = sseErrorResponse(parsed.payload!, parsed.status!, c.req.header('accept'));
+					response.headers.set('Cache-Control', 'no-store');
+					return response;
+				}
+				if (parsed.ok && parsed.isBatch && (parsed.body as unknown[]).some(isAccessContextToolCall)) {
+					return Response.json(
+						jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid request: access context requires a single request'),
+						{
+							status: 400,
+							headers: { 'Cache-Control': 'no-store' },
+						},
+					);
+				}
+				if (parsed.ok && !parsed.isBatch && isAccessContextToolCall(parsed.body)) accessContextBody = parsed.body as JsonRpcRequest;
+			}
+		}
 		const authHeader = c.req.header('authorization');
 		const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 		// #747: `X-API-Key` is a first-class alternative for clients that cannot set
@@ -573,7 +610,23 @@ for (const path of authedPaths) {
 
 		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 		const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
-		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
+		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url, accessContextBody ? { readOnly: true } : undefined);
+		if (accessContextBody) {
+			const contentTypeError = validateContentType(c.req.header('content-type'));
+			if (contentTypeError)
+				return Response.json(contentTypeError.payload, { status: contentTypeError.status, headers: { 'Cache-Control': 'no-store' } });
+			if (classifyProtocolVersionHeader(c.req.header('mcp-protocol-version')) === 'unsupported') {
+				return Response.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'), {
+					status: 400,
+					headers: { 'Cache-Control': 'no-store' },
+				});
+			}
+			const result = await handleAccessContextRequest(accessContextBody, tierResult, {
+				serverVersion: SERVER_VERSION,
+				pseudonymSecret: c.env.OAUTH_SIGNING_SECRET ?? c.env.BV_API_KEY,
+			});
+			return Response.json(result.payload, { status: result.httpStatus, headers: result.headers });
+		}
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 		c.set('apiKeyInQuery', apiKeyInQuery);
@@ -943,7 +996,7 @@ app.post('/mcp', async (c) => {
 		return sseErrorResponse(contentTypeError.payload!, contentTypeError.status!, accept);
 	}
 
-	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
+	const bodyReadResult = c.get('mcpBodyReadResult') ?? (await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES));
 	if (!bodyReadResult.ok) {
 		return sseErrorResponse(bodyReadResult.payload!, bodyReadResult.status!, accept);
 	}
@@ -1306,7 +1359,7 @@ app.post('/mcp/messages', async (c) => {
 		);
 	}
 
-	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
+	const bodyReadResult = c.get('mcpBodyReadResult') ?? (await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES));
 	if (!bodyReadResult.ok) {
 		return Response.json(bodyReadResult.payload, { status: bodyReadResult.status });
 	}

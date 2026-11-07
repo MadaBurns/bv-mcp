@@ -17,6 +17,8 @@ import { markUnmeasured, isAccessRefusal } from '../lib/unmeasured-result';
 import { isCompletedCheck } from '../lib/ungraded-display';
 import { TOOLS } from '../schemas/tool-definitions';
 import type { McpToolResult, ToolRuntimeOptions, WireTool } from './tool-types';
+import { GetAccessContextArgs } from '../schemas/tool-args';
+import { unavailableAccessContextResult } from '../mcp/access-context';
 import { MUTATING_DEDUP_TOOLS, nxdomainGateCategory, toolRequiresDomain } from './tool-sets';
 import { TOOL_REGISTRY, buildDnsOptions } from './tool-registry';
 import { buildToolErrorResult, dispatchDirectTool } from './direct-dispatch';
@@ -109,6 +111,13 @@ export async function handleToolsCall(
 	runtimeOptions?: ToolRuntimeOptions,
 ): Promise<McpToolResult> {
 	const { name, args } = resolveToolAlias(params.name, params.arguments ?? {});
+	if (name === 'get_access_context') {
+		// Non-HTTP callers do not possess a verified request receipt. Return before
+		// prior-tool/session tracking, ordinary tool logging or cache wrappers.
+		return GetAccessContextArgs.safeParse(args).success
+			? unavailableAccessContextResult('unavailable')
+			: buildToolErrorResult('Invalid access context request: arguments must be empty.');
+	}
 	const startTime = Date.now();
 	// Resolve priorTool synchronously (O(1) in-memory Map read+write) before the
 	// tool executes so the "immediately before this call" semantic is exact.

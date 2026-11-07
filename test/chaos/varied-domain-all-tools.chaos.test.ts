@@ -297,6 +297,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_dnssec', arguments: domainArgs() },
 		{ name: 'check_ssl', arguments: domainArgs() },
 		{ name: 'check_mta_sts', arguments: domainArgs() },
+		{ name: 'get_access_context', arguments: {} },
 		{ name: 'check_ns', arguments: domainArgs() },
 		{ name: 'check_caa', arguments: domainArgs() },
 		{ name: 'check_bimi', arguments: domainArgs() },
@@ -481,6 +482,11 @@ describe('chaos: varied-domain all-tools scanning', () => {
 			if (toolCase.name === 'query_ual') {
 				expect(result.isError).toBe(true);
 				expect(result.structuredContent).toEqual({ ok: false, error: 'query_ual_deprecated' });
+				continue;
+			}
+			if (toolCase.name === 'get_access_context') {
+				expect(result.isError).toBe(true);
+				expect(result.structuredContent).toMatchObject({ available: false, authenticated: null, ownerVerified: false });
 				continue;
 			}
 			if ((toolCase.name === 'batch_scan_status' || toolCase.name === 'batch_scan_findings') && result.isError) {

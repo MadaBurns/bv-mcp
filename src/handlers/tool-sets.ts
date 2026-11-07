@@ -41,6 +41,7 @@ export const MUTATING_DEDUP_TOOLS = new Set(
  * a newly declared tool that is listed but has no resolution path.
  */
 export const DIRECT_DISPATCH_TOOLS: Set<string> = new Set<ToolName>([
+	'get_access_context',
 	'scan_domain',
 	'batch_scan',
 	'batch_scan_start',
