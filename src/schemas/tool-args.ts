@@ -18,6 +18,9 @@ import {
 	ExplainStatusSchema,
 } from './primitives';
 
+/** Request-local authentication metadata, never a target/domain operation. */
+export const GetAccessContextArgs = z.object({}).strict();
+
 /** Domain + optional format — shared by most check tools. */
 export const BaseDomainArgs = z
 	.object({
@@ -338,7 +341,9 @@ export const CheckAgentDiscoveryArgs = z
 			.transform((v) => v.toLowerCase().trim())
 			.pipe(z.enum(['a2a', 'mcp', 'https']))
 			.optional()
-			.describe('Scope discovery to a single agent protocol (_index._{protocol}._agents and _{protocol}._agents). Omit to sweep every protocol.'),
+			.describe(
+				'Scope discovery to a single agent protocol (_index._{protocol}._agents and _{protocol}._agents). Omit to sweep every protocol.',
+			),
 		name: z.string().min(1).max(63).optional().describe('Resolve a single named agent ({name}.{domain}) instead of enumerating the zone.'),
 		verify_cap: z
 			.boolean()
@@ -706,6 +711,7 @@ export const AssessCoverageArgs = z
  * Used for runtime validation in tools.ts and for inputSchema generation.
  */
 export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
+	get_access_context: GetAccessContextArgs,
 	check_mx: BaseDomainArgs,
 	check_spf: BaseDomainArgs,
 	check_dmarc: BaseDomainArgs,

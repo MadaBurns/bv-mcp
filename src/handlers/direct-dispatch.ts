@@ -3,6 +3,7 @@
 // Direct dispatch: the tools with no TOOL_REGISTRY entry, split out of `handlers/tools.ts`'s handleToolsCall.
 
 import { buildScanCacheKey } from '../lib/cache';
+import { unavailableAccessContextResult } from '../mcp/access-context';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
@@ -108,6 +109,9 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 	let logResult = 'unknown';
 	let logDetails: unknown;
 	switch (name) {
+		case 'get_access_context':
+			// Only the public request seam can bind verified authentication context.
+			return unavailableAccessContextResult('unavailable');
 		case 'scan_domain': {
 			const profile = extractScanProfile(validatedArgs);
 			const forceRefresh = extractForceRefresh(validatedArgs);

@@ -27,6 +27,7 @@ const CLOSED_WORLD_TOOLS = [
 	'discover_brand_domains_findings',
 	'discover_brand_domains_status',
 	'explain_finding',
+	'get_access_context',
 	'get_benchmark',
 	'get_domain_rank',
 	'get_provider_insights',

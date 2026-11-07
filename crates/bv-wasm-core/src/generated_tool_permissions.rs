@@ -63,6 +63,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "discover_subdomains" => PermissionMode::ReadOnly,
         "explain_finding" => PermissionMode::ReadOnly,
         "generate" => PermissionMode::ReadOnly,
+        "get_access_context" => PermissionMode::ReadOnly,
         "get_benchmark" => PermissionMode::ReadOnly,
         "get_ca_policies" => PermissionMode::ReadOnly,
         "get_domain_rank" => PermissionMode::ReadOnly,

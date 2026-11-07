@@ -37,6 +37,7 @@ const JwtIssuableTierSchema = z.enum(['owner', 'developer', 'enterprise']);
 
 export interface TierAuthResult {
 	authenticated: boolean;
+	ownerIpGate?: 'allowed' | 'denied' | 'not_required' | 'not_applicable';
 	tier?: McpApiKeyTier;
 	/** Stable 256-bit security principal used for quota, ownership, and downstream authorization. */
 	keyHash?: string;
@@ -149,6 +150,16 @@ function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined
 	return 'owner';
 }
 
+function ownerIpGateDisposition(
+	tier: McpApiKeyTier,
+	ownerAllowIps: string | undefined,
+	clientIp: string | undefined,
+): TierAuthResult['ownerIpGate'] {
+	if (tier !== 'owner') return 'not_applicable';
+	if (parseOwnerAllowIps(ownerAllowIps).length === 0) return 'not_required';
+	return applyOwnerIpGate(tier, ownerAllowIps, clientIp) === 'owner' ? 'allowed' : 'denied';
+}
+
 /**
  * Token-version check (FIND-13): a token whose `ver` claim is below the current per-subject
  * counter is stale; an absent `ver` is 1 (JWTs minted before the feature). For an `ema:`
@@ -161,14 +172,16 @@ async function tokenVersionAndTenantCurrent(
 	claims: JwtClaims,
 	coordinator: DurableObjectNamespace<QuotaCoordinator> | undefined,
 	kvEnvelopeKeyBase64: string | undefined,
+	readOnly = false,
 ): Promise<boolean> {
 	const [storedVer, tenantLive] = await Promise.all([
-		getTokenVersion(kv, claims.sub, coordinator),
+		getTokenVersion(kv, claims.sub, coordinator, readOnly),
 		claims.sub.startsWith(EMA_SUBJECT_PREFIX)
 			? isEmaTokenLive(
 					{ coordinator, kv, kvEnvelopeKey: parseEnvelopeKey(kvEnvelopeKeyBase64) ?? undefined },
 					claims,
 					Math.floor(Date.now() / 1000),
+					readOnly,
 				)
 			: true,
 	]);
@@ -212,6 +225,7 @@ export async function resolveTier(
 	},
 	clientIp: string | undefined,
 	requestUrl: string,
+	options: { readOnly?: boolean } = {},
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
@@ -235,7 +249,14 @@ export async function resolveTier(
 		) {
 			return { authenticated: false };
 		}
-		return { authenticated: true, tier: 'owner', keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+		return {
+			authenticated: true,
+			tier: 'owner',
+			keyHash,
+			legacyOwnerId: keyHash.slice(0, 16),
+			credentialHash: keyHash,
+			ownerIpGate: 'not_required',
+		};
 	}
 
 	// 0. OAuth 2.1 Bearer JWT path — a valid access token short-circuits before
@@ -266,17 +287,24 @@ export async function resolveTier(
 			});
 			const tierResult = JwtIssuableTierSchema.safeParse(claims.tier);
 			if (typeof claims.sub === 'string' && tierResult.success) {
-				if (await isRevoked(env.SESSION_STORE, claims.jti, env.QUOTA_COORDINATOR)) {
+				if (await isRevoked(env.SESSION_STORE, claims.jti, env.QUOTA_COORDINATOR, options.readOnly)) {
 					return { authenticated: false };
 				}
 				// Token version (FIND-13) and, for an EMA subject, tenant-wide revocation.
-				if (!(await tokenVersionAndTenantCurrent(env.SESSION_STORE, claims, env.QUOTA_COORDINATOR, env.KV_ENVELOPE_KEY))) {
+				if (
+					!(await tokenVersionAndTenantCurrent(env.SESSION_STORE, claims, env.QUOTA_COORDINATOR, env.KV_ENVELOPE_KEY, options.readOnly))
+				) {
 					return { authenticated: false };
 				}
 				// A monotonic entitlement generation makes delayed revocation delivery safe:
 				// an old event can raise the floor for old tokens without invalidating a token
 				// minted after the plan transition. Pre-claim JWTs remain generation 1.
-				const minimumEntitlementGeneration = await getMinimumEntitlementGeneration(env.SESSION_STORE, claims.sub, env.QUOTA_COORDINATOR);
+				const minimumEntitlementGeneration = await getMinimumEntitlementGeneration(
+					env.SESSION_STORE,
+					claims.sub,
+					env.QUOTA_COORDINATOR,
+					options.readOnly,
+				);
 				const tokenEntitlementGeneration = typeof claims.entitlementGeneration === 'number' ? claims.entitlementGeneration : 1;
 				if (tokenEntitlementGeneration < minimumEntitlementGeneration) {
 					return { authenticated: false };
@@ -308,6 +336,7 @@ export async function resolveTier(
 					oauthPrincipalKind: principalKind,
 					...(principalKind === 'tenant' ? { oauthTenantId: claims.sub } : {}),
 					contractFlag,
+					ownerIpGate: ownerIpGateDisposition(tierResult.data, env.OWNER_ALLOW_IPS, clientIp),
 				};
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
@@ -332,7 +361,14 @@ export async function resolveTier(
 		if (allowedIps.length === 0 || !clientIp || !allowedIps.includes(clientIp)) {
 			return { authenticated: false };
 		}
-		return { authenticated: true, tier: 'owner', keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+		return {
+			authenticated: true,
+			tier: 'owner',
+			keyHash,
+			legacyOwnerId: keyHash.slice(0, 16),
+			credentialHash: keyHash,
+			ownerIpGate: 'allowed',
+		};
 	}
 
 	// 0. Static internal-dev key short-circuit. The dev keys are hardcoded
@@ -345,7 +381,14 @@ export async function resolveTier(
 	// other consumers. Both resolve to owner tier and remain OWNER_ALLOW_IPS-gated.
 	if ((await matchesStaticKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) || (await matchesStaticKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))) {
 		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+		return {
+			authenticated: true,
+			tier: resolvedTier,
+			keyHash,
+			legacyOwnerId: keyHash.slice(0, 16),
+			credentialHash: keyHash,
+			ownerIpGate: ownerIpGateDisposition('owner', env.OWNER_ALLOW_IPS, clientIp),
+		};
 	}
 
 	// The configured static key is authoritative independently of remote
@@ -355,10 +398,20 @@ export async function resolveTier(
 	// every request; static credentials never populate the entitlement cache.
 	if (await matchesStaticKey(tokenRaw, env.BV_API_KEY)) {
 		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+		return {
+			authenticated: true,
+			tier: resolvedTier,
+			keyHash,
+			legacyOwnerId: keyHash.slice(0, 16),
+			credentialHash: keyHash,
+			ownerIpGate: ownerIpGateDisposition('owner', env.OWNER_ALLOW_IPS, clientIp),
+		};
 	}
 
 	// 1. Try KV cache
+	// Metadata authentication must not consume trials, mutate entitlement caches,
+	// or invoke remote validation. Unresolved credentials are UNKNOWN, never free.
+	if (options.readOnly) return { authenticated: false, storageUnavailable: true };
 	if (env.RATE_LIMIT) {
 		try {
 			const cached = await env.RATE_LIMIT.get(`tier:${keyHash}`);

@@ -44,9 +44,7 @@ function isVersionResult(value: unknown): value is { value: number } {
 	return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 1;
 }
 
-function isIdempotentVersionBumpResult(
-	value: unknown,
-): value is { state: 'complete'; value: number } | { state: 'conflict' } {
+function isIdempotentVersionBumpResult(value: unknown): value is { state: 'complete'; value: number } | { state: 'conflict' } {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const record = value as Record<string, unknown>;
 	const state = record.state;
@@ -302,11 +300,12 @@ export async function isRevoked(
 	kv: KVNamespace,
 	jti: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	readOnly = false,
 ): Promise<boolean> {
 	let marker;
 	const key = await coordinationKey('jti', jti);
 	try {
-		marker = await hasMarkerWithCoordinator(key, quotaCoordinator);
+		marker = await hasMarkerWithCoordinator(key, quotaCoordinator, readOnly);
 	} catch {
 		throw new StrongStateUnavailableError('token revocation check');
 	}
@@ -321,6 +320,7 @@ export async function isRevoked(
 		throw new StrongStateUnavailableError('token revocation check');
 	}
 	if (!legacyRevoked) return false;
+	if (readOnly) return true;
 	// The KV mirror already proves this token revoked, so the answer is `true` regardless of whether
 	// copying the entry into strong state succeeds. The migration write is best-effort: a throwing DO
 	// or a malformed reply must not turn a known-revoked token into a 503 (or a swallowed raw error);
@@ -371,9 +371,13 @@ export async function getMinimumEntitlementGeneration(
 	kv: KVNamespace,
 	sub: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	readOnly = false,
 ): Promise<number> {
 	const raw = await safeKvGet(kv, entitlementGenerationKey(sub), 'entitlement-generation read');
 	const parsed = Number(raw);
+	if (readOnly && raw !== null && (!Number.isSafeInteger(parsed) || parsed < 1)) {
+		throw new StrongStateUnavailableError('entitlement-generation read');
+	}
 	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 	let result;
 	try {
@@ -381,6 +385,7 @@ export async function getMinimumEntitlementGeneration(
 			await coordinationKey('subject-entitlement-generation', sub),
 			legacyValue,
 			quotaCoordinator,
+			readOnly,
 		);
 	} catch {
 		throw new StrongStateUnavailableError('entitlement-generation read');
@@ -437,13 +442,17 @@ export async function getTokenVersion(
 	kv: KVNamespace,
 	sub: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	readOnly = false,
 ): Promise<number> {
 	const raw = await safeKvGet(kv, tokenVersionKey(sub), 'token-version read');
 	const n = Number(raw);
+	if (readOnly && raw !== null && (!Number.isSafeInteger(n) || n < 1)) {
+		throw new StrongStateUnavailableError('token-version read');
+	}
 	const legacyValue = Number.isSafeInteger(n) && n >= 1 ? n : 1;
 	let result;
 	try {
-		result = await getVersionWithCoordinator(await coordinationKey('subject', sub), legacyValue, quotaCoordinator);
+		result = await getVersionWithCoordinator(await coordinationKey('subject', sub), legacyValue, quotaCoordinator, readOnly);
 	} catch {
 		throw new StrongStateUnavailableError('token-version read');
 	}

@@ -751,9 +751,10 @@ async function migrateLegacyTenants(registry: EmaRegistry): Promise<void> {
  * Worker may send the import; the registry runs it once), then asked again. A status that is not an answer
  * throws StrongStateUnavailableError: a retryable 503, never a 401 and never an absence.
  */
-async function registryCall<T extends EmaAnswer>(registry: EmaRegistry, payload: EmaRegistryRequest): Promise<T> {
+async function registryCall<T extends EmaAnswer>(registry: EmaRegistry, payload: EmaRegistryRequest, readOnly = false): Promise<T> {
 	let result = await send(registry, payload);
 	if (result.status === 'ema_not_migrated') {
+		if (readOnly) throw registryUnavailable();
 		await migrateLegacyTenants(registry);
 		result = await send(registry, payload);
 	}
@@ -762,8 +763,8 @@ async function registryCall<T extends EmaAnswer>(registry: EmaRegistry, payload:
 }
 
 /** The tenant record, or null when none exists. Throws StrongStateUnavailableError when the registry or the record cannot be read. */
-export async function getEmaTenant(registry: EmaRegistry, tenantId: string): Promise<EmaTenantRecord | null> {
-	return (await registryCall<EmaRecordResult>(registry, { kind: 'ema-get', tenantId })).record;
+export async function getEmaTenant(registry: EmaRegistry, tenantId: string, readOnly = false): Promise<EmaTenantRecord | null> {
+	return (await registryCall<EmaRecordResult>(registry, { kind: 'ema-get', tenantId }, readOnly)).record;
 }
 
 /** The longest issuer a record can hold (EmaTenantRecordSchema): a longer `iss` cannot be registered. */
@@ -817,9 +818,14 @@ export interface EmaTokenClaims {
  * that comes after (a re-enable, a re-approval, a tier round trip) brings them back. A registry that cannot
  * be read throws StrongStateUnavailableError (a retryable 503), never a silent accept or a 401.
  */
-export async function isEmaTokenLive(registry: EmaRegistry, claims: EmaTokenClaims, nowSeconds: number): Promise<boolean> {
+export async function isEmaTokenLive(
+	registry: EmaRegistry,
+	claims: EmaTokenClaims,
+	nowSeconds: number,
+	readOnly = false,
+): Promise<boolean> {
 	const tenantId = emaSubjectTenantId(claims.sub);
 	if (!tenantId) return false;
-	const rec = await getEmaTenant(registry, tenantId);
+	const rec = await getEmaTenant(registry, tenantId, readOnly);
 	return rec !== null && isTenantActive(rec, nowSeconds) && claims.tier === rec.tier && claims.tep === tenantEpoch(rec);
 }

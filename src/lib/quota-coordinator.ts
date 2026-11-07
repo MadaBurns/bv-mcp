@@ -343,11 +343,13 @@ export type QuotaCoordinatorRequest =
 	| {
 			kind: 'marker-has';
 			coordinationKey: string;
+			readOnly?: boolean;
 	  }
 	| {
 			kind: 'version-get';
 			coordinationKey: string;
 			defaultValue: number;
+			readOnly?: boolean;
 	  }
 	| {
 			kind: 'version-bump';
@@ -700,8 +702,9 @@ export async function setMarkerWithCoordinator(
 export async function hasMarkerWithCoordinator(
 	coordinationKey: string,
 	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+	readOnly = false,
 ): Promise<MarkerResult | undefined> {
-	return callCoordinator<MarkerResult>(namespace, { kind: 'marker-has', coordinationKey });
+	return callCoordinator<MarkerResult>(namespace, { kind: 'marker-has', coordinationKey, ...(readOnly ? { readOnly: true } : {}) });
 }
 
 /** Read a persistent monotonic version from strong state. Undefined means no binding. */
@@ -709,8 +712,14 @@ export async function getVersionWithCoordinator(
 	coordinationKey: string,
 	defaultValue: number,
 	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+	readOnly = false,
 ): Promise<VersionResult | undefined> {
-	return callCoordinator<VersionResult>(namespace, { kind: 'version-get', coordinationKey, defaultValue });
+	return callCoordinator<VersionResult>(namespace, {
+		kind: 'version-get',
+		coordinationKey,
+		defaultValue,
+		...(readOnly ? { readOnly: true } : {}),
+	});
 }
 
 /** Atomically bump a persistent monotonic version. Undefined means no binding. */
@@ -1261,6 +1270,9 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 
 	const fieldErr = validateQuotaFields(obj);
 	if (fieldErr) return { valid: false, error: fieldErr };
+	if ('readOnly' in obj && (typeof obj.readOnly !== 'boolean' || (kind !== 'marker-has' && kind !== 'version-get'))) {
+		return { valid: false, error: 'Invalid readOnly' };
+	}
 	if (kind === 'scoped-rate' && obj.scope !== 'tools' && obj.scope !== 'control') {
 		return { valid: false, error: 'Invalid scope' };
 	}
@@ -1636,6 +1648,11 @@ export class QuotaCoordinator extends DurableObject<Env> {
 	private async handleMarkerHas(payload: Extract<QuotaCoordinatorRequest, { kind: 'marker-has' }>): Promise<MarkerResult> {
 		const now = Date.now();
 		const key = coordinatedCounterKey('marker', payload.coordinationKey);
+		if (payload.readOnly) {
+			const raw = await this.ctx.storage.get<CounterRecord>(key);
+			if (raw !== undefined && !normalizeRecord(raw, -Infinity)) throw new Error('Unreadable revocation marker');
+			return { present: Boolean(normalizeRecord(raw, now)) };
+		}
 		const present = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) =>
 			Boolean(await this.getCounter(txn, key, now)),
 		);
@@ -1648,7 +1665,8 @@ export class QuotaCoordinator extends DurableObject<Env> {
 			const record = await txn.get<VersionRecord>(key);
 			const value = record?.value;
 			if (Number.isSafeInteger(value) && (value as number) >= 1) return { value: value as number };
-			await txn.put(key, { value: payload.defaultValue });
+			if (payload.readOnly && record !== undefined) throw new Error('Unreadable security version');
+			if (!payload.readOnly) await txn.put(key, { value: payload.defaultValue });
 			return { value: payload.defaultValue };
 		});
 	}
