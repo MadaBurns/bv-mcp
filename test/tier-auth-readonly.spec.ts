@@ -44,10 +44,10 @@ describe('read-only authentication', () => {
 			{ sub: 'owner', jti: newJti(), tier: 'owner' },
 			{ secret, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience: `${issuer}/mcp` },
 		);
-		const payloads: Array<{ kind: string; readOnly?: boolean }> = [];
-		const dispatch = vi.fn(async (p: { kind: string; readOnly?: boolean }) => {
+		const payloads: Array<{ kind: string }> = [];
+		const dispatch = vi.fn(async (p: { kind: string }) => {
 			payloads.push(p);
-			return p.kind === 'marker-has' ? { present: false } : { value: 1 };
+			return p.kind === 'marker-peek' ? { present: false } : { value: 1 };
 		});
 		const namespace = { getByName: () => ({ dispatch }) } as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		const get = vi.fn(async () => null);
@@ -64,7 +64,7 @@ describe('read-only authentication', () => {
 			ownerIpGate: 'allowed',
 		});
 		expect(payloads).toHaveLength(3);
-		expect(payloads.every((p) => p.readOnly === true)).toBe(true);
+		expect(payloads.map((p) => p.kind)).toEqual(['marker-peek', 'version-peek', 'version-peek']);
 		dispatch.mockRejectedValue(new Error('state unavailable'));
 		expect(await resolveTier(token, options, '203.0.113.1', issuer, readonly)).toEqual({ authenticated: false, storageUnavailable: true });
 		expect((await resolveTier('bad.jwt.value', options, '203.0.113.1', issuer, readonly)).authenticated).toBe(false);
@@ -76,7 +76,7 @@ describe('read-only authentication', () => {
 		const namespace = { getByName: () => ({ dispatch }) } as unknown as DurableObjectNamespace<QuotaCoordinator>;
 		expect(await isRevoked({ get: async () => 'revoked' } as unknown as KVNamespace, 'jti', namespace, true)).toBe(true);
 		expect(dispatch).toHaveBeenCalledTimes(1);
-		expect(dispatch.mock.calls[0]).toEqual([{ kind: 'marker-has', coordinationKey: expect.any(String), readOnly: true }]);
+		expect(dispatch.mock.calls[0]).toEqual([{ kind: 'marker-peek', coordinationKey: expect.any(String) }]);
 	});
 
 	it('unmigrated EMA registry is unavailable without a migration attempt', async () => {

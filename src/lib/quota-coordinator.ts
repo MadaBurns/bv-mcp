@@ -343,13 +343,20 @@ export type QuotaCoordinatorRequest =
 	| {
 			kind: 'marker-has';
 			coordinationKey: string;
-			readOnly?: boolean;
+	  }
+	| {
+			kind: 'marker-peek';
+			coordinationKey: string;
 	  }
 	| {
 			kind: 'version-get';
 			coordinationKey: string;
 			defaultValue: number;
-			readOnly?: boolean;
+	  }
+	| {
+			kind: 'version-peek';
+			coordinationKey: string;
+			defaultValue: number;
 	  }
 	| {
 			kind: 'version-bump';
@@ -438,7 +445,9 @@ type SecurityStatePayload = Extract<
 			| 'claim-once'
 			| 'marker-set'
 			| 'marker-has'
+			| 'marker-peek'
 			| 'version-get'
+			| 'version-peek'
 			| 'version-bump'
 			| 'version-set-max'
 			| 'version-bump-idempotent'
@@ -453,7 +462,9 @@ const SECURITY_STATE_KINDS: ReadonlySet<string> = new Set<SecurityStatePayload['
 	'claim-once',
 	'marker-set',
 	'marker-has',
+	'marker-peek',
 	'version-get',
+	'version-peek',
 	'version-bump',
 	'version-set-max',
 	'version-bump-idempotent',
@@ -704,7 +715,7 @@ export async function hasMarkerWithCoordinator(
 	namespace?: DurableObjectNamespace<QuotaCoordinator>,
 	readOnly = false,
 ): Promise<MarkerResult | undefined> {
-	return callCoordinator<MarkerResult>(namespace, { kind: 'marker-has', coordinationKey, ...(readOnly ? { readOnly: true } : {}) });
+	return callCoordinator<MarkerResult>(namespace, { kind: readOnly ? 'marker-peek' : 'marker-has', coordinationKey });
 }
 
 /** Read a persistent monotonic version from strong state. Undefined means no binding. */
@@ -715,10 +726,9 @@ export async function getVersionWithCoordinator(
 	readOnly = false,
 ): Promise<VersionResult | undefined> {
 	return callCoordinator<VersionResult>(namespace, {
-		kind: 'version-get',
+		kind: readOnly ? 'version-peek' : 'version-get',
 		coordinationKey,
 		defaultValue,
-		...(readOnly ? { readOnly: true } : {}),
 	});
 }
 
@@ -1080,7 +1090,9 @@ const VALID_KINDS = new Set<string>([
 	'claim-once',
 	'marker-set',
 	'marker-has',
+	'marker-peek',
 	'version-get',
+	'version-peek',
 	'version-bump',
 	'version-set-max',
 	'version-bump-idempotent',
@@ -1209,6 +1221,9 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 	}
 
 	const obj = raw as Record<string, unknown>;
+	// Read-only behavior has its own wire kinds. Never silently accept the old flag,
+	// including on the early-return evaluate/EMA validation paths.
+	if ('readOnly' in obj) return { valid: false, error: 'Invalid readOnly' };
 	const requireFields = (...fields: string[]): string | undefined => fields.find((field) => !(field in obj));
 
 	if (kind === 'evaluate') {
@@ -1251,7 +1266,9 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		'claim-once': ['coordinationKey', 'expiresAt'],
 		'marker-set': ['coordinationKey', 'expiresAt'],
 		'marker-has': ['coordinationKey'],
+		'marker-peek': ['coordinationKey'],
 		'version-get': ['coordinationKey', 'defaultValue'],
+		'version-peek': ['coordinationKey', 'defaultValue'],
 		'version-bump': ['coordinationKey', 'defaultValue'],
 		'version-set-max': ['coordinationKey', 'defaultValue', 'value'],
 		'version-bump-idempotent': ['coordinationKey', 'idempotencyCoordinationKey', 'requestHash', 'defaultValue', 'expiresAt'],
@@ -1270,9 +1287,6 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 
 	const fieldErr = validateQuotaFields(obj);
 	if (fieldErr) return { valid: false, error: fieldErr };
-	if ('readOnly' in obj && (typeof obj.readOnly !== 'boolean' || (kind !== 'marker-has' && kind !== 'version-get'))) {
-		return { valid: false, error: 'Invalid readOnly' };
-	}
 	if (kind === 'scoped-rate' && obj.scope !== 'tools' && obj.scope !== 'control') {
 		return { valid: false, error: 'Invalid scope' };
 	}
@@ -1287,7 +1301,11 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		return { valid: false, error: 'Invalid initialUsed: cannot exceed limit' };
 	}
 	if (
-		(kind === 'version-get' || kind === 'version-bump' || kind === 'version-set-max' || kind === 'version-bump-idempotent') &&
+		(kind === 'version-get' ||
+			kind === 'version-peek' ||
+			kind === 'version-bump' ||
+			kind === 'version-set-max' ||
+			kind === 'version-bump-idempotent') &&
 		(obj.defaultValue as number) < 1
 	) {
 		return { valid: false, error: 'Invalid defaultValue: must be at least 1' };
@@ -1648,15 +1666,23 @@ export class QuotaCoordinator extends DurableObject<Env> {
 	private async handleMarkerHas(payload: Extract<QuotaCoordinatorRequest, { kind: 'marker-has' }>): Promise<MarkerResult> {
 		const now = Date.now();
 		const key = coordinatedCounterKey('marker', payload.coordinationKey);
-		if (payload.readOnly) {
-			const raw = await this.ctx.storage.get<CounterRecord>(key);
-			if (raw !== undefined && !normalizeRecord(raw, -Infinity)) throw new Error('Unreadable revocation marker');
-			return { present: Boolean(normalizeRecord(raw, now)) };
-		}
 		const present = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) =>
 			Boolean(await this.getCounter(txn, key, now)),
 		);
 		return { present };
+	}
+
+	private async handleMarkerPeek(payload: Extract<QuotaCoordinatorRequest, { kind: 'marker-peek' }>): Promise<MarkerResult> {
+		const raw = await this.ctx.storage.get<CounterRecord>(coordinatedCounterKey('marker', payload.coordinationKey));
+		if (raw !== undefined && !normalizeRecord(raw, -Infinity)) throw new Error('Unreadable revocation marker');
+		return { present: Boolean(normalizeRecord(raw, Date.now())) };
+	}
+
+	private async handleVersionPeek(payload: Extract<QuotaCoordinatorRequest, { kind: 'version-peek' }>): Promise<VersionResult> {
+		const record = await this.ctx.storage.get<VersionRecord>(coordinatedVersionKey(payload.coordinationKey));
+		if (record === undefined) return { value: payload.defaultValue };
+		if (!Number.isSafeInteger(record?.value) || record.value < 1) throw new Error('Unreadable security version');
+		return { value: record.value };
 	}
 
 	private async handleVersionGet(payload: Extract<QuotaCoordinatorRequest, { kind: 'version-get' }>): Promise<VersionResult> {
@@ -1665,8 +1691,7 @@ export class QuotaCoordinator extends DurableObject<Env> {
 			const record = await txn.get<VersionRecord>(key);
 			const value = record?.value;
 			if (Number.isSafeInteger(value) && (value as number) >= 1) return { value: value as number };
-			if (payload.readOnly && record !== undefined) throw new Error('Unreadable security version');
-			if (!payload.readOnly) await txn.put(key, { value: payload.defaultValue });
+			await txn.put(key, { value: payload.defaultValue });
 			return { value: payload.defaultValue };
 		});
 	}
@@ -1849,7 +1874,9 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		'claim-once': (self, payload) => self.handleClaimOnce(payload),
 		'marker-set': (self, payload) => self.handleMarkerSet(payload),
 		'marker-has': (self, payload) => self.handleMarkerHas(payload),
+		'marker-peek': (self, payload) => self.handleMarkerPeek(payload),
 		'version-get': (self, payload) => self.handleVersionGet(payload),
+		'version-peek': (self, payload) => self.handleVersionPeek(payload),
 		'version-bump': (self, payload) => self.handleVersionBump(payload),
 		'version-set-max': (self, payload) => self.handleVersionSetMax(payload),
 		'version-bump-idempotent': (self, payload) => self.handleIdempotentVersionBump(payload),
