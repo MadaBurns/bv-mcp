@@ -8,6 +8,30 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.110.0] - 2026-11-08
+
+### Added
+
+- `get_access_context` reports effective authentication tier, owner-IP-gate disposition, owner verification, a keyed pseudonymous principal reference, server version and observation time. It performs no target checks or quota, session, cache or job writes; unreadable authentication remains unavailable rather than falling back to free scanning (#1380).
+
+### Fixed
+
+- Read-only JWT authentication uses explicit coordinator peek operations without version seeding, expired-marker cleanup or legacy-state migration. Unsupported coordinator versions fail closed without retrying mutating operations. Mixed diagnostic batches are rejected before authentication (#1380).
+- MCP POST transports reuse one bounded body read. Malformed and oversized bodies are rejected before stateful authentication, preserving the SSE error envelope and preventing ordinary request logging on that path (#1380).
+
+### Changed
+
+- Updated Cloudflare development tooling while preserving four workspace-local Wrangler installations. Root Wrangler 4.156.1 and the Vitest plugin 1.4.12 use their matching Miniflare/Workerd pair; workspace Wrangler 4.155.0 and the existing `cf` tooling retain their respective compatible runtime pairs. The patched Zod override is preserved (#1374).
+- Adapted the cron test ExecutionContext fixture to the newer Workers types without raising the test-error baseline (#1374).
+
+### Security
+
+- Patched nested development-tool Undici copies to 7.30.1 through explicit parent overrides and lockfile regeneration, preserving the compatible Cloudflare runtime pairs.
+
+### Availability
+
+- This tag and GitHub Release do not deploy the hosted Worker or publish MCP Registry metadata. Hosted rollout remains a separate operator step. Scoring behavior and dns-checks 2.0.0 are unchanged.
+
 ## [3.109.1] - 2026-11-05
 
 Dependency-only patch release; no tool, scoring or behaviour changes.
