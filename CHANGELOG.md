@@ -24,6 +24,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 - Updated Cloudflare development tooling while preserving four workspace-local Wrangler installations. Root Wrangler 4.156.1 and the Vitest plugin 1.4.12 use their matching Miniflare/Workerd pair; workspace Wrangler 4.155.0 and the existing `cf` tooling retain their respective compatible runtime pairs. The patched Zod override is preserved (#1374).
 - Adapted the cron test ExecutionContext fixture to the newer Workers types without raising the test-error baseline (#1374).
 
+### Security
+
+- Patched nested development-tool Undici copies to 7.30.1 through explicit parent overrides and lockfile regeneration, preserving the compatible Cloudflare runtime pairs.
+
 ### Availability
 
 - This tag and GitHub Release do not deploy the hosted Worker or publish MCP Registry metadata. Hosted rollout remains a separate operator step. Scoring behavior and dns-checks 2.0.0 are unchanged.
