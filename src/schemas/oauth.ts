@@ -102,6 +102,8 @@ export type JwtBearerTokenRequest = z.infer<typeof JwtBearerTokenRequestSchema>;
 export const ClientRecordSchema = z.object({
 	client_id: z.string(),
 	client_id_issued_at: z.number(),
+	/** Epoch seconds of the last TTL-refreshing rewrite on use (see refreshClientTtl); absent until the first one. */
+	refreshed_at: z.number().optional(),
 	redirect_uris: z.array(z.string()),
 	client_name: z.string().optional(),
 	software_id: z.string().optional(),

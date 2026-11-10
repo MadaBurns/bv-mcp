@@ -1196,7 +1196,9 @@ export function parsePerCheckTimeout(envValue?: string): number {
 
 // ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
 export const OAUTH_CODE_TTL_SECONDS = 60; // KV minimum TTL is 60s; auth codes are short-lived
-export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
+export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use (see OAUTH_CLIENT_REFRESH_AFTER_SECONDS)
+/** A DCR client record is rewritten (fresh TTL) on a token exchange only when its last write is older than this, so normal logins add no KV write. */
+export const OAUTH_CLIENT_REFRESH_AFTER_SECONDS = 60 * 60 * 24 * 30;
 // Access tokens are bearer credentials: keep the replay window short. The
 // server does not issue refresh tokens, so clients re-run PKCE after expiry.
 export const OAUTH_JWT_TTL_SECONDS = 60 * 60; // 1 hour
