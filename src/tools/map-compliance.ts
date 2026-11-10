@@ -7,7 +7,7 @@
  */
 
 import type { CheckResult } from '../lib/scoring';
-import { scanDomain } from './scan-domain';
+import { scanDomain, SCAN_CATEGORIES } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
@@ -237,6 +237,9 @@ const COMPLIANCE_CONTROLS: ComplianceControlDef[] = [
 	},
 ];
 
+/** Categories a normal scan can produce a result for (the scan roster). */
+const SCAN_ROSTER: ReadonlySet<string> = new Set(SCAN_CATEGORIES);
+
 /** All framework keys in stable display order. */
 const FRAMEWORK_ORDER: ComplianceFramework[] = ['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'];
 
@@ -290,7 +293,14 @@ export function evaluateCompliance(
 		// `scan/format-report.ts` is the single source `categoryScores` and
 		// `notApplicableCategories` both come from, and its verdict is passed in.
 		const applicableResults = matchedResults.filter((r) => !notApplicable.has(r.category));
-		const notApplicableCount = matchedResults.length - applicableResults.length;
+		// Same treatment for a mapped category the scan roster can NEVER produce and no result
+		// was supplied for (e.g. `authoritative_dns_infra`, which only its dedicated profile
+		// runs): it is unmeasurable, not unmet, so it must not sit in the denominator and cap
+		// the control at `fail` for every real scan. A rostered category with no result is
+		// different — see the "missing counts as not passing" rule below. A result supplied by
+		// the caller for such a category is in `resultsByCategory` and is honoured as usual.
+		const unmeasurableCount = control.categories.filter((cat) => !resultsByCategory.has(cat) && !SCAN_ROSTER.has(cat)).length;
+		const notApplicableCount = matchedResults.length - applicableResults.length + unmeasurableCount;
 
 		if (applicableResults.length === 0) {
 			// No check data for ANY mapped category — there is no evidence either way,

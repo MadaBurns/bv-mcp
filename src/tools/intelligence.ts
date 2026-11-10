@@ -272,12 +272,16 @@ export function computePercentileRank(score: number, benchmark: BenchmarkResult)
 
 	const bucket = Math.min(90, Math.floor(score / 10) * 10);
 
-	// Find the percentile for the bucket below this score
-	const prevBucket = bucket - 10;
-	if (prevBucket < 0) return 0;
-
-	const prevLabel = `${prevBucket}-${prevBucket + 9}`;
-	return benchmark.percentiles[prevLabel] ?? 0;
+	// The percentile map is built from the histogram rows that EXIST, so a sparse
+	// histogram has no entry for an empty bucket. Its cumulative value is the same as the
+	// nearest lower bucket that does exist — nothing scored in between — so walk down to it
+	// instead of reading the gap as 0 (which ranked a 75 above 30% of scans as "0th
+	// percentile"). 0 only when no bucket at or below the one beneath this score exists.
+	for (let prevBucket = bucket - 10; prevBucket >= 0; prevBucket -= 10) {
+		const cumulative = benchmark.percentiles[`${prevBucket}-${prevBucket + 9}`];
+		if (cumulative !== undefined) return cumulative;
+	}
+	return 0;
 }
 
 /** Format benchmark data as human-readable text. */

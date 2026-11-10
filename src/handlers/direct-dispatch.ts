@@ -495,9 +495,23 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 				}
 			}
 
-			const forceRefresh = extractForceRefresh(validatedArgs);
+			// The cached baseline was read into memory above; the CURRENT side must be a fresh
+			// measurement. Without the refresh scanDomain serves that SAME cache entry back, so the
+			// diff is a scan against itself (always "stable", zero delta). This internal refresh is
+			// not caller-requested, so it sits outside the metered `force_refresh` allowance in
+			// mcp/execute.ts (which counts only a literal `force_refresh: true` argument) and cannot
+			// be refused by it. The fresh result overwrites the cache entry, which is fine because
+			// the baseline is already held.
+			const forceRefresh = baselineStr === 'cached' || extractForceRefresh(validatedArgs);
 			const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 			const scanResult = await scanDomain(validDomain, scanCacheKV, scanOptions);
+			// Never fall back silently to the cached entry: diffing against a replayed result is
+			// exactly the self-diff this arm must not produce.
+			if (baselineStr === 'cached' && scanResult.cached) {
+				return buildToolErrorResult(
+					`Invalid baseline: could not take a fresh measurement of ${validDomain} to compare against the cached scan. Pass a baseline JSON instead.`,
+				);
+			}
 			// The CURRENT side needs the same abstain as the baseline side, and for a
 			// sharper reason: computeDrift diffs finding SETS, so an unmeasured current
 			// scan makes every baseline finding "disappear" and reports them as RESOLVED.
