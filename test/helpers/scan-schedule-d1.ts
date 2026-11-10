@@ -193,3 +193,11 @@ export function makeSlowQueue() {
 	});
 	return { queue: { send } as unknown as Queue, send, sent };
 }
+
+/**
+ * A stand-in consumer schema that accepts any message. Passed as
+ * `consumerSchema` to `dispatchDueScans` by tests that exercise claim/send
+ * mechanics in isolation from the fail-closed consumer-compatibility guard
+ * (SQ-558); the guard itself is covered in test/scheduler/dispatch-contract.spec.ts.
+ */
+export const ACCEPTING_CONSUMER = { safeParse: () => ({ success: true }) };

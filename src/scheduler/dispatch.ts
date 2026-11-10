@@ -17,12 +17,21 @@
  * `src/lib/scaling-flags.ts` — never re-derived here. No cron is added to
  * `wrangler.jsonc`; the operator binds the DB/queue and adds the cron entry at
  * enable time.
+ *
+ * Consumer contract (SQ-558): the message built here (`tenant_id`, `domain`,
+ * `lane`, `scheduled_at`) is NOT what the scanner-queue consumer accepts (its
+ * strict `ScanQueueMessageSchema` requires `cycle_id` + `sub_tenant_id`), and no
+ * scheduled-scan lane consumer exists yet (a later phase; nothing calls
+ * `markCompleted`). Arming the flag before one lands would claim-and-advance
+ * rows whose messages are dead-lettered as poison, so the dispatcher fails
+ * closed before `claimDue` until the consumer schema accepts its message.
  */
 
 import { isScanDispatchEnabled, resolveScanDispatchConfig, type ScalingFlagEnv } from '../lib/scaling-flags';
-import { claimDue } from './schedule-index';
+import { claimDue, type ClaimedScanRow } from './schedule-index';
 import { rateKeyForLane } from './rate';
 import { logError, logEvent } from '../lib/log';
+import { ScanQueueMessageSchema } from '../schemas/tenant-internal';
 
 /** Scheduling lanes. Aligned with the `scan:rate:target:{fast,slow}` KV keys. */
 export const SCAN_LANES = ['fast', 'slow'] as const;
@@ -56,22 +65,62 @@ export interface DispatchOptions {
 	now: number;
 	/** Cron tick width in seconds (default 60). */
 	tickSeconds?: number;
+	/**
+	 * The schema of the queue consumer the dispatched messages will land on.
+	 * Defaults to the real scanner-queue consumer's {@link ScanQueueMessageSchema};
+	 * overridable only so tests can exercise the claim/send mechanics in isolation.
+	 */
+	consumerSchema?: ConsumerSchema;
+}
+
+/** The slice of a Zod schema the dispatch guard needs. */
+export interface ConsumerSchema {
+	safeParse(input: unknown): { success: boolean };
 }
 
 /** Message enqueued per claimed schedule row. */
-interface ScheduledScanMessage {
+export interface ScheduledScanMessage {
 	tenant_id: string;
 	domain: string;
 	lane: string;
 	scheduled_at: number;
 }
 
+/** The exact object sent for a claimed row; single source for the send and the compatibility probe. */
+export function buildScheduledScanMessage(row: Pick<ClaimedScanRow, 'tenant_id' | 'domain' | 'lane'>, now: number): ScheduledScanMessage {
+	return { tenant_id: row.tenant_id, domain: row.domain, lane: row.lane, scheduled_at: now };
+}
+
+/**
+ * True when `consumer` accepts the message this dispatcher would send. The
+ * default consumer (`handleScanQueue`) parses with the strict
+ * `ScanQueueMessageSchema` and dead-letters a mismatch as poison; claiming
+ * advances `next_scan_at`, so dispatching an unconsumable message silently
+ * loses the scan. Probing with a representative row keeps this tied to the real
+ * schema: once producer and consumer agree, the guard opens by itself.
+ */
+function consumerBlocksDispatch(consumer: ConsumerSchema = ScanQueueMessageSchema): boolean {
+	const probe = buildScheduledScanMessage({ tenant_id: 'probe', domain: 'probe.example', lane: SCAN_LANES[0] }, 0);
+	if (consumer.safeParse(probe).success) return false;
+	logError('scan dispatch armed but no compatible queue consumer is wired — nothing claimed', {
+		severity: 'error',
+		category: 'scan.dispatch',
+		details: { message: 'scan_dispatch_no_compatible_consumer' },
+	});
+	return true;
+}
+
 /**
  * Claim due rows per lane and fan them onto the lane's queue. DARK by default
  * and fail-soft throughout — a per-lane error is swallowed so one bad lane can't
  * starve the others, and the whole call no-ops when disabled or unprovisioned.
+ * When armed but no queue consumer accepts the message shape it fails CLOSED:
+ * logs an error and returns BEFORE claiming, so no schedule row is consumed.
  */
-export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds = DEFAULT_TICK_SECONDS }: DispatchOptions): Promise<void> {
+export async function dispatchDueScans(
+	env: ScanDispatchEnv,
+	{ now, tickSeconds = DEFAULT_TICK_SECONDS, consumerSchema }: DispatchOptions,
+): Promise<void> {
 	let currentLane: ScanLane | undefined;
 	let claimedCount = 0;
 	let sentCount = 0;
@@ -79,6 +128,8 @@ export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds 
 		if (!isScanDispatchEnabled(env)) return;
 		const db = env.SCAN_SCHEDULE_DB;
 		if (!db) return;
+
+		if (consumerBlocksDispatch(consumerSchema)) return;
 
 		const cap = resolveScanDispatchConfig(env).batchSize;
 
@@ -114,8 +165,7 @@ export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds 
 				if (claimedCount === 0) continue;
 
 				for (const row of claimed) {
-					const message: ScheduledScanMessage = { tenant_id: row.tenant_id, domain: row.domain, lane: row.lane, scheduled_at: now };
-					await queue.send(message, { contentType: 'json' });
+					await queue.send(buildScheduledScanMessage(row, now), { contentType: 'json' });
 					sentCount += 1;
 				}
 			} catch (err) {

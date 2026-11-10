@@ -11,7 +11,7 @@
 // Dynamic import inside the test fn for mock isolation (workers pool).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makeScanScheduleDb, makeSlowQueue } from '../helpers/scan-schedule-d1';
+import { ACCEPTING_CONSUMER, makeScanScheduleDb, makeSlowQueue } from '../helpers/scan-schedule-d1';
 
 const NOW = 1_750_000_000_000;
 const SIX_HOURS = 6 * 60 * 60 * 1000; // the old fast-lane default scalar
@@ -36,7 +36,7 @@ describe('dispatchDueScans (C2) — advances by the row cadence, not the lane de
 		} as unknown as import('../../src/scheduler/dispatch').ScanDispatchEnv;
 
 		const { dispatchDueScans } = await import('../../src/scheduler/dispatch');
-		await dispatchDueScans(env, { now: NOW });
+		await dispatchDueScans(env, { now: NOW, consumerSchema: ACCEPTING_CONSUMER });
 
 		// It claimed + enqueued the due row.
 		expect(send).toHaveBeenCalledTimes(1);
@@ -89,7 +89,7 @@ describe('dispatchDueScans — resolves the lane queue before claiming', () => {
 		} as unknown as import('../../src/scheduler/dispatch').ScanDispatchEnv;
 
 		const { dispatchDueScans, SCAN_LANES } = await import('../../src/scheduler/dispatch');
-		await dispatchDueScans(env, { now: NOW });
+		await dispatchDueScans(env, { now: NOW, consumerSchema: ACCEPTING_CONSUMER });
 
 		// The rows were never claimed — no prepare() call at all — so the
 		// schedule is untouched and nothing was silently consumed.
@@ -128,7 +128,7 @@ describe('dispatchDueScans — a mid-loop send failure is logged, other lanes st
 		} as unknown as import('../../src/scheduler/dispatch').ScanDispatchEnv;
 
 		const { dispatchDueScans } = await import('../../src/scheduler/dispatch');
-		await dispatchDueScans(env, { now: NOW });
+		await dispatchDueScans(env, { now: NOW, consumerSchema: ACCEPTING_CONSUMER });
 
 		// Never rethrows — the call above resolved.
 		expect(fastSend).toHaveBeenCalledTimes(2);

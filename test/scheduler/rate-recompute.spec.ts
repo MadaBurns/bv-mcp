@@ -11,7 +11,7 @@
 // Dynamic imports inside the test fns for mock isolation (workers pool).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makeScanScheduleDb, makeSlowQueue } from '../helpers/scan-schedule-d1';
+import { ACCEPTING_CONSUMER, makeScanScheduleDb, makeSlowQueue } from '../helpers/scan-schedule-d1';
 
 const DAY_MS = 86_400_000;
 const NOW = 1_750_000_000_000;
@@ -209,7 +209,7 @@ describe('readRateTarget (via dispatchDueScans) — KV target → per-tick claim
 			...(kv ? { RATE_LIMIT: kv } : {}),
 		} as unknown as RateEnv;
 		const { dispatchDueScans } = await import('../../src/scheduler/dispatch');
-		await dispatchDueScans(env, { now: NOW });
+		await dispatchDueScans(env, { now: NOW, consumerSchema: ACCEPTING_CONSUMER });
 		const claims = fake.calls.filter((c) => c.sql.includes('RETURNING') && c.binds[2] === 'fast');
 		expect(claims).toHaveLength(1);
 		return claims[0].binds[4] as number;
