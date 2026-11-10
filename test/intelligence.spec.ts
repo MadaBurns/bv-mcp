@@ -150,6 +150,28 @@ describe('computePercentileRank', () => {
 		});
 		expect(rank).toBe(75); // percentile of the 60-69 bucket (bucket below 70-79)
 	});
+
+	it('uses the nearest lower bucket that exists when the bucket below the score has no row (sparse histogram)', () => {
+		// The percentile map is built from existing histogram rows only: 30% of scans sit in
+		// 40-49 and nothing scored 50-69. A 75 is above all of them, so 30 — not a bogus 0.
+		const rank = computePercentileRank(75, {
+			status: 'ok',
+			profile: 'mail_enabled',
+			totalScans: 100,
+			percentiles: { '40-49': 30, '80-89': 100 },
+		});
+		expect(rank).toBe(30);
+	});
+
+	it('returns 0 only when no bucket at or below the one under the score exists', () => {
+		const rank = computePercentileRank(75, {
+			status: 'ok',
+			profile: 'mail_enabled',
+			totalScans: 100,
+			percentiles: { '80-89': 60, '90-99': 100 },
+		});
+		expect(rank).toBe(0);
+	});
 });
 
 describe('formatBenchmark', () => {

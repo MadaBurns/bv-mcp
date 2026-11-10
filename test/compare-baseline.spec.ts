@@ -799,6 +799,30 @@ describe('compare_baseline abstains on a category the scan itself declared not a
 		expect(compact).toContain('does not apply to this domain');
 	});
 
+	it('a definite violation still FAILS when another requested rule is inconclusive (mixed case)', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		const scan = webOnlyScanWithNoMtaSts();
+		scan.score = { ...scan.score, overall: 40, grade: 'D' };
+
+		const result = compareBaseline(scan, { score: 90, require_mta_sts: true });
+
+		// A measured score violation proves failure; the unevaluable MTA-STS rule must not
+		// hide it behind `null` (a gate would re-run forever instead of failing).
+		expect(result.violations.map((v) => v.rule)).toEqual(['score']);
+		expect(result.passed).toBe(false);
+		// The unevaluable rule is still reported, not swallowed.
+		expect(result.inconclusiveRules).toEqual(['require_mta_sts']);
+		expect(result.notApplicableRules).toEqual(['require_mta_sts']);
+
+		const full = formatBaselineResult(result, 'full');
+		expect(full).toContain('**Result:** FAIL');
+		expect(full).toContain('score');
+		expect(full).toContain('does not apply to this domain');
+		const compact = formatBaselineResult(result, 'compact');
+		expect(compact).toContain('FAIL');
+		expect(compact).not.toContain('INCONCLUSIVE');
+	});
+
 	it('keeps grading an applicable category on the same scan (guard — no blanket abstention)', async () => {
 		const { compareBaseline } = await import('../src/tools/compare-baseline');
 		// `spf` is NOT in the mail-only N/A set for this fixture (it publishes a
