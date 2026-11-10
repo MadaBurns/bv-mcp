@@ -8,6 +8,22 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- Access-log archive objects are now named by the first and last row id of each page, so later cron runs in the same UTC day no longer replace objects whose rows were already deleted from D1 (SQ-551).
+- A tool name that is not registered, including one longer than 100 characters or a name such as `constructor`, is answered as an unknown tool before any quota call. Previously an over-long name made the quota coordinator reject the request and counted toward opening its circuit breaker. The auth-resolution limiter key is now a fixed length, so long IPv6 client addresses no longer do the same (SQ-552).
+- Errors that escape a route now return the JSON-RPC `-32603` body through `app.onError`; the previous catch-all middleware never ran. `prompts/get` with missing or invalid arguments returns HTTP 400 / `-32602`. `/badge/:domain` validates the domain before spending any counter and sends `Cache-Control: no-store` on non-200 badges. Brand-audit legacy-owner reconciliation matches the normalised tool name (SQ-553).
+- OAuth: a registered client record older than 30 days has its one-year lifetime renewed on a successful authorization-code exchange. In the `jwt-bearer` grant the assertion id is claimed immediately before signing, so a 503 raised earlier in minting leaves the assertion reusable (SQ-554).
+- Async batch scans: a duplicate delivery under a fresh lease is retried after the remaining lease, a scan that fails on its final attempt is recorded as `failed`, and a job that is not yet readable is retried before being dropped (SQ-555).
+- `analyze_drift` with `baseline: "cached"` measures the current side with a fresh scan; it used to compare the cached scan with itself. `map_compliance` no longer counts a category the scan cannot produce, so SOC 2 CC6.6 and CIS 12.1 can pass. `compare_baseline` reports a failure whenever a rule is violated, even if another rule could not be evaluated. Percentile rank uses the nearest lower populated bucket (SQ-557).
+- The scheduled-scan dispatcher (dark) refuses to claim schedule rows while the queue consumer cannot accept its message, and logs `scan_dispatch_no_compatible_consumer` (SQ-558).
+- The infra-probe sidecar answers a non-object JSON body with 400. Tenant cycle-alert highlight titles are clamped to the schema limit (SQ-559).
+- A direct `check_*` call and a concurrent `scan_domain` for the same domain no longer share one in-flight run, so each caller gets the result of its own options and time budget (SQ-561).
+
+### Changed
+
+- dns-checks 2.1.0 and scoring model 2.1.0: see `packages/dns-checks/CHANGELOG.md`. `check_spf` reads inherited DMARC policy for subdomains and treats a failed DMARC lookup as unmeasured; `redirect=` beside an `all` mechanism is not counted; TLS-RPT records are selected individually; 3072-bit RSA DKIM keys are recognised (SQ-556).
+
 ## [3.110.1] - 2026-11-10
 
 ### Fixed
