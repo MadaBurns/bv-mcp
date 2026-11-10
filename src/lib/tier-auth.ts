@@ -77,6 +77,21 @@ export const BV_WEB_VALIDATE_KEY_TIMEOUT_MS = 5_000;
 /** Uses the existing 60/minute, 600/hour control-plane thresholds on a distinct key. */
 export const AUTH_RESOLUTION_MINUTE_LIMIT = 60;
 const AUTH_RESOLUTION_RATE_KEY_PREFIX = 'auth-resolution:';
+/** Quota coordinator rejects an `ip` field over 50 chars; prefix (16) + 32 hex digest chars = 48. */
+const AUTH_RESOLUTION_RATE_KEY_DIGEST_BYTES = 16;
+
+/**
+ * Fixed-length auth-resolution limiter key. A raw IPv6 client address (up to 39 chars,
+ * 45 with an embedded IPv4) plus the prefix exceeds the coordinator's `ip` cap, which
+ * throws and trips the shared breaker, so the principal is digested instead.
+ */
+async function authResolutionRateKey(clientIp: string | undefined): Promise<string> {
+	const digest = (await hashTokenRaw(clientIp ?? 'unknown')).subarray(0, AUTH_RESOLUTION_RATE_KEY_DIGEST_BYTES);
+	const hex = Array.from(digest)
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
+	return `${AUTH_RESOLUTION_RATE_KEY_PREFIX}${hex}`;
+}
 
 /** @internal Exported for focused timeout regression tests. */
 export async function fetchBvWebValidateKey(
@@ -476,11 +491,7 @@ export async function resolveTier(
 	let authResolutionRateLimited = false;
 	let authResolutionRetryAfterMs: number | undefined;
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
-		const resolutionRate = await checkControlPlaneRateLimit(
-			`${AUTH_RESOLUTION_RATE_KEY_PREFIX}${clientIp ?? 'unknown'}`,
-			env.RATE_LIMIT,
-			env.QUOTA_COORDINATOR,
-		);
+		const resolutionRate = await checkControlPlaneRateLimit(await authResolutionRateKey(clientIp), env.RATE_LIMIT, env.QUOTA_COORDINATOR);
 		authResolutionRateLimited = !resolutionRate.allowed;
 		authResolutionRetryAfterMs = resolutionRate.retryAfterMs;
 	}

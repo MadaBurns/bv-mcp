@@ -1732,3 +1732,97 @@ describe('executeMcpRequest — authenticated per-key daily total across tools',
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SQ-552: unknown tool names are decided before any quota / coordinator call
+// ---------------------------------------------------------------------------
+
+describe('executeMcpRequest — unknown tool names never reach quota (SQ-552)', () => {
+	const developer = { authenticated: true, tier: 'developer', keyHash: 'sq552-dev-key' } as const;
+
+	function recordingBackends() {
+		const dispatch = vi.fn(async () => {
+			throw new TypeError('Invalid toolName: must be string <= 100 chars');
+		});
+		const quotaCoordinator = { getByName: () => ({ dispatch }) } as unknown as NonNullable<ExecuteMcpRequestOptions['quotaCoordinator']>;
+		const kvPuts: string[] = [];
+		const kvGets: string[] = [];
+		const rateLimitKv = {
+			get: vi.fn(async (key: string) => {
+				kvGets.push(key);
+				return null;
+			}),
+			put: vi.fn(async (key: string) => {
+				kvPuts.push(key);
+			}),
+			list: vi.fn(async () => ({ keys: [], list_complete: true })),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const pending: Promise<unknown>[] = [];
+		const waitUntil = (p: Promise<unknown>) => void pending.push(p);
+		return { dispatch, quotaCoordinator, rateLimitKv, kvPuts, kvGets, waitUntil, settle: () => Promise.all(pending) };
+	}
+
+	function toolCall(name: string, overrides: Partial<ExecuteMcpRequestOptions> = {}): ExecuteMcpRequestOptions {
+		return baseOptions({
+			body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+			...overrides,
+		});
+	}
+
+	function textOf(result: Awaited<ReturnType<typeof import('../src/mcp/execute').executeMcpRequest>>): string {
+		if (result.kind !== 'response') throw new Error('expected response');
+		return (result.payload as { result: { content: { text: string }[] } }).result.content[0].text;
+	}
+
+	it('a 150-char tool name returns the unknown-tool result with no coordinator or quota KV call', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const backends = recordingBackends();
+
+		const result = await executeMcpRequest(
+			toolCall('x'.repeat(150), {
+				isAuthenticated: true,
+				tierAuthResult: developer,
+				keyHash: developer.keyHash,
+				rateLimitKv: backends.rateLimitKv,
+				quotaCoordinator: backends.quotaCoordinator,
+				waitUntil: backends.waitUntil,
+			}),
+		);
+		await backends.settle();
+
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(200);
+		expect((result.payload as { result: { isError: boolean } }).result.isError).toBe(true);
+		const text = textOf(result);
+		expect(text).toMatch(/^Error: Unknown tool: x{64}\.\.\.\. Call tools\/list to see the available tools\.$/);
+		expect(backends.dispatch).not.toHaveBeenCalled();
+		// The only KV traffic is the fuzz counter, so the unknown_tool signal keeps firing.
+		expect(backends.kvPuts.length).toBeGreaterThan(0);
+		for (const key of [...backends.kvPuts, ...backends.kvGets]) expect(key).toMatch(/^fuzz:p:/);
+		expect(backends.kvPuts.every((key) => key.endsWith(':unknown_tool'))).toBe(true);
+	});
+
+	it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+		'prototype-chain name %s gets the same unknown-tool text as a random name, with no quota headers',
+		async (name) => {
+			const { executeMcpRequest } = await import('../src/mcp/execute');
+			const random = await executeMcpRequest(toolCall('no_such_tool_sq552'));
+			expect(textOf(random)).toBe('Error: Unknown tool: no_such_tool_sq552. Call tools/list to see the available tools.');
+
+			for (const options of [
+				toolCall(name),
+				toolCall(name, { isAuthenticated: true, tierAuthResult: developer, keyHash: developer.keyHash }),
+			]) {
+				const result = await executeMcpRequest(options);
+				if (result.kind !== 'response') throw new Error('expected response');
+				expect(result.httpStatus).toBe(200);
+				expect(textOf(result)).toBe(`Error: Unknown tool: ${name.toLowerCase()}. Call tools/list to see the available tools.`);
+				for (const [header, value] of Object.entries(result.headers)) {
+					expect(`${header}=${value}`).not.toContain('function');
+					expect(header).not.toMatch(/^x-quota-/);
+				}
+			}
+		},
+	);
+});

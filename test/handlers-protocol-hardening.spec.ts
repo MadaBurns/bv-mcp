@@ -32,11 +32,33 @@ describe('handlers-protocol-hardening: prototype-key lookups (item 3)', () => {
 		expect(() => handlePromptsGet({ name })).toThrow(`Invalid prompt name: ${name}`);
 	});
 
+	it('every declared, registry and direct-dispatch tool is a registered tool name; prototype keys are not', async () => {
+		const { TOOLS } = await import('../src/schemas/tool-definitions');
+		const { TOOL_REGISTRY } = await import('../src/handlers/tool-registry');
+		const { DIRECT_DISPATCH_TOOLS } = await import('../src/handlers/tool-sets');
+		const { isRegisteredToolName } = await import('../src/handlers/tool-args');
+		// The public tools/call gate rejects any name this predicate refuses, so it must cover every real tool.
+		for (const name of [...TOOLS.map((tool) => tool.name), ...Object.keys(TOOL_REGISTRY), ...DIRECT_DISPATCH_TOOLS]) {
+			expect(isRegisteredToolName(name), name).toBe(true);
+		}
+		for (const key of PROTOTYPE_KEYS) expect(isRegisteredToolName(key.toLowerCase()), key).toBe(false);
+		expect(isRegisteredToolName('x'.repeat(150))).toBe(false);
+	});
+
+	it.each(PROTOTYPE_KEYS)('tier quota lookup for %s falls back to the tier default, never a function', async (key) => {
+		const { tierToolDailyLimit, TIER_DAILY_LIMITS } = await import('../src/lib/config');
+		expect(tierToolDailyLimit('developer', key)).toBe(TIER_DAILY_LIMITS.developer);
+	});
+
 	it('tools/call with a prototype key name is an unknown tool, not a crash', async () => {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		for (const name of PROTOTYPE_KEYS) {
 			const result = await handleToolsCall({ name, arguments: {} });
 			expect(result.isError).toBe(true);
+			// Exactly the unknown-tool result, not the generic "unexpected error" fallback a TypeError produces.
+			expect(result.content[0]).toMatchObject({
+				text: `Error: Unknown tool: ${name.toLowerCase()}. Call tools/list to see the available tools.`,
+			});
 		}
 	});
 });
