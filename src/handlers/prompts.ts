@@ -247,7 +247,7 @@ export function handlePromptsGet(params: Record<string, unknown>): {
 } {
 	const name = params.name;
 	if (typeof name !== 'string') {
-		throw new Error('Missing required parameter: name');
+		throw new JsonRpcClientError(JSON_RPC_ERRORS.INVALID_PARAMS, 'Missing required parameter: name');
 	}
 
 	const prompt = PROMPTS.find((p) => p.name === name);
@@ -263,7 +263,7 @@ export function handlePromptsGet(params: Record<string, unknown>): {
 	if (!parsed.success) {
 		const firstIssue = parsed.error.issues[0];
 		const field = firstIssue?.path.join('.') || 'arguments';
-		throw new Error(`Invalid ${field}: ${firstIssue?.message ?? 'validation failed'}`);
+		throw new JsonRpcClientError(JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid ${field}: ${firstIssue?.message ?? 'validation failed'}`);
 	}
 
 	const args: Record<string, string> = {};
