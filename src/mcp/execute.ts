@@ -15,7 +15,7 @@ import { jsonRpcError, JSON_RPC_ERRORS, JsonRpcClientError, isJsonRpcNotificatio
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	AGGREGATE_QUOTA_COUNTER,
-	FREE_TOOL_DAILY_LIMITS,
+	freeToolDailyLimit,
 	FREE_IP_DAILY_LIMIT,
 	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
@@ -286,6 +286,11 @@ function clipEchoedToolName(name: string): string {
 	return name.length > MAX_ECHOED_TOOL_NAME_LENGTH ? `${name.slice(0, MAX_ECHOED_TOOL_NAME_LENGTH)}...` : name;
 }
 
+/** A string `name` whose normalised form is not a registered tool (a non-string name is left to dispatch validation). */
+function isUnknownToolName(rawName: unknown, normalizedName: string): boolean {
+	return typeof rawName === 'string' && !isRegisteredToolName(normalizedName);
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	// Metadata never enters quota/session/cache/analytics or ordinary tool dispatch,
 	// including malformed-argument and unavailable-context paths.
@@ -381,7 +386,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// indexes the limit tables to a function. Same genuine unknown-tool payload (and fuzz
 		// counter hit) as the dispatch path; the echoed name is clipped so a hostile name cannot
 		// inflate the response.
-		if (typeof internalOnlyNameRaw === 'string' && !isRegisteredToolName(internalOnlyName)) {
+		if (isUnknownToolName(internalOnlyNameRaw, internalOnlyName)) {
 			return buildInternalOnlyToolResponse(
 				id,
 				clipEchoedToolName(internalOnlyName),
@@ -475,7 +480,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const toolNameRaw =
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName && Object.hasOwn(FREE_TOOL_DAILY_LIMITS, toolName) ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		const toolDailyLimit = freeToolDailyLimit(toolName);
 
 		// Gated/auth-required tools are rejected (401/403) without ever recording a
 		// per-tool-daily count in the serial path (their gate returns before the

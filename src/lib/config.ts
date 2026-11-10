@@ -445,6 +445,15 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 export const FORCE_REFRESH_DAILY_LIMIT = 5;
 
 /**
+ * Free-tier daily cap for a tool, or undefined when it has none. Own-key lookup: a bare index
+ * resolves `constructor` / `__proto__` through Object.prototype to a function that reads as an
+ * unlimited quota with garbage x-quota-* headers.
+ */
+export function freeToolDailyLimit(toolName: string): number | undefined {
+	return Object.hasOwn(FREE_TOOL_DAILY_LIMITS, toolName) ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+}
+
+/**
  * Tools gated to paid tiers (developer and above). Pinned to 0 in
  * FREE_TOOL_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS.free, and
  * TIER_TOOL_DAILY_LIMITS.agent so unauthenticated, free-tier-key, and
