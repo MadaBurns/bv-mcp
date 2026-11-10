@@ -249,7 +249,7 @@ describe('estimateTxtRrsetBytes', () => {
 	});
 });
 
-describe('analyzeSpfLookupBudget — redirect= counts toward the §4.6.4 budget', () => {
+describe('analyzeSpfLookupBudget — redirect= and the §4.6.4 budget', () => {
 	it('counts a bare redirect= modifier as one DNS lookup', () => {
 		// RFC 7208 §4.6.4: the redirect modifier is a lookup-consuming term.
 		const analysis = analyzeSpfLookupBudget('v=spf1 redirect=_spf.example.com');
@@ -257,11 +257,32 @@ describe('analyzeSpfLookupBudget — redirect= counts toward the §4.6.4 budget'
 		expect(analysis.mechanisms).toContain('redirect');
 	});
 
-	it('counts redirect= alongside mechanisms so 10 mechanisms + redirect = 11 (crosses the limit)', () => {
+	it('does not count redirect= when the record has an all mechanism (RFC 7208 §6.1: it is ignored)', () => {
 		const tenMechs = Array.from({ length: 10 }, (_, i) => `include:spf${i}.example.com`).join(' ');
 		const analysis = analyzeSpfLookupBudget(`v=spf1 ${tenMechs} redirect=_spf.example.com -all`);
-		expect(analysis.count).toBe(11);
-		expect(analysis.count).toBeGreaterThan(10);
+		expect(analysis.count).toBe(10);
+		expect(analysis.mechanisms).not.toContain('redirect');
+	});
+});
+
+describe('checkSPF — redirect= beside an all mechanism is neither counted nor followed (SQ-556)', () => {
+	it('a record with 10 real lookups, -all and redirect= counts 10, not "Too many DNS lookups"', async () => {
+		const tenIncludes = Array.from({ length: 10 }, (_, i) => `include:spf${i}.example.org`).join(' ');
+		const records: Record<string, string[]> = {
+			'example.com': [`v=spf1 ${tenIncludes} -all redirect=_spf.example.net`],
+			'_dmarc.example.com': ['v=DMARC1; p=reject; aspf=s; adkim=s'],
+			// The redirect target has lookups of its own: following it would add 3 more.
+			'_spf.example.net': ['v=spf1 include:a.example.net include:b.example.net mx -all'],
+		};
+		for (let i = 0; i < 10; i++) records[`spf${i}.example.org`] = ['v=spf1 ip4:192.0.2.1 -all'];
+		const queryDNS = createMockDNS(records);
+
+		const result = await checkSPF('example.com', queryDNS);
+
+		expect(result.findings.some((f) => f.title === 'Too many DNS lookups')).toBe(false);
+		const nearLimit = result.findings.find((f) => f.title === 'SPF lookup budget near limit');
+		expect(nearLimit?.metadata?.lookupCount).toBe(10);
+		expect(queryDNS).not.toHaveBeenCalledWith('_spf.example.net', 'TXT', expect.anything());
 	});
 });
 

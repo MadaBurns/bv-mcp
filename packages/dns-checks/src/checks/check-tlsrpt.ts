@@ -30,14 +30,12 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 		return buildRcodeAbstentionResult('tlsrpt', 'TLS-RPT', tlsrptDomain, 'TXT', outcome.rcode);
 	}
 
-	const txtRecords = outcome.records;
-
-	// Concatenate all TXT records to handle cases where TLS-RPT data is split across multiple records
-	const concatenatedTxt = txtRecords.join('');
-
-	// Extract TLS-RPT record from concatenated TXT data
-	const tlsrptMatch = concatenatedTxt.match(/v=tlsrptv1[^]*/i);
-	const tlsrptRecords = tlsrptMatch ? [tlsrptMatch[0]] : [];
+	// Select TLS-RPT records individually (RFC 8460 §3): TXT records that do not begin with
+	// v=TLSRPTv1 are discarded, never merged into one. Each element is already one complete RR
+	// (the DNS layer joins a multi-string RR), so joining the RRset fused an unrelated record
+	// into the reporting URI and counted two TLS-RPT records as one. Same predicate as the
+	// `mta_sts` scan's TLS-RPT reader (getTlsRptRecordFindings).
+	const tlsrptRecords = outcome.records.filter((record) => record.toLowerCase().startsWith('v=tlsrptv1'));
 
 	if (tlsrptRecords.length === 0) {
 		findings.push(
@@ -51,9 +49,7 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 		return buildCheckResult('tlsrpt', findings, undefined, false);
 	}
 
-	// Check for multiple TLS-RPT records in the concatenated data
-	const tlsrptMatches = concatenatedTxt.match(/v=tlsrptv1/gi);
-	if (tlsrptMatches && tlsrptMatches.length > 1) {
+	if (tlsrptRecords.length > 1) {
 		findings.push(
 			createFinding(
 				'tlsrpt',
@@ -62,9 +58,12 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 				// TLS-RPT is hardening (reporting only); a duplicate config shouldn't be
 				// penalized harder than having none, so this is low, not medium.
 				'low',
-				`Found ${tlsrptMatches.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain (RFC 8460 §3 — receivers treat multiple records as no policy).`,
+				`Found ${tlsrptRecords.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain (RFC 8460 §3 — receivers treat multiple records as no policy).`,
 			),
 		);
+		// No single record is in effect, so no reporting URI is read from any of them and the
+		// set is never reported as "configured". Records ARE published, so recordPresent is true.
+		return buildCheckResult('tlsrpt', findings, undefined, true);
 	}
 
 	const record = tlsrptRecords[0];
@@ -98,7 +97,7 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 	}
 
 	// If record is valid
-	if (rua.invalid.length === 0 && tlsrptRecords.length <= 1) {
+	if (rua.invalid.length === 0) {
 		findings.push(
 			createFinding(
 				'tlsrpt',

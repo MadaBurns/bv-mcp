@@ -12,6 +12,7 @@
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
+import { dmarcTreeWalk, isDmarcRecord } from './check-dmarc';
 import { parseDmarcTags } from './dmarc-utils';
 import {
 	DNS_UDP_LIMIT_BYTES,
@@ -60,44 +61,81 @@ interface TrustSurfaceDmarcContext {
 	dmarcAlignmentMode?: string;
 }
 
-async function getTrustSurfaceDmarcContext(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	timeout?: number,
-): Promise<TrustSurfaceDmarcContext> {
+/** The DMARC lookup concluded and no record governs the name: a measured absence. */
+const MISSING_DMARC_CONTEXT: TrustSurfaceDmarcContext = {
+	corroboratedByWeakDmarc: true,
+	dmarcPolicy: 'missing',
+	dmarcAlignmentMode: 'missing',
+};
+
+/**
+ * The DMARC lookup never concluded (transport failure, or SERVFAIL/REFUSED at any step of the
+ * walk), so DMARC was UNMEASURED: nothing corroborates, and nothing may be claimed missing —
+ * the same claim discipline `checkDMARC` applies when it abstains. `unknown` is the value the
+ * thrown-lookup path has always carried; one value, one meaning.
+ */
+const UNMEASURED_DMARC_CONTEXT: TrustSurfaceDmarcContext = {
+	corroboratedByWeakDmarc: false,
+	dmarcPolicy: 'unknown',
+	dmarcAlignmentMode: 'unknown',
+};
+
+/**
+ * RFC 9989 §4.10: a record inherited from the organisational domain applies its `sp=`
+ * (falling back to `p=`) to the subdomain — exactly what `checkDMARC` reads as the policy.
+ */
+function effectiveDmarcPolicy(tags: Map<string, string>, inheritedFromParent: boolean): string {
+	const policy = inheritedFromParent ? tags.get('sp') || tags.get('p') : tags.get('p');
+	return policy ?? 'none';
+}
+
+/** Both identifier alignments strict (`aspf=s` and `adkim=s`); an omitted tag defaults to relaxed. */
+function hasStrictAlignment(tags: Map<string, string>): boolean {
+	return tags.get('aspf') === 's' && tags.get('adkim') === 's';
+}
+
+/** Anything short of `p=reject` applied to 100% of mail. */
+function isEnforcementWeak(policy: string, pct: string): boolean {
+	return policy !== 'reject' || pct !== '100';
+}
+
+/** The `dmarcPolicy` label: the policy token, with a partial `pct=` appended. */
+function dmarcPolicyLabel(policy: string, pct: string): string {
+	return pct === '100' ? policy : `${policy}; pct=${pct}`;
+}
+
+function contextFromDmarcRecord(record: string, inheritedFromParent: boolean): TrustSurfaceDmarcContext {
+	const tags = parseDmarcTags(record);
+	const policy = effectiveDmarcPolicy(tags, inheritedFromParent);
+	const pct = tags.get('pct') ?? '100';
+	const strictAlignment = hasStrictAlignment(tags);
+
+	return {
+		corroboratedByWeakDmarc: isEnforcementWeak(policy, pct) && !strictAlignment,
+		dmarcPolicy: dmarcPolicyLabel(policy, pct),
+		dmarcAlignmentMode: strictAlignment ? 'strict' : 'relaxed',
+	};
+}
+
+/**
+ * Resolve the DMARC policy that GOVERNS `domain` — through `checkDMARC`'s own RFC 9989
+ * §4.10 tree walk, never a second one — so a subdomain inheriting its organisational
+ * domain's policy is not reported as having no DMARC (SQ-556).
+ */
+async function getTrustSurfaceDmarcContext(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<TrustSurfaceDmarcContext> {
+	let walk: Awaited<ReturnType<typeof dmarcTreeWalk>>;
 	try {
-		const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
-		const dmarcRecord = dmarcRecords.find((record) => record.toLowerCase().startsWith('v=dmarc1'));
-
-		if (!dmarcRecord) {
-			return {
-				corroboratedByWeakDmarc: true,
-				dmarcPolicy: 'missing',
-				dmarcAlignmentMode: 'missing',
-			};
-		}
-
-		const tags = parseDmarcTags(dmarcRecord);
-		const policy = tags.get('p') ?? 'none';
-		const pct = tags.get('pct') ?? '100';
-		const aspf = tags.get('aspf') ?? 'r';
-		const adkim = tags.get('adkim') ?? 'r';
-		const enforcementWeak = policy !== 'reject' || pct !== '100';
-		const alignmentWeak = aspf !== 's' || adkim !== 's';
-		const alignmentMode = aspf === 's' && adkim === 's' ? 'strict' : 'relaxed';
-
-		return {
-			corroboratedByWeakDmarc: enforcementWeak && alignmentWeak,
-			dmarcPolicy: pct === '100' ? policy : `${policy}; pct=${pct}`,
-			dmarcAlignmentMode: alignmentMode,
-		};
+		walk = await dmarcTreeWalk(domain, queryDNS, timeout);
 	} catch {
-		return {
-			corroboratedByWeakDmarc: false,
-			dmarcPolicy: 'unknown',
-			dmarcAlignmentMode: 'unknown',
-		};
+		return UNMEASURED_DMARC_CONTEXT;
 	}
+	if (walk.inconclusive) return UNMEASURED_DMARC_CONTEXT;
+
+	// The walk returns records only from the name it stopped at (`foundAt`), so no record means
+	// the walk concluded with nothing published anywhere up the tree.
+	const record = walk.txtRecords.find(isDmarcRecord);
+	if (!record) return MISSING_DMARC_CONTEXT;
+	return contextFromDmarcRecord(record, walk.foundAt !== domain.toLowerCase());
 }
 
 /**
