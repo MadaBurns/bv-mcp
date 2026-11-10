@@ -203,13 +203,26 @@ export async function processAsyncBatchMessage(
 		await deps.kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
 		return ACK;
 	} catch (error) {
-		// The last delivery has nothing left to retry into: record a terminal `failed` state (with the
-		// error) instead of leaving a `queued` job that nobody will ever pick up again.
-		const exhausted = attempts >= ASYNC_BATCH_MAX_ATTEMPTS;
-		job.status = exhausted ? 'failed' : 'queued';
-		job.updatedAt = now();
-		job.error = error instanceof Error ? error.message.slice(0, 300) : 'batch_scan_failed';
-		await deps.kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
-		return exhausted ? ACK : retryAfter(SCAN_FAILURE_RETRY_DELAY_SECONDS);
+		return recordScanFailure(job, error, attempts, deps.kv, now());
 	}
+}
+
+/**
+ * The last delivery has nothing left to retry into: record a terminal `failed` state (with the error)
+ * instead of leaving a `queued` job that nobody will ever pick up again. Earlier attempts stay
+ * `queued` and are redelivered after a delay so the retries are not all spent within seconds.
+ */
+async function recordScanFailure(
+	job: AsyncBatchJob,
+	error: unknown,
+	attempts: number,
+	kv: KVNamespace,
+	nowMs: number,
+): Promise<AsyncBatchVerdict> {
+	const exhausted = attempts >= ASYNC_BATCH_MAX_ATTEMPTS;
+	job.status = exhausted ? 'failed' : 'queued';
+	job.updatedAt = nowMs;
+	job.error = error instanceof Error ? error.message.slice(0, 300) : 'batch_scan_failed';
+	await kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
+	return exhausted ? ACK : retryAfter(SCAN_FAILURE_RETRY_DELAY_SECONDS);
 }
