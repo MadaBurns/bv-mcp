@@ -306,3 +306,63 @@ describe('validateQuotaPayload: field errors vs kind-specific errors on a top-le
 		expect(result).toEqual({ valid: false, error: 'Invalid scope' });
 	});
 });
+
+describe('tier resolution: auth-resolution limiter key fits the coordinator ip cap (SQ-552)', () => {
+	// Longest textual IPv6 forms: 39 chars (8 full groups) and 45 chars (IPv4-mapped tail).
+	const LONG_IPV6 = ['2001:0db8:85a3:0000:0000:8a2e:0370:7334', '0000:0000:0000:0000:0000:ffff:192.168.100.228'];
+
+	it.each(LONG_IPV6)('a %s client reaches the coordinator with a valid, bounded ip field', async (clientIp) => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const payloads: Record<string, unknown>[] = [];
+		const QUOTA_COORDINATOR = {
+			getByName: () => ({
+				dispatch: async (payload: Record<string, unknown>) => {
+					payloads.push(payload);
+					return { allowed: true, minuteRemaining: 59, hourRemaining: 599 };
+				},
+			}),
+		} as unknown as DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+		const kv = { get: async () => null, put: async () => undefined, delete: async () => undefined } as unknown as KVNamespace;
+		const bvWeb = { fetch: async () => Response.json({ tier: 'enterprise' }) } as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'sq552-unseen-bearer',
+			{ RATE_LIMIT: kv, QUOTA_COORDINATOR, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			clientIp,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		const withIp = payloads.filter((payload) => 'ip' in payload);
+		expect(withIp.length).toBeGreaterThan(0);
+		for (const payload of withIp) {
+			expect((payload.ip as string).length).toBeLessThanOrEqual(50);
+			// The Durable Object throws on exactly this validation; it must pass here.
+			expect(validateQuotaPayload(payload)).toMatchObject({ valid: true });
+		}
+	});
+
+	it('keeps distinct clients on distinct limiter keys', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const ips: string[] = [];
+		const QUOTA_COORDINATOR = {
+			getByName: () => ({
+				dispatch: async (payload: { ip?: string }) => {
+					if (payload.ip) ips.push(payload.ip);
+					return { allowed: true, minuteRemaining: 59, hourRemaining: 599 };
+				},
+			}),
+		} as unknown as DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+		const kv = { get: async () => null, put: async () => undefined, delete: async () => undefined } as unknown as KVNamespace;
+		const bvWeb = { fetch: async () => Response.json({ tier: 'enterprise' }) } as unknown as Fetcher;
+		const env = { RATE_LIMIT: kv, QUOTA_COORDINATOR, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' };
+
+		await resolveTier('sq552-bearer-a', env, '2001:db8::1', 'https://example.com/mcp');
+		await resolveTier('sq552-bearer-b', env, '2001:db8::2', 'https://example.com/mcp');
+		await resolveTier('sq552-bearer-c', env, '2001:db8::1', 'https://example.com/mcp');
+
+		expect(ips).toHaveLength(3);
+		expect(ips[0]).not.toBe(ips[1]);
+		expect(ips[0]).toBe(ips[2]);
+	});
+});

@@ -43,6 +43,15 @@ export function normalizeToolName(name: string): string {
 }
 
 /**
+ * True when `canonicalName` is a registered tool. Own-key lookup, so `constructor` / `__proto__` /
+ * `toString` are not tools, and a hostile over-long name is rejected without touching any quota backend.
+ * `TOOL_SCHEMA_MAP` is the registry of every tool name (see its doc comment).
+ */
+export function isRegisteredToolName(canonicalName: string): boolean {
+	return Object.hasOwn(TOOL_SCHEMA_MAP, canonicalName);
+}
+
+/**
  * Resolve a tool call through the alias table, injecting any alias-supplied
  * args. Use at the dispatch boundary where args matter; `normalizeToolName`
  * remains the name-only path for routing/analytics.
@@ -125,8 +134,8 @@ export function declaredToolArgKeys(toolName: string): ReadonlySet<string> {
 
 /** Validate tool arguments against the tool's Zod schema. Throws with prefixed error message. */
 export function validateToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+	if (!isRegisteredToolName(toolName)) return args;
 	const schema = TOOL_SCHEMA_MAP[toolName];
-	if (!schema) return args;
 	try {
 		return schema.parse(args) as Record<string, unknown>;
 	} catch (err) {

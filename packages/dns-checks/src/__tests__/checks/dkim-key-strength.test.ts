@@ -38,6 +38,53 @@ describe('analyzeKeyStrength — malformed/truncated RSA keys', () => {
 	});
 });
 
+/** base64 <-> bytes without Node built-ins (the package is runtime-agnostic). */
+function toBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+/** A freshly generated RSA public key's SubjectPublicKeyInfo DER, base64 — never a published key. */
+async function generateSpkiBase64(modulusLength: number): Promise<string> {
+	const pair = (await crypto.subtle.generateKey(
+		{ name: 'RSASSA-PKCS1-v1_5', modulusLength, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+		true,
+		['sign', 'verify'],
+	)) as CryptoKeyPair;
+	return toBase64(new Uint8Array((await crypto.subtle.exportKey('spki', pair.publicKey)) as ArrayBuffer));
+}
+
+describe('analyzeKeyStrength — 3072-bit RSA keys (SQ-556)', () => {
+	it('reads a complete generated 3072-bit SPKI key as 3072 bits, not 4096', async () => {
+		const key = await generateSpkiBase64(3072);
+		// The measured shape the header table relies on: fixed DER prefix, fixed length.
+		expect(key.startsWith('MIIBojANBgkqhkiG9w0BAQEFAAOCAY8A')).toBe(true);
+		expect(key).toHaveLength(564);
+
+		expect(analyzeKeyStrength(key, 'rsa')).toMatchObject({ bits: 3072, strength: 'info', keyType: 'rsa' });
+	});
+
+	it('classifies a truncated 3072-bit-header key as malformed with its declared size', async () => {
+		const key = await generateSpkiBase64(3072);
+		expect(analyzeKeyStrength(key.slice(0, 200), 'rsa')).toMatchObject({ bits: 3072, keyType: 'rsa-malformed' });
+	});
+
+	it('the length heuristic (no recognised header) reports 3072 for 3072-bit encodings, still 4096 above', async () => {
+		// A 3072-bit key in PKCS#1 RSAPublicKey form: the same generated SPKI with its fixed
+		// 24-byte AlgorithmIdentifier + BIT STRING prefix removed. 532 base64 chars, header-less.
+		const spki = Uint8Array.from(atob(await generateSpkiBase64(3072)), (c) => c.charCodeAt(0));
+		const pkcs1 = toBase64(spki.slice(24));
+		expect(pkcs1).toHaveLength(532);
+
+		expect(analyzeKeyStrength(pkcs1, 'rsa')).toMatchObject({ bits: 3072, strength: 'info', keyType: 'rsa' });
+		// SPKI-length (~564 chars) body without a recognised header — the reported defect.
+		expect(analyzeKeyStrength('A'.repeat(564), 'rsa')).toMatchObject({ bits: 3072, strength: 'info', keyType: 'rsa' });
+		// 4096-bit encodings start at 704 chars; the long synthetic fixtures stay 4096.
+		expect(analyzeKeyStrength('A'.repeat(600), 'rsa')).toMatchObject({ bits: 4096, strength: 'info', keyType: 'rsa' });
+	});
+});
+
 describe('checkDKIM — truncated key does not produce a false weak-key critical', () => {
 	it('reports a malformed/truncated finding instead of "Weak RSA key (~512 bits)"', async () => {
 		const queryDNS = createMockDNS({

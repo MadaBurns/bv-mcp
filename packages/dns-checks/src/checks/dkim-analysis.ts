@@ -30,6 +30,7 @@ const RSA_SPKI_HEADERS: ReadonlyArray<{ prefix: string; bits: number; fullChars:
 	{ prefix: 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBA', bits: 512, fullChars: 128 },
 	{ prefix: 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCB', bits: 1024, fullChars: 216 },
 	{ prefix: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A', bits: 2048, fullChars: 392 },
+	{ prefix: 'MIIBojANBgkqhkiG9w0BAQEFAAOCAY8A', bits: 3072, fullChars: 564 },
 	{ prefix: 'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8A', bits: 4096, fullChars: 736 },
 ];
 
@@ -191,13 +192,21 @@ export function analyzeKeyStrength(publicKeyBase64: string | undefined, declared
 		return { bits: 2048, strength: 'medium', keyType: 'rsa' };
 	}
 
-	// 2048-bit RSA keys: PKCS#1 format ~355 chars, SubjectPublicKeyInfo ~392 chars.
-	// Threshold at 350 safely covers both encodings without false-positives.
-	if (charCount < 550) {
-		return { bits: 2048, strength: 'info', keyType: 'rsa' };
-	}
+	return { bits: strongRsaBitsFromLength(charCount), strength: 'info', keyType: 'rsa' };
+}
 
-	return { bits: 4096, strength: 'info', keyType: 'rsa' };
+/**
+ * Modulus size of a complete RSA key (≥350 base64 chars) with no recognised SPKI header.
+ *
+ * Complete-key base64 lengths, measured from generated keys (PKCS#1 / SubjectPublicKeyInfo):
+ * 2048-bit 360 / 392, 3072-bit 532 / 564, 4096-bit 704 / 736. Each bound sits between one
+ * size's longest encoding and the next size's shortest, so a ~564-char 3072-bit key is not
+ * reported as 4096 bits (SQ-556).
+ */
+function strongRsaBitsFromLength(charCount: number): number {
+	if (charCount < 460) return 2048;
+	if (charCount < 600) return 3072;
+	return 4096;
 }
 
 export function consolidateSelectorProbeKeyStrengthFindings(findings: Finding[]): void {

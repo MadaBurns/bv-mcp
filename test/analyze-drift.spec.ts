@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ScanScore, Finding } from '@blackveil/dns-checks/scoring';
+import type { ScanDomainResult } from '../src/tools/scan-domain';
+import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 import { nistScoreToGrade, scoreToGrade } from '@blackveil/dns-checks/scoring';
 import { computeDrift, classifyDrift } from '../src/tools/analyze-drift';
 import { displayGradeFor } from '../src/lib/ungraded-display';
@@ -225,6 +228,106 @@ describe('analyzeDrift', () => {
 		});
 		it('classifies as mixed when improving but has new critical findings', () => {
 			expect(classifyDrift(5, 1, 2)).toBe('mixed');
+		});
+	});
+
+	describe('analyze_drift handler — baseline "cached" measures the CURRENT side afresh', () => {
+		const { restore } = setupFetchMock();
+		afterEach(() => {
+			restore();
+			IN_MEMORY_CACHE.clear();
+			vi.restoreAllMocks();
+		});
+
+		const CACHED_ONLY_FINDING = 'CACHED-ONLY-MARKER finding';
+
+		/** NS and A resolve (a real, delegated domain); every other type is NOERROR-empty. */
+		function installResolvingDnsFetch() {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = String(input instanceof Request ? input.url : input);
+				if (/dns-query|\/resolve|dns-json|dns\.google|cloudflare-dns/.test(url)) {
+					const parsed = new URL(url);
+					const name = (parsed.searchParams.get('name') ?? 'drift-probe.com').replace(/\.$/, '');
+					const type = (parsed.searchParams.get('type') ?? 'A').toUpperCase();
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.10' }]));
+					}
+					return Promise.resolve(createDohResponse([], []));
+				}
+				return Promise.resolve(new Response('', { status: 200 }));
+			}) as unknown as typeof globalThis.fetch;
+		}
+
+		function makeKv(seed: Record<string, unknown>): KVNamespace {
+			const store = new Map<string, string>(Object.entries(seed).map(([k, v]) => [k, JSON.stringify(v)]));
+			return {
+				async get(key: string, type?: string): Promise<unknown> {
+					const raw = store.get(key);
+					if (raw === undefined) return null;
+					return type === 'json' ? JSON.parse(raw) : raw;
+				},
+				async put(key: string, value: string): Promise<void> {
+					store.set(key, value);
+				},
+				async delete(key: string): Promise<void> {
+					store.delete(key);
+				},
+				async list(): Promise<unknown> {
+					return { keys: [], list_complete: true, cacheStatus: null };
+				},
+				async getWithMetadata(): Promise<unknown> {
+					return { value: null, metadata: null };
+				},
+			} as unknown as KVNamespace;
+		}
+
+		/** A graded cached scan: the "good" posture the domain had when last scanned. */
+		function cachedScan(): ScanDomainResult {
+			return {
+				domain: 'drift-probe.com',
+				score: makeScanScore(99, 'A+', { spf: 100, dmarc: 100 }, [makeFinding('dmarc', CACHED_ONLY_FINDING, 'high')]),
+				checks: [],
+				maturity: { stage: 4, label: 'Enforced', description: 'x', nextStep: null },
+				context: { profile: 'mail_enabled', signals: [], detectedProvider: null },
+				cached: false,
+				timestamp: new Date().toISOString(),
+				scoringNote: null,
+				adaptiveWeightDeltas: null,
+				interactionEffects: [],
+			} as unknown as ScanDomainResult;
+		}
+
+		it('does not diff the cached scan against itself: the current side reflects the changed DNS', async () => {
+			// The cache holds 99/A+; the live DNS (resolving, but publishing no SPF/DMARC/…)
+			// now scores far lower. Before the fix the current side was served from the SAME
+			// cache entry, so drift was a self-diff: delta 0, "stable", nothing resolved.
+			installResolvingDnsFetch();
+			const kv = makeKv({ [buildScanCacheKey('drift-probe.com')]: cachedScan() });
+			const { handleToolsCall } = await import('../src/handlers/tools');
+
+			const result = await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'drift-probe.com' } }, kv);
+
+			expect(result.isError).toBeFalsy();
+			const drift = result.structuredContent as { scoreDelta: number | null; classification: string; improvements: Array<{ title: string }> };
+			expect(drift.scoreDelta).not.toBe(0);
+			expect(drift.scoreDelta).toBeLessThan(0);
+			expect(drift.classification).not.toBe('stable');
+			// The cached-only finding is absent from the fresh measurement, i.e. it disappeared.
+			expect(drift.improvements.map((f) => f.title)).toContain(CACHED_ONLY_FINDING);
+		});
+
+		it('overwrites the cache entry with the fresh measurement after reading the baseline', async () => {
+			installResolvingDnsFetch();
+			const kv = makeKv({ [buildScanCacheKey('drift-probe.com')]: cachedScan() });
+			const { handleToolsCall } = await import('../src/handlers/tools');
+
+			await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'drift-probe.com' } }, kv);
+
+			const stored = (await kv.get(buildScanCacheKey('drift-probe.com'), 'json')) as ScanDomainResult;
+			expect(stored.score.overall).not.toBe(99);
 		});
 	});
 });

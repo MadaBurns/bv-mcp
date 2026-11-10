@@ -21,18 +21,18 @@ PCI DSS 4.0: 5/5 controls passing (100%)
  ✓ 8.3.1 Authentication Controls
  ✓ 11.3.1 Vulnerability Management
 
-SOC 2: 4/5 controls passing (80%)
+SOC 2: 5/5 controls passing (100%)
  ✓ CC6.1 Logical Access Security
- ~ CC6.6 System Boundary Protection
+ ✓ CC6.6 System Boundary Protection
  ✓ CC6.7 Data-in-Transit Encryption
  ✓ CC7.1 Monitoring and Detection
  ✓ CC8.1 Change Management
 
-CIS Controls: 3/4 controls passing (75%)
+CIS Controls: 4/4 controls passing (100%)
  ✓ 9.2 DNS Filtering and Monitoring
  ✓ 9.3 Email Security
  ✓ 3.10 Encrypt Data in Transit
- ~ 12.1 DNS Infrastructure",
+ ✓ 12.1 DNS Infrastructure",
   "mixed": "Compliance: fmt.example — 71/100 (C+)
 
 NIST 800-177: 5/8 controls passing (63%)
@@ -52,9 +52,9 @@ PCI DSS 4.0: 2/5 controls passing (40%)
  ~ 8.3.1 Authentication Controls — TXT RRset exceeds UDP limit
  ~ 11.3.1 Vulnerability Management — DNSSEC not enabled
 
-SOC 2: 1/5 controls passing (20%)
+SOC 2: 2/5 controls passing (40%)
  ~ CC6.1 Logical Access Security — TXT RRset exceeds UDP limit
- ~ CC6.6 System Boundary Protection
+ ✓ CC6.6 System Boundary Protection
  ~ CC6.7 Data-in-Transit Encryption — No MTA-STS record
  ✓ CC7.1 Monitoring and Detection
  ~ CC8.1 Change Management — DNSSEC not enabled
@@ -157,21 +157,21 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
 ✅ **11.3.1 Vulnerability Management** — PASS
 
 ## SOC 2
-**4/5** controls passing (80%) | 0 failing | 1 partial
+**5/5** controls passing (100%) | 0 failing | 0 partial
 
 ✅ **CC6.1 Logical Access Security** — PASS
-⚠️ **CC6.6 System Boundary Protection** — PARTIAL — implemented but flagged (not certified)
+✅ **CC6.6 System Boundary Protection** — PASS
 ✅ **CC6.7 Data-in-Transit Encryption** — PASS
 ✅ **CC7.1 Monitoring and Detection** — PASS
 ✅ **CC8.1 Change Management** — PASS
 
 ## CIS Controls
-**3/4** controls passing (75%) | 0 failing | 1 partial
+**4/4** controls passing (100%) | 0 failing | 0 partial
 
 ✅ **9.2 DNS Filtering and Monitoring** — PASS
 ✅ **9.3 Email Security** — PASS
 ✅ **3.10 Encrypt Data in Transit** — PASS
-⚠️ **12.1 DNS Infrastructure** — PARTIAL — implemented but flagged (not certified)",
+✅ **12.1 DNS Infrastructure** — PASS",
   "mixed": "# Compliance Report: fmt.example
 **Score:** 71/100 (C+)
 
@@ -205,13 +205,13 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
   - second finding
 
 ## SOC 2
-**1/5** controls passing (20%) | 0 failing | 4 partial
+**2/5** controls passing (40%) | 0 failing | 3 partial
 
 ⚠️ **CC6.1 Logical Access Security** — PARTIAL — implemented but flagged (not certified)
   - TXT RRset exceeds UDP limit
   - DNSSEC not enabled
   - second finding
-⚠️ **CC6.6 System Boundary Protection** — PARTIAL — implemented but flagged (not certified)
+✅ **CC6.6 System Boundary Protection** — PASS
 ⚠️ **CC6.7 Data-in-Transit Encryption** — PARTIAL — implemented but flagged (not certified)
   - No MTA-STS record
 ✅ **CC7.1 Monitoring and Detection** — PASS

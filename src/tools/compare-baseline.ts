@@ -44,10 +44,12 @@ export interface BaselineViolation {
 export interface BaselineResult {
 	domain: string;
 	/**
-	 * `true` = every evaluated rule met. `false` = at least one violated.
-	 * `null` = INCONCLUSIVE: at least one requested rule could not be evaluated
-	 * because the scan produced no measurement. A policy gate must treat `null`
+	 * `false` = at least one rule was DEFINITELY violated — a measured violation proves
+	 * failure whatever else could not be evaluated, so this wins over `null`.
+	 * `null` = INCONCLUSIVE: no violation, but at least one requested rule could not be
+	 * evaluated because the scan produced no measurement. A policy gate must treat `null`
 	 * as "re-run", never as a pass and never as a fail.
+	 * `true` = no violation and every requested rule was evaluated and met.
 	 */
 	passed: boolean | null;
 	violations: BaselineViolation[];
@@ -55,8 +57,9 @@ export interface BaselineResult {
 	 * Rules the caller requested that could not be evaluated — because the scan
 	 * produced no measurement, OR because the control does not apply to this domain
 	 * (see {@link BaselineResult.notApplicableRules}). One channel, because a gate
-	 * consumer's decision is the same for both: `passed` is `null`, re-run or
-	 * reconsider the policy — never read as a pass and never as a fail.
+	 * consumer's decision is the same for both: absent a violation `passed` is `null`,
+	 * re-run or reconsider the policy — never read as a pass and never as a fail. A
+	 * violation elsewhere still makes `passed` `false`; these rules stay listed here.
 	 */
 	inconclusiveRules: string[];
 	/**
@@ -336,10 +339,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 
 	return {
 		domain: scan.domain,
-		// An unevaluatable rule poisons the whole verdict: reporting `passed: true`
-		// because the failing rule was skipped is exactly the confident-output-from-
-		// incomplete-measurement pathology this change exists to remove.
-		passed: inconclusiveRules.length > 0 ? null : violations.length === 0,
+		passed: policyVerdict(violations.length, inconclusiveRules.length),
 		violations,
 		inconclusiveRules,
 		notApplicableRules,
@@ -347,6 +347,18 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		scoringProfile: scan.context?.profile,
 		timestamp: new Date().toISOString(),
 	};
+}
+
+/**
+ * The tri-state policy verdict. A definite violation proves failure whatever else could
+ * not be evaluated, so it is checked first: hiding a measured breach behind an
+ * inconclusive rule would send a gate into a re-run loop instead of failing it.
+ * Otherwise an unevaluatable rule poisons the verdict — `true` because a rule was skipped
+ * is the confident-output-from-incomplete-measurement pathology `null` exists to remove.
+ */
+function policyVerdict(violationCount: number, inconclusiveCount: number): boolean | null {
+	if (violationCount > 0) return false;
+	return inconclusiveCount > 0 ? null : true;
 }
 
 /** Format baseline result as readable markdown text for MCP clients. */

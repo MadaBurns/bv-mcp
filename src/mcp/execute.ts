@@ -15,7 +15,7 @@ import { jsonRpcError, JSON_RPC_ERRORS, JsonRpcClientError, isJsonRpcNotificatio
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	AGGREGATE_QUOTA_COUNTER,
-	FREE_TOOL_DAILY_LIMITS,
+	freeToolDailyLimit,
 	FREE_IP_DAILY_LIMIT,
 	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
@@ -27,7 +27,7 @@ import {
 	tierToolDailyLimit,
 	type McpApiKeyTier,
 } from '../lib/config';
-import { normalizeToolName } from '../handlers/tool-args';
+import { isRegisteredToolName, normalizeToolName } from '../handlers/tool-args';
 import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -58,6 +58,7 @@ import {
 	buildGatedToolResponse,
 	buildInternalOnlyToolResponse,
 	buildTierQuotaExceededResponse,
+	type TierQuotaDenial,
 } from './responses';
 
 // Re-exports: every name that was exported from this module before the split stays importable from here.
@@ -279,6 +280,79 @@ export interface ExecuteMcpRequestOptions {
 	globalDailyLimit?: number;
 }
 
+/** Longest tool name echoed back in an unknown-tool message (registered names are all shorter). */
+const MAX_ECHOED_TOOL_NAME_LENGTH = 64;
+
+function clipEchoedToolName(name: string): string {
+	return name.length > MAX_ECHOED_TOOL_NAME_LENGTH ? `${name.slice(0, MAX_ECHOED_TOOL_NAME_LENGTH)}...` : name;
+}
+
+/** A string `name` whose normalised form is not a registered tool (a non-string name is left to dispatch validation). */
+function isUnknownToolName(rawName: unknown, normalizedName: string): boolean {
+	return typeof rawName === 'string' && !isRegisteredToolName(normalizedName);
+}
+
+/** True when `params.name` is a tool the public surface refuses to an unauthenticated caller (401/403, never executed). */
+function isUnauthGatedTool(params: unknown): boolean {
+	const rawName = typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+	if (typeof rawName !== 'string') return false;
+	const policy = evaluateToolPolicy({ surface: 'public', tool: normalizeToolName(rawName), authenticated: false, tier: null });
+	return !policy.allowed && (policy.block === 'auth_required' || policy.block === 'paid_only');
+}
+
+/** A JSON-RPC notification gets no response body; it is only counted in request analytics. */
+function acknowledgeNotification(options: ExecuteMcpRequestOptions, method: string): ProcessedRequestResult {
+	emitRequestAnalytics(options, method, 'ok', false);
+	return { kind: 'notification' };
+}
+
+/** Authenticated daily counters, recorded before the concurrency gate and consumed after it. */
+interface PendingTierQuota {
+	tier: McpApiKeyTier;
+	principalId: string;
+	toolName: string;
+	dailyLimit: number;
+	aggregateLimit: number;
+}
+
+/**
+ * Consume an authenticated key's daily counters: the per-tool cap, then, only if that allowed, the
+ * key's total across all tools (SQ-494). Writes the x-quota-* headers for the counter that decided,
+ * plus x-quota-total-remaining for a capped total, and returns the denial when either is exhausted.
+ * Uncapped (Infinity) limits short-circuit inside checkToolDailyRateLimit with no counter round trip.
+ */
+async function consumeTierQuota(
+	quota: PendingTierQuota,
+	options: ExecuteMcpRequestOptions,
+	rateHeaders: Record<string, string>,
+): Promise<TierQuotaDenial | undefined> {
+	const { tier, principalId, toolName, dailyLimit, aggregateLimit } = quota;
+	const perTool = await checkToolDailyRateLimit(principalId, toolName, dailyLimit, options.rateLimitKv, options.quotaCoordinator);
+	rateHeaders['x-quota-limit'] = String(perTool.limit);
+	rateHeaders['x-quota-remaining'] = String(perTool.remaining);
+	rateHeaders['x-quota-reset'] = String(Math.ceil(Date.now() / 86_400_000) * 86_400);
+	rateHeaders['x-quota-tier'] = tier;
+	if (!perTool.allowed) {
+		const message = `Rate limit exceeded. ${tier} tier is limited to ${dailyLimit} requests per day.`;
+		return { tier, counter: toolName, limit: dailyLimit, result: perTool, message };
+	}
+	const total = await checkToolDailyRateLimit(
+		principalId,
+		AGGREGATE_QUOTA_COUNTER,
+		aggregateLimit,
+		options.rateLimitKv,
+		options.quotaCoordinator,
+	);
+	if (!total.allowed) {
+		rateHeaders['x-quota-limit'] = String(total.limit);
+		rateHeaders['x-quota-remaining'] = String(total.remaining);
+		const message = `Rate limit exceeded. ${tier} tier is limited to ${aggregateLimit} requests per day across all tools.`;
+		return { tier, counter: AGGREGATE_QUOTA_COUNTER, limit: aggregateLimit, result: total, message };
+	}
+	if (Number.isFinite(aggregateLimit)) rateHeaders['x-quota-total-remaining'] = String(total.remaining);
+	return undefined;
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	// Metadata never enters quota/session/cache/analytics or ordinary tool dispatch,
 	// including malformed-argument and unavailable-context paths.
@@ -368,83 +442,101 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		if (internalOnlyName === AGGREGATE_QUOTA_COUNTER) {
 			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
 		}
+		// SQ-552: a name that is not an own key of the tool registry is unknown. Decide that here,
+		// before any quota or coordinator call: an over-long name makes the quota Durable Object
+		// throw (and trips the shared breaker), and a prototype-chain name such as `constructor`
+		// indexes the limit tables to a function. Same genuine unknown-tool payload (and fuzz
+		// counter hit) as the dispatch path; the echoed name is clipped so a hostile name cannot
+		// inflate the response.
+		if (isUnknownToolName(internalOnlyNameRaw, internalOnlyName)) {
+			return buildInternalOnlyToolResponse(
+				id,
+				clipEchoedToolName(internalOnlyName),
+				method,
+				options,
+				eventId,
+				accessLogInput && { ...accessLogInput, toolName: clipEchoedToolName(accessLogInput.toolName) },
+			);
+		}
 	}
 
+	// SQ-560: the control-plane limiter and the session gate run before any tools/call counter, so a call
+	// with a missing or unknown session spends no quota. The control-plane limiter skips tools/call and
+	// the counters below apply only to tools/call, so every other method keeps its order.
+	if (method !== 'tools/call') {
+		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+			options.ip,
+			options.rateLimitKv,
+			method,
+			options.isAuthenticated,
+			id,
+			options.accept,
+			options.quotaCoordinator,
+			options.quotaShardRouting,
+		);
+		if (controlPlaneLimited) {
+			emitRequestAnalytics(options, method, 'error', true);
+			return {
+				kind: 'response',
+				payload: await readJsonRpcErrorPayload(controlPlaneLimited),
+				headers: extractProtocolHeaders(controlPlaneLimited),
+				httpStatus: controlPlaneLimited.status,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
+	}
+
+	// Authenticated users can call read-only protocol methods without a session (e.g. Smithery
+	// proxy-style clients that discover tools via ?api_key= before establishing a session).
+	const isSessionlessProtocolMethod =
+		options.isAuthenticated &&
+		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
+
+	// An unauthenticated call to an auth-required or paid-only tool is never executed: it is answered
+	// 401/403 (with the OAuth challenge when available) by the gate below. That answer must not depend
+	// on a session, because a client learns it has to authenticate from exactly this response, so the
+	// session gate is skipped for it. It still passes the short-window limiter first.
+	const isUnauthGatedToolCall = !options.isAuthenticated && method === 'tools/call' && isUnauthGatedTool(params);
+
+	// Notifications are fire-and-forget at the JSON-RPC layer, but they are still
+	// subsequent HTTP requests and therefore must carry a valid assigned session.
+	if (options.validateSession && method !== 'initialize' && !isSessionlessProtocolMethod && !isUnauthGatedToolCall) {
+		const sessionError = await validateSessionRequest(
+			options.sessionId,
+			options.sessionStore,
+			id,
+			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
+		);
+		if (sessionError) {
+			// An unrecognized or expired caller-supplied ID is never recreated. A random
+			// 256-bit value proves possession, not that this server issued it; reviving it
+			// would let authenticated callers turn arbitrary IDs into durable KV writes.
+			// MCP clients must initialize again and accept the newly assigned session ID.
+			emitRequestAnalytics(options, method, 'error', true);
+			return {
+				kind: 'response',
+				payload: sessionError.payload,
+				headers: {},
+				httpStatus: sessionError.status,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
+	}
+
+	// Per JSON-RPC 2.0, a notification is a request WITHOUT an `id` member. An explicit
+	// `id: null` is a valid (if discouraged) id that REQUIRES a response, so it must NOT be
+	// collapsed into a notification. We treat a request as a notification when EITHER its
+	// method is in the `notifications/*` namespace (which carries no response by definition,
+	// even if a client erroneously attaches `id: null`) OR the `id` member is absent entirely.
+	// SQ-560: a notification never executes, so it spends no daily quota. It returns after the quota
+	// blocks below; the anonymous block returns it early, after its one minute/hour unit.
+	const isNotification = isJsonRpcNotification(options.body);
 	let rateHeaders: Record<string, string> = {};
-	/** Per-key total to consume once the session and concurrency gates pass (SQ-494/SQ-520). */
-	let aggregateQuota: { tier: McpApiKeyTier; principalId: string; limit: number } | undefined;
+	/** Authenticated daily counters, consumed once the concurrency slot is held (SQ-494/SQ-520/SQ-560). */
+	let tierQuota: PendingTierQuota | undefined;
 	if (!options.isAuthenticated && method === 'tools/call') {
-		const globalDailyLimit = options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT;
-		const globalResult = await checkGlobalDailyLimit(globalDailyLimit, options.rateLimitKv, options.quotaCoordinator, options.analytics);
-		if (!globalResult.allowed) {
-			const globalHeaders: Record<string, string> = {};
-			if (globalResult.retryAfterMs !== undefined) {
-				globalHeaders['retry-after'] = String(Math.ceil(globalResult.retryAfterMs / 1000));
-			}
-			options.analytics?.emitRateLimitEvent({
-				limitType: 'daily_global',
-				toolName: 'n/a',
-				limit: globalDailyLimit,
-				remaining: 0,
-				country: options.country,
-				authTier: options.authTier,
-			});
-			emitRequestAnalytics(options, method, 'error', true);
-			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
-			}
-			return {
-				kind: 'response',
-				payload: jsonRpcError(
-					id,
-					JSON_RPC_ERRORS.RATE_LIMITED,
-					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
-				),
-				headers: globalHeaders,
-				httpStatus: 429,
-				useErrorEnvelope: true,
-				eventId,
-			};
-		}
-
-		// FIND-02: per-IP daily cap prevents one source consuming a disproportionate share
-		// of the global free budget while staying under per-minute/hour limits.
-		const ipDailyResult = await checkIpDailyLimit(options.ip, options.rateLimitKv);
-		if (!ipDailyResult.allowed) {
-			const ipDailyHeaders: Record<string, string> = {};
-			if (ipDailyResult.retryAfterMs !== undefined) {
-				ipDailyHeaders['retry-after'] = String(Math.ceil(ipDailyResult.retryAfterMs / 1000));
-			}
-			options.analytics?.emitRateLimitEvent({
-				limitType: 'daily_ip',
-				toolName: 'n/a',
-				limit: FREE_IP_DAILY_LIMIT,
-				remaining: 0,
-				country: options.country,
-				authTier: options.authTier,
-			});
-			emitRequestAnalytics(options, method, 'error', true);
-			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
-			}
-			return {
-				kind: 'response',
-				payload: jsonRpcError(
-					id,
-					JSON_RPC_ERRORS.RATE_LIMITED,
-					'Rate limit exceeded. Daily request limit reached for this IP. Please try again tomorrow.',
-					// Cross-tool per-IP daily ceiling — a free-tier volume limit an upgrade
-					// raises. Anchored to the free spine (scan_domain); channel is self_serve
-					// regardless of tool (isVolume429). Prose unchanged (no public-surface churn).
-					buildUpgradeData('scan_domain', true),
-				),
-				headers: ipDailyHeaders,
-				httpStatus: 429,
-				useErrorEnvelope: true,
-				eventId,
-			};
-		}
-
 		// R8: resolve the tool name up front (pure — no quota side effects) so the
 		// batched per-IP quota evaluation can fold the scoped-rate + per-tool-daily
 		// checks into ONE QuotaCoordinator round trip routed to the IP's shard,
@@ -452,7 +544,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const toolNameRaw =
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		const toolDailyLimit = freeToolDailyLimit(toolName);
 
 		// Gated/auth-required tools are rejected (401/403) without ever recording a
 		// per-tool-daily count in the serial path (their gate returns before the
@@ -461,7 +553,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// matching the prior checkRateLimit-first ordering.
 		const unauthPolicy = evaluateToolPolicy({ surface: 'public', tool: toolName, authenticated: false, tier: null });
 		const toolGated = !unauthPolicy.allowed && (unauthPolicy.block === 'auth_required' || unauthPolicy.block === 'paid_only');
-		const batchToolDailyLimit = !toolGated ? toolDailyLimit : undefined;
+		const batchToolDailyLimit = !toolGated && !isNotification ? toolDailyLimit : undefined;
 
 		const quotaBatch = await checkIpScopedQuotaBatch(options.ip, toolName, batchToolDailyLimit, {
 			kv: options.rateLimitKv,
@@ -531,6 +623,83 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 				),
 				headers: rateHeaders,
+				httpStatus: 429,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
+
+		// SQ-560: an anonymous tools/call notification spends its one minute/hour unit (test/index.spec.ts
+		// pins that notifications are metered) and no daily quota.
+		if (isNotification) return acknowledgeNotification(options, method);
+
+		// SQ-560: the daily caps run after the short-window limiter, so a burst it rejects never drains
+		// the per-IP daily count or the global budget shared by every anonymous caller.
+		const globalDailyLimit = options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT;
+		const globalResult = await checkGlobalDailyLimit(globalDailyLimit, options.rateLimitKv, options.quotaCoordinator, options.analytics);
+		if (!globalResult.allowed) {
+			const globalHeaders: Record<string, string> = {};
+			if (globalResult.retryAfterMs !== undefined) {
+				globalHeaders['retry-after'] = String(Math.ceil(globalResult.retryAfterMs / 1000));
+			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'daily_global',
+				toolName: 'n/a',
+				limit: globalDailyLimit,
+				remaining: 0,
+				country: options.country,
+				authTier: options.authTier,
+			});
+			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
+			}
+			return {
+				kind: 'response',
+				payload: jsonRpcError(
+					id,
+					JSON_RPC_ERRORS.RATE_LIMITED,
+					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
+				),
+				headers: globalHeaders,
+				httpStatus: 429,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
+
+		// FIND-02: per-IP daily cap prevents one source consuming a disproportionate share
+		// of the global free budget while staying under per-minute/hour limits.
+		const ipDailyResult = await checkIpDailyLimit(options.ip, options.rateLimitKv);
+		if (!ipDailyResult.allowed) {
+			const ipDailyHeaders: Record<string, string> = {};
+			if (ipDailyResult.retryAfterMs !== undefined) {
+				ipDailyHeaders['retry-after'] = String(Math.ceil(ipDailyResult.retryAfterMs / 1000));
+			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'daily_ip',
+				toolName: 'n/a',
+				limit: FREE_IP_DAILY_LIMIT,
+				remaining: 0,
+				country: options.country,
+				authTier: options.authTier,
+			});
+			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
+			}
+			return {
+				kind: 'response',
+				payload: jsonRpcError(
+					id,
+					JSON_RPC_ERRORS.RATE_LIMITED,
+					'Rate limit exceeded. Daily request limit reached for this IP. Please try again tomorrow.',
+					// Cross-tool per-IP daily ceiling — a free-tier volume limit an upgrade
+					// raises. Anchored to the free spine (scan_domain); channel is self_serve
+					// regardless of tool (isVolume429). Prose unchanged (no public-surface churn).
+					buildUpgradeData('scan_domain', true),
+				),
+				headers: ipDailyHeaders,
 				httpStatus: 429,
 				useErrorEnvelope: true,
 				eventId,
@@ -728,96 +897,15 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 
-		const tierQuotaResult = await checkToolDailyRateLimit(principalId, toolName, dailyLimit, options.rateLimitKv, options.quotaCoordinator);
-		const tierDailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
-		rateHeaders['x-quota-limit'] = String(tierQuotaResult.limit);
-		rateHeaders['x-quota-remaining'] = String(tierQuotaResult.remaining);
-		rateHeaders['x-quota-reset'] = String(tierDailyResetEpoch);
-		rateHeaders['x-quota-tier'] = tier;
-		if (!tierQuotaResult.allowed) {
-			const message = `Rate limit exceeded. ${tier} tier is limited to ${dailyLimit} requests per day.`;
-			const denial = { tier, counter: toolName, limit: dailyLimit, result: tierQuotaResult, message };
-			return buildTierQuotaExceededResponse(id, denial, method, options, rateHeaders, eventId, accessLogInput);
-		}
-
-		// SQ-494: per-key total across ALL tools, on top of the per-tool cap above. SQ-520:
-		// only RECORDED here; it is consumed below, after the session and concurrency gates,
-		// so a call those gates reject never burns the total. (The per-tool counter above
-		// still runs first: moving it too would change which denial wins when both trip.)
-		// Uncapped (Infinity) tiers short-circuit inside checkToolDailyRateLimit with no
-		// counter round trip.
-		aggregateQuota = { tier, principalId, limit: TIER_AGGREGATE_DAILY_LIMITS[tier] };
+		// SQ-494/SQ-520/SQ-560: both daily counters (per tool, then the per-key total) are only recorded
+		// here and consumed after the concurrency gate below, so a call that gate rejects spends neither.
+		tierQuota = { tier, principalId, toolName, dailyLimit, aggregateLimit: TIER_AGGREGATE_DAILY_LIMITS[tier] };
 	}
 
-	// Per-tier concurrency limiting deferred to after notification check (below).
+	if (isNotification && method !== 'initialize') return acknowledgeNotification(options, method);
+
+	// Per-tier concurrency slot for tools/call, acquired below and released on every exit path.
 	let concurrencyPrincipalId: string | undefined;
-
-	if (method !== 'tools/call') {
-		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
-			options.ip,
-			options.rateLimitKv,
-			method,
-			options.isAuthenticated,
-			id,
-			options.accept,
-			options.quotaCoordinator,
-			options.quotaShardRouting,
-		);
-		if (controlPlaneLimited) {
-			emitRequestAnalytics(options, method, 'error', true);
-			return {
-				kind: 'response',
-				payload: await readJsonRpcErrorPayload(controlPlaneLimited),
-				headers: extractProtocolHeaders(controlPlaneLimited),
-				httpStatus: controlPlaneLimited.status,
-				useErrorEnvelope: true,
-				eventId,
-			};
-		}
-	}
-
-	// Authenticated users can call read-only protocol methods without a session (e.g. Smithery
-	// proxy-style clients that discover tools via ?api_key= before establishing a session).
-	const isSessionlessProtocolMethod =
-		options.isAuthenticated &&
-		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
-
-	// Notifications are fire-and-forget at the JSON-RPC layer, but they are still
-	// subsequent HTTP requests and therefore must carry a valid assigned session.
-	if (options.validateSession && method !== 'initialize' && !isSessionlessProtocolMethod) {
-		const sessionError = await validateSessionRequest(
-			options.sessionId,
-			options.sessionStore,
-			id,
-			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
-		);
-		if (sessionError) {
-			// An unrecognized or expired caller-supplied ID is never recreated. A random
-			// 256-bit value proves possession, not that this server issued it; reviving it
-			// would let authenticated callers turn arbitrary IDs into durable KV writes.
-			// MCP clients must initialize again and accept the newly assigned session ID.
-			emitRequestAnalytics(options, method, 'error', true);
-			return {
-				kind: 'response',
-				payload: sessionError.payload,
-				headers: {},
-				httpStatus: sessionError.status,
-				useErrorEnvelope: true,
-				eventId,
-			};
-		}
-	}
-
-	// Per JSON-RPC 2.0, a notification is a request WITHOUT an `id` member. An explicit
-	// `id: null` is a valid (if discouraged) id that REQUIRES a response, so it must NOT be
-	// collapsed into a notification. We treat a request as a notification when EITHER its
-	// method is in the `notifications/*` namespace (which carries no response by definition,
-	// even if a client erroneously attaches `id: null`) OR the `id` member is absent entirely.
-	const isNotification = isJsonRpcNotification(options.body);
-	if (isNotification && method !== 'initialize') {
-		emitRequestAnalytics(options, method, 'ok', false);
-		return { kind: 'notification' };
-	}
 
 	// Per-tier concurrency limiting for tools/call (after notification early-return)
 	if (method === 'tools/call') {
@@ -864,28 +952,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
-	// SQ-494/SQ-520: the per-key total, consumed only for a call that cleared the session and
-	// concurrency gates above. An allowed call keeps the per-tool x-quota-* headers and adds
-	// x-quota-total-remaining for capped tiers; a denial reports the total that tripped, and
-	// hands back the concurrency slot it was holding.
-	if (aggregateQuota) {
-		const { tier, principalId, limit: aggregateLimit } = aggregateQuota;
-		const aggregateResult = await checkToolDailyRateLimit(
-			principalId,
-			AGGREGATE_QUOTA_COUNTER,
-			aggregateLimit,
-			options.rateLimitKv,
-			options.quotaCoordinator,
-		);
-		if (!aggregateResult.allowed) {
+	// SQ-494/SQ-520/SQ-560: the authenticated daily counters, consumed only by a call that holds its
+	// concurrency slot. A denial hands the slot back.
+	if (tierQuota) {
+		const denial = await consumeTierQuota(tierQuota, options, rateHeaders);
+		if (denial) {
 			if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
-			rateHeaders['x-quota-limit'] = String(aggregateResult.limit);
-			rateHeaders['x-quota-remaining'] = String(aggregateResult.remaining);
-			const message = `Rate limit exceeded. ${tier} tier is limited to ${aggregateLimit} requests per day across all tools.`;
-			const denial = { tier, counter: AGGREGATE_QUOTA_COUNTER, limit: aggregateLimit, result: aggregateResult, message };
 			return buildTierQuotaExceededResponse(id, denial, method, options, rateHeaders, eventId, accessLogInput);
 		}
-		if (Number.isFinite(aggregateLimit)) rateHeaders['x-quota-total-remaining'] = String(aggregateResult.remaining);
 	}
 
 	if (options.allowStreaming && method === 'tools/call' && options.responseTransport === 'sse' && acceptsSSE(options.accept)) {

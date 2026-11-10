@@ -138,12 +138,19 @@ function compareEntries(a: DiffEntry, b: DiffEntry): number {
 	return (b.previousSeverity ? SEVERITY_RANK[b.previousSeverity] : 0) - (a.previousSeverity ? SEVERITY_RANK[a.previousSeverity] : 0);
 }
 
+/** Mirror of the schema's title cap (z.string().max counts UTF-16 code units). */
+const MAX_TITLE_LENGTH = 200;
+
+function clampTitle(title: string): string {
+	return title.length > MAX_TITLE_LENGTH ? `${title.slice(0, MAX_TITLE_LENGTH - 1)}…` : title;
+}
+
 function toFindingDelta(entry: DiffEntry, opts: ComputeCycleDiffOptions): TenantFindingDelta {
 	const out: TenantFindingDelta = {
 		domain: entry.domain,
 		category: entry.category,
 		severity: entry.severity,
-		title: entry.title,
+		title: clampTitle(entry.title),
 		delta: entry.delta,
 		cycle_id: opts.currentCycleId,
 		scan_at: opts.scanAt,

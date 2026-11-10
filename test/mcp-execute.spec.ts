@@ -1417,6 +1417,25 @@ describe('executeMcpRequest — unknown resource / prompt', () => {
 		expect(payload.error.code).toBe(-32602);
 		expect(payload.error.message).toBe('Invalid prompt name: no-such-prompt');
 	});
+
+	it.each([
+		['empty arguments for a real prompt', { name: 'full-security-audit', arguments: {} }, /^Invalid domain: /],
+		['an invalid domain argument', { name: 'full-security-audit', arguments: { domain: 'a'.repeat(254) } }, /^Invalid domain: /],
+	])('prompts/get with %s returns -32602 over HTTP 400, not 500', async (_label, params, messagePattern) => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 7, method: 'prompts/get', params } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(7);
+		expect(payload.error.code).toBe(-32602);
+		expect(payload.error.message).toMatch(messagePattern);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1711,5 +1730,276 @@ describe('executeMcpRequest — authenticated per-key daily total across tools',
 			expect(result.httpStatus).toBe(200);
 			expect(result.headers['x-quota-tier']).toBe('free');
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// SQ-552: unknown tool names are decided before any quota / coordinator call
+// ---------------------------------------------------------------------------
+
+describe('executeMcpRequest — unknown tool names never reach quota (SQ-552)', () => {
+	const developer = { authenticated: true, tier: 'developer', keyHash: 'sq552-dev-key' } as const;
+
+	function recordingBackends() {
+		const dispatch = vi.fn(async () => {
+			throw new TypeError('Invalid toolName: must be string <= 100 chars');
+		});
+		const quotaCoordinator = { getByName: () => ({ dispatch }) } as unknown as NonNullable<ExecuteMcpRequestOptions['quotaCoordinator']>;
+		const kvPuts: string[] = [];
+		const kvGets: string[] = [];
+		const rateLimitKv = {
+			get: vi.fn(async (key: string) => {
+				kvGets.push(key);
+				return null;
+			}),
+			put: vi.fn(async (key: string) => {
+				kvPuts.push(key);
+			}),
+			list: vi.fn(async () => ({ keys: [], list_complete: true })),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const pending: Promise<unknown>[] = [];
+		const waitUntil = (p: Promise<unknown>) => void pending.push(p);
+		return { dispatch, quotaCoordinator, rateLimitKv, kvPuts, kvGets, waitUntil, settle: () => Promise.all(pending) };
+	}
+
+	function toolCall(name: string, overrides: Partial<ExecuteMcpRequestOptions> = {}): ExecuteMcpRequestOptions {
+		return baseOptions({
+			body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+			...overrides,
+		});
+	}
+
+	function textOf(result: Awaited<ReturnType<typeof import('../src/mcp/execute').executeMcpRequest>>): string {
+		if (result.kind !== 'response') throw new Error('expected response');
+		return (result.payload as { result: { content: { text: string }[] } }).result.content[0].text;
+	}
+
+	it('a 150-char tool name returns the unknown-tool result with no coordinator or quota KV call', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const backends = recordingBackends();
+
+		const result = await executeMcpRequest(
+			toolCall('x'.repeat(150), {
+				isAuthenticated: true,
+				tierAuthResult: developer,
+				keyHash: developer.keyHash,
+				rateLimitKv: backends.rateLimitKv,
+				quotaCoordinator: backends.quotaCoordinator,
+				waitUntil: backends.waitUntil,
+			}),
+		);
+		await backends.settle();
+
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(200);
+		expect((result.payload as { result: { isError: boolean } }).result.isError).toBe(true);
+		const text = textOf(result);
+		expect(text).toMatch(/^Error: Unknown tool: x{64}\.\.\.\. Call tools\/list to see the available tools\.$/);
+		expect(backends.dispatch).not.toHaveBeenCalled();
+		// The only KV traffic is the fuzz counter, so the unknown_tool signal keeps firing.
+		expect(backends.kvPuts.length).toBeGreaterThan(0);
+		for (const key of [...backends.kvPuts, ...backends.kvGets]) expect(key).toMatch(/^fuzz:p:/);
+		expect(backends.kvPuts.every((key) => key.endsWith(':unknown_tool'))).toBe(true);
+	});
+
+	it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+		'prototype-chain name %s gets the same unknown-tool text as a random name, with no quota headers',
+		async (name) => {
+			const { executeMcpRequest } = await import('../src/mcp/execute');
+			const random = await executeMcpRequest(toolCall('no_such_tool_sq552'));
+			expect(textOf(random)).toBe('Error: Unknown tool: no_such_tool_sq552. Call tools/list to see the available tools.');
+
+			for (const options of [
+				toolCall(name),
+				toolCall(name, { isAuthenticated: true, tierAuthResult: developer, keyHash: developer.keyHash }),
+			]) {
+				const result = await executeMcpRequest(options);
+				if (result.kind !== 'response') throw new Error('expected response');
+				expect(result.httpStatus).toBe(200);
+				expect(textOf(result)).toBe(`Error: Unknown tool: ${name.toLowerCase()}. Call tools/list to see the available tools.`);
+				for (const [header, value] of Object.entries(result.headers)) {
+					expect(`${header}=${value}`).not.toContain('function');
+					expect(header).not.toMatch(/^x-quota-/);
+				}
+			}
+		},
+	);
+});
+
+// ---------------------------------------------------------------------------
+// SQ-560: a tools/call that is rejected before it can execute spends no quota
+// ---------------------------------------------------------------------------
+
+describe('executeMcpRequest — a call rejected before dispatch spends no quota (SQ-560)', () => {
+	const developer = {
+		isAuthenticated: true,
+		tierAuthResult: { authenticated: true, tier: 'developer', keyHash: 'sq560-dev-key' },
+	} as const;
+	/** Every quota or rate counter a tools/call can reach. The batch holds the minute/hour and anonymous per-tool counters. */
+	const COUNTERS = [
+		'checkGlobalDailyLimit',
+		'checkIpDailyLimit',
+		'checkIpScopedQuotaBatch',
+		'checkToolDailyRateLimit',
+		'checkDistinctDomainDailyLimit',
+		'acquireConcurrencySlot',
+	] as const;
+	type CounterName = (typeof COUNTERS)[number];
+	type CounterSpies = Record<CounterName, ReturnType<typeof vi.fn>>;
+
+	beforeEach(() => {
+		vi.doUnmock('../src/lib/rate-limiter');
+		vi.doUnmock('../src/lib/config');
+		vi.doUnmock('../src/mcp/dispatch');
+		vi.doUnmock('../src/lib/session');
+	});
+
+	function mockDispatchSuccess(): void {
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: 1, result: {} },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'check_spf',
+				logCategory: 'tool',
+				logResult: 'ok',
+				logDetails: {},
+			}),
+		}));
+	}
+
+	/** Spies on every counter that still run the real (in-memory) implementation. */
+	function spyOnCounters(): CounterSpies {
+		const spies = Object.fromEntries(COUNTERS.map((name) => [name, vi.fn()])) as CounterSpies;
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			for (const name of COUNTERS) spies[name].mockImplementation(actual[name] as (...args: unknown[]) => unknown);
+			return { ...actual, ...spies };
+		});
+		mockDispatchSuccess();
+		return spies;
+	}
+
+	function toolCall(overrides: Partial<ExecuteMcpRequestOptions> = {}, withId = true): ExecuteMcpRequestOptions {
+		const body = { jsonrpc: '2.0', method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } };
+		return baseOptions({ body: (withId ? { ...body, id: 1 } : body) as JsonRpcRequest, ...overrides });
+	}
+
+	async function responseOf(result: Promise<import('../src/mcp/execute').ProcessedRequestResult>) {
+		const settled = await result;
+		if (settled.kind !== 'response') throw new Error('expected response');
+		return settled;
+	}
+
+	function expectNoCounterTouched(spies: CounterSpies): void {
+		for (const name of COUNTERS) expect(spies[name], name).not.toHaveBeenCalled();
+	}
+
+	const anonymousCounters: readonly CounterName[] = [
+		'checkGlobalDailyLimit',
+		'checkIpDailyLimit',
+		'checkIpScopedQuotaBatch',
+		'checkDistinctDomainDailyLimit',
+		'acquireConcurrencySlot',
+	];
+	const authenticatedCounters: readonly CounterName[] = ['checkToolDailyRateLimit', 'acquireConcurrencySlot'];
+
+	it.each([
+		['anonymous', {}, anonymousCounters],
+		['authenticated', developer, authenticatedCounters],
+	] as const)('an %s tools/call with an unknown or missing session touches no counter', async (_caller, caller, reached) => {
+		const spies = spyOnCounters();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { createSession } = await import('../src/lib/session');
+
+		const unknown = await responseOf(executeMcpRequest(toolCall({ ...caller, validateSession: true, sessionId: 'c'.repeat(64) })));
+		expect(unknown.httpStatus).toBe(404);
+		const missing = await responseOf(executeMcpRequest(toolCall({ ...caller, validateSession: true })));
+		expect(missing.httpStatus).toBe(400);
+		expectNoCounterTouched(spies);
+
+		// Positive control: the same call on a live session reaches the counters.
+		const live = await responseOf(executeMcpRequest(toolCall({ ...caller, validateSession: true, sessionId: await createSession() })));
+		expect(live.httpStatus).toBe(200);
+		for (const name of reached) expect(spies[name], name).toHaveBeenCalled();
+	});
+
+	it('an authenticated tools/call notification (no id) returns without touching any counter', async () => {
+		const spies = spyOnCounters();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		expect((await executeMcpRequest(toolCall(developer, false))).kind).toBe('notification');
+		expectNoCounterTouched(spies);
+
+		// Positive control: the same call with an id is metered.
+		expect((await responseOf(executeMcpRequest(toolCall(developer)))).httpStatus).toBe(200);
+		for (const name of authenticatedCounters) expect(spies[name], name).toHaveBeenCalled();
+	});
+
+	it('an anonymous tools/call notification spends its one minute/hour unit and no daily quota', async () => {
+		const spies = spyOnCounters();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { FREE_TOOL_DAILY_LIMITS } = await import('../src/lib/config');
+
+		expect((await executeMcpRequest(toolCall({}, false))).kind).toBe('notification');
+		// The short-window unit stays metered (test/index.spec.ts pins it); the per-tool daily check is left out of the batch.
+		expect(spies.checkIpScopedQuotaBatch).toHaveBeenCalledTimes(1);
+		expect(spies.checkIpScopedQuotaBatch).toHaveBeenCalledWith('203.0.113.1', 'check_spf', undefined, expect.any(Object));
+		for (const name of COUNTERS.filter((counter) => counter !== 'checkIpScopedQuotaBatch'))
+			expect(spies[name], name).not.toHaveBeenCalled();
+
+		// Positive control: the same call with an id asks the batch for its per-tool daily too, and reaches every counter.
+		expect((await responseOf(executeMcpRequest(toolCall()))).httpStatus).toBe(200);
+		expect(spies.checkIpScopedQuotaBatch).toHaveBeenLastCalledWith(
+			'203.0.113.1',
+			'check_spf',
+			FREE_TOOL_DAILY_LIMITS.check_spf,
+			expect.any(Object),
+		);
+		for (const name of anonymousCounters) expect(spies[name], name).toHaveBeenCalled();
+	});
+
+	it('an authenticated call rejected by the concurrency limit spends no per-tool slot, and a per-tool denial hands its slot back', async () => {
+		const state = { reject: true };
+		const release = vi.fn();
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return {
+				...actual,
+				acquireConcurrencySlot: vi.fn(() =>
+					state.reject ? { allowed: false, retryAfterMs: 1000, active: 10, limit: 10 } : { allowed: true, active: 1, limit: 10 },
+				),
+				releaseConcurrencySlot: release,
+			};
+		});
+		vi.doMock('../src/lib/config', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/config')>();
+			return { ...actual, tierToolDailyLimit: () => 2 };
+		});
+		mockDispatchSuccess();
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+
+		for (let i = 0; i < 4; i++) {
+			const rejected = await responseOf(executeMcpRequest(toolCall(developer)));
+			expect(rejected.httpStatus).toBe(429);
+			expect((rejected.payload as { error: { message: string } }).error.message).toContain('concurrent requests');
+		}
+
+		state.reject = false;
+		// Both per-tool slots are still free: had the rejected calls spent them, these would be denied.
+		for (let i = 0; i < 2; i++) expect((await responseOf(executeMcpRequest(toolCall(developer)))).httpStatus).toBe(200);
+		const perTool = await responseOf(executeMcpRequest(toolCall(developer)));
+		expect(perTool.httpStatus).toBe(429);
+		const payload = perTool.payload as { error: { code: number; message: string } };
+		expect(payload.error.code).toBe(-32029);
+		expect(payload.error.message).toBe('Rate limit exceeded. developer tier is limited to 2 requests per day.');
+		expect(perTool.headers['x-quota-limit']).toBe('2');
+		expect(perTool.headers['x-quota-remaining']).toBe('0');
+		expect(perTool.headers['x-quota-tier']).toBe('developer');
+		expect(Number(perTool.headers['retry-after'])).toBeGreaterThan(0);
+		// Two completed calls release in the finally block; the per-tool denial hands back its slot too.
+		expect(release).toHaveBeenCalledTimes(3);
 	});
 });

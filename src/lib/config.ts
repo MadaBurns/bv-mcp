@@ -445,6 +445,15 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 export const FORCE_REFRESH_DAILY_LIMIT = 5;
 
 /**
+ * Free-tier daily cap for a tool, or undefined when it has none. Own-key lookup: a bare index
+ * resolves `constructor` / `__proto__` through Object.prototype to a function that reads as an
+ * unlimited quota with garbage x-quota-* headers.
+ */
+export function freeToolDailyLimit(toolName: string): number | undefined {
+	return Object.hasOwn(FREE_TOOL_DAILY_LIMITS, toolName) ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+}
+
+/**
  * Tools gated to paid tiers (developer and above). Pinned to 0 in
  * FREE_TOOL_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS.free, and
  * TIER_TOOL_DAILY_LIMITS.agent so unauthenticated, free-tier-key, and
@@ -780,7 +789,10 @@ export function isAuthRequiredTool(toolName: string): boolean {
  * up gated by one and not the other.
  */
 export function tierToolDailyLimit(tier: McpApiKeyTier, toolName: string): number {
-	return TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+	// Own-key lookups: a bare index resolves `constructor` / `__proto__` through Object.prototype
+	// to a function, which then reads as an unlimited, garbage-headered quota.
+	const perTool = TIER_TOOL_DAILY_LIMITS[tier];
+	return perTool && Object.hasOwn(perTool, toolName) ? perTool[toolName] : TIER_DAILY_LIMITS[tier];
 }
 
 /** Entry-point surface a `tools/call` arrived on. */
@@ -1196,7 +1208,9 @@ export function parsePerCheckTimeout(envValue?: string): number {
 
 // ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
 export const OAUTH_CODE_TTL_SECONDS = 60; // KV minimum TTL is 60s; auth codes are short-lived
-export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
+export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use (see OAUTH_CLIENT_REFRESH_AFTER_SECONDS)
+/** A DCR client record is rewritten (fresh TTL) on a token exchange only when its last write is older than this, so normal logins add no KV write. */
+export const OAUTH_CLIENT_REFRESH_AFTER_SECONDS = 60 * 60 * 24 * 30;
 // Access tokens are bearer credentials: keep the replay window short. The
 // server does not issue refresh tokens, so clients re-run PKCE after expiry.
 export const OAUTH_JWT_TTL_SECONDS = 60 * 60; // 1 hour

@@ -19,7 +19,12 @@ function makeCheckResult(category: string, passed: boolean, findings: Array<{ ti
 	} as CheckResult;
 }
 
-/** Build a full set of check results where every category passes. */
+/**
+ * Build a full set of check results where every category passes, shaped like a REAL scan:
+ * `authoritative_dns_infra` is deliberately absent — only its dedicated scan profile runs
+ * that check, so the normal scan roster never produces a result for it. Tests that need an
+ * infra result supply one explicitly (see "authoritative DNS infra" cases below).
+ */
 function makeAllPassing(): CheckResult[] {
 	return [
 		makeCheckResult('spf', true),
@@ -34,7 +39,6 @@ function makeAllPassing(): CheckResult[] {
 		makeCheckResult('http_security', true),
 		makeCheckResult('ns', true),
 		makeCheckResult('mx', true),
-		makeCheckResult('authoritative_dns_infra', true),
 	];
 }
 
@@ -225,6 +229,25 @@ describe('evaluateCompliance', () => {
 		const socBoundary = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC6.6');
 		expect(socBoundary!.status).toBe('partial');
 		expect(socBoundary!.relatedFindings).toContain('Route leak or hijack signal observed');
+	});
+
+	it('passes CC6.6 and CIS 12.1 for an all-passing real-shaped scan (no authoritative_dns_infra result)', () => {
+		// A normal scan never runs `authoritative_dns_infra` (its dedicated profile does), so
+		// the category must not sit in the denominator and cap both controls below `pass`.
+		const report = evaluateCompliance(makeAllPassing(), 'example.com', 95, 'A+');
+
+		expect(report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC6.6')!.status).toBe('pass');
+		expect(report.frameworks.cis_controls.mappings.find((m) => m.controlId === '12.1')!.status).toBe('pass');
+	});
+
+	it('still counts a ROSTERED category with no result as not passing (sparse evidence is intentional)', () => {
+		// `caa` IS in the scan roster, so its absence is a measured gap, not an unmeasurable
+		// category: CIS 12.1 (dnssec, ns, caa, authoritative_dns_infra) must not read `pass`.
+		const withoutCaa = makeAllPassing().filter((r) => r.category !== 'caa');
+		const report = evaluateCompliance(withoutCaa, 'example.com', 80, 'B');
+
+		expect(report.frameworks.cis_controls.mappings.find((m) => m.controlId === '12.1')!.status).toBe('partial');
+		expect(report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC6.6')!.status).toBe('partial');
 	});
 
 	it('should compute partial status for multi-category controls with mixed results', () => {

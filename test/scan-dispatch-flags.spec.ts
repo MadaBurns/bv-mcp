@@ -11,7 +11,7 @@
 // Written BEFORE the impl → FAILS until src/lib/scan-scheduler.ts lands.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makeScanScheduleDb, makeSlowQueue } from './helpers/scan-schedule-d1';
+import { ACCEPTING_CONSUMER, makeScanScheduleDb, makeSlowQueue } from './helpers/scan-schedule-d1';
 
 const NOW = 1_750_000_000_000;
 
@@ -60,7 +60,7 @@ describe('dispatchDueScans (F) — DARK by default', () => {
 			BV_SCANNER_SLOW_QUEUE: queue,
 		} as unknown as import('../src/lib/scan-scheduler').ScanDispatchEnv;
 
-		await dispatchDueScans(env, { now: NOW });
+		await dispatchDueScans(env, { now: NOW, consumerSchema: ACCEPTING_CONSUMER });
 
 		expect(send).toHaveBeenCalledTimes(SCAN_LANES.length);
 		const domains = sent.map((s) => (s.message as { domain: string }).domain);

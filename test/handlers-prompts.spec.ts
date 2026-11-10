@@ -107,11 +107,21 @@ describe('handlePromptsGet', () => {
 		);
 	});
 
-	it('throws when name parameter is missing', () => {
-		expect(() => handlePromptsGet({})).toThrow('Missing required parameter: name');
+	it('throws a client INVALID_PARAMS error when name parameter is missing', () => {
+		expect(() => handlePromptsGet({})).toThrow(
+			expect.objectContaining({ name: 'JsonRpcClientError', code: -32602, message: 'Missing required parameter: name' }),
+		);
 	});
 
-	it('throws when name is not a string', () => {
-		expect(() => handlePromptsGet({ name: 42 })).toThrow('Missing required parameter: name');
+	it('throws a client INVALID_PARAMS error when name is not a string', () => {
+		expect(() => handlePromptsGet({ name: 42 })).toThrow(
+			expect.objectContaining({ name: 'JsonRpcClientError', code: -32602, message: 'Missing required parameter: name' }),
+		);
+	});
+
+	it('throws a client INVALID_PARAMS error for schema-invalid arguments', () => {
+		expect(() => handlePromptsGet({ name: 'full-security-audit', arguments: {} })).toThrow(
+			expect.objectContaining({ name: 'JsonRpcClientError', code: -32602, message: expect.stringMatching(/^Invalid domain: /) }),
+		);
 	});
 });

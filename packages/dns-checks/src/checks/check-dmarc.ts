@@ -65,8 +65,11 @@ function treeWalkTargets(domain: string): string[] {
  * A lookup that genuinely throws (transport failure — timeout, network error, DoH
  * HTTP error) is NOT caught here: `queryWithRcode` documents that contract, and the
  * throw propagates to `checkDMARC`'s caller unchanged.
+ *
+ * Exported for `checkSPF`'s trust-surface DMARC context, so both checks discover the
+ * policy that governs a name through this ONE walk (SQ-556).
  */
-async function dmarcTreeWalk(
+export async function dmarcTreeWalk(
 	domain: string,
 	queryDNS: DNSQueryFunction,
 	timeout: number,
@@ -89,7 +92,7 @@ async function dmarcTreeWalk(
  * RFC 7489 section 6.6.3: only TXT records that START with the version tag are DMARC
  * records; anything else at `_dmarc.<name>` is discarded, never merged into a record.
  */
-function isDmarcRecord(record: string): boolean {
+export function isDmarcRecord(record: string): boolean {
 	return /^\s*v=dmarc1/i.test(record);
 }
 
