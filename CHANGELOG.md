@@ -18,6 +18,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 - `analyze_drift` with `baseline: "cached"` measures the current side with a fresh scan; it used to compare the cached scan with itself. `map_compliance` no longer counts a category the scan cannot produce, so SOC 2 CC6.6 and CIS 12.1 can pass. `compare_baseline` reports a failure whenever a rule is violated, even if another rule could not be evaluated. Percentile rank uses the nearest lower populated bucket (SQ-557).
 - The scheduled-scan dispatcher (dark) refuses to claim schedule rows while the queue consumer cannot accept its message, and logs `scan_dispatch_no_compatible_consumer` (SQ-558).
 - The infra-probe sidecar answers a non-object JSON body with 400. Tenant cycle-alert highlight titles are clamped to the schema limit (SQ-559).
+- `tools/call` validates the session before spending any counter, so a call with a missing or stale session costs nothing and still receives 400 / 404. Unauthenticated calls are checked against the minute and hour limits before the daily caps, so a rate-limited call no longer consumes daily allowance. Authenticated per-tool and all-tools daily counters are consumed only after a concurrency slot is held; a concurrency 429 therefore carries `retry-after` but no `x-quota-*` headers. A `tools/call` notification spends no daily quota (SQ-560).
 - A direct `check_*` call and a concurrent `scan_domain` for the same domain no longer share one in-flight run, so each caller gets the result of its own options and time budget (SQ-561).
 
 ### Changed
