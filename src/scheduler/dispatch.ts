@@ -99,8 +99,15 @@ export function buildScheduledScanMessage(row: Pick<ClaimedScanRow, 'tenant_id' 
  * loses the scan. Probing with a representative row keeps this tied to the real
  * schema: once producer and consumer agree, the guard opens by itself.
  */
-function consumerAcceptsDispatch(consumer: ConsumerSchema): boolean {
-	return consumer.safeParse(buildScheduledScanMessage({ tenant_id: 'probe', domain: 'probe.example', lane: SCAN_LANES[0] }, 0)).success;
+function consumerBlocksDispatch(consumer: ConsumerSchema = ScanQueueMessageSchema): boolean {
+	const probe = buildScheduledScanMessage({ tenant_id: 'probe', domain: 'probe.example', lane: SCAN_LANES[0] }, 0);
+	if (consumer.safeParse(probe).success) return false;
+	logError('scan dispatch armed but no compatible queue consumer is wired — nothing claimed', {
+		severity: 'error',
+		category: 'scan.dispatch',
+		details: { message: 'scan_dispatch_no_compatible_consumer' },
+	});
+	return true;
 }
 
 /**
@@ -112,7 +119,7 @@ function consumerAcceptsDispatch(consumer: ConsumerSchema): boolean {
  */
 export async function dispatchDueScans(
 	env: ScanDispatchEnv,
-	{ now, tickSeconds = DEFAULT_TICK_SECONDS, consumerSchema = ScanQueueMessageSchema }: DispatchOptions,
+	{ now, tickSeconds = DEFAULT_TICK_SECONDS, consumerSchema }: DispatchOptions,
 ): Promise<void> {
 	let currentLane: ScanLane | undefined;
 	let claimedCount = 0;
@@ -122,14 +129,7 @@ export async function dispatchDueScans(
 		const db = env.SCAN_SCHEDULE_DB;
 		if (!db) return;
 
-		if (!consumerAcceptsDispatch(consumerSchema)) {
-			logError('scan dispatch armed but no compatible queue consumer is wired — nothing claimed', {
-				severity: 'error',
-				category: 'scan.dispatch',
-				details: { message: 'scan_dispatch_no_compatible_consumer' },
-			});
-			return;
-		}
+		if (consumerBlocksDispatch(consumerSchema)) return;
 
 		const cap = resolveScanDispatchConfig(env).batchSize;
 
