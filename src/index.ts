@@ -610,6 +610,18 @@ for (const path of authedPaths) {
 
 		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 		const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
+		if (accessContextBody) {
+			// This path returns before every other limiter, so meter it here. No bindings
+			// are passed: the per-isolate in-memory window keeps the path free of storage writes.
+			const rate = await checkControlPlaneRateLimit(resolvedClientIp);
+			if (!rate.allowed) {
+				const retryAfterSeconds = Math.max(1, Math.ceil((rate.retryAfterMs ?? 0) / 1000));
+				return Response.json(
+					jsonRpcError(accessContextBody.id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+					{ status: 429, headers: { 'retry-after': String(retryAfterSeconds), 'Cache-Control': 'no-store' } },
+				);
+			}
+		}
 		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url, accessContextBody ? { readOnly: true } : undefined);
 		if (accessContextBody) {
 			const contentTypeError = validateContentType(c.req.header('content-type'));

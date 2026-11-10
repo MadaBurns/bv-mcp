@@ -97,6 +97,17 @@ describe('read-only access context HTTP boundary', () => {
 		expect(result.response.status).toBe(400);
 		expect(result.body.error.code).toBe(-32700);
 	});
+	it('limits repeated diagnostics per client address without touching storage or authentication', async () => {
+		// 60 per minute is the control-plane budget; the address is unique to this case.
+		const options = { token: 'synthetic-unresolved-token', ip: '192.0.2.77' };
+		for (let i = 0; i < 60; i++) expect((await call(metadata, options)).response.status).toBe(503);
+		const limited = await call(metadata, options);
+		expect(limited.response.status).toBe(429);
+		expect(limited.body.error).toMatchObject({ code: -32029, message: expect.stringMatching(/^Rate limit exceeded/) });
+		expect(Number(limited.response.headers.get('retry-after'))).toBeGreaterThan(0);
+		// Another address is unaffected.
+		expect((await call(metadata, { token: 'synthetic-unresolved-token', ip: '192.0.2.78' })).response.status).toBe(503);
+	});
 	it('uses the same read-only boundary on the legacy POST path', async () => {
 		const result = await call(metadata, { path: '/mcp/messages' });
 		expect(result.response.status).toBe(200);
