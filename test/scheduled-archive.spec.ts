@@ -284,6 +284,80 @@ describe('access-log archive idempotency (S3)', () => {
 		expect(archive2.bodies.length).toBe(1);
 		expect(archive2.bodies[0].key).toBe(archive1.bodies[0].key);
 	});
+
+	it('two ticks with different cutoffs in the same UTC day keep BOTH runs archived rows (no overwrite)', async () => {
+		// Tick 1 archives + deletes rows 1-2. Tick 2 (15 min later, same day bucket) sees only
+		// row 3, which aged past the cutoff in between. Both runs' rows must survive in R2.
+		const base = Date.UTC(2026, 5, 28, 12, 0, 0);
+		const retentionSeconds = 90 * 86_400;
+		const cutoff1 = Math.floor(base / 1000) - retentionSeconds;
+		const table = [
+			{ ...expiringRow(), id: 1, created_at: cutoff1 - 100 },
+			{ ...expiringRow(), id: 2, created_at: cutoff1 - 50 },
+			{ ...expiringRow(), id: 3, created_at: cutoff1 + 300 },
+		];
+		// Stateful D1: SELECT honours (cutoff, lastId, limit); DELETE removes rows below the cutoff.
+		const db = {
+			prepare: (sql: string) => {
+				let args: unknown[] = [];
+				const stmt = {
+					bind: (...a: unknown[]) => {
+						args = a;
+						return stmt;
+					},
+					all: async () => {
+						const [cutoff, lastId, limit] = args as [number, number, number];
+						const results = table
+							.filter((r) => r.created_at < cutoff && r.id > lastId)
+							.sort((a, b) => a.id - b.id)
+							.slice(0, limit);
+						return { results, success: true };
+					},
+					run: async () => {
+						if (/DELETE FROM mcp_access_log/i.test(sql)) {
+							const [cutoff] = args as [number];
+							for (let i = table.length - 1; i >= 0; i--) if (table[i].created_at < cutoff) table.splice(i, 1);
+						}
+						return { success: true };
+					},
+				};
+				return stmt;
+			},
+		} as unknown as D1Database;
+
+		// One shared bucket so a colliding key would REPLACE the earlier object, like real R2.
+		const store = new Map<string, unknown>();
+		const bucket = {
+			put: async (key: string, value: unknown) => {
+				store.set(key, value);
+				return { key } as unknown as R2Object;
+			},
+		} as unknown as R2Bucket;
+		const env = {
+			INTELLIGENCE_DB: db,
+			MCP_ACCESS_LOG_ARCHIVE: bucket,
+			ANALYTICS_ARCHIVE_ENABLED: 'true',
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const nowSpy = vi.spyOn(Date, 'now');
+		const { handleScheduled } = await import('../src/scheduled');
+		nowSpy.mockReturnValue(base);
+		await handleScheduled(env);
+		nowSpy.mockReturnValue(base + 15 * 60_000);
+		await handleScheduled(env);
+
+		const archivedIds: number[] = [];
+		for (const body of store.values()) {
+			const text = await gunzipToText(body);
+			for (const line of text.split('\n').filter((l) => l.trim().length > 0)) archivedIds.push(JSON.parse(line).id);
+		}
+		expect(archivedIds.sort()).toEqual([1, 2, 3]);
+		expect(store.size).toBe(2);
+		// Same day bucket for both ticks, distinct content-derived page names.
+		const buckets = new Set([...store.keys()].map((k) => k.split('/')[2]));
+		expect(buckets.size).toBe(1);
+	});
 });
 
 describe('scan_rollup prune (S2)', () => {
