@@ -27,7 +27,7 @@ import {
 	tierToolDailyLimit,
 	type McpApiKeyTier,
 } from '../lib/config';
-import { normalizeToolName } from '../handlers/tool-args';
+import { isRegisteredToolName, normalizeToolName } from '../handlers/tool-args';
 import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -279,6 +279,13 @@ export interface ExecuteMcpRequestOptions {
 	globalDailyLimit?: number;
 }
 
+/** Longest tool name echoed back in an unknown-tool message (registered names are all shorter). */
+const MAX_ECHOED_TOOL_NAME_LENGTH = 64;
+
+function clipEchoedToolName(name: string): string {
+	return name.length > MAX_ECHOED_TOOL_NAME_LENGTH ? `${name.slice(0, MAX_ECHOED_TOOL_NAME_LENGTH)}...` : name;
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	// Metadata never enters quota/session/cache/analytics or ordinary tool dispatch,
 	// including malformed-argument and unavailable-context paths.
@@ -368,6 +375,22 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		if (internalOnlyName === AGGREGATE_QUOTA_COUNTER) {
 			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
 		}
+		// SQ-552: a name that is not an own key of the tool registry is unknown. Decide that here,
+		// before any quota or coordinator call: an over-long name makes the quota Durable Object
+		// throw (and trips the shared breaker), and a prototype-chain name such as `constructor`
+		// indexes the limit tables to a function. Same genuine unknown-tool payload (and fuzz
+		// counter hit) as the dispatch path; the echoed name is clipped so a hostile name cannot
+		// inflate the response.
+		if (typeof internalOnlyNameRaw === 'string' && !isRegisteredToolName(internalOnlyName)) {
+			return buildInternalOnlyToolResponse(
+				id,
+				clipEchoedToolName(internalOnlyName),
+				method,
+				options,
+				eventId,
+				accessLogInput && { ...accessLogInput, toolName: clipEchoedToolName(accessLogInput.toolName) },
+			);
+		}
 	}
 
 	let rateHeaders: Record<string, string> = {};
@@ -452,7 +475,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const toolNameRaw =
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		const toolDailyLimit = toolName && Object.hasOwn(FREE_TOOL_DAILY_LIMITS, toolName) ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 
 		// Gated/auth-required tools are rejected (401/403) without ever recording a
 		// per-tool-daily count in the serial path (their gate returns before the

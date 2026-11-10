@@ -212,7 +212,8 @@ export async function handleToolsCall(
 			}
 
 			// Dispatch to the appropriate tool — check registry first, then special cases
-			const registeredTool = TOOL_REGISTRY[name];
+			// Own-key lookup: `constructor` / `__proto__` must fall through to the unknown-tool arm.
+			const registeredTool = Object.hasOwn(TOOL_REGISTRY, name) ? TOOL_REGISTRY[name] : undefined;
 			if (registeredTool) {
 				const checkName = await registeredTool.cacheKey(validatedArgs, runtimeOptions);
 				// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildCheckCacheKey.

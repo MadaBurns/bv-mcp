@@ -780,7 +780,10 @@ export function isAuthRequiredTool(toolName: string): boolean {
  * up gated by one and not the other.
  */
 export function tierToolDailyLimit(tier: McpApiKeyTier, toolName: string): number {
-	return TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+	// Own-key lookups: a bare index resolves `constructor` / `__proto__` through Object.prototype
+	// to a function, which then reads as an unlimited, garbage-headered quota.
+	const perTool = TIER_TOOL_DAILY_LIMITS[tier];
+	return perTool && Object.hasOwn(perTool, toolName) ? perTool[toolName] : TIER_DAILY_LIMITS[tier];
 }
 
 /** Entry-point surface a `tools/call` arrived on. */
