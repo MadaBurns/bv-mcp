@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.110.1] - 2026-11-10
+
+### Fixed
+
+- `get_access_context` is now rate limited per client address (60 per minute, 600 per hour). The diagnostic returned before every other limiter, so repeated calls were unmetered. Excess calls get HTTP 429 with `retry-after`; the limit is held in memory per Worker instance so the path still performs no storage writes (#1382).
+
 ## [3.110.0] - 2026-11-08
 
 ### Added
