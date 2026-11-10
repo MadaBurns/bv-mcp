@@ -829,8 +829,28 @@
  *   and `emailBonusFull/Mid/Partial` 5/3/2 -> 0; the keys and code paths remain and an explicit
  *   override still applies. `criticalGapCeiling` (64) and `partialEnforcementCeiling` (94) are
  *   unchanged, so a verified missing DMARC control still caps at 64.
+ * - 2.1.0 — Check-input corrections (Sidequest SQ-556, US-18; dns-checks 2.1.0). SCORE-BEARING, mostly
+ *   UP. (a) `check_spf` resolves the DMARC context its trust-surface aggregate is graded against through
+ *   `checkDMARC`'s own RFC 9989 §4.10 tree walk: a subdomain with no `_dmarc` record of its own now reads
+ *   its organisational domain's effective policy (`sp=`, else `p=`) instead of "missing". Inheriting
+ *   `p=reject` at pct=100 (or strict alignment on both aspf/adkim) no longer corroborates, so the "SPF
+ *   trust surface: N shared platforms" aggregate drops `high` -> `info` (spf +25); inheriting `p=none`
+ *   moves the `~all` finding from `low` to the `info` monitoring variant. (b) A SERVFAIL/REFUSED (or
+ *   thrown) DMARC lookup at any walk step is UNMEASURED (`dmarcPolicy: 'unknown'`, no corroboration)
+ *   rather than "missing", so it no longer escalates the aggregate. (c) SPF lookup budget: `redirect=`
+ *   beside an `all` mechanism is ignored (RFC 7208 §6.1) — neither counted nor followed, matching
+ *   `resolve_spf_chain` — which can clear a `high` "Too many DNS lookups" / "lookup budget near limit".
+ *   (d) `check_tlsrpt` selects `v=TLSRPTv1` records individually (RFC 8460 §3) instead of joining the
+ *   RRset: an unrelated TXT record no longer corrupts `rua=` (can clear a `medium` invalid-URI finding);
+ *   two TLS-RPT records report only the `low` "Multiple TLS-RPT records" (no rua read, no "configured").
+ *   DOWN only for a TLS-RPT record split across separate RRs (non-conformant), which now reads as its
+ *   first RR alone. (e) DKIM: the 3072-bit SPKI header is recognised and the header-less length
+ *   heuristic has a 3072 band (460–599 chars); complete keys stay `info`, but a TRUNCATED 3072-bit key
+ *   is now `high` "malformed" like 2048/4096 instead of a heuristic 512/1024/2048 estimate. The
+ *   affected populations are UNMEASURED against the corpus. No weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '2.0.0';
+export const SCORING_MODEL_VERSION = '2.1.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

@@ -73,12 +73,24 @@ export type RecursiveState = {
 };
 
 /**
+ * The record's terms as an evaluator sees them: RFC 7208 §6.1 says a `redirect=` modifier
+ * MUST be ignored when the record has an `all` mechanism anywhere, so it is dropped here —
+ * neither counted toward the §4.6.4 budget nor followed. Matches `resolve_spf_chain`.
+ * A record without an `all` term is returned unchanged.
+ */
+function withoutIgnoredRedirect(spfRecord: string): string {
+	const terms = spfRecord.split(/\s+/);
+	if (!terms.some((term) => /^[+?~-]?all$/i.test(term))) return spfRecord;
+	return terms.filter((term) => !/^[+?~-]?redirect=/i.test(term)).join(' ');
+}
+
+/**
  * Count SPF mechanisms that consume DNS lookups in a single record (non-recursive).
  * RFC 7208 limits evaluation to 10 DNS-mechanism lookups.
  */
 export function analyzeSpfLookupBudget(spfRecord: string): SpfLookupAnalysis {
 	const mechanisms: string[] = [];
-	for (const token of spfRecord.split(/\s+/)) {
+	for (const token of withoutIgnoredRedirect(spfRecord).split(/\s+/)) {
 		if (!token) continue;
 		const normalized = token.replace(/^[+\-~?]/, '').toLowerCase();
 		if (normalized.startsWith('include:')) mechanisms.push('include');
@@ -87,10 +99,11 @@ export function analyzeSpfLookupBudget(spfRecord: string): SpfLookupAnalysis {
 		else if (normalized === 'ptr' || normalized.startsWith('ptr:')) mechanisms.push('ptr');
 		else if (normalized.startsWith('exists:')) mechanisms.push('exists');
 		else if (normalized.startsWith('redirect=')) mechanisms.push('redirect');
-		// Note: redirect= is counted as a lookup-consuming term per RFC 7208 §4.6.4
-		// (the lookup-limit rule explicitly counts the redirect modifier). This +1 is
-		// the redirect term's own lookup; the target record's mechanisms are added
-		// separately when countRecursiveLookups recurses into it (no double-count).
+		// Note: a redirect= that is in effect is counted as a lookup-consuming term per
+		// RFC 7208 §4.6.4 (the lookup-limit rule explicitly counts the redirect modifier).
+		// This +1 is the redirect term's own lookup; the target record's mechanisms are
+		// added separately when countRecursiveLookups recurses into it (no double-count).
+		// One ignored beside an `all` mechanism never reaches this loop (withoutIgnoredRedirect).
 	}
 
 	return { count: mechanisms.length, mechanisms };
@@ -152,7 +165,7 @@ export async function countRecursiveLookups(
 		return totalCount;
 	}
 
-	const { includes, redirect } = extractLookupDomains(spfRecord);
+	const { includes, redirect } = extractLookupDomains(withoutIgnoredRedirect(spfRecord));
 	const domainsToResolve = [...includes];
 	if (redirect) domainsToResolve.push(redirect);
 

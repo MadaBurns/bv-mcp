@@ -166,16 +166,18 @@ describe('checkSpf', () => {
 		expect(f!.severity).toBe('high');
 	});
 
-	it('counts mixed lookup mechanisms (include, a, mx, redirect)', async () => {
-		// redirect= is a modifier (RFC 7208 §6.1), not a mechanism — it doesn't count as a lookup.
-		// 11 mechanisms (9 includes + a + mx) exceeds the 10-lookup limit.
+	it('counts mixed lookup mechanisms (include, a, mx) and ignores redirect= beside -all', async () => {
+		// A redirect= modifier that is in effect DOES count toward the §4.6.4 limit, but RFC 7208
+		// §6.1 says it MUST be ignored when the record has an `all` mechanism — as here (-all) —
+		// so it is neither counted nor followed (SQ-556, matching resolve_spf_chain).
+		// 11 mechanisms (9 includes + a + mx) still exceeds the 10-lookup limit.
 		const mechs =
 			'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com include:l.com';
 		const domainMap: Record<string, string[]> = {
 			'example.com': [`v=spf1 ${mechs} -all`],
 		};
-		// Each included domain resolves to a simple SPF
-		for (const d of ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'h.com', 'i.com', 'j.com', 'k.com', 'l.com']) {
+		// Each included domain resolves to a simple SPF (h.com is never queried: the redirect is ignored)
+		for (const d of ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'i.com', 'j.com', 'k.com', 'l.com']) {
 			domainMap[d] = ['v=spf1 -all'];
 		}
 		mockMultiDomainTxt(domainMap);
@@ -183,6 +185,22 @@ describe('checkSpf', () => {
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('high');
+		expect(f!.metadata?.lookupCount).toBe(11);
+	});
+
+	it("carries a subdomain's inherited organisational-domain DMARC into the worker trust surface (SQ-556)", async () => {
+		// augmentTrustSurface rebuilds its DMARC context from the core findings' metadata, so the
+		// core's inherited p=reject must reach the worker-derived aggregate unchanged.
+		mockMultiDomainTxt({
+			'news.example.com': ['v=spf1 include:_spf.google.com include:sendgrid.net include:spf.protection.outlook.com ~all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const r = await run('news.example.com');
+		const summary = r.findings.find((f) => /^SPF trust surface: \d+ shared platforms$/.test(f.title));
+		expect(summary).toBeDefined();
+		expect(summary!.severity).toBe('info');
+		expect(summary!.metadata?.dmarcPolicy).toBe('reject');
+		expect(r.findings.some((f) => /No DMARC record is published/i.test(f.detail))).toBe(false);
 	});
 
 	// ---- New tests for recursive include expansion ----

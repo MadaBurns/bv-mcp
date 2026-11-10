@@ -60,6 +60,15 @@ describe('checkTlsrpt', () => {
 		const finding = result.findings.find((f) => /Multiple TLS-RPT records/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('low');
+		// RFC 8460 §3: no single record is in effect, so the set is not also "configured" (SQ-556).
+		expect(result.findings.some((f) => /TLS-RPT record configured/i.test(f.title))).toBe(false);
+	});
+
+	it('ignores an unrelated TXT record at _smtp._tls instead of fusing it into rua (SQ-556)', async () => {
+		mockTxtRecords(['v=TLSRPTv1; rua=mailto:a@example.com', 'unrelated=value with space']);
+		const result = await run();
+		expect(result.findings.some((f) => /TLS-RPT record configured/i.test(f.title))).toBe(true);
+		expect(result.findings.some((f) => /invalid reporting URI/i.test(f.title))).toBe(false);
 	});
 
 	it('should return info finding for record with multiple comma-separated valid URIs', async () => {
