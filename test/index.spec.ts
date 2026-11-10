@@ -1862,7 +1862,7 @@ describe('DNS Security MCP Server', () => {
 				getByName: (name: string) => { coordinatorCalls.push(name); throw new Error('limiter must not be consulted'); },
 				idFromName: (name: string) => { coordinatorCalls.push(name); throw new Error('limiter must not be consulted'); },
 			} as unknown as DurableObjectNamespace;
-			const spyEnv = { ...env, RATE_LIMIT: spyKv, QUOTA_COORDINATOR: spyCoordinator } as Env;
+			const spyEnv = { ...env, RATE_LIMIT: spyKv, QUOTA_COORDINATOR: spyCoordinator } as unknown as Env;
 
 			const request = new Request('http://example.com/badge/example.invalid', { headers: { 'cf-connecting-ip': '203.0.113.61' } });
 			const ctx = createExecutionContext();
@@ -1895,7 +1895,7 @@ describe('DNS Security MCP Server', () => {
 				QUOTA_COORDINATOR: recordingCoordinator,
 				QUOTA_SHARDING_ENABLED: 'true',
 				QUOTA_SHARD_SALT: routing.salt,
-			} as Env;
+			} as unknown as Env;
 
 			const request = new Request('http://example.com/badge/example.com', { headers: { 'cf-connecting-ip': ip } });
 			const ctx = createExecutionContext();
