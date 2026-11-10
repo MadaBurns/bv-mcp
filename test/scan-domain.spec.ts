@@ -1773,3 +1773,120 @@ describe('scanDomain — sentinel-skip on per-check path (Fix 2)', () => {
 		expect(getKeys.filter((key) => String(key).includes(':check:'))).toHaveLength(0);
 	});
 });
+
+/**
+ * SQ-561 — a direct check_* call and a concurrent scan_domain of the same domain must not share
+ * one in-flight promise. Both used to dedup under `buildCheckCacheKey(domain, category)`, but the
+ * two call sites produce different results for that key: the direct `check_ssl` opts into CT
+ * certificate metadata (the scan does not), and the scan's run is wrapped in its own per-check
+ * timeout, abort signal and fetch budget. Whoever registered first answered the other caller.
+ */
+describe('scanDomain vs a concurrent direct check_* call (SQ-561)', () => {
+	const CT_ISSUER = 'SQ-561 Test CA';
+
+	function deferred(): { promise: Promise<void>; release: () => void } {
+		let release!: () => void;
+		const promise = new Promise<void>((resolve) => (release = resolve));
+		return { promise, release };
+	}
+
+	/** mockAllChecks, plus a Certspotter answer and a gate on one URL pattern. */
+	function mockWithGate(gateWhen: (url: string) => boolean, gate: Promise<void>) {
+		mockAllChecks();
+		const base = globalThis.fetch;
+		const calls = { gated: 0, certspotter: 0 };
+		globalThis.fetch = vi.fn().mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('api.certspotter.com')) {
+				calls.certspotter++;
+				const issuance = {
+					not_before: '2026-05-01T00:00:00Z',
+					not_after: '2027-05-01T00:00:00Z',
+					dns_names: ['example.com'],
+					issuer: { name: CT_ISSUER },
+					serial: 'sq561',
+				};
+				return new Response(JSON.stringify([issuance]), { status: 200 });
+			}
+			if (gateWhen(url)) {
+				calls.gated++;
+				await gate;
+			}
+			return base(input, init);
+		});
+		return calls;
+	}
+
+	function toolText(result: { content: { text?: string }[] }): string {
+		return result.content.map((c) => c.text ?? '').join('\n');
+	}
+
+	it('a direct check_ssl started while the scan ssl check is in flight gets its own CT certificate metadata', async () => {
+		const domain = 'sq561-scan-first.com';
+		const gate = deferred();
+		const calls = mockWithGate((url) => url.startsWith(`https://${domain}/`), gate.promise);
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const scanP = scanDomain(domain);
+		// The scan fan-out has registered its per-check runs once its first web fetch is out.
+		await vi.waitFor(() => expect(calls.gated).toBeGreaterThan(0));
+		const directP = handleToolsCall({ name: 'check_ssl', arguments: { domain } });
+		await new Promise((r) => setTimeout(r, 100));
+		gate.release();
+		const [scan, direct] = await Promise.all([scanP, directP]);
+
+		expect(direct.isError).toBeUndefined();
+		expect(toolText(direct)).toContain(`Issuer: ${CT_ISSUER}`);
+		expect(calls.certspotter).toBe(1);
+		expect(scan.checks.find((c) => c.category === 'ssl')?.metadata?.certificate).toBeUndefined();
+	});
+
+	it('a scan started while a direct check_ssl is in flight does not inherit the direct call result', async () => {
+		const domain = 'sq561-direct-first.com';
+		const gate = deferred();
+		const calls = mockWithGate((url) => url.startsWith(`https://${domain}/`), gate.promise);
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const directP = handleToolsCall({ name: 'check_ssl', arguments: { domain } });
+		await vi.waitFor(() => expect(calls.gated).toBeGreaterThan(0));
+		const scanP = scanDomain(domain);
+		// The direct call holds one gated fetch; the scan's fan-out adds at least one more.
+		await vi.waitFor(() => expect(calls.gated).toBeGreaterThan(1));
+		await new Promise((r) => setTimeout(r, 100));
+		gate.release();
+		const [scan, direct] = await Promise.all([scanP, directP]);
+
+		expect(toolText(direct)).toContain(`Issuer: ${CT_ISSUER}`);
+		const scanSsl = scan.checks.find((c) => c.category === 'ssl');
+		expect(scanSsl).toBeDefined();
+		expect(scanSsl!.metadata?.certificate).toBeUndefined();
+	});
+
+	it("a direct check_dkim neither waits on nor inherits the scan's stalled DKIM run", async () => {
+		const domain = 'sq561-dkim.com';
+		const gate = deferred();
+		// Hold only the scan's DKIM queries: everything sent after the direct call starts passes.
+		let directStarted = false;
+		const calls = mockWithGate((url) => !directStarted && url.includes('cloudflare-dns.com') && url.includes('_domainkey.'), gate.promise);
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const scanP = scanDomain(domain, undefined, { scanTimeoutMs: 4_000, perCheckTimeoutMs: 300 });
+		await vi.waitFor(() => expect(calls.gated).toBeGreaterThan(0));
+		directStarted = true;
+		// The scan's held queries cannot fail before DNS_TIMEOUT_MS (3s), so a direct call bound to
+		// the scan's run cannot answer inside 2s; one running its own check answers at once.
+		const direct = await Promise.race([
+			handleToolsCall({ name: 'check_dkim', arguments: { domain } }),
+			new Promise<null>((r) => setTimeout(() => r(null), 2_000)),
+		]);
+		gate.release();
+		await scanP;
+
+		expect(direct).not.toBeNull();
+		expect(direct!.isError).toBeUndefined();
+		expect(toolText(direct!)).not.toContain('not measured');
+	});
+});
