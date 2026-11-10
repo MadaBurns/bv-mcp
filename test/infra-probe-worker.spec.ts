@@ -108,6 +108,18 @@ describe('infra probe worker', () => {
 		expect(body.error).toBe('invalid_hostname');
 	});
 
+	it.each(['/probe/authoritative-dns', '/probe/delegation-consistency'])('answers invalid_hostname 400 for a non-object JSON body on %s', async (path) => {
+		for (const raw of ['null', '[]', '5', '"x"']) {
+			const response = await infraProbeWorker.fetch(new Request(`https://infra-probe.internal${path}`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: raw,
+			}));
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as { error?: string }).error).toBe('invalid_hostname');
+		}
+	});
+
 	it('rejects an oversized chunked probe body before JSON parsing', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
 			method: 'POST',
