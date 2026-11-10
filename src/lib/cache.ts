@@ -184,6 +184,20 @@ export function buildScanCacheKey(
 	return profile ? `${base}:profile:${profile}` : base;
 }
 
+/**
+ * Build the in-isolate dedup key for one scan_domain per-check run (SQ-561).
+ * Shape: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>:scan-check:<checkName>`.
+ *
+ * Deliberately distinct from {@link buildCheckCacheKey}, the direct check_* key. The two call
+ * sites produce different results for the same check: the direct `check_ssl` adds CT certificate
+ * metadata, while the scan's run is wrapped in its own per-check timeout, abort signal, fetch
+ * budget and zone context. Sharing one in-flight promise handed each caller the other's result,
+ * including the scan's cancellation. Scans still share runs with each other under this key.
+ */
+export function buildScanCheckInflightKey(domain: string, checkName: string): string {
+	return `${buildScanCacheKey(domain)}:scan-check:${checkName}`;
+}
+
 /** In-flight promise map for cache stampede (thundering herd) protection */
 const INFLIGHT = new Map<string, Promise<unknown>>();
 

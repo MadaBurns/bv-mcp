@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, runWithCache, IN_MEMORY_CACHE } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, runWithCache, IN_MEMORY_CACHE, buildCheckCacheKey, buildScanCheckInflightKey } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -661,5 +661,16 @@ describe('runWithCache — skipSentinel flag', () => {
 		expect(run).not.toHaveBeenCalled();
 		expect(mockKV.put).not.toHaveBeenCalled();
 		expect(mockKV.delete).not.toHaveBeenCalled();
+	});
+});
+
+describe('buildScanCheckInflightKey (SQ-561)', () => {
+	it('never equals the direct check_* key for the same domain and check', () => {
+		// A scan and a direct call compute different results for one check, so they must not share
+		// an in-flight promise; scans still share one key with each other.
+		for (const check of ['ssl', 'dkim', 'mx', 'ptr']) {
+			expect(buildScanCheckInflightKey('example.com', check)).not.toBe(buildCheckCacheKey('example.com', check));
+			expect(buildScanCheckInflightKey('example.com', check)).toBe(buildScanCheckInflightKey('example.com', check));
+		}
 	});
 });

@@ -8,7 +8,7 @@
  */
 
 import { type CheckCategory, type CheckResult, buildCheckResult, createFinding } from '../../lib/scoring';
-import { buildCheckCacheKey, runWithCache } from '../../lib/cache';
+import { buildScanCheckInflightKey, runWithCache } from '../../lib/cache';
 import type { QueryDnsOptions } from '../../lib/dns-types';
 import { CHECK_DISPATCH } from './check-dispatch';
 import type { ScanRuntimeOptions } from './post-processing';
@@ -103,8 +103,12 @@ export async function runCheckRetry(
  * What stays: `runWithCache` still shares the in-flight promise for the same key, so two
  * concurrent scans of one domain in an isolate run each check once, and it reads the in-memory
  * cache. `shouldCache` is false so nothing is written there either (a memory write per category
- * would churn the 1000-entry fallback cache that short-TTL poller results rely on). Direct
- * check_* calls keep their own KV-backed per-check cache under the same key.
+ * would churn the 1000-entry fallback cache that short-TTL poller results rely on).
+ *
+ * SQ-561: the key is the scan's own (`buildScanCheckInflightKey`), not the direct check_* key.
+ * A direct call computes a different result (e.g. `check_ssl` adds CT certificate metadata) and
+ * is not bound to this scan's timeout and abort signal, so the two must never join each other's
+ * run. Direct check_* calls keep their own KV-backed per-check cache under `buildCheckCacheKey`.
  */
 export function runDedupedCheck(
 	domain: string,
@@ -112,7 +116,7 @@ export function runDedupedCheck(
 	run: () => Promise<CheckResult>,
 	skipCache?: boolean,
 ): Promise<CheckResult> {
-	return runWithCache(buildCheckCacheKey(domain, category), run, undefined, undefined, skipCache, () => false, true);
+	return runWithCache(buildScanCheckInflightKey(domain, category), run, undefined, undefined, skipCache, () => false, true);
 }
 
 /**
