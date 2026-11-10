@@ -189,6 +189,13 @@ describe('computeCycleDiff', () => {
 		expect(out.baseline_cycle_id).toBeNull();
 	});
 
+	it('truncates an over-long title to the schema limit instead of throwing', () => {
+		const out = computeCycleDiff([row('a.com', 'dmarc', 'high', 'x'.repeat(300))], [], baseOpts);
+		expect(out.highlights).toHaveLength(1);
+		expect(out.highlights[0].title).toHaveLength(200);
+		expect(out.highlights[0].title.endsWith('…')).toBe(true);
+	});
+
 	it('webhook_url_hash is 16 lowercase hex chars', () => {
 		const out = computeCycleDiff([], [], baseOpts);
 		expect(out.webhook_url_hash).toMatch(/^[a-f0-9]{16}$/);

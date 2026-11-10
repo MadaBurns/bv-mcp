@@ -29,7 +29,10 @@ async function readJson(request: Request): Promise<{ ok: true; value: unknown } 
 	const body = await readBoundedText(request, MAX_PROBE_BODY_BYTES);
 	if (!body.ok) return { ok: false, status: 413 };
 	try {
-		return { ok: true, value: JSON.parse(body.text) as unknown };
+		const value = JSON.parse(body.text) as unknown;
+		// A non-object body (null, number, string, array) carries no hostname; hand callers an empty object so
+		// they answer invalid_hostname instead of throwing on a property read.
+		return { ok: true, value: value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {} };
 	} catch {
 		return { ok: false, status: 400 };
 	}
