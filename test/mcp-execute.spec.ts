@@ -1417,6 +1417,25 @@ describe('executeMcpRequest — unknown resource / prompt', () => {
 		expect(payload.error.code).toBe(-32602);
 		expect(payload.error.message).toBe('Invalid prompt name: no-such-prompt');
 	});
+
+	it.each([
+		['empty arguments for a real prompt', { name: 'full-security-audit', arguments: {} }, /^Invalid domain: /],
+		['an invalid domain argument', { name: 'full-security-audit', arguments: { domain: 'a'.repeat(254) } }, /^Invalid domain: /],
+	])('prompts/get with %s returns -32602 over HTTP 400, not 500', async (_label, params, messagePattern) => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 7, method: 'prompts/get', params } as JsonRpcRequest,
+			}),
+		);
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		const payload = result.payload as { id: number; error: { code: number; message: string } };
+		expect(payload.id).toBe(7);
+		expect(payload.error.code).toBe(-32602);
+		expect(payload.error.message).toMatch(messagePattern);
+	});
 });
 
 // ---------------------------------------------------------------------------

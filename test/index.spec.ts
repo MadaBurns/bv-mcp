@@ -2,7 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker, { resolveM365PrincipalIdentity } from '../src';
 import { checkDistinctDomainDailyLimitWithCoordinator, resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
-import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
+import { checkToolDailyRateLimit, resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { getLegacyStreamCount, resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
 import { ACTIVE_SESSIONS } from '../src/lib/session-memory';
@@ -1797,19 +1797,23 @@ describe('DNS Security MCP Server', () => {
 			// mint a fresh per-IP daily-quota bucket. Without cf-connecting-ip, every
 			// request lands in the shared 'unknown' bucket — so 25 hits exhaust the
 			// daily cap and a 26th from a different spoofed XFF still 429s.
+			// Seed the shared 'unknown' bucket to the 25/day cap directly: /badge now
+			// validates the domain BEFORE consuming any counter, so malformed-domain
+			// requests no longer drain it.
 			for (let i = 0; i < 25; i++) {
-				const request = new Request('http://example.com/badge/example.invalid', {
-					headers: { 'x-forwarded-for': '198.51.100.20' },
-				});
-				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, env, ctx);
-				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(400);
+				expect((await checkToolDailyRateLimit('unknown', 'scan_domain', 25, env.RATE_LIMIT, env.QUOTA_COORDINATOR)).allowed).toBe(true);
 			}
+			const seededRequest = new Request('http://example.com/badge/example.com', {
+				headers: { 'x-forwarded-for': '198.51.100.20' },
+			});
+			const seededCtx = createExecutionContext();
+			const seededResponse = await worker.fetch(seededRequest, env, seededCtx);
+			await waitOnExecutionContext(seededCtx);
+			expect(seededResponse.status).toBe(429);
 
 			// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one,
-			// so the 26th request 429s regardless of the spoofed forwarding header.
-			const differentIpRequest = new Request('http://example.com/badge/example.invalid', {
+			// so the next request 429s regardless of the spoofed forwarding header.
+			const differentIpRequest = new Request('http://example.com/badge/example.com', {
 				headers: { 'x-forwarded-for': '203.0.113.30' },
 			});
 			const differentIpCtx = createExecutionContext();
@@ -1844,9 +1848,96 @@ describe('DNS Security MCP Server', () => {
 
 				expect(response.status).toBe(429);
 				expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
+				expect(response.headers.get('Cache-Control')).toBe('no-store');
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+
+		it('badge: an invalid domain is 400 + no-store and makes no limiter call', async () => {
+			const kvCalls: string[] = [];
+			const spyKv = new Proxy({}, { get: (_t, prop) => (...args: unknown[]) => { kvCalls.push(`${String(prop)}:${String(args[0])}`); return Promise.resolve(null); } }) as unknown as KVNamespace;
+			const coordinatorCalls: string[] = [];
+			const spyCoordinator = {
+				getByName: (name: string) => { coordinatorCalls.push(name); throw new Error('limiter must not be consulted'); },
+				idFromName: (name: string) => { coordinatorCalls.push(name); throw new Error('limiter must not be consulted'); },
+			} as unknown as DurableObjectNamespace;
+			const spyEnv = { ...env, RATE_LIMIT: spyKv, QUOTA_COORDINATOR: spyCoordinator } as Env;
+
+			const request = new Request('http://example.com/badge/example.invalid', { headers: { 'cf-connecting-ip': '203.0.113.61' } });
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, spyEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(400);
+			expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
+			expect(response.headers.get('Cache-Control')).toBe('no-store');
+			expect(kvCalls).toEqual([]);
+			expect(coordinatorCalls).toEqual([]);
+		});
+
+		it('badge: the per-IP rate and tool-daily counters use the same shard routing as /mcp', async () => {
+			const routing = { enabled: true, salt: 'badge-shard-salt' };
+			const ip = '203.0.113.62';
+			// Trip the distinct-domain cap (sharded) so the request ends before any scan.
+			for (let index = 0; index < 12; index += 1) {
+				expect((await checkDistinctDomainDailyLimitWithCoordinator(ip, `seed-${index}`, 12, env.QUOTA_COORDINATOR, routing))?.allowed).toBe(true);
+			}
+			const names: string[] = [];
+			const recordingCoordinator = {
+				getByName: (name: string) => {
+					names.push(name);
+					return env.QUOTA_COORDINATOR.getByName(name);
+				},
+			} as unknown as DurableObjectNamespace;
+			const shardedEnv = {
+				...env,
+				QUOTA_COORDINATOR: recordingCoordinator,
+				QUOTA_SHARDING_ENABLED: 'true',
+				QUOTA_SHARD_SALT: routing.salt,
+			} as Env;
+
+			const request = new Request('http://example.com/badge/example.com', { headers: { 'cf-connecting-ip': ip } });
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, shardedEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(429);
+			// Only the global daily cap stays on the singleton; rate, tool-daily and
+			// distinct-domain counters all land on quota shards.
+			expect(names.filter((name) => name === 'global-quota-coordinator')).toHaveLength(1);
+			expect(names.filter((name) => name.startsWith('quota-shard-')).length).toBeGreaterThanOrEqual(3);
+		});
+
+		it('unhandled handler throw goes through app.onError as a JSON-RPC envelope, not text/plain', async () => {
+			const throwingEnv = { ...env } as Env;
+			Object.defineProperty(throwingEnv, 'RATE_LIMIT', {
+				get() {
+					throw new Error('boom');
+				},
+			});
+			const request = new Request('http://example.com/badge/example.com', { headers: { 'cf-connecting-ip': '203.0.113.63' } });
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, throwingEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(500);
+			expect(response.headers.get('Content-Type')).toContain('application/json');
+			expect(await response.json()).toEqual({
+				jsonrpc: '2.0',
+				id: null,
+				error: { code: -32603, message: 'Internal server error' },
+			});
+		});
+
+		it('owner-scoped brand tool detection normalises the tool name like dispatch does', async () => {
+			const { includesOwnerScopedBrandOperation } = await import('../src');
+			const call = (name: unknown) => ({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name } });
+			expect(includesOwnerScopedBrandOperation([call('brand_audit_status')])).toBe(true);
+			expect(includesOwnerScopedBrandOperation([call('Brand_Audit_Status')])).toBe(true);
+			expect(includesOwnerScopedBrandOperation([call('  brand_audit_status ')])).toBe(true);
+			expect(includesOwnerScopedBrandOperation([call('scan_domain')])).toBe(false);
+			expect(includesOwnerScopedBrandOperation([call(42)])).toBe(false);
 		});
 
 		it('authenticated scan_domain requests are not subject to free daily cap', async () => {

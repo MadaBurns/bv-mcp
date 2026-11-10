@@ -16,6 +16,7 @@
 
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
+import { HTTPException } from 'hono/http-exception';
 
 // INERT — the bv-wasm-core crate (estimateTokens / checkPermission / compaction)
 // is a fully-built, fully-tested subsystem that is NOT wired into any code path
@@ -36,6 +37,7 @@ import {
 } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog, sanitizeRequestUrlForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
+import { normalizeToolName } from './handlers/tool-args';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
@@ -99,14 +101,15 @@ const OWNER_SCOPED_BRAND_TOOLS = new Set([
 	'delete_brand_audit_watch',
 ]);
 
-function includesOwnerScopedBrandOperation(entries: unknown[]): boolean {
+/** True when any batch entry is a tools/call to an owner-scoped brand tool (name normalised exactly as dispatch does). */
+export function includesOwnerScopedBrandOperation(entries: unknown[]): boolean {
 	return entries.some((entry) => {
 		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
 		const request = entry as { method?: unknown; params?: unknown };
 		if (request.method !== 'tools/call' || !request.params || typeof request.params !== 'object' || Array.isArray(request.params))
 			return false;
 		const name = (request.params as { name?: unknown }).name;
-		return typeof name === 'string' && OWNER_SCOPED_BRAND_TOOLS.has(name);
+		return typeof name === 'string' && OWNER_SCOPED_BRAND_TOOLS.has(normalizeToolName(name));
 	});
 }
 
@@ -730,20 +733,21 @@ app.use('*', async (c, next) => {
 	}
 });
 
-app.use('*', async (c, next) => {
-	try {
-		await next();
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'error',
-			details: {
-				method: c.req.method,
-				url: sanitizeRequestUrlForLog(c.req.url),
-				headers: sanitizeHeadersForLog(c.req.raw.headers),
-			},
-		});
-		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
-	}
+// Hono's compose catches a handler throw at the throwing level and routes it to
+// `app.onError`; a try/catch middleware around `next()` never sees it. Keep the
+// sanitised log + JSON-RPC envelope here so an unhandled throw is never a bare
+// text/plain 500.
+app.onError((err, c) => {
+	if (err instanceof HTTPException) return err.getResponse();
+	logError(err instanceof Error ? err : String(err), {
+		severity: 'error',
+		details: {
+			method: c.req.method,
+			url: sanitizeRequestUrlForLog(c.req.url),
+			headers: sanitizeHeadersForLog(c.req.raw.headers),
+		},
+	});
+	return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
 });
 
 /**
@@ -872,15 +876,29 @@ function badgeRateLimitResponse(svgHeaders: Record<string, string>, retryAfterMs
 }
 
 app.get('/badge/:domain', async (c) => {
+	// Only a 200 grade badge is cacheable. Every error badge (400/429/500) is
+	// no-store so a shared cache never pins a transient failure for 5 minutes.
 	const svgHeaders = {
 		'Content-Type': 'image/svg+xml',
 		'Cache-Control': 'public, max-age=300',
 	};
+	const errorHeaders = { ...svgHeaders, 'Cache-Control': 'no-store' };
+
+	// Validate BEFORE touching any rate/quota counter so a malformed domain costs nothing.
+	const rawDomain = c.req.param('domain');
+	const validation = validateDomain(rawDomain);
+	const domain = validation.valid ? sanitizeDomain(rawDomain) : undefined;
+	if (!domain) {
+		return new Response(errorBadge(), { status: 400, headers: errorHeaders });
+	}
 
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
-	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	// Same shard routing as the /mcp unauthenticated path, so both surfaces count
+	// an IP on the same coordinator instance when QUOTA_SHARDING_ENABLED is on.
+	const routing = resolveQuotaShardRouting(c.env);
+	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR, routing);
 	if (!rateResult.allowed) {
-		return badgeRateLimitResponse(svgHeaders, rateResult.retryAfterMs);
+		return badgeRateLimitResponse(errorHeaders, rateResult.retryAfterMs);
 	}
 
 	// The badge runs the full scan engine unauthenticated, so it must apply the
@@ -894,7 +912,7 @@ app.get('/badge/:domain', async (c) => {
 		c.env.QUOTA_COORDINATOR,
 	);
 	if (!globalResult.allowed) {
-		return badgeRateLimitResponse(svgHeaders, globalResult.retryAfterMs);
+		return badgeRateLimitResponse(errorHeaders, globalResult.retryAfterMs);
 	}
 
 	const toolQuota = await checkToolDailyRateLimit(
@@ -903,20 +921,10 @@ app.get('/badge/:domain', async (c) => {
 		FREE_TOOL_DAILY_LIMITS.scan_domain,
 		c.env.RATE_LIMIT,
 		c.env.QUOTA_COORDINATOR,
+		routing,
 	);
 	if (!toolQuota.allowed) {
-		return c.text('Rate limit exceeded', 429);
-	}
-
-	const rawDomain = c.req.param('domain');
-	const validation = validateDomain(rawDomain);
-	if (!validation.valid) {
-		return new Response(errorBadge(), { status: 400, headers: svgHeaders });
-	}
-
-	const domain = sanitizeDomain(rawDomain);
-	if (!domain) {
-		return new Response(errorBadge(), { status: 400, headers: svgHeaders });
+		return c.text('Rate limit exceeded', 429, { 'Cache-Control': 'no-store' });
 	}
 
 	// Distinct-domain/day cap (tighter than the per-tool 25/day) — mirrors the
@@ -929,10 +937,10 @@ app.get('/badge/:domain', async (c) => {
 		FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 		c.env.RATE_LIMIT,
 		c.env.QUOTA_COORDINATOR,
-		resolveQuotaShardRouting(c.env),
+		routing,
 	);
 	if (!distinctResult.allowed) {
-		return badgeRateLimitResponse(svgHeaders, distinctResult.retryAfterMs);
+		return badgeRateLimitResponse(errorHeaders, distinctResult.retryAfterMs);
 	}
 
 	try {
@@ -961,7 +969,7 @@ app.get('/badge/:domain', async (c) => {
 			headers: svgHeaders,
 		});
 	} catch {
-		return new Response(errorBadge(), { status: 500, headers: svgHeaders });
+		return new Response(errorBadge(), { status: 500, headers: errorHeaders });
 	}
 });
 
