@@ -54,7 +54,7 @@ describe('SQ-291 async batch scan — unscanned tail is recorded, not reported a
 			item('c.example.com', 'batch_budget_exceeded'),
 		]);
 
-		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toBe('ack');
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toEqual({ action: 'ack' });
 
 		const job = await getAsyncBatchJob(jobId, 'principal-a', kv);
 		expect(job?.status).toBe('completed');

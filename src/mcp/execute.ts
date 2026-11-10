@@ -292,6 +292,14 @@ function isUnknownToolName(rawName: unknown, normalizedName: string): boolean {
 	return typeof rawName === 'string' && !isRegisteredToolName(normalizedName);
 }
 
+/** True when `params.name` is a tool the public surface refuses to an unauthenticated caller (401/403, never executed). */
+function isUnauthGatedTool(params: unknown): boolean {
+	const rawName = typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+	if (typeof rawName !== 'string') return false;
+	const policy = evaluateToolPolicy({ surface: 'public', tool: normalizeToolName(rawName), authenticated: false, tier: null });
+	return !policy.allowed && (policy.block === 'auth_required' || policy.block === 'paid_only');
+}
+
 /** A JSON-RPC notification gets no response body; it is only counted in request analytics. */
 function acknowledgeNotification(options: ExecuteMcpRequestOptions, method: string): ProcessedRequestResult {
 	emitRequestAnalytics(options, method, 'ok', false);
@@ -485,9 +493,15 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		options.isAuthenticated &&
 		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
 
+	// An unauthenticated call to an auth-required or paid-only tool is never executed: it is answered
+	// 401/403 (with the OAuth challenge when available) by the gate below. That answer must not depend
+	// on a session, because a client learns it has to authenticate from exactly this response, so the
+	// session gate is skipped for it. It still passes the short-window limiter first.
+	const isUnauthGatedToolCall = !options.isAuthenticated && method === 'tools/call' && isUnauthGatedTool(params);
+
 	// Notifications are fire-and-forget at the JSON-RPC layer, but they are still
 	// subsequent HTTP requests and therefore must carry a valid assigned session.
-	if (options.validateSession && method !== 'initialize' && !isSessionlessProtocolMethod) {
+	if (options.validateSession && method !== 'initialize' && !isSessionlessProtocolMethod && !isUnauthGatedToolCall) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
 			options.sessionStore,
