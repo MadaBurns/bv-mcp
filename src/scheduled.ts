@@ -222,39 +222,55 @@ async function gzipText(text: string): Promise<Uint8Array> {
 }
 
 /**
+ * Content-addressed R2 key for one non-empty page of ordered rows: the day bucket
+ * plus the page's first and last row id. The ids name the object, so a non-numeric
+ * id throws — the caller then holds the rows rather than archiving unnamed data.
+ */
+function archivePageKey(windowBucket: number, rows: Record<string, unknown>[]): { key: string; lastRowId: number } {
+	const firstRowId = Number(rows[0].id);
+	const lastRowId = Number(rows[rows.length - 1].id);
+	if (!Number.isFinite(firstRowId) || !Number.isFinite(lastRowId)) throw new Error('access-log archive page has a non-numeric id');
+	const pad = (n: number) => String(n).padStart(12, '0');
+	return { key: `mcp-access-log/v1/window=${windowBucket}/part-${pad(firstRowId)}-${pad(lastRowId)}.ndjson.gz`, lastRowId };
+}
+
+/**
  * Phase 1, decision #3 — archive aging `mcp_access_log` rows to R2 as gzipped
  * NDJSON before the retention DELETE. Keyset-paginated by `id`; each page is a
- * separate `mcp-access-log/v1/window=<bucket>/part-NNNN.ndjson.gz` object. PII
- * columns are stripped via {@link projectArchiveRow}. Returns `true` when every
- * page archived cleanly (or threw, caught by the caller); the caller deletes only
- * on `true` so a failed archive holds the rows.
+ * separate `mcp-access-log/v1/window=<bucket>/part-<firstId>-<lastId>.ndjson.gz`
+ * object. PII columns are stripped via {@link projectArchiveRow}. Returns `true`
+ * when every page archived cleanly (a throw is caught by the caller); the caller
+ * deletes only on `true` so a failed archive holds the rows.
  *
  * `cutoffSeconds` is the single retention boundary (epoch seconds) computed ONCE
  * by the caller and bound verbatim to the SELECT — the same literal also drives
  * the caller's DELETE, so no statement re-evaluates `strftime('now')` and a row
- * can't cross the boundary between SELECT and DELETE (S1, TOCTOU). The R2 window
- * key derives deterministically from that boundary's day bucket, so a retried or
- * partially-failed run overwrites rather than duplicating objects (S3, idempotent).
+ * can't cross the boundary between SELECT and DELETE (S1, TOCTOU).
+ *
+ * Object keys are content-addressed, not cutoff-addressed. The cron fires every
+ * tick and many cutoffs share one UTC day bucket, so a key built from the bucket
+ * plus a per-run page counter would be overwritten by the next tick's (different,
+ * newer) rows, losing the earlier archive after its rows were deleted. Naming
+ * each page by its first and last row id (the keyset cursor) means the same page
+ * of rows always maps to the same key (a retry replaces an identical object, S3)
+ * while different rows never collide.
  */
 async function archiveExpiringAccessLogRows(db: D1Database, archive: R2Bucket, cutoffSeconds: number): Promise<boolean> {
 	const windowBucket = Math.floor(cutoffSeconds / 86_400);
 	const selectSql = `SELECT ${ARCHIVE_COLUMNS.join(', ')} FROM mcp_access_log WHERE created_at < ? AND id > ? ORDER BY id ASC LIMIT ?`;
 	let lastId = 0;
-	let part = 0;
 	for (;;) {
 		const result = await db.prepare(selectSql).bind(cutoffSeconds, lastId, ARCHIVE_PAGE_SIZE).all<Record<string, unknown>>();
 		const rows = result.results ?? [];
 		if (rows.length === 0) break;
 
+		const { key, lastRowId: nextId } = archivePageKey(windowBucket, rows);
 		const ndjson = rows.map((row) => JSON.stringify(projectArchiveRow(row))).join('\n') + '\n';
-		const key = `mcp-access-log/v1/window=${windowBucket}/part-${String(part).padStart(4, '0')}.ndjson.gz`;
 		await archive.put(key, await gzipText(ndjson), {
 			httpMetadata: { contentType: 'application/x-ndjson', contentEncoding: 'gzip' },
 		});
-		part += 1;
 
-		const nextId = Number((rows[rows.length - 1] as { id?: unknown }).id);
-		if (!Number.isFinite(nextId) || nextId <= lastId) break; // non-advancing keyset guard
+		if (nextId <= lastId) break; // non-advancing keyset guard
 		lastId = nextId;
 		if (rows.length < ARCHIVE_PAGE_SIZE) break; // last (partial) page
 	}
