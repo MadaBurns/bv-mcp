@@ -87,6 +87,32 @@ function handleExplainFindingValidationError(
 	return buildToolErrorResult(error.message);
 }
 
+/**
+ * analyze_drift's CURRENT-side measurement.
+ *
+ * With a cached baseline (already read into memory by the caller) the current side MUST be a
+ * fresh measurement: without `forceRefresh` scanDomain serves that SAME cache entry back and
+ * the diff is a scan against itself (always "stable", zero delta). This internal refresh is
+ * not caller-requested, so it sits outside the metered `force_refresh` allowance in
+ * mcp/execute.ts (which counts only a literal `force_refresh: true` argument) and cannot be
+ * refused by it. The fresh result overwrites the cache entry, which is fine because the
+ * baseline is already held.
+ *
+ * Returns `undefined` when a cached baseline is paired with a replayed (`cached: true`)
+ * result: never fall back silently to the cache, since that is exactly the self-diff.
+ */
+async function scanDriftCurrentSide(
+	domain: string,
+	kv: KVNamespace | undefined,
+	runtimeOptions: ToolRuntimeOptions | undefined,
+	callerForceRefresh: boolean,
+	cachedBaseline: boolean,
+): Promise<Awaited<ReturnType<typeof scanDomain>> | undefined> {
+	const forceRefresh = cachedBaseline || callerForceRefresh;
+	const scan = await scanDomain(domain, kv, { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) });
+	return cachedBaseline && scan.cached ? undefined : scan;
+}
+
 /** The handleToolsCall locals the direct-dispatch arms read. */
 export interface DirectDispatchContext {
 	name: string;
@@ -495,19 +521,14 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 				}
 			}
 
-			// The cached baseline was read into memory above; the CURRENT side must be a fresh
-			// measurement. Without the refresh scanDomain serves that SAME cache entry back, so the
-			// diff is a scan against itself (always "stable", zero delta). This internal refresh is
-			// not caller-requested, so it sits outside the metered `force_refresh` allowance in
-			// mcp/execute.ts (which counts only a literal `force_refresh: true` argument) and cannot
-			// be refused by it. The fresh result overwrites the cache entry, which is fine because
-			// the baseline is already held.
-			const forceRefresh = baselineStr === 'cached' || extractForceRefresh(validatedArgs);
-			const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
-			const scanResult = await scanDomain(validDomain, scanCacheKV, scanOptions);
-			// Never fall back silently to the cached entry: diffing against a replayed result is
-			// exactly the self-diff this arm must not produce.
-			if (baselineStr === 'cached' && scanResult.cached) {
+			const scanResult = await scanDriftCurrentSide(
+				validDomain,
+				scanCacheKV,
+				runtimeOptions,
+				extractForceRefresh(validatedArgs),
+				baselineStr === 'cached',
+			);
+			if (!scanResult) {
 				return buildToolErrorResult(
 					`Invalid baseline: could not take a fresh measurement of ${validDomain} to compare against the cached scan. Pass a baseline JSON instead.`,
 				);
