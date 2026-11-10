@@ -560,6 +560,36 @@ describe('POST /oauth/token grant_type=jwt-bearer (ID-JAG)', () => {
 		expect(body.error_description).toBe('Assertion has already been used');
 	});
 
+	it('leaves the assertion reusable when the mint fails after validation (token-version read outage), then burns it on success', async () => {
+		// Only the first token-version read fails; every other coordinator call (incl. the jti claim) reaches the real binding.
+		let versionReadsToFail = 1;
+		const flaky = {
+			getByName: (name: string) => {
+				const stub = env.QUOTA_COORDINATOR.getByName(name);
+				return {
+					dispatch: (request: { kind: string }) => {
+						if (request.kind === 'version-get' && versionReadsToFail-- > 0) return Promise.reject(new Error('version outage'));
+						return stub.dispatch(request as never);
+					},
+				};
+			},
+		} as unknown as DurableObjectNamespace<QuotaCoordinator>;
+		const flakyEnv = { ...grantEnv, QUOTA_COORDINATOR: flaky } as TestEnv;
+		const assertion = await signIdJag(signer);
+
+		const first = await postToken(grantParams(assertion), flakyEnv);
+		expect(first.status).toBe(503);
+		expect(((await first.json()) as Record<string, unknown>).error).toBe('temporarily_unavailable');
+
+		// The same assertion is retryable: the failed mint did not burn its jti.
+		const retry = await postToken(grantParams(assertion), flakyEnv);
+		expect(retry.status).toBe(200);
+
+		// A successful mint still burns it.
+		const body = await expectError(await postToken(grantParams(assertion), flakyEnv), 400, 'invalid_grant');
+		expect(body.error_description).toBe('Assertion has already been used');
+	});
+
 	it('fails closed with 503 when the replay state is unavailable', async () => {
 		// Without the coordinator the rate limit falls back to KV, but the one-time jti claim must not.
 		const noCoordinatorEnv = { ...grantEnv, QUOTA_COORDINATOR: undefined } as unknown as TestEnv;

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { putCode } from '../../src/oauth/storage';
-import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
+import { OAUTH_CLIENT_TTL_SECONDS, OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
 const TEST_API_KEY = 'testkey';
@@ -578,5 +578,94 @@ describe('POST /oauth/token', () => {
 			return postTokenRaw(body, authEnv, { 'cf-connecting-ip': ip, 'x-forwarded-for': '203.0.113.30' });
 		});
 		expect(differentXff.status).toBe(429);
+	});
+});
+
+describe('POST /oauth/token — DCR client TTL refresh on use', () => {
+	const DAY_SECONDS = 24 * 60 * 60;
+	type ClientPut = { key: string; options?: KVNamespacePutOptions };
+
+	/** The SESSION_STORE with every `oauth:client:` put observed (and optionally rejected); all other calls reach the real KV. */
+	function envWithClientPutSpy(puts: ClientPut[], rejectClientPut = false): TestEnv {
+		const kv = new Proxy(env.SESSION_STORE, {
+			get(target, prop) {
+				if (prop === 'put') {
+					return async (key: string, value: string, options?: KVNamespacePutOptions) => {
+						if (key.startsWith('oauth:client:')) {
+							puts.push({ key, options });
+							if (rejectClientPut) throw new Error('client write outage');
+						}
+						return target.put(key, value, options);
+					};
+				}
+				const value = Reflect.get(target, prop, target) as unknown;
+				return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+			},
+		});
+		return { ...authEnv, SESSION_STORE: kv } as TestEnv;
+	}
+
+	/** Register a client, then back-date its record so it was last written `ageDays` ago. */
+	async function registerClientAged(ageDays: number): Promise<string> {
+		const { getClient, putClient } = await import('../../src/oauth/storage');
+		const cid = await registerClient();
+		const kv = env.SESSION_STORE as unknown as KVNamespace;
+		const rec = await getClient(kv, cid);
+		expect(rec, 'registered client readable').not.toBeNull();
+		await putClient(kv, { ...rec!, client_id_issued_at: Math.floor(Date.now() / 1000) - ageDays * DAY_SECONDS });
+		return cid;
+	}
+
+	async function exchange(cid: string, customEnv: TestEnv): Promise<Response> {
+		const { verifier, challenge } = await pkcePair();
+		const code = await getAuthCode(cid, challenge);
+		expect(code).not.toBe('');
+		return postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+			customEnv,
+		);
+	}
+
+	it('rewrites a client record older than the refresh threshold with the full client TTL', async () => {
+		const cid = await registerClientAged(45);
+		const puts: ClientPut[] = [];
+		const res = await exchange(cid, envWithClientPutSpy(puts));
+		expect(res.status).toBe(200);
+		expect(puts).toEqual([{ key: `oauth:client:${cid}`, options: { expirationTtl: OAUTH_CLIENT_TTL_SECONDS } }]);
+		const { getClient } = await import('../../src/oauth/storage');
+		const rec = await getClient(env.SESSION_STORE as unknown as KVNamespace, cid);
+		expect(Math.abs((rec?.refreshed_at ?? 0) - Math.floor(Date.now() / 1000))).toBeLessThan(60);
+	});
+
+	it('does not rewrite a client record last written within the refresh threshold', async () => {
+		const cid = await registerClientAged(5);
+		const puts: ClientPut[] = [];
+		const res = await exchange(cid, envWithClientPutSpy(puts));
+		expect(res.status).toBe(200);
+		expect(puts).toEqual([]);
+	});
+
+	it('does not rewrite again right after a refresh (refreshed_at, not issued_at, sets the age)', async () => {
+		const cid = await registerClientAged(45);
+		const puts: ClientPut[] = [];
+		const spyEnv = envWithClientPutSpy(puts);
+		expect((await exchange(cid, spyEnv)).status).toBe(200);
+		expect((await exchange(cid, spyEnv)).status).toBe(200);
+		expect(puts).toHaveLength(1);
+	});
+
+	it('still issues the token when the refresh write fails', async () => {
+		const cid = await registerClientAged(45);
+		const puts: ClientPut[] = [];
+		const res = await exchange(cid, envWithClientPutSpy(puts, true));
+		expect(res.status).toBe(200);
+		expect(puts).toHaveLength(1);
+		expect(typeof ((await res.json()) as Record<string, unknown>).access_token).toBe('string');
 	});
 });

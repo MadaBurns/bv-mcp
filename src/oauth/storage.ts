@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { ClientRecord, CodeRecord, CodeRecordInput } from '../schemas/oauth';
 import { ClientRecordSchema, CodeRecordSchema } from '../schemas/oauth';
-import { OAUTH_CLIENT_TTL_SECONDS, OAUTH_CODE_TTL_SECONDS, OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
+import {
+	OAUTH_CLIENT_REFRESH_AFTER_SECONDS,
+	OAUTH_CLIENT_TTL_SECONDS,
+	OAUTH_CODE_TTL_SECONDS,
+	OAUTH_JWT_TTL_SECONDS,
+	OAUTH_KV_PREFIX,
+} from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
 import { sha256Hex } from './jwks';
 import {
@@ -123,6 +129,27 @@ export async function putClient(kv: KVNamespace, rec: ClientRecord, kvEnvelopeKe
 	const plaintext = JSON.stringify(rec);
 	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
 	await safeKvPut(kv, clientKey(rec.client_id), value, { expirationTtl: OAUTH_CLIENT_TTL_SECONDS }, 'client registration write');
+}
+
+/**
+ * Make "refreshed on use" true for a DCR client: rewrite the record with a fresh TTL, but only once its last write
+ * (`refreshed_at`, else the registration time) is older than OAUTH_CLIENT_REFRESH_AFTER_SECONDS, so a login adds a
+ * KV write at most once a month. Best effort: a missing record, a failed read or a failed write never fails the
+ * caller's grant. Call it only for DCR ids; CIMD clients live under a separate, self-expiring cache keyspace.
+ */
+export async function refreshClientTtl(
+	kv: KVNamespace,
+	clientId: string,
+	kvEnvelopeKey?: Uint8Array,
+	nowSeconds = Math.floor(Date.now() / 1000),
+): Promise<void> {
+	try {
+		const rec = await getClient(kv, clientId, kvEnvelopeKey);
+		if (!rec || nowSeconds - (rec.refreshed_at ?? rec.client_id_issued_at) <= OAUTH_CLIENT_REFRESH_AFTER_SECONDS) return;
+		await putClient(kv, { ...rec, refreshed_at: nowSeconds }, kvEnvelopeKey);
+	} catch {
+		// Best effort: the record simply keeps its current expiry.
+	}
 }
 
 /** Look up a CLIENT RECORD at `key`. Returns null on a miss, a corrupt value or a failed decrypt. */

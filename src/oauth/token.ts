@@ -3,10 +3,10 @@ import type { Context } from 'hono';
 import type { AppEnv } from '../index';
 import { JwtBearerTokenRequestSchema, TokenRequestSchema, type JwtBearerTokenRequest } from '../schemas/oauth';
 import type { EmaTenantRecord } from '../schemas/ema';
-import { claimAssertionJti, consumeCode, getTokenVersion, StrongStateUnavailableError } from './storage';
+import { claimAssertionJti, consumeCode, getTokenVersion, refreshClientTtl, StrongStateUnavailableError } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { AssertionVerifyError, getJwksCached, JwksFetchError, sha256Hex, verifyJwsWithJwks, type JsonWebKeySet } from './jwks';
-import { resolveClient } from './cimd';
+import { isCimdClientId, resolveClient } from './cimd';
 import { EMA_SUBJECT_PREFIX, getEmaTenantByIssuer, isTenantActive, normalizeIssuer, tenantEpoch, type EmaRegistry } from './ema-tenants';
 import {
 	isAllowedOAuthRedirectUri,
@@ -192,6 +192,12 @@ export interface MintAccessTokenOptions {
 	scope: string;
 	/** jwt-bearer only: echo the granted resource (`${issuer}/mcp`) in the response (RFC 8707 style). Absent for every other grant. */
 	echoResource?: boolean;
+	/**
+	 * Runs after every fallible read (secret, issuer, TTL, token version) and immediately before signing, so a
+	 * one-time grant claims its credential as the LAST fallible step: a failed mint leaves the credential reusable.
+	 * A throw is rendered like any other mint failure (TokenEndpointError or the shared 503).
+	 */
+	claimGrant?: () => Promise<void>;
 }
 
 /**
@@ -214,6 +220,7 @@ export async function mintAccessToken(
 		// Read the current token-version for this subject so the minted JWT can be
 		// invalidated before its natural expiry (FIND-13).
 		const ver = await getTokenVersion(env.SESSION_STORE!, opts.subject, env.QUOTA_COORDINATOR);
+		await opts.claimGrant?.();
 		const token = await signJwt(
 			{
 				sub: opts.subject,
@@ -358,6 +365,9 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 		return c.json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400);
 	}
 
+	// DCR clients only (a CIMD id is a self-expiring cache entry elsewhere); best-effort, never fails the grant.
+	if (!isCimdClientId(parsed.client_id)) await refreshClientTtl(kv, parsed.client_id, kvEnvelopeKey);
+
 	return mintAccessToken(c, env, {
 		subject: codeRec.subject ?? 'owner',
 		tier: codeRec.tier ?? 'owner',
@@ -379,6 +389,8 @@ interface AcceptedIdJag {
 	subjectHash: string;
 	/** A resource was requested or claimed (and validated), so the response echoes it. */
 	resourceGranted: boolean;
+	/** Burns the assertion's one-time jti. The mint calls it as its last fallible step: a replay throws invalid_grant, a state outage the 503. */
+	claimAssertion: () => Promise<void>;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -593,7 +605,8 @@ async function claimAssertionOnce(issuer: string, jti: string, exp: number, quot
  * Validate an ID-JAG token request in the contract order (each step's failure is final):
  * shape + `typ` → trusted issuer → allowlisted, resolvable client → `client_id` claim →
  * signature (a JWKS outage is a 503) → verified iss / client_id / aud / time window / sub / jti →
- * resource → one-time jti.
+ * resource → one-time jti. The jti is claimed LAST, by the returned `claimAssertion` after the mint's own
+ * fallible reads: a 503 or mint failure before it leaves the assertion reusable, a successful mint burns it.
  */
 async function acceptIdJag(
 	c: Context<AppEnv>,
@@ -606,7 +619,7 @@ async function acceptIdJag(
 	const issuer = requireStrictIssuer(c.req.url, c.env.OAUTH_ISSUER);
 	const now = Math.floor(Date.now() / 1000);
 	const unverified = decodeIdJagUnverified(request.assertion);
-	// Read before the jti is consumed, so an unreadable registry is a 503 that leaves the assertion reusable.
+	// Read before the jti is claimed, so an unreadable registry is a 503 that leaves the assertion reusable.
 	const tenant = await resolveTrustedTenant({ coordinator: c.env.QUOTA_COORDINATOR, kv, kvEnvelopeKey }, unverified.iss, now);
 	await assertClientAllowed(kv, tenant, request.client_id, kvEnvelopeKey);
 	if (unverified.client_id !== request.client_id) throw new TokenEndpointError('invalid_grant', 'Assertion client_id does not match');
@@ -614,8 +627,14 @@ async function acceptIdJag(
 	const expected: IdJagExpectation = { audience: issuer, tenantIssuer: tenant.issuer, clientId: request.client_id };
 	const { sub, jti, exp } = validateIdJagClaims(claims, expected, now);
 	const resourceGranted = assertResourceBinding(request.resource, claims.resource, `${issuer}/mcp`);
-	await claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR);
-	return { tenant, tenantEpoch: tenantEpoch(tenant), clientId: request.client_id, subjectHash: await sha256Hex(sub), resourceGranted };
+	return {
+		tenant,
+		tenantEpoch: tenantEpoch(tenant),
+		clientId: request.client_id,
+		subjectHash: await sha256Hex(sub),
+		resourceGranted,
+		claimAssertion: () => claimAssertionOnce(tenant.issuer, jti, exp, c.env.QUOTA_COORDINATOR),
+	};
 }
 
 /** The normalized `iss` of an assertion payload read WITHOUT verification (cheap, no fetch), or a fixed bucket label. */
@@ -668,7 +687,7 @@ async function handleJwtBearerGrant(
 	} catch (error) {
 		return tokenErrorResponse(c, error, NO_STORE);
 	}
-	const { tenant, tenantEpoch, clientId, subjectHash, resourceGranted } = grant;
+	const { tenant, tenantEpoch, clientId, subjectHash, resourceGranted, claimAssertion } = grant;
 	const response = await mintAccessToken(
 		c,
 		c.env,
@@ -681,6 +700,7 @@ async function handleJwtBearerGrant(
 			tenantEpoch,
 			scope: ID_JAG_GRANTED_SCOPE,
 			echoResource: resourceGranted,
+			claimGrant: claimAssertion,
 		},
 		NO_STORE,
 	);
