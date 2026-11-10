@@ -124,20 +124,64 @@ export async function getAsyncBatchJob(jobId: string, principalId: string, kv: K
 	return job?.principalId === principalId ? job : null;
 }
 
+/** What the queue consumer should do with a message: ack it, or redeliver it after `delaySeconds`. */
+export type AsyncBatchVerdict = { action: 'ack' } | { action: 'retry'; delaySeconds: number };
+
+const ACK: AsyncBatchVerdict = { action: 'ack' };
+
+/**
+ * Total deliveries a message gets: the first delivery plus `max_retries` (3) from
+ * docs/provisioning/wrangler.async-batch-queues.json. Queues counts `message.attempts` from 1.
+ */
+export const ASYNC_BATCH_MAX_ATTEMPTS = 4;
+/** Redelivery delay after a thrown scan, so the retries are not all spent within seconds. */
+const SCAN_FAILURE_RETRY_DELAY_SECONDS = 30;
+/** KV is eventually consistent: wait this long (per attempt) before re-reading a job that was just written. */
+const JOB_MISSING_RETRY_DELAY_SECONDS = 15;
+
+function retryAfter(delaySeconds: number): AsyncBatchVerdict {
+	return { action: 'retry', delaySeconds };
+}
+
+/** Seconds until a fresh running lease turns stale, at least 1 and at most the whole lease. */
+function remainingLeaseSeconds(job: AsyncBatchJob, nowMs: number): number {
+	const remainingMs = RUNNING_LEASE_MS - (nowMs - job.updatedAt);
+	return Math.min(RUNNING_LEASE_MS / 1000, Math.max(1, Math.ceil(remainingMs / 1000)));
+}
+
+/**
+ * A null read is usually KV lag on a job that was just written, so retry with a short delay and only
+ * ack once the attempts are exhausted (acking early would strand the job `queued`).
+ */
+function missingJobVerdict(attempts: number): AsyncBatchVerdict {
+	return attempts >= ASYNC_BATCH_MAX_ATTEMPTS ? ACK : retryAfter(JOB_MISSING_RETRY_DELAY_SECONDS);
+}
+
+/**
+ * Verdict for deliveries that must not (re)run the scan, or `null` when the scan should run.
+ * Queue delivery is at-least-once: terminal jobs are acked untouched, a duplicate is deferred until
+ * the first delivery's lease would go stale, and a stale lease is intentionally reclaimable after an
+ * isolate crash so jobs cannot remain stuck in `running` forever.
+ */
+function verdictWithoutRunning(job: AsyncBatchJob, nowMs: number): AsyncBatchVerdict | null {
+	if (job.status === 'completed' || job.status === 'failed') return ACK;
+	if (job.status === 'running' && nowMs - job.updatedAt < RUNNING_LEASE_MS) return retryAfter(remainingLeaseSeconds(job, nowMs));
+	return null;
+}
+
 export async function processAsyncBatchMessage(
 	body: unknown,
-	deps: { kv: KVNamespace; runtimeOptions?: ScanRuntimeOptions; now?: () => number; runBatchScan?: typeof batchScan },
-): Promise<'ack' | 'retry'> {
-	if (!body || typeof body !== 'object') return 'ack';
+	deps: { kv: KVNamespace; runtimeOptions?: ScanRuntimeOptions; now?: () => number; runBatchScan?: typeof batchScan; attempts?: number },
+): Promise<AsyncBatchVerdict> {
+	if (!body || typeof body !== 'object') return ACK;
 	const message = body as Partial<AsyncBatchQueueMessage>;
-	if (message.version !== 1 || typeof message.jobId !== 'string' || typeof message.principalId !== 'string') return 'ack';
+	if (message.version !== 1 || typeof message.jobId !== 'string' || typeof message.principalId !== 'string') return ACK;
+	const attempts = deps.attempts ?? 1;
 	const job = await getAsyncBatchJob(message.jobId, message.principalId, deps.kv);
-	if (!job || job.status === 'completed') return 'ack';
 	const now = deps.now ?? Date.now;
-	// Queue delivery is at-least-once. Defer a duplicate while its first delivery
-	// still owns a fresh execution lease; a stale lease is intentionally reclaimable
-	// after an isolate crash so jobs cannot remain stuck in `running` forever.
-	if (job.status === 'running' && now() - job.updatedAt < RUNNING_LEASE_MS) return 'retry';
+	if (!job) return missingJobVerdict(attempts);
+	const early = verdictWithoutRunning(job, now());
+	if (early) return early;
 	job.status = 'running';
 	job.updatedAt = now();
 	delete job.error;
@@ -157,12 +201,28 @@ export async function processAsyncBatchMessage(
 		job.status = 'completed';
 		job.updatedAt = now();
 		await deps.kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
-		return 'ack';
+		return ACK;
 	} catch (error) {
-		job.status = 'queued';
-		job.updatedAt = now();
-		job.error = error instanceof Error ? error.message.slice(0, 300) : 'batch_scan_failed';
-		await deps.kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
-		return 'retry';
+		return recordScanFailure(job, error, attempts, deps.kv, now());
 	}
+}
+
+/**
+ * The last delivery has nothing left to retry into: record a terminal `failed` state (with the error)
+ * instead of leaving a `queued` job that nobody will ever pick up again. Earlier attempts stay
+ * `queued` and are redelivered after a delay so the retries are not all spent within seconds.
+ */
+async function recordScanFailure(
+	job: AsyncBatchJob,
+	error: unknown,
+	attempts: number,
+	kv: KVNamespace,
+	nowMs: number,
+): Promise<AsyncBatchVerdict> {
+	const exhausted = attempts >= ASYNC_BATCH_MAX_ATTEMPTS;
+	job.status = exhausted ? 'failed' : 'queued';
+	job.updatedAt = nowMs;
+	job.error = error instanceof Error ? error.message.slice(0, 300) : 'batch_scan_failed';
+	await kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
+	return exhausted ? ACK : retryAfter(SCAN_FAILURE_RETRY_DELAY_SECONDS);
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it, vi } from 'vitest';
-import { getAsyncBatchJob, processAsyncBatchMessage, startAsyncBatchScan } from '../src/tools/batch-scan-async';
+import { ASYNC_BATCH_MAX_ATTEMPTS, getAsyncBatchJob, processAsyncBatchMessage, startAsyncBatchScan } from '../src/tools/batch-scan-async';
 
 function memoryKv(): KVNamespace {
 	const values = new Map<string, string>();
@@ -65,8 +65,8 @@ describe('asynchronous batch scans', () => {
 		});
 		const runBatchScan = vi.fn(async () => []);
 		const message = { version: 1 as const, jobId: job.jobId, principalId: 'principal-a' };
-		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toBe('ack');
-		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toBe('ack');
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toEqual({ action: 'ack' });
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan })).toEqual({ action: 'ack' });
 		expect(runBatchScan).toHaveBeenCalledTimes(1);
 		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'completed', result: { results: [] } });
 	});
@@ -80,10 +80,45 @@ describe('asynchronous batch scans', () => {
 		const runBatchScan = vi.fn(async () => {
 			throw new Error('transient upstream failure');
 		});
-		expect(await processAsyncBatchMessage({ version: 1, jobId: job.jobId, principalId: 'principal-a' }, { kv, runBatchScan })).toBe(
-			'retry',
+		const verdict = await processAsyncBatchMessage(
+			{ version: 1, jobId: job.jobId, principalId: 'principal-a' },
+			{ kv, runBatchScan, attempts: 1 },
 		);
+		expect(verdict).toMatchObject({ action: 'retry' });
+		expect((verdict as { delaySeconds: number }).delaySeconds).toBeGreaterThan(0);
 		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'queued', error: 'transient upstream failure' });
+	});
+
+	it('writes a terminal failed status when the scan throws on the last attempt, and acks a later duplicate', async () => {
+		const kv = memoryKv();
+		const job = await startAsyncBatchScan({ domains: ['example.com'], idempotencyKey: 'replay-key-terminal' }, 'principal-a', {
+			kv,
+			queue: { send: async () => undefined },
+		});
+		const runBatchScan = vi.fn(async () => {
+			throw new Error('persistent upstream failure');
+		});
+		const message = { version: 1 as const, jobId: job.jobId, principalId: 'principal-a' };
+
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: ASYNC_BATCH_MAX_ATTEMPTS })).toEqual({ action: 'ack' });
+		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'failed', error: 'persistent upstream failure' });
+
+		// A duplicate delivery of a terminal failed job changes nothing and does not rerun the scan.
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: 1 })).toEqual({ action: 'ack' });
+		expect(runBatchScan).toHaveBeenCalledTimes(1);
+		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'failed' });
+	});
+
+	it('retries with a delay when the job is not yet visible, and acks once attempts are exhausted', async () => {
+		const kv = memoryKv();
+		const runBatchScan = vi.fn(async () => []);
+		const message = { version: 1 as const, jobId: `bs_${'a'.repeat(40)}`, principalId: 'principal-a' };
+
+		const first = await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: 1 });
+		expect(first).toMatchObject({ action: 'retry' });
+		expect((first as { delaySeconds: number }).delaySeconds).toBeGreaterThan(0);
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: ASYNC_BATCH_MAX_ATTEMPTS })).toEqual({ action: 'ack' });
+		expect(runBatchScan).not.toHaveBeenCalled();
 	});
 
 	it('defers duplicate work under a fresh execution lease and reclaims a stale lease', async () => {
@@ -101,9 +136,10 @@ describe('asynchronous batch scans', () => {
 		const runBatchScan = vi.fn(async () => []);
 		const message = { version: 1 as const, jobId: job.jobId, principalId: 'principal-a' };
 
-		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, now: () => 60_000 })).toBe('retry');
+		// Lease runs 1_000 -> 121_000 ms: at 60_000 ms, 61 s remain, so the redelivery waits that long.
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, now: () => 60_000 })).toEqual({ action: 'retry', delaySeconds: 61 });
 		expect(runBatchScan).not.toHaveBeenCalled();
-		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, now: () => 122_000 })).toBe('ack');
+		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, now: () => 122_000 })).toEqual({ action: 'ack' });
 		expect(runBatchScan).toHaveBeenCalledTimes(1);
 	});
 });

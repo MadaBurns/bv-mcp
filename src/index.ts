@@ -2037,8 +2037,9 @@ export default {
 							profileAccumulator: env.PROFILE_ACCUMULATOR,
 							profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(env.PROFILE_ACCUMULATOR_SHARDING),
 						},
+						attempts: message.attempts,
 					});
-					if (verdict === 'retry') message.retry();
+					if (verdict.action === 'retry') message.retry({ delaySeconds: verdict.delaySeconds });
 					else message.ack();
 				}
 				return;
