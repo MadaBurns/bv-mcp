@@ -56,6 +56,20 @@ The distinction is where the hostname came from, not how the URL is spelled.
   synthetic `__all_tools__` counter; `owner`/`partner`/`free` keys are
   uncapped). Both deny with 429 `-32029`; the total's message ends "across all
   tools" and its `x-quota-*` headers describe the total.
+- **Gate order for `tools/call`** (`executeMcpRequest`, SQ-560): a missing (400)
+  or unknown (404) session is rejected before any counter moves. Anonymous
+  callers then hit the 50/min + 300/hr limiter, which shares one coordinator
+  batch with the per-tool daily count and skips that count when it denies.
+  After it come the global and per-IP daily caps, the 401/403 gates,
+  force-refresh, distinct-domain, and the concurrency slot last. Authenticated
+  callers pass the 403 gates, take the concurrency slot, and only then spend
+  per tool and the total; a daily denial gives the slot back, so a call refused
+  for concurrency costs no daily quota. Concurrency 429s carry `retry-after` but
+  no authenticated `x-quota-*`.
+- An id-less `tools/call` is a notification: it never runs and spends no daily
+  quota. An anonymous one still uses one minute/hour unit (pinned by
+  `test/index.spec.ts`, "tools/call notifications consume exactly one
+  rate-limit unit per request").
 - Per-tool: `FREE_TOOL_DAILY_LIMITS` (`check_mx_reputation` 5/day + 60-min cache).
 - Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via the `QuotaCoordinator` DO.
 - **Distinct-domain cap**: unauthenticated per-IP distinct domains/day
