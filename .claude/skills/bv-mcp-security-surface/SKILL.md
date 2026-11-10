@@ -57,7 +57,10 @@ The distinction is where the hostname came from, not how the URL is spelled.
   uncapped). Both deny with 429 `-32029`; the total's message ends "across all
   tools" and its `x-quota-*` headers describe the total.
 - **Gate order for `tools/call`** (`executeMcpRequest`, SQ-560): a missing (400)
-  or unknown (404) session is rejected before any counter moves. Anonymous
+  or unknown (404) session is rejected before any counter moves. One exception:
+  an anonymous call to an auth-required or paid-only tool skips the session
+  check, so it gets its 401/403 (and the OAuth challenge) with or without a
+  session; it is never executed. Anonymous
   callers then hit the 50/min + 300/hr limiter, which shares one coordinator
   batch with the per-tool daily count and skips that count when it denies.
   After it come the global and per-IP daily caps, the 401/403 gates,

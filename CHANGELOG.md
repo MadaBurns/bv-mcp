@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.111.0] - 2026-11-10
+
 ### Fixed
 
 - Access-log archive objects are now named by the first and last row id of each page, so later cron runs in the same UTC day no longer replace objects whose rows were already deleted from D1 (SQ-551).
