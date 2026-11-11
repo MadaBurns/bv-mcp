@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { handleToolsList } from '../../src/handlers/tools';
 
 /** Compact-JSON size of the whole public tool list. Roughly four characters per token. */
-const MAX_TOOL_LIST_CHARS = 109_500;
+const MAX_TOOL_LIST_CHARS = 98_500;
 /** Per-tool description ceiling, measured on the wire (includes the scan_domain suffix). */
 const MAX_TOOL_DESCRIPTION_CHARS = 400;
 /** Per-parameter description ceiling, at any depth of a tool's inputSchema. */

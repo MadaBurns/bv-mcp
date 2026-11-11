@@ -358,7 +358,7 @@ const TOOL_DEFS = {
 	},
 	scan_domain: {
 		description:
-			'Run a full DNS and email security audit for one domain across all scan-included checks; returns an overall score, NIST-aligned letter grade (A+ to F), maturity stage and prioritized findings. Use for a comprehensive audit, overall grade or email security maturity level. Cite scoringConfigHash with a score; scoringModelVersion (policy) and dnsChecksPackageVersion (engine) are not comparable.',
+			'Run a full DNS and email security audit for one domain across every scan-included check (SPF, DKIM, DMARC, DNSSEC and more); returns an overall score, NIST-aligned letter grade (A+ to F), maturity stage and prioritized findings. Use for a comprehensive audit, overall grade or email security maturity level. Cite scoringConfigHash with a score; model and engine versions are not comparable.',
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
