@@ -18,25 +18,33 @@ import {
 	ExplainStatusSchema,
 } from './primitives';
 
+// The three arguments most tools share. Each is defined once so the wire
+// `tools/list` text is short and identical everywhere; z.toJSONSchema inlines
+// a reused instance (no $ref), and test/audits/tool-list-weight pins the size.
+// A tool whose argument has tool-specific meaning keeps its own description.
+const SHARED_DOMAIN = DomainSchema.describe('Domain, e.g. example.com');
+const SHARED_FORCE_REFRESH = z.boolean().optional().describe('Bypass the cache.');
+const SHARED_FORMAT = FormatSchema.optional().describe('Output verbosity.');
+
 /** Request-local authentication metadata, never a target/domain operation. */
 export const GetAccessContextArgs = z.object({}).strict();
 
 /** Domain + optional format — shared by most check tools. */
 export const BaseDomainArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		domain: SHARED_DOMAIN,
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** scan_domain */
 export const ScanDomainArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+		domain: SHARED_DOMAIN,
 		profile: ProfileSchema.optional().describe('Scoring profile. Default "auto" detects.'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh scan. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -44,8 +52,8 @@ export const ScanDomainArgs = z
 export const BatchScanArgs = z
 	.object({
 		domains: z.array(z.string().min(1).max(253)).min(1).max(10).describe('Domains to scan (max 10 per request)'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -59,7 +67,7 @@ export const BatchScanJobArgs = z
 			.string()
 			.regex(/^bs_[a-f0-9]{40}$/)
 			.describe('Job ID returned by batch_scan_start.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -67,34 +75,34 @@ export const BatchScanJobArgs = z
 export const CompareDomainsArgs = z
 	.object({
 		domains: z.array(z.string().min(1).max(253)).min(2).max(5).describe('Domains to compare (2–5 domains)'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** check_dkim */
 export const CheckDkimArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+		domain: SHARED_DOMAIN,
 		selector: DkimSelectorSchema.optional().describe('DKIM selector. Omit to probe common ones.'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** check_resolver_consistency */
 export const CheckResolverConsistencyArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+		domain: SHARED_DOMAIN,
 		record_type: RecordTypeSchema.optional().describe('Record type. Omit for A/AAAA/MX/TXT/NS.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** check_root_server_set */
 export const RootServerSetArgs = z
 	.object({
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -104,7 +112,7 @@ export const ExplainFindingArgs = z
 		checkType: z.string().min(1).max(100).describe("Check type (e.g., 'SPF', 'DMARC')."),
 		status: ExplainStatusSchema.describe('Finding severity or status.'),
 		details: z.string().max(2000).optional().describe('Additional detail from check result.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -112,8 +120,8 @@ export const ExplainFindingArgs = z
 export const CompareBaselineArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to scan and compare.'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 		baseline: z
 			.object(
 				{
@@ -138,9 +146,7 @@ export const CompareBaselineArgs = z
 				},
 			)
 			.strict()
-			.describe(
-				'Policy/requirements baseline OBJECT for compliance enforcement — "does this domain meet these required controls?" (grade/score floors, require_* flags, max_*_findings). NOT a prior scan. For drift-over-time vs a previous ScanScore (or the literal "cached"), use analyze_drift instead.',
-			),
+			.describe('Required-controls policy (grade/score floors, require_* flags). Not a prior scan; see analyze_drift.'),
 	})
 	.strict();
 
@@ -154,13 +160,8 @@ export const GetDomainRankArgs = z
 			.length(2)
 			.optional()
 			.describe('ISO 3166-1 alpha-2 country code to use the country cohort (e.g., "NZ"). Omit for global cohort.'),
-		sector: z
-			.string()
-			.min(1)
-			.max(100)
-			.optional()
-			.describe('Sector label (e.g., "finance"). Forwarded to the cohort endpoint; sector filtering is planned for a future release.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		sector: z.string().min(1).max(100).optional().describe('Sector label, e.g. "finance". Accepted but not yet used to filter the cohort.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -168,7 +169,7 @@ export const GetDomainRankArgs = z
 export const GetBenchmarkArgs = z
 	.object({
 		profile: BenchmarkProfileSchema.optional().describe('Profile to benchmark (default "mail_enabled").'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -177,7 +178,7 @@ export const GetProviderInsightsArgs = z
 	.object({
 		provider: z.string().min(1).max(200).describe('Provider (e.g., "google workspace").'),
 		profile: BenchmarkProfileSchema.optional().describe('Profile (default "mail_enabled").'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -205,7 +206,7 @@ export const ValidateFixArgs = z
 		domain: DomainSchema.describe('Domain to validate the fix for'),
 		check: CheckNameSchema.describe('Check name to re-run (e.g., "dmarc", "spf")'),
 		expected: z.string().max(1000).optional().describe('Expected DNS record value to verify against'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -230,8 +231,8 @@ export const PrioritizePortfolioLeadsArgs = z
 			.max(253)
 			.optional()
 			.describe('Brand seed apex; discovers the portfolio, derives ownership buckets, then ranks the top candidates.'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict()
 	.refine((v) => (v.domains == null) !== (v.brand == null), {
@@ -253,11 +254,9 @@ export const AnalyzeDriftArgs = z
 			// non-error), not a thrown validation failure — the common case is a
 			// warm cache from the caller's just-prior scan.
 			.default('cached')
-			.describe(
-				'Prior scan reference for drift-over-time analysis: a previous ScanScore JSON STRING, or the literal "cached" to reuse the last cached scan (the default when omitted). NOT a policy/requirements object — for compliance enforcement against required controls, use compare_baseline instead.',
-			),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+			.describe('Prior ScanScore JSON string, or "cached" (default) for the last cached scan. Not a policy object.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -285,7 +284,7 @@ export const RUA_EMAIL_PATTERN = /^[^\s;,@\x00-\x1f\x7f]+@[^\s;,@\x00-\x1f\x7f]+
 export const GenerateArgs = z
 	.object({
 		artifact: GenerateArtifactSchema.describe('Which artifact to generate (e.g., "dmarc_record", "fix_plan").'),
-		domain: DomainSchema.describe('Domain (e.g., example.com)'),
+		domain: SHARED_DOMAIN,
 		// spf_record
 		include_providers: z
 			.array(SafeLabelSchema.regex(/^[a-z0-9._-]+$/i))
@@ -313,17 +312,17 @@ export const GenerateArgs = z
 		timeline: TimelineSchema.optional().describe('rollout_plan: rollout speed (default: standard).'),
 		// fix_plan
 		force_refresh: z.boolean().optional().describe('fix_plan: bypass cache and run a fresh scan.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** check_fast_flux — domain + rounds + format */
 export const CheckFastFluxArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+		domain: SHARED_DOMAIN,
 		rounds: z.number().int().min(3).max(5).optional().describe('Number of query rounds (3-5, default 3).'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -335,24 +334,20 @@ export const CheckFastFluxArgs = z
  */
 export const CheckAgentDiscoveryArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check for published agent-discovery records (e.g., example.com).'),
+		domain: SHARED_DOMAIN,
 		protocol: z
 			.string()
 			.transform((v) => v.toLowerCase().trim())
 			.pipe(z.enum(['a2a', 'mcp', 'https']))
 			.optional()
-			.describe(
-				'Scope discovery to a single agent protocol (_index._{protocol}._agents and _{protocol}._agents). Omit to sweep every protocol.',
-			),
+			.describe('Limit to one agent protocol (a2a, mcp or https). Omit to sweep all.'),
 		name: z.string().min(1).max(63).optional().describe('Resolve a single named agent ({name}.{domain}) instead of enumerating the zone.'),
 		verify_cap: z
 			.boolean()
 			.optional()
-			.describe(
-				'Fetch each declared capability document (cap=) over HTTPS via safeFetch and verify it against the cap-sha256 integrity pin. Default false (declaration/existence check only).',
-			),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+			.describe('Fetch each cap= capability document over HTTPS and check its cap-sha256 pin. Default false.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -363,16 +358,14 @@ export const CheckAgentDiscoveryArgs = z
  */
 export const CheckSubdomainTakeoverArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to check (e.g., example.com).'),
+		domain: SHARED_DOMAIN,
 		subdomains: z
 			.array(z.string().min(1).max(253))
 			.max(1000)
 			.optional()
-			.describe(
-				'Optional explicit subdomain list (full FQDNs or short labels). When provided (deduped, capped at 1000), this list is swept instead of the 15-name built-in. Source from Certificate-Transparency enumeration or brand-audit discovery.',
-			),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+			.describe('Explicit subdomains to sweep (FQDNs or short labels; max 1000). Default: a 15-name built-in list.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -415,9 +408,7 @@ const BrandCandidateDomainsArg = z
 /** discover_brand_domains — seed + optional signal set + candidate seed list. */
 export const DiscoverBrandDomainsArgs = z
 	.object({
-		domain: DomainSchema.describe(
-			"The exact seed domain to expand, scanned verbatim (e.g., example.com). Do NOT normalize, resolve, or substitute a brand's canonical/main domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`). Use `brand_aliases` for related brand labels.",
-		),
+		domain: DomainSchema.describe('Seed domain, used verbatim: never normalize or swap in a canonical domain (clau.de stays clau.de).'),
 		signals: z
 			.array(DiscoverSignalSchema)
 			.min(1)
@@ -428,7 +419,7 @@ export const DiscoverBrandDomainsArgs = z
 			'Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.',
 		),
 		planner_mode: BrandAuditPlannerModeSchema.optional().describe(
-			'Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.',
+			'Discovery planner: observe emits metrics; enforce applies candidate-backed signal caps.',
 		),
 		brand_aliases: BrandAliasesArg,
 		candidate_domains: BrandCandidateDomainsArg,
@@ -446,24 +437,13 @@ export const DiscoverBrandDomainsArgs = z
 		discovery_mode: z
 			.enum(['classic', 'tiered'])
 			.default('classic')
-			.describe(
-				'Discovery mode. "classic" (default, BSL-licensed) runs the public signal-sweep pipeline. ' +
-					'"tiered" layers Tier 0 (tenant-declared portfolio), Tier 1 (infrastructure-graph), and ' +
-					'Tier 2 (declared-evidence) lookups in front of the legacy sweep, falling back to Tier 3 ' +
-					'(the existing sweep) only on cache miss / very_stale fingerprint / uncovered caller ' +
-					'candidates. Tiered mode requires private BlackVeil service bindings — BSL self-hosts ' +
-					'should leave this on "classic".',
-			),
+			.describe('"classic" (default) runs the public signal sweep; "tiered" adds private-binding tier lookups first.'),
 		ownership_verified: z
 			.boolean()
 			.optional()
-			.describe(
-				'Caller attests that the seed domain is owned or authorized for scanning. ' +
-					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal. ' +
-					'Prevents unauthorized mass reconnaissance via deep tier lookups.',
-			),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+			.describe('Attest you own or may scan the seed domain. Required for "tiered" unless enterprise/owner/partner.'),
+		force_refresh: SHARED_FORCE_REFRESH,
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -478,7 +458,7 @@ export const DiscoverBrandDomainsStartArgs = DiscoverBrandDomainsArgs;
 export const DiscoverBrandDomainsStatusArgs = z
 	.object({
 		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -486,7 +466,7 @@ export const DiscoverBrandDomainsStatusArgs = z
 export const DiscoverBrandDomainsFindingsArgs = z
 	.object({
 		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -502,7 +482,7 @@ export const BrandAuditViewSchema = z.enum(['standard', 'registrar_complement'])
 export const BrandAuditSingleArgs = z
 	.object({
 		domain: DomainSchema.describe('Target domain to audit (e.g., apple.com).'),
-		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
+		force_refresh: SHARED_FORCE_REFRESH,
 		format: BrandAuditFormatSchema.optional().describe('Inline output mode. Defaults to "both".'),
 		min_confidence: z
 			.number()
@@ -514,26 +494,19 @@ export const BrandAuditSingleArgs = z
 			'Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.',
 		),
 		planner_mode: BrandAuditPlannerModeSchema.optional().describe(
-			'Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.',
+			'Discovery planner: observe emits metrics; enforce applies candidate-backed signal caps.',
 		),
 		brand_aliases: BrandAliasesArg,
 		candidate_domains: BrandCandidateDomainsArg,
-		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
-		),
+		view: BrandAuditViewSchema.optional().describe("Output view: 'standard' (default) or 'registrar_complement' (enterprise tier only)."),
 		discovery_mode: z
 			.enum(['classic', 'tiered'])
 			.optional()
-			.describe(
-				'Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).',
-			),
+			.describe('Discovery pipeline: classic = legacy sweep; tiered = tenant/graph/evidence lookups first.'),
 		ownership_verified: z
 			.boolean()
 			.optional()
-			.describe(
-				'Caller attests that the target domain is owned or authorized for scanning. ' +
-					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
-			),
+			.describe('Attest you own or may scan the target. Required for "tiered" unless enterprise/owner/partner.'),
 	})
 	.strict();
 
@@ -552,26 +525,19 @@ export const BrandAuditBatchStartArgs = z
 			'Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.',
 		),
 		planner_mode: BrandAuditPlannerModeSchema.optional().describe(
-			'Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.',
+			'Discovery planner: observe emits metrics; enforce applies candidate-backed signal caps.',
 		),
 		brand_aliases: BrandAliasesArg,
 		candidate_domains: BrandCandidateDomainsArg,
 		discovery_mode: z
 			.enum(['classic', 'tiered'])
 			.optional()
-			.describe(
-				'Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).',
-			),
+			.describe('Discovery pipeline: classic = legacy sweep; tiered = tenant/graph/evidence lookups first.'),
 		ownership_verified: z
 			.boolean()
 			.optional()
-			.describe(
-				'Caller attests that the target domains are owned or authorized for scanning. ' +
-					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
-			),
-		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
-		),
+			.describe('Attest you own or may scan these domains. Required for "tiered" unless enterprise/owner/partner.'),
+		view: BrandAuditViewSchema.optional().describe("Output view: 'standard' (default) or 'registrar_complement' (enterprise tier only)."),
 	})
 	.strict();
 
@@ -579,7 +545,7 @@ export const BrandAuditBatchStartArgs = z
 export const BrandAuditStatusArgs = z
 	.object({
 		auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -588,14 +554,14 @@ export const BrandAuditGetReportArgs = z
 	.object({
 		auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
 		target: z.string().min(1).max(253).optional().describe('Specific target domain. Omit for audit-level aggregate.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
 /** list_brand_audit_watches — enumerate the caller's recurring brand-audit watches. */
 export const ListBrandAuditWatchesArgs = z
 	.object({
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -609,8 +575,8 @@ export const RegisterBrandAuditWatchArgs = z
 			.url()
 			.max(2048)
 			.optional()
-			.describe('Optional webhook URL — POSTed on classification drift. Re-validated for SSRF at both register and delivery time.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+			.describe('Optional webhook URL, POSTed on classification drift. SSRF-validated at register and delivery.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -618,7 +584,7 @@ export const RegisterBrandAuditWatchArgs = z
 export const DeleteBrandAuditWatchArgs = z
 	.object({
 		watchId: z.string().min(1).max(64).describe('Watch ID returned by register_brand_audit_watch.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -675,7 +641,7 @@ export const QuerySigninsArgs = z
 		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
 		failures_only: z.boolean().optional().describe('When true, return only failed sign-ins.'),
 		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -686,7 +652,7 @@ export const QueryUalArgs = z
 		operation: z.string().max(200).optional().describe('Filter to a specific Unified Audit Log operation (e.g., "MailItemsAccessed").'),
 		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
 		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -694,7 +660,7 @@ export const QueryUalArgs = z
 export const GetCaPoliciesArgs = z
 	.object({
 		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
@@ -702,7 +668,7 @@ export const GetCaPoliciesArgs = z
 export const AssessCoverageArgs = z
 	.object({
 		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+		format: SHARED_FORMAT,
 	})
 	.strict();
 
