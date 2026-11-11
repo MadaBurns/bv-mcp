@@ -8,6 +8,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.111.1] - 2026-11-11
+
+Dependency-only patch release; no tool, scoring or runtime behaviour changes.
+
+### Changed
+
+- Bumped the pinned CodeQL actions from 4.39.1 to 4.39.3 (#1385).
+- Bumped the ESLint development dependency from 10.13.0 to 10.14.0 (#1387).
+
 ## [3.111.0] - 2026-11-10
 
 ### Fixed
