@@ -41,6 +41,8 @@ export const NODE_POOL_AUDIT_TESTS = [
 	// SQ-256: spawns the promote script (and a stand-in cf in a temp tree) with real node:child_process / node:fs.
 	'test/audits/deploy-prod-promote.node.test.ts',
 	'test/audits/license-headers.audit.test.ts',
+	// Imports scripts/ci/live-binding-drift.mjs (node:child_process, node:fs src scan).
+	'test/audits/live-binding-drift.node.test.ts',
 	'test/audits/overlay-merge.node.test.ts',
 	'test/audits/pretooluse-hook-scope.node.test.ts',
 	'test/audits/private-config-injection.node.test.ts',
