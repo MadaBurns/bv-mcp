@@ -17,9 +17,25 @@
 	"analytics_engine_datasets": [
 		{ "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
 	],
+	// REQUIRE_PRODUCTION_BINDINGS=true (below) makes the owner-only deep /health report 503
+	// "degraded" when TENANT_REGISTRY_DB, BV_SCANNER_QUEUE, BRAND_AUDIT_DB, BRAND_REPORTS or
+	// either brand-audit queue is absent, so a production overlay declares all of them.
+	// INTELLIGENCE_DB (the mcp_access_log store) is optional: absent -> access-log no-op.
+	// Schema for a new one: scripts/access-log/sql/0001_baseline.sql.
+	"d1_databases": [
+		{ "binding": "TENANT_REGISTRY_DB", "database_name": "your-tenant-registry", "database_id": "YOUR_TENANT_REGISTRY_D1_ID" },
+		{ "binding": "BRAND_AUDIT_DB", "database_name": "your-brand-audit", "database_id": "YOUR_BRAND_AUDIT_D1_ID" },
+		{ "binding": "INTELLIGENCE_DB", "database_name": "your-access-log", "database_id": "YOUR_ACCESS_LOG_D1_ID" }
+	],
+	"r2_buckets": [
+		{ "binding": "BRAND_REPORTS", "bucket_name": "your-brand-reports" }
+	],
 	"queues": {
 		"producers": [
-			{ "binding": "BV_SCANNER_QUEUE", "queue": "bv-scanner-queue" }
+			{ "binding": "BV_SCANNER_QUEUE", "queue": "bv-scanner-queue" },
+			{ "binding": "BRAND_AUDIT_QUEUE", "queue": "brand-audit-queue" },
+			{ "binding": "BRAND_AUDIT_PDF_QUEUE", "queue": "brand-audit-pdf-queue" },
+			{ "binding": "ASYNC_BATCH_QUEUE", "queue": "async-batch-scan-queue" }
 		],
 		"consumers": [
 			{
@@ -31,6 +47,29 @@
 				// "Dead-Letter Queue Setup" subsection. Without it, a message that exhausts
 				// max_retries is dropped with no durable marker (SQ-169).
 				"dead_letter_queue": "bv-scanner-dlq"
+			},
+			// One job per batch: a brand audit / PDF render is a long single unit of work.
+			// Every consumer gets a DLQ, created first as above — no queue drops silently.
+			{
+				"queue": "brand-audit-queue",
+				"max_batch_size": 1,
+				"max_batch_timeout": 30,
+				"max_retries": 3,
+				"dead_letter_queue": "brand-audit-dlq"
+			},
+			{
+				"queue": "brand-audit-pdf-queue",
+				"max_batch_size": 1,
+				"max_batch_timeout": 30,
+				"max_retries": 3,
+				"dead_letter_queue": "brand-audit-pdf-dlq"
+			},
+			{
+				"queue": "async-batch-scan-queue",
+				"max_batch_size": 1,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "async-batch-scan-dlq"
 			}
 		]
 	},

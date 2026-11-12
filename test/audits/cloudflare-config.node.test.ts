@@ -269,6 +269,9 @@ describe('(c) production mode matches the injector (mergeOverlay) binding for bi
 			{ binding: 'TENANT_DB_ACME', database_name: 'tenant-acme', database_id: 'acme-id' },
 		];
 		overlay.r2_buckets = [{ binding: 'BRAND_REPORTS', bucket_name: 'reports', jurisdiction: 'eu' }];
+		// Replace the template's own BRAND_AUDIT_QUEUE producer rather than adding a second one: a
+		// duplicate binding is (correctly) left unrendered and fails the build closed.
+		overlay.queues.producers = overlay.queues.producers.filter((p: Json) => p.binding !== 'BRAND_AUDIT_QUEUE');
 		overlay.queues.producers.push({ binding: 'BRAND_AUDIT_QUEUE', queue: 'brand-audit', delivery_delay: 5 });
 		overlay.queues.consumers.push({ queue: 'brand-audit', max_batch_size: 1, max_batch_timeout: 30, max_concurrency: 2, retry_delay: 10 });
 		overlay.vars.OVERLAY_ONLY_VAR = 'overlay-value';
