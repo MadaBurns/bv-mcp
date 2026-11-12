@@ -8,6 +8,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.111.3] - 2026-11-12
+
+Deploy-tooling patch release; no tool, argument-schema, scoring or runtime behaviour changes.
+
+### Changed
+
+- `npm run deploy:prod` now refuses to deploy without the `KV_ENVELOPE_KEY` secret. OAuth is enabled in production, and OAuth codes and trial keys are envelope-encrypted in KV with this key; it is added to the deploy's required-secrets list in both the Wrangler and `cf` deploy paths (#1391).
+- `wrangler.private.example.jsonc` now declares the bindings that the owner-only deep `/health` check expects when `REQUIRE_PRODUCTION_BINDINGS=true` (tenant registry, brand-audit database, reports bucket and queues), plus the async batch queue, with a dead-letter queue on every consumer. An overlay copied from the old template reported `degraded` (#1391).
+
+### Added
+
+- `npm run check:live-binding-drift`, a read-only operator check that compares the reviewed config (public `wrangler.jsonc` plus the private overlay, merged as the deploy does) with every version in the live deployment. It reports missing, unreviewed or changed bindings, changed var values and absent required secrets without printing values or resource ids, and exits 2 rather than reporting clean when it cannot read the live deployment (#1393).
+
 ## [3.111.2] - 2026-11-12
 
 Description-only patch release; no tool, argument-schema, scoring or runtime behaviour changes.

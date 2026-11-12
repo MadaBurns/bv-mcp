@@ -406,6 +406,18 @@ in "Binding notes" below.
 | `ALERT_WEBHOOK_URL` | Secret | Static alert fallback. ⚠️ A Worker **secret**, never a `vars` entry (#1073 — see Private config injection) |
 | `ALERT_*` | var | Cron alert thresholds/windows. ⚠️ Latency has its OWN lane/window |
 
+## Live binding drift — config vs what is serving
+
+`npm run check:live-binding-drift` (read-only; `scripts/ci/live-binding-drift.mjs`) merges `wrangler.jsonc` + the
+overlay exactly as the deploy doors do, then compares every version in the ACTIVE deployment (`wrangler deployments
+status` → `versions view`). ERROR (exit 1): a binding missing live, an unreviewed live binding, a type or target
+mismatch, a var whose value differs, a `secrets.required` name absent from the version. WARN: a queue consumer with
+no `dead_letter_queue`. INFO: a count of env names `src/` reads that nothing binds (`--verbose` lists them). Exit 2 =
+unreadable input or a live set with no bindings, never clean. Pass `--overlay <path>` from a worktree (the overlay
+lives in the main checkout's `.dev/`). Prints neither var values nor resource ids. Limits: consumer settings are not
+in version metadata, so the DLQ warning reads CONFIG (`wrangler queues info` for live); extra live secrets are not
+errors (fail-soft keys). `check:cf-binding-parity` is the config-vs-`cf build` sibling; this is config-vs-live.
+
 ## Binding notes
 
 Detail for the bindings whose Purpose cell in CLAUDE.md's table is a summary.
