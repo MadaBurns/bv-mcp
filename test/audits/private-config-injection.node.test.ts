@@ -166,6 +166,8 @@ describe('private Wrangler config injection', () => {
 
 		expect(injected.secrets?.required, 'the generated production config must declare its required secrets').toContain('BV_API_KEY');
 		expect(injected.secrets?.required).toContain('OAUTH_SIGNING_SECRET');
+		// FIND-17: production runs with ENABLE_OAUTH=true, so the KV envelope key must gate the deploy.
+		expect(injected.secrets?.required).toContain('KV_ENVELOPE_KEY');
 		// Removal is a supported way to revoke temporary roaming owner access.
 		expect(injected.secrets?.required).not.toContain('BV_ROAMING_OWNER_KEY');
 

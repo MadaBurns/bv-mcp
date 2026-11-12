@@ -176,8 +176,8 @@ export function validateOverlayKeys(privateConfig, publicConfig) {
  *   BV_CERTSTREAM_ADMIN_KEY, BV_MOBILE_INTERNAL_KEY, BV_INTERNAL_DEV_KEY(_2).
  *
  * Entries are added only once the secret is provisioned on the Worker: declaring a name
- * before it exists turns the gate into a deploy outage. KV_ENVELOPE_KEY belongs here
- * whenever OAuth is enabled (FIND-17) — add it as part of provisioning it, not before.
+ * before it exists turns the gate into a deploy outage. KV_ENVELOPE_KEY is required
+ * because OAuth is enabled (FIND-17); it was added once provisioned (2026-10-29).
  */
 export const PRODUCTION_REQUIRED_SECRETS = [
     'BV_API_KEY',
@@ -185,6 +185,9 @@ export const PRODUCTION_REQUIRED_SECRETS = [
     'BV_WEB_INTERNAL_KEY',
     'MCP_ACCESS_LOG_IP_ENCRYPTION_KEY',
     'CF_ANALYTICS_TOKEN',
+    // FIND-17: OAuth is enabled in production, so OAuth codes and trial keys are envelope-
+    // encrypted in KV; a deploy without this key would refuse EMA writes (409). Provisioned 2026-10-29.
+    'KV_ENVELOPE_KEY',
 ];
 
 export const REQUIRED_PRODUCTION_VARS = {

@@ -294,6 +294,7 @@ function privateBindings(read: Reader) {
 		BV_WEB_INTERNAL_KEY: read.secret('BV_WEB_INTERNAL_KEY'),
 		MCP_ACCESS_LOG_IP_ENCRYPTION_KEY: read.secret('MCP_ACCESS_LOG_IP_ENCRYPTION_KEY'),
 		CF_ANALYTICS_TOKEN: read.secret('CF_ANALYTICS_TOKEN'),
+		KV_ENVELOPE_KEY: read.secret('KV_ENVELOPE_KEY'),
 	};
 }
 
