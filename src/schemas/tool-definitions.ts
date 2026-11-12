@@ -233,7 +233,7 @@ const TOOL_DEFS = {
 	},
 	check_dmarc: {
 		description:
-			"Look up and validate the DMARC record for a domain. Shows the enforcement level (none/quarantine/reject), alignment mode (strict/relaxed), and aggregate/forensic reporting destinations. Use to determine a domain's DMARC enforcement level, whether it sends aggregate reports, or if it is protected against email impersonation — distinct from check_shadow_domains (which checks TLD variants) and assess_spoofability (composite score).",
+			"Look up and validate a domain's DMARC record: enforcement level (none/quarantine/reject), alignment mode, and aggregate/forensic reporting destinations. Use to find a domain's DMARC enforcement, whether it sends aggregate reports, or whether it is protected against email impersonation; not check_shadow_domains (TLD variants) or assess_spoofability (composite score).",
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'core',
@@ -257,7 +257,7 @@ const TOOL_DEFS = {
 	},
 	check_ssl: {
 		description:
-			'Check the HTTPS/TLS posture of a domain: HTTPS reachability, HSTS policy, and HTTP-to-HTTPS redirect. Also returns certificate metadata (issuer, expiry date, days remaining, SAN count) read from public Certificate Transparency logs — this describes the most recently LOGGED certificate, which may differ from the one currently served. Origin TLS protocol support and cipher suites are not assessed; legacy-TLS detection is withdrawn because the probe cannot observe the origin handshake. Use to verify HTTPS/HSTS configuration and certificate issuer/expiry.',
+			'Check HTTPS/TLS posture: reachability, HSTS, HTTP-to-HTTPS redirect, and certificate issuer, expiry, days remaining and SAN count from public CT logs (the latest LOGGED certificate, which may differ from the one served). TLS protocol versions and cipher suites are not assessed. Use to verify HTTPS/HSTS and certificate expiry.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -288,7 +288,7 @@ const TOOL_DEFS = {
 	},
 	check_bimi: {
 		description:
-			'Check the BIMI brand-logo record at default._bimi.<domain>. Validates the logo URL (l=) and the presence of mark-certificate authority evidence (a=) — the a= tag is a bare URL, so the certificate type (VMC or CMC) is not determined — and verifies the DMARC enforcement prerequisite (p=quarantine/reject) that mail clients require before displaying a BIMI logo. Returns findings for a missing/malformed record or unmet prerequisites. Use to assess brand-indicator readiness in inboxes.',
+			'Check the BIMI record at default._bimi.<domain>: validates the logo URL (l=), the presence of mark-certificate authority evidence (a=; a bare URL, so VMC vs CMC is not determined), and the DMARC enforcement prerequisite (p=quarantine/reject) mail clients require. Use to assess brand-logo readiness in inboxes.',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'hardening',
@@ -304,7 +304,7 @@ const TOOL_DEFS = {
 	},
 	check_http_security: {
 		description:
-			"Audit a domain's browser-facing HTTP security headers over HTTPS. Inspects Content-Security-Policy (flagging unsafe-inline/unsafe-eval/wildcards), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, and the cross-origin isolation headers (COOP/COEP/CORP), and detects CDN/WAF interception. Returns per-header findings for missing or weak protections against XSS, clickjacking, and cross-origin attacks.",
+			'Audit browser-facing HTTP security headers over HTTPS: Content-Security-Policy (unsafe-inline/unsafe-eval/wildcards), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and COOP/COEP/CORP; also detects CDN/WAF interception. Returns per-header findings for missing or weak protection against XSS, clickjacking and cross-origin attacks.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -312,7 +312,7 @@ const TOOL_DEFS = {
 	},
 	check_dane: {
 		description:
-			"Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain's MX hosts and looks up TLSA records at _25._tcp.<mx-host>, validating their syntax, usage/selector/matching-type fields and DNSSEC backing on the MX host's zone. The record is reported as present but UNVERIFIED: there is no certificate probe for port 25/SMTP, so the pinned data is never compared against the certificate the mail server actually serves (the comparable capture-and-compare pipeline exists only for check_dane_https at port 443, and is itself currently kill-switched there — see that tool's description). Use when asked if SMTP mail servers publish DANE/TLSA pinning; this does not confirm the pin matches the live certificate. For HTTPS DANE at port 443, use check_dane_https instead.",
+			'Check DANE/TLSA pinning for SMTP: looks up TLSA records at _25._tcp.<mx-host> for each MX and validates their fields and DNSSEC backing. Records are reported present but UNVERIFIED: there is no port-25 certificate probe, so a pin is never compared to the certificate actually served. Use for SMTP DANE; use check_dane_https for port 443.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -327,7 +327,7 @@ const TOOL_DEFS = {
 	},
 	check_dane_https: {
 		description:
-			'Verify DANE certificate pinning for HTTPS connections. Looks up TLSA records at _443._tcp.{domain} (port 443) and validates their syntax, usage/selector/matching-type fields and DNSSEC backing. The record is reported as present but UNVERIFIED in every deployment: comparison against the certificate the host actually serves is currently withdrawn because the operator probe vantage cannot observe the origin certificate (finding metadata notAssessedReason probe_vantage_intercepted when the probe is bound), so a stale pin is NOT detected here. Distinct from check_dane which covers SMTP at port 25.',
+			'Verify DANE/TLSA pinning for HTTPS (port 443): looks up TLSA records at _443._tcp.<domain> and validates fields and DNSSEC backing. Reported present but UNVERIFIED in every deployment: comparison with the served certificate is withdrawn (the probe cannot observe the origin certificate), so a stale pin is NOT detected. Use check_dane for SMTP.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -358,7 +358,7 @@ const TOOL_DEFS = {
 	},
 	scan_domain: {
 		description:
-			"Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain's overall security grade, or to assess email security maturity. Version stamps: 'scoringModelVersion' is the scoring POLICY semver (changes only when weights/thresholds/severities change, so it advances slowly) and is INDEPENDENT of — never comparable to — 'dnsChecksPackageVersion', the @blackveil/dns-checks npm engine-package version, which moves every release; a lower model version is expected, not a version gap. When citing a score, record 'scoringConfigHash' — it identifies the exact scoring configuration that produced the result.",
+			'Run a full DNS and email security audit for one domain across every scan-included check (SPF, DKIM, DMARC, DNSSEC and more); returns an overall score, NIST-aligned letter grade (A+ to F), maturity stage and prioritized findings. Use for a comprehensive audit, overall grade or email security maturity level. Cite scoringConfigHash with a score; model and engine versions are not comparable.',
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -366,7 +366,7 @@ const TOOL_DEFS = {
 	},
 	batch_scan: {
 		description:
-			"Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains. Version stamps (hoisted once per batch): 'scoringModelVersion' is the scoring POLICY semver and is INDEPENDENT of 'dnsChecksPackageVersion', the @blackveil/dns-checks npm engine-package version — the model version legitimately lags and the two must not be compared. Record 'scoringConfigHash' when citing scores.",
+			'Bulk-scan up to 10 domains in parallel with a full security audit each; returns score, NIST-aligned letter grade (A+ to F) and finding counts per domain. Use to audit several domains at once; use compare_domains for a side-by-side comparison of 2-5 domains. scoringModelVersion (policy) is independent of dnsChecksPackageVersion (engine); cite scoringConfigHash with scores.',
 		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -434,7 +434,7 @@ const TOOL_DEFS = {
 	},
 	check_srv: {
 		description:
-			"Map a domain's DNS-visible service footprint by probing 19 common SRV record prefixes (email, calendar, messaging, directory, web) in parallel. Returns discovered services and flags insecure service advertisements — e.g. plaintext IMAP/POP3/LDAP without an encrypted variant. A domain with no matches among the probed prefixes is not proof the domain has no services at all. Use when asked to map DNS-visible services or flag insecure service advertisements.",
+			"Map a domain's DNS-visible service footprint by probing 19 common SRV prefixes (email, calendar, messaging, directory, web) in parallel; returns discovered services and flags insecure advertisements such as plaintext IMAP/POP3/LDAP with no encrypted variant. No match among probed prefixes is not proof the domain has no services. Use to map DNS-visible services.",
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -481,7 +481,7 @@ const TOOL_DEFS = {
 	},
 	assess_spoofability: {
 		description:
-			'Compute a composite email spoofability risk score (0–100, higher = more spoofable) by combining SPF trust surface, DMARC enforcement, and DKIM coverage. Returns a risk level (minimal→critical), per-control sub-scores, and plain-language summary of how easy it would be to spoof email from the domain. Use when asked how easy it is to spoof email from a domain, or for a composite email spoofing risk score.',
+			'Compute a composite email spoofability risk score (0-100, higher = more spoofable) from SPF trust surface, DMARC enforcement and DKIM coverage. Returns a risk level (minimal to critical), per-control sub-scores and a plain-language summary. Use when asked how easy it is to spoof email from a domain, or for a composite spoofing risk score.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -509,7 +509,7 @@ const TOOL_DEFS = {
 	},
 	analyze_drift: {
 		description:
-			'Measure whether a domain\'s DNS security posture improved or regressed by comparing the current state against a prior scan snapshot. Returns a drift classification (improving/stable/regressing/mixed), score delta, and lists of improvements and regressions. Use to answer "did our security score improve or regress since last time?" — distinct from compare_baseline which checks compliance against a fixed policy (not improvement over time).',
+			'Measure whether a domain\'s DNS security posture improved or regressed versus a prior scan snapshot; returns a drift classification (improving/stable/regressing/mixed), score delta, and lists of improvements and regressions. Use for "did our score improve or regress since last time?"; not compare_baseline, which checks compliance with a fixed policy.',
 		schema: AnalyzeDriftArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -530,7 +530,7 @@ const TOOL_DEFS = {
 	},
 	discover_subdomains: {
 		description:
-			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance. Returns a CT SAMPLE, not an asset inventory: the count is a lower bound, a host with no publicly-logged certificate never appears, and the result carries a per-source `coverage` record stating what was actually consulted. `countBasis` says whether `totalSubdomains` is the tool’s normal reach (`sample`) or a `floor` from a run whose recall was cut (then `minSubdomainsObserved` is present); `concreteSubdomains` excludes wildcard patterns.',
+			'Find subdomains via Certificate Transparency logs to reveal shadow IT and forgotten services. Returns a CT SAMPLE, not an asset inventory: counts are a lower bound, hosts without a logged certificate never appear, and a per-source `coverage` record states what was consulted. `countBasis` marks totalSubdomains as `sample` or a cut-recall `floor`; `concreteSubdomains` excludes wildcards.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -544,7 +544,7 @@ const TOOL_DEFS = {
 	},
 	sge_quickscan: {
 		description:
-			'Answer, for ONE domain, whether it meets the New Zealand Secure Government Email (SGE) requirements agencies must satisfy by October 2026. Reports all seven SGE controls — DMARC p=reject, SPF -all, DKIM, SMTP transport TLS, MTA-STS enforce, TLS-RPT, full sub-domain coverage — each as satisfied, not satisfied, or NOT MEASURED, with the structured evidence behind every verdict. Neither SMTP transport TLS nor sub-domain coverage can be observed from a single domain scan, so a DNS-only result tops out at INDETERMINATE, which is not a pass. Distinct from map_compliance, which maps findings to NIST/PCI/SOC 2/CIS.',
+			'Check whether ONE domain meets the New Zealand Secure Government Email (SGE) requirements due October 2026. Reports seven controls (DMARC p=reject, SPF -all, DKIM, SMTP transport TLS, MTA-STS enforce, TLS-RPT, sub-domain coverage) as satisfied, not satisfied or NOT MEASURED, with evidence. A DNS-only result tops out at INDETERMINATE, which is not a pass. Not map_compliance (NIST/PCI/SOC 2/CIS).',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -621,21 +621,21 @@ const TOOL_DEFS = {
 	},
 	check_agent_discovery: {
 		description:
-			'Assess the security posture of IETF BANDAID agent-discovery records (draft-mozleywilliams-dnsop-dnsaid). Detects SVCB agent records under _agents, _index._{protocol}._agents and _{protocol}._agents, reports whether the discovery zone is DNSSEC-anchored (unsigned = spoofable agent endpoints), evaluates DANE/TLSA binding trust (RFC 6698 §10.1), and checks capability-document integrity (cap / cap-sha256). Read-only; uses Private-Use SVCB param code points pending IANA assignment.',
+			'Assess IETF BANDAID agent-discovery DNS records: finds SVCB agent records under _agents, reports whether the discovery zone is DNSSEC-anchored (unsigned means spoofable endpoints), evaluates DANE/TLSA binding trust and checks capability-document integrity (cap / cap-sha256). Read-only; uses Private-Use SVCB param code points pending IANA assignment.',
 		schema: CheckAgentDiscoveryArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	check_llms_txt: {
 		description:
-			"Inspect a domain's published /llms.txt and /llms-full.txt for links and install instructions an AI agent could inherit from someone else. Parses and dedupes the links (same-origin vs external), sweeps external link hosts for dangling CNAMEs and deprovisioned-service fingerprints (evidence of a dangling service, not proof it can be claimed), and checks package names in npm/npx/pnpm/yarn/pip/uv/pipx install commands against the npm or PyPI registry (an unregistered name is claimable) and OSV malicious-package (MAL-) advisories. Detection only; not scored. Anything not measured is listed under notAssessed.",
+			"Inspect a domain's /llms.txt and /llms-full.txt for links and install commands an AI agent could inherit. Sweeps external link hosts for dangling CNAMEs and deprovisioned-service fingerprints (evidence, not proof it is claimable) and checks npm/PyPI install package names for unregistered names and OSV malicious-package advisories. Detection only, not scored; notAssessed lists unmeasured items.",
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	check_dnskey_strength: {
 		description:
-			'Audit the cryptographic strength of DNSKEY signing algorithms used for DNSSEC. Reports which algorithm is used for DNSSEC signing keys (RSA/SHA-1, RSA/SHA-256, ECDSA P-256, Ed25519, etc.), flags deprecated algorithms (RSA/SHA-1, DSA), independent of whether the DNSSEC chain validates. Use when asked what algorithm is used for DNSSEC signing keys, or if deprecated DNSKEY algorithms are in use.',
+			'Audit DNSKEY signing algorithms used for DNSSEC: reports the algorithm in use (RSA/SHA-1, RSA/SHA-256, ECDSA P-256, Ed25519, etc.) and flags deprecated ones (RSA/SHA-1, DSA), independent of whether the chain validates. Use when asked which algorithm signs DNSSEC keys or if deprecated DNSKEY algorithms are in use.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -650,7 +650,7 @@ const TOOL_DEFS = {
 	},
 	check_subdomain_takeover: {
 		description:
-			'Sweep subdomains for dangling CNAMEs pointing to deprovisioned cloud services that could be claimed by an attacker (subdomain takeover vulnerabilities). Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.). Use when asked if subdomains are pointing to deprovisioned cloud services. Pair with discover_subdomains to widen the candidate set — note that returns a CT sample, not a full inventory.',
+			'Sweep subdomains for dangling CNAMEs pointing at deprovisioned cloud services an attacker could claim (subdomain takeover); detects 16 provider families such as AWS S3/CloudFront, Azure, GCP Storage, Heroku, GitHub Pages, Vercel and Firebase. Use when asked if subdomains point to deprovisioned services. Pair with discover_subdomains to widen candidates (it returns a CT sample).',
 		schema: CheckSubdomainTakeoverArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -658,7 +658,7 @@ const TOOL_DEFS = {
 	},
 	check_authoritative_dns_infra: {
 		description:
-			'Measure authoritative DNS infrastructure posture for a hostname over direct DNS-over-TCP/53 from a single vantage: TCP/53 reachability, the authoritative AA flag, recursion exposure, SOA serial consistency across nameservers, DNSKEY/RRSIG presence (not validation), IPv4/IPv6 answer parity, and unsupported-query handling — plus, for authenticated callers, a zone-transfer refusal test (first response only, no zone data retrieved) and CHAOS version.bind/id.server disclosure. Reports UDP/53 reachability, amplification, EDNS large-response/truncation, DNS cookies/RRL, BGP origin, RPKI, route-leak signals, anycast diversity, vantage latency, and RIR/RDAP as inconclusive — none of those are measured. Uses BV_INFRA_PROBE when available.',
+			"Measure a hostname's authoritative DNS posture by querying its nameservers directly over TCP/53 from one vantage: reachability, AA flag, recursion exposure, SOA serial consistency, DNSKEY/RRSIG presence (not validation), IPv4/IPv6 parity. Authenticated callers also get a zone-transfer refusal test (no zone data retrieved) and CHAOS disclosure. UDP, BGP, RPKI, anycast not measured.",
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -705,7 +705,7 @@ const TOOL_DEFS = {
 	},
 	brand_audit_single: {
 		description:
-			'Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, real registrar-sprawl shadowIt, authorized vendor dependency, indeterminate, or impersonation relationships. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).',
+			'Run a full brand audit on one target (optional standard/deep depth, brand aliases, candidate domains). Discovers brand-related domains, looks up registrar and registrant, and classifies each as consolidated, shadowIt, authorized vendor, indeterminate or impersonation. Gated by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).',
 		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,
@@ -729,7 +729,7 @@ const TOOL_DEFS = {
 	},
 	brand_audit_get_report: {
 		description:
-			'Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling an in-flight audit. When a rendered PDF sidecar exists, metadata includes pdfUrl — an authenticated /reports/ download link (same bearer credential as this call). Completed targets whose PDF is still rendering include pdfPending so callers can poll again.',
+			'Fetch the result JSON of a completed brand audit: the per-target CheckResult when `target` is set, else the audit-level aggregate; returns notReady while in flight. When a PDF sidecar exists, metadata includes pdfUrl, an authenticated /reports/ download link (same bearer credential). Targets whose PDF is still rendering include pdfPending, so poll again.',
 		schema: BrandAuditGetReportArgs,
 		group: 'discovery',
 		scanIncluded: false,
