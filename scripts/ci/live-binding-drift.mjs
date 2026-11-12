@@ -34,13 +34,15 @@ import { mergeOverlay, parseJsonc, validateOverlayKeys } from '../lib/overlay-me
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** Config list → [live binding type, field holding the target resource]. */
+/** Config entries → [list getter, live binding type, name field, target field]. */
 const CONFIG_KINDS = [
-	['kv_namespaces', 'kv_namespace', 'id'],
-	['d1_databases', 'd1', 'database_id'],
-	['r2_buckets', 'r2_bucket', 'bucket_name'],
-	['analytics_engine_datasets', 'analytics_engine', 'dataset'],
-	['services', 'service', 'service'],
+	[(m) => m.kv_namespaces, 'kv_namespace', 'binding', 'id'],
+	[(m) => m.d1_databases, 'd1', 'binding', 'database_id'],
+	[(m) => m.r2_buckets, 'r2_bucket', 'binding', 'bucket_name'],
+	[(m) => m.analytics_engine_datasets, 'analytics_engine', 'binding', 'dataset'],
+	[(m) => m.services, 'service', 'binding', 'service'],
+	[(m) => m.durable_objects?.bindings, 'durable_object_namespace', 'name', 'class_name'],
+	[(m) => m.queues?.producers, 'queue', 'binding', 'queue'],
 ];
 
 /** Live binding type → field holding the target resource (null: no resource to compare). */
@@ -58,19 +60,20 @@ const LIVE_TARGET_FIELD = {
 
 const digest = (value) => (value === undefined || value === null ? null : createHash('sha256').update(String(value)).digest('hex'));
 
+function* resourceEntries(merged) {
+	for (const [list, type, nameField, targetField] of CONFIG_KINDS) {
+		for (const entry of list(merged) ?? []) yield [entry[nameField], { type, target: entry[targetField] ?? null }];
+	}
+}
+
+function* varAndSecretEntries(merged) {
+	for (const [name, value] of Object.entries(merged.vars ?? {})) yield [name, { type: 'plain_text', target: digest(value) }];
+	for (const name of merged.secrets?.required ?? []) yield [name, { type: 'secret_text', target: null }];
+}
+
 /** Expected bindings from a merged config: Map name → { type, target } (target hashed for vars). */
 export function expectedBindings(merged) {
-	const out = new Map();
-	for (const [key, type, field] of CONFIG_KINDS) {
-		for (const entry of merged[key] ?? []) out.set(entry.binding, { type, target: entry[field] ?? null });
-	}
-	for (const entry of merged.durable_objects?.bindings ?? []) {
-		out.set(entry.name, { type: 'durable_object_namespace', target: entry.class_name ?? null });
-	}
-	for (const entry of merged.queues?.producers ?? []) out.set(entry.binding, { type: 'queue', target: entry.queue ?? null });
-	for (const [name, value] of Object.entries(merged.vars ?? {})) out.set(name, { type: 'plain_text', target: digest(value) });
-	for (const name of merged.secrets?.required ?? []) out.set(name, { type: 'secret_text', target: null });
-	return out;
+	return new Map([...resourceEntries(merged), ...varAndSecretEntries(merged)]);
 }
 
 /** Live bindings from one `versions view` payload: Map name → { type, target }. */
@@ -84,16 +87,20 @@ export function liveBindings(version) {
 	return out;
 }
 
+function missingMessage(name, want) {
+	return want.type === 'secret_text'
+		? `required secret ${name} is not set on the deployed version`
+		: `${name} (${want.type}) is missing live`;
+}
+
+function mismatchMessage(name, want) {
+	return want.type === 'plain_text' ? `var ${name}: value differs` : `${name} (${want.type}): target differs`;
+}
+
 function compareOne(name, want, got) {
-	if (!got)
-		return want.type === 'secret_text'
-			? `required secret ${name} is not set on the deployed version`
-			: `${name} (${want.type}) is missing live`;
+	if (!got) return missingMessage(name, want);
 	if (got.type !== want.type) return `${name}: type differs (config ${want.type}, live ${got.type})`;
-	if (want.target !== null && got.target !== want.target) {
-		return want.type === 'plain_text' ? `var ${name}: value differs` : `${name} (${want.type}): target differs`;
-	}
-	return null;
+	return want.target !== null && got.target !== want.target ? mismatchMessage(name, want) : null;
 }
 
 /**
@@ -177,6 +184,33 @@ function report(label, lines, print) {
 	for (const line of lines) print(`  ${label} ${line}`);
 }
 
+const hasLiveBindings = (versions) =>
+	Array.isArray(versions) && versions.length > 0 && versions.every((v) => v?.resources?.bindings?.length > 0);
+
+function reportInfo(info, verbose, out) {
+	if (verbose) report('INFO ', info, out);
+	else if (info.length > 0) out(`  INFO  ${info.length} env names read by src/ are unbound (optional/dark); --verbose lists them`);
+}
+
+/** Compare and print every deployed version; returns true when any version has errors. */
+function checkVersions({ merged, versions, verbose }, codeNames, { out, err }) {
+	const expected = expectedBindings(merged);
+	const consumers = merged.queues?.consumers ?? [];
+	let failed = false;
+	for (const version of versions) {
+		const result = compareLiveBindings({ expected, live: liveBindings(version), consumers, codeNames });
+		failed ||= result.errors.length > 0;
+		const status = result.errors.length > 0 ? 'FAIL' : 'OK';
+		out(
+			`live-binding-drift: ${status} — version ${version.id}: ${version.resources.bindings.length} live bindings, ${expected.size} expected`,
+		);
+		report('ERROR', result.errors, err);
+		report('WARN ', result.warnings, out);
+		reportInfo(result.info, verbose, out);
+	}
+	return failed;
+}
+
 export function main(argv, { out = console.log, err = console.error, srcDir = join(repoRoot, 'src') } = {}) {
 	let inputs;
 	try {
@@ -185,28 +219,11 @@ export function main(argv, { out = console.log, err = console.error, srcDir = jo
 		err(`live-binding-drift: cannot read inputs — ${error.message.split('\n')[0]}`);
 		return 2;
 	}
-	const { merged, versions, verbose } = inputs;
-	if (!Array.isArray(versions) || versions.length === 0 || versions.some((v) => !v?.resources?.bindings?.length)) {
+	if (!hasLiveBindings(inputs.versions)) {
 		err('live-binding-drift: the live deployment returned no versions or a version with no bindings — refusing to report clean.');
 		return 2;
 	}
-	const expected = expectedBindings(merged);
-	const codeNames = scanCodeEnvNames(srcDir);
-	let failed = false;
-	for (const version of versions) {
-		const result = compareLiveBindings({ expected, live: liveBindings(version), consumers: merged.queues?.consumers ?? [], codeNames });
-		const status = result.errors.length > 0 ? 'FAIL' : 'OK';
-		failed ||= result.errors.length > 0;
-		out(
-			`live-binding-drift: ${status} — version ${version.id}: ${version.resources.bindings.length} live bindings, ${expected.size} expected`,
-		);
-		report('ERROR', result.errors, err);
-		report('WARN ', result.warnings, out);
-		if (verbose) report('INFO ', result.info, out);
-		else if (result.info.length > 0)
-			out(`  INFO  ${result.info.length} env names read by src/ are unbound (optional/dark); --verbose lists them`);
-	}
-	return failed ? 1 : 0;
+	return checkVersions(inputs, scanCodeEnvNames(srcDir), { out, err }) ? 1 : 0;
 }
 
 const invokedDirectly = process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
