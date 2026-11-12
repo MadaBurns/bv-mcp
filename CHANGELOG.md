@@ -8,6 +8,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.111.2] - 2026-11-12
+
+Description-only patch release; no tool, argument-schema, scoring or runtime behaviour changes.
+
+### Changed
+
+- The public `tools/list` response is about 10% smaller (109,105 to 98,201 characters of compact JSON), which lowers the context cost for clients that load the full tool list. Tool descriptions are capped at 400 characters and parameter descriptions at 100; the shared `domain`, `force_refresh` and `format` parameters use one short description each. Tool names, argument schemas, output schemas and annotations are the same (#1389).
+- A new audit, `test/audits/tool-list-weight.audit.test.ts`, pins the total size and both caps so the list cannot regrow unnoticed (#1389).
+
 ## [3.111.1] - 2026-11-11
 
 Dependency-only patch release; no tool, scoring or runtime behaviour changes.
