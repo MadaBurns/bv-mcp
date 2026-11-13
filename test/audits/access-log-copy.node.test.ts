@@ -45,12 +45,20 @@ describe('sqlLiteral', () => {
 		expect(sqlLiteral(1.5)).toBe('1.5');
 	});
 
+	it('writes a string containing NUL as a UTF-8 blob cast to TEXT, which keeps every byte', () => {
+		expect(sqlLiteral('a\u0000b')).toBe("CAST(X'610062' AS TEXT)");
+		const hostile = "ex\u0000ample.com'); DROP TABLE x; --\u0000é";
+		const literal = sqlLiteral(hostile);
+		const hex = /^CAST\(X'([0-9A-F]+)' AS TEXT\)$/.exec(literal)?.[1];
+		expect(hex).toBeDefined();
+		expect(Buffer.from(hex!, 'hex').toString('utf8')).toBe(hostile);
+	});
+
 	it('refuses any value it cannot copy exactly', () => {
 		expect(() => sqlLiteral(undefined)).toThrow(/undefined/);
 		expect(() => sqlLiteral(2 ** 53)).toThrow(/safe range/);
 		expect(() => sqlLiteral(Number.NaN)).toThrow(/non-finite/);
 		expect(() => sqlLiteral(true)).toThrow(/boolean/);
-		expect(() => sqlLiteral('a\u0000b')).toThrow(/NUL/);
 	});
 });
 
