@@ -88,7 +88,9 @@ export async function startAsyncBatchScan(
 		scoringConfigHash,
 	});
 	const jobId = `bs_${(await sha256(fingerprint)).slice(0, 40)}`;
-	const existing = await deps.kv.get<AsyncBatchJob>(jobKey(jobId), 'json');
+	// Same read-path deadline as batch_scan_status: a job abandoned past the stale bound reads as
+	// `failed` here too, so a reused key starts a new job instead of replaying a dead one (SQ-577).
+	const existing = await getAsyncBatchJobForRead(jobId, principalId, deps.kv, deps.now);
 	if (existing && existing.status !== 'failed') return existing;
 
 	const now = (deps.now ?? Date.now)();
