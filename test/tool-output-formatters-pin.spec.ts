@@ -357,7 +357,16 @@ describe('filterBucketPayload pins (via scanBucketsFindings)', () => {
 	}
 	async function run(payload: unknown, args: { target?: string; providers?: string[] }) {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
-		const r = await scanBucketsFindings({ scanId: 's1', ...args }, { reconBinding: binding(payload), reconAuthToken: 't' });
+		// The poll fails closed without an owner record equal to the caller (SQ-566). The record names an owner
+		// only (no remembered target/providers), so the scope still comes solely from `args`, as before.
+		const ownerKv = {
+			get: async (key: string) => (key === 'bucket-scan-scope:s1' ? JSON.stringify({ owner: 'p1' }) : null),
+			put: async () => undefined,
+		} as unknown as KVNamespace;
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', ...args },
+			{ reconBinding: binding(payload), reconAuthToken: 't', bucketScanKv: ownerKv, principalId: 'p1' },
+		);
 		return { detail: String(r.findings[0]!.detail), metadata: r.findings[0]!.metadata };
 	}
 
