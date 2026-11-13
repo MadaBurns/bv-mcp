@@ -228,13 +228,19 @@ describe('runTailer across logs', () => {
 		await seed(0, 0);
 		await seed(1, 0);
 		await seed(2, 0);
-		// Three logs, WINDOW tiles each, want 12 slots; six are free, and every tile takes 30 ms, so six requests are still
-		// waiting for a slot when the 20 ms fetch phase ends.
-		const net = fakeNetwork(30);
+		// Three logs, WINDOW tiles each, want 12 slots; six are free, and every tile outlasts the fetch phase, so six
+		// requests are still waiting for a slot when it ends.
+		// Prime the log-list memo outside the timed call (#1395). With a cold memo the log-list GET spent the timed budget,
+		// and on a contended runner the LIST request itself was deferred, so runTailer rejected before any tile request.
+		// A run that selects no logs fetches the list and nothing else.
+		await runTailer(tailers, { scheduledTime: NOW, now: NOW, fetch: fakeNetwork().fetch, logIds: new Set() });
+		// The phase still covers the kill-switch and cursor reads, so it is sized well above them (it was 20 ms, #1395).
+		const fetchPhaseMs = 200;
+		const net = fakeNetwork(fetchPhaseMs + 100);
 		const start = Date.now();
-		const summary = await runTailer(tailers, { scheduledTime: NOW, now: NOW, fetch: net.fetch, fetchPhaseMs: 20 });
+		const summary = await runTailer(tailers, { scheduledTime: NOW, now: NOW, fetch: net.fetch, fetchPhaseMs });
 
-		const late = net.calls.filter((call) => call.at > start + 20 + 5);
+		const late = net.calls.filter((call) => call.at > start + fetchPhaseMs + 5);
 		expect(late).toEqual([]);
 		expect(Object.values(summary.deferred)).toContain('fetch phase ended before this request had a slot');
 		expect(summary.errors).toEqual({});
