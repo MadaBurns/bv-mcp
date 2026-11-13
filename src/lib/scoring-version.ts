@@ -867,8 +867,25 @@
  *   scored before. NOERROR-empty and NXDOMAIN answers keep their existing findings and scores exactly. The
  *   affected populations are UNMEASURED against the corpus; no frequency is claimed. No weight, tier, grade
  *   band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 2.3.0 — Optional DMARC failure reporting is advisory, not a penalty (dns-checks 2.3.0).
+ *   SCORE-BEARING, direction UP only, same shape as the 1.15.0 `aspf=r` reclassification. (a) "No
+ *   forensic reporting configured (ruf= absent)" — emitted when `rua=` is published and `ruf=` is not —
+ *   is a severity reclassification `low` → `info`, so it no longer carries the −5 low penalty: +5 on the
+ *   `dmarc` category for every domain that publishes aggregate reporting without a forensic address.
+ *   `ruf=` is an optional tag; a forensic report carries headers and content from a real failed message,
+ *   so declining to receive them is a legitimate privacy choice, and the old rule charged a domain for
+ *   making it. Our own production domains publish no `ruf=` by decision and were scored down for it by
+ *   our own scanner. (b) "Limited DMARC failure reporting coverage" (`fo=0`) stays `low` when a `ruf=`
+ *   address is published and becomes `info` when none is: `fo=` only selects which failure reports go to
+ *   the `ruf=` address, so without one the tag has no effect. A record with `rua=`, `fo=0` and no `ruf=`
+ *   therefore moves +10. Six DMARC parity fixtures moved up by exactly 5 (strict `p=reject` + `rua=` is
+ *   now 100; `p=none` stays 0 — the missing-control zeroing is untouched). Both finding titles are
+ *   unchanged (downstream consumers match them). "No aggregate reporting" (`rua=` absent, medium) and
+ *   the medium invalid-`ruf=`-URI and invalid-`fo=` findings are unchanged. The affected population is
+ *   UNMEASURED against the corpus. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
+ *   missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '2.2.0';
+export const SCORING_MODEL_VERSION = '2.3.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

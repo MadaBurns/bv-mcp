@@ -143,12 +143,13 @@ describe('mail_enabled: partial enforcement caps the top letter at 94 (NIST A, n
 		expect(nistScoreToGrade(overall)).toBe('A');
 	});
 
-	it('2. POSITIVE CONTROL — p=reject + rua on the same roster → 97 (A+) with no gaps (the gate is off)', async () => {
+	it('2. POSITIVE CONTROL — p=reject + rua on the same roster → 98 (A+) with no gaps (the gate is off)', async () => {
 		const { score, overall } = await scoreWith(REJECT, 'mail_enabled');
 		// 100 before scoring model 2.0.0, when the +5 email bonus lifted a sub-100 base to the
 		// clamp. The bonus is zeroed now, so the real DMARC category score (<100 even for
 		// reject+rua) shows through the core tier; still above the 95 A+ line and above the 94 cap.
-		expect(overall).toBe(97);
+		// 97 until scoring model 2.3.0, which stopped charging 5 DMARC points for an absent ruf=.
+		expect(overall).toBe(98);
 		expect(overall).toBeGreaterThan(94);
 		expect(score.partialEnforcementGaps).toEqual([]);
 		expect(score.criticalGaps).toEqual([]);
