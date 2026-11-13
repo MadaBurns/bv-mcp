@@ -168,7 +168,10 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 		expect(vi.mocked(kv.get).mock.calls.some((c) => String(c[0]) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
-	// ─── Behavior 4: 4xx → DEFINITIVE REJECT → no LKG, fall through to static key
+	// ─── Behavior 4: a 4xx never consults the LKG; a matching static key still resolves
+	// Backend 401/403/404/408/429 describe the backend's own failure (unavailable → 503,
+	// see test/tier-auth-backend-outage.spec.ts); any other non-2xx stays a plain, uncached
+	// rejection. The only definitive "no entitlement" answer is a 2xx body with a null tier.
 	// An LKG entry is present AND a matching BV_API_KEY is configured. The single
 	// `tier === 'owner'` assertion proves BOTH halves: LKG was skipped (else we'd
 	// get 'enterprise') and the static BV_API_KEY path engaged.
@@ -178,7 +181,7 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 		const keyHash = await keyHashOf('static-fallthrough-key');
 		const kv = {
 			get: vi.fn((key: string) => {
-				// LKG entry present — a 4xx is definitive and must NOT consult it.
+				// LKG entry present — a 4xx must NOT consult it.
 				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('enterprise');
 				return Promise.resolve(null);
 			}),

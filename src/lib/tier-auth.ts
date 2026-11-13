@@ -24,6 +24,7 @@ import type { QuotaCoordinator } from './quota-coordinator';
 import { checkControlPlaneRateLimit } from './rate-limiter';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import { deriveCanonicalOAuthPrincipal } from './auth-principal';
+import { logEvent } from './log';
 import type { OAuthPrincipalKind } from './auth-principal';
 import { isStrongDistinctSecurityCapability } from './security-capabilities';
 
@@ -132,25 +133,56 @@ export async function fetchBvWebValidateKey(
 	}
 }
 
+/**
+ * Non-2xx statuses that describe the backend or the internal channel rather than the customer key: our internal
+ * bearer was rejected (401/403), the route is absent (404), or the backend timed out / throttled us (408/429).
+ * The only definitive "no entitlement" answer is a 2xx body carrying `tier: null`.
+ */
+const BV_WEB_BACKEND_FAILURE_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 408, 429]);
+
 type BvWebVerdict =
 	| { kind: 'tier'; tier: McpApiKeyTier }
-	/** Definitive "no entitlement" answer (null tier). */
+	/** Definitive "no entitlement" answer (2xx, null tier). */
 	| { kind: 'revoked' }
-	/** Definitive client-side rejection (4xx): the credential is not accepted. */
+	/** Any other non-2xx status: the credential is not accepted, and nothing is cached. */
 	| { kind: 'denied' }
-	/** No usable answer (5xx or malformed body): the credential's validity is unknowable. */
-	| { kind: 'unavailable' };
+	/** No usable answer (backend failure status, 5xx, malformed body): validity is unknowable. `reason` is a fixed log-safe token. */
+	| { kind: 'unavailable'; reason: string };
+
+/** Classify a non-2xx validate-key status: the backend's own failure is unavailable, anything else is a plain denial. */
+function classifyBvWebStatus(status: number): BvWebVerdict {
+	if (status >= 500) return { kind: 'unavailable', reason: 'status_5xx' };
+	if (BV_WEB_BACKEND_FAILURE_STATUSES.has(status)) return { kind: 'unavailable', reason: `status_${status}` };
+	return { kind: 'denied' };
+}
 
 /** Classify a validate-key response. Only a well-formed answer is ever definitive. */
 function classifyBvWebValidation(response: Awaited<ReturnType<typeof fetchBvWebValidateKey>>): BvWebVerdict {
-	if (response.kind === 'http') return { kind: response.status >= 500 ? 'unavailable' : 'denied' };
+	if (response.kind === 'http') return classifyBvWebStatus(response.status);
 	const parsed = ValidateKeyResponseSchema.safeParse(response.data);
-	if (!parsed.success) return { kind: 'unavailable' };
+	if (!parsed.success) return { kind: 'unavailable', reason: 'malformed_body' };
 	return parsed.data.tier === null ? { kind: 'revoked' } : { kind: 'tier', tier: parsed.data.tier };
 }
 
+/** Make an otherwise invisible entitlement outage observable. The reason is a fixed token: no key, hash, URL or body. */
+function reportBvWebUnavailable(reason: string): TierAuthResult {
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'auth',
+		result: 'validate_key_unavailable',
+		details: { reason },
+	});
+	return { authenticated: false, storageUnavailable: true };
+}
+
+/** Fixed log-safe token for a thrown validate-key call. */
+function bvWebFailureReason(error: unknown): string {
+	return error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'fetch_error';
+}
+
 /**
- * Short-lived accelerator for a definitive answer only. A 4xx denial is not cached, and an `unavailable`
+ * Short-lived accelerator for a definitive answer only. A non-2xx denial is not cached, and an `unavailable`
  * verdict never reaches here (a transient outage must not become a lockout).
  */
 async function cacheBvWebVerdict(
@@ -166,7 +198,7 @@ async function cacheBvWebVerdict(
 /**
  * Entitlement lookup via the BV_WEB service binding. Fail-closed authorization boundary: never grants a
  * tier without a definitive positive answer and never serves a stale one. An unreachable or unintelligible
- * backend (throw, timeout, 5xx, malformed body) is reported with the same `storageUnavailable` marker as
+ * backend (throw, timeout, 5xx, 401/403/404/408/429, malformed body) is reported with the same `storageUnavailable` marker as
  * the JWT/trial outage paths so the caller answers a retryable 503 instead of a 401.
  */
 async function resolveViaBvWeb(
@@ -180,10 +212,10 @@ async function resolveViaBvWeb(
 	let verdict: BvWebVerdict;
 	try {
 		verdict = classifyBvWebValidation(await fetchBvWebValidateKey(bvWeb, internalKey, keyHash));
-	} catch {
-		return { authenticated: false, storageUnavailable: true };
+	} catch (error) {
+		return reportBvWebUnavailable(bvWebFailureReason(error));
 	}
-	if (verdict.kind === 'unavailable') return { authenticated: false, storageUnavailable: true };
+	if (verdict.kind === 'unavailable') return reportBvWebUnavailable(verdict.reason);
 	try {
 		await cacheBvWebVerdict(kv, keyHash, verdict);
 	} catch {
