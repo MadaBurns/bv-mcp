@@ -38,12 +38,23 @@ import type { ScanRuntimeOptions } from './post-processing';
 const PROBE_ELIGIBLE_TIERS = new Set(['developer', 'enterprise', 'partner', 'owner']);
 
 /**
+ * True when this scan's `ssl` and `dane_https` checks actually receive the TLS-probe binding: the caller's tier
+ * is probe-eligible AND the binding is bound. This is the capability (not the tier name) that changes those two
+ * checks' output (SQ-567: `ssl` metadata.tlsVersionAssessment, `dane_https` finding metadata), so it is what the
+ * scan-level cache key and the per-check in-flight key partition on. Deployments without the binding are never
+ * active, so they keep one shared key.
+ */
+export function tlsProbeEnrichmentActive(rt?: ScanRuntimeOptions): boolean {
+	return Boolean(rt?.tlsProbeBinding) && PROBE_ELIGIBLE_TIERS.has(rt?.authTier ?? '');
+}
+
+/**
  * Resolve the TLS-probe binding for the `ssl` and `dane_https` checks, gated on tier
  * eligibility. Paid-tier only — free/agent/anonymous scans skip Browser Rendering.
  */
 function resolveTlsProbeOptions(rt?: ScanRuntimeOptions): { tlsProbeBinding?: { fetch: typeof fetch }; tlsProbeAuthToken?: string } {
 	return {
-		tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(rt?.authTier ?? '') ? rt?.tlsProbeBinding : undefined,
+		tlsProbeBinding: tlsProbeEnrichmentActive(rt) ? rt?.tlsProbeBinding : undefined,
 		tlsProbeAuthToken: rt?.tlsProbeAuthToken,
 	};
 }

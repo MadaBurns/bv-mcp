@@ -126,3 +126,40 @@ describe('scan_domain → tool_call analytics event', () => {
 		expect(scanEvents[0].cacheStatus).toBe('miss');
 	});
 });
+
+// SQ-567: the TLS-probe binding changes the ssl check's output for a probe-eligible caller
+// (metadata.tlsVersionAssessment), so an anonymous caller must not be served that result from the cache
+// within the TTL, and the reverse. Deployments without the binding keep ONE shared entry.
+describe('scanDomain cache partition by TLS-probe eligibility (SQ-567)', () => {
+	const binding = { fetch: (async () => new Response('{}')) as typeof fetch };
+	const sslMetadata = (r: { checks: Array<{ category: string; metadata?: Record<string, unknown> }> }) =>
+		r.checks.find((c) => c.category === 'ssl')?.metadata?.tlsVersionAssessment;
+
+	it('does not serve an eligible caller\'s scan to an anonymous caller (or the reverse) when the binding is bound', async () => {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const eligible = await scanDomain('partition.example.com', undefined, { authTier: 'owner', tlsProbeBinding: binding });
+		expect(eligible.cached).toBe(false);
+		expect(sslMetadata(eligible)).toEqual({ status: 'not_assessed', reason: 'probe_vantage_intercepted' });
+
+		// Same domain, inside the TTL, different capability: a fresh scan computed for ITS eligibility.
+		const anon = await scanDomain('partition.example.com', undefined, { authTier: 'anon', tlsProbeBinding: binding });
+		expect(anon.cached).toBe(false);
+		expect(sslMetadata(anon)).toBeUndefined();
+
+		// Each capability is then served its own cached entry.
+		const eligibleAgain = await scanDomain('partition.example.com', undefined, { authTier: 'partner', tlsProbeBinding: binding });
+		expect(eligibleAgain.cached).toBe(true);
+		expect(sslMetadata(eligibleAgain)).toEqual({ status: 'not_assessed', reason: 'probe_vantage_intercepted' });
+		const anonAgain = await scanDomain('partition.example.com', undefined, { authTier: 'free', tlsProbeBinding: binding });
+		expect(anonAgain.cached).toBe(true);
+		expect(sslMetadata(anonAgain)).toBeUndefined();
+	});
+
+	it('shares one cache entry across every tier when the binding is not bound', async () => {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const first = await scanDomain('unbound.example.com', undefined, { authTier: 'owner' });
+		expect(first.cached).toBe(false);
+		const second = await scanDomain('unbound.example.com', undefined, { authTier: 'anon' });
+		expect(second.cached).toBe(true);
+	});
+});
