@@ -55,6 +55,25 @@ function mockPerResolverTxt(cloudflareData: string[], googleData: string[]) {
 }
 
 describe('queryMultiResolver', () => {
+	it.each([
+		['A', 1, ['192.0.2.1', '192.0.2.2', '192.0.2.3', '192.0.2.4']],
+		['AAAA', 28, ['2001:db8:0:0:0:0:0:1', '2001:db8:0:0:0:0:0:2', '2001:db8:0:0:0:0:0:3', '2001:db8:0:0:0:0:0:1']],
+		['TXT', 16, ['version-a', 'version-b', 'version-c', 'version-d']],
+	] as const)('does not infer poisoning from diverse %s answer pools alone', async (type, number, answers) => {
+		let call = 0;
+		mockResolverFetch(() => Promise.resolve(createDohResponse(
+			[{ name: 'example.com', type: number }],
+			[{ name: 'example.com', type: number, TTL: 300, data: answers[call++ % answers.length] }],
+		)));
+		const result = await queryMultiResolver('example.com', type);
+		expect(result.status).toBe('SPLIT_HORIZON');
+		expect(result.quorumMet).toBe(true);
+		expect(result.respondedCount).toBe(4);
+		expect(result.resolverAnswers.every((answer) => answer.answers.length > 0)).toBe(true);
+		expect(result.detail).not.toMatch(/poison|misconfigur|likely/i);
+		expect(result.detail).toContain('cause');
+	});
+
 	it('returns CONSISTENT when all resolvers agree', async () => {
 		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.10' }]);
 

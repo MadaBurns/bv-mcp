@@ -88,6 +88,20 @@ describe('checkResolverConsistency', () => {
 		expect(nonInfo.length + result.findings.filter((f) => f.severity === 'info').length).toBe(1);
 	});
 
+	it('retains four divergent answers without emitting a high-severity poisoning lead', async () => {
+		let call = 0;
+		mockResolverFetch(() => Promise.resolve(createDohResponse(
+			[{ name: 'example.com', type: 1 }],
+			[{ name: 'example.com', type: 1, TTL: 300, data: `192.0.2.${++call}` }],
+		)));
+		const result = await run('example.com', 'A');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('low');
+		expect(result.findings[0].metadata?.status).toBe('SPLIT_HORIZON');
+		expect(result.findings[0].metadata?.resolverAnswers).toHaveLength(4);
+		expect(result.findings[0].detail).not.toMatch(/poison|misconfigur/i);
+	});
+
 	it('findings have resolver metadata', async () => {
 		mockSplitDns();
 		const result = await run('example.com', 'A');

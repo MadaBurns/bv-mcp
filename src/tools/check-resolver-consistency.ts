@@ -5,9 +5,9 @@
  *
  * Queries 4 public DoH resolvers (Cloudflare, Google, Quad9, OpenDNS) in parallel
  * for multiple record types and compares answer sets to detect:
- * - GeoDNS / CDN steering (SPLIT_HORIZON)
+ * - Divergent answers with an unestablished cause (SPLIT_HORIZON)
  * - Propagation issues or blocking (INCOMPLETE)
- * - Potential DNS poisoning (SUSPICIOUS)
+ * SUSPICIOUS remains a compatibility status; answer diversity alone does not emit it.
  * - Normal consistent resolution (CONSISTENT)
  */
 

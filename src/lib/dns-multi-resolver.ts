@@ -284,19 +284,12 @@ function classifyConsistency(resolverAnswers: ResolverAnswer[], type: RecordType
 		}
 	}
 
-	// Multiple different non-empty answer sets
-	if (uniqueSets.size === 2) {
+	// Answer-set cardinality alone cannot distinguish geographic steering,
+	// rotating address pools, propagation or a genuine integrity problem.
+	if (uniqueSets.size >= 2) {
 		return {
 			status: 'SPLIT_HORIZON',
-			detail: `${type} records differ between resolvers — likely GeoDNS or CDN steering. ${okAnswers.length} resolvers returned ${uniqueSets.size} distinct answer sets.`,
-		};
-	}
-
-	// More than 2 different results — suspicious
-	if (uniqueSets.size >= 3) {
-		return {
-			status: 'SUSPICIOUS',
-			detail: `${type} records show ${uniqueSets.size} distinct answer sets across ${okAnswers.length} resolvers — unusual divergence. Possible DNS poisoning or misconfiguration.`,
+			detail: `${type} records differ between resolvers: ${okAnswers.length} resolvers returned ${uniqueSets.size} distinct answer sets. The cause is not established; geographic steering, rotating pools or propagation can produce different answers.`,
 		};
 	}
 
