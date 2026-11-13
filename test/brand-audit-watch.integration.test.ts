@@ -161,6 +161,20 @@ describe('register_brand_audit_watch', () => {
 		expect(row).toEqual({ owner_id: 'owner-1', domain: 'apple.com', interval: 'weekly', webhook_url: 'https://hooks.example.com/abc' });
 	});
 
+	it('registry threads the runtime signing secret into registration and omits it when unset (SQ-587)', async () => {
+		const { TOOL_REGISTRY } = await import('../src/handlers/tool-registry');
+		const run = (watchWebhookSigningSecret: string | undefined, domain: string) =>
+			TOOL_REGISTRY.register_brand_audit_watch.execute(domain, { interval: 'daily', webhook_url: 'https://hooks.example.com/abc' }, {
+				brandAuditDb: brandAuditDb(),
+				principalId: 'owner-1',
+				watchWebhookSigningSecret,
+			} as never);
+		const on = await run('s'.repeat(40), 'signed.example.com');
+		const off = await run(undefined, 'unsigned.example.com');
+		expect(on.findings[0]?.metadata?.signingSecret).toMatch(/^[0-9a-f]{64}$/);
+		expect(off.findings[0]?.metadata).not.toHaveProperty('signingSecret');
+	});
+
 	it('rejects a webhook URL that fails SSRF validation (private IP)', async () => {
 		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const deps = makeDeps();
@@ -308,6 +322,25 @@ describe('list_brand_audit_watches', () => {
 		expect(watches[1]?.webhookTokenFingerprint).toBeNull();
 		expect(JSON.stringify(watches)).not.toContain(callbackToken);
 		expect(JSON.stringify(watches)).not.toContain('webhook_url');
+	});
+
+	it('never returns the per-watch signing secret, even with signing enabled and a real D1 row (SQ-587)', async () => {
+		const { registerBrandAuditWatch, listBrandAuditWatches } = await import('../src/tools/brand-audit-watch');
+		const deps = makeDeps({ signingSecret: 's'.repeat(40) });
+
+		const registered = await registerBrandAuditWatch(
+			{ domain: 'apple.com', interval: 'weekly', webhook_url: 'https://hooks.example.com/abc' },
+			'owner-1',
+			deps,
+		);
+		const secret = registered.findings.find((f) => f.metadata?.summary === true)?.metadata?.signingSecret as string;
+		expect(secret).toMatch(/^[0-9a-f]{64}$/);
+
+		const listed = await listBrandAuditWatches('owner-1', deps);
+		const serialized = JSON.stringify(listed);
+		expect(serialized).toContain('watch-test-id');
+		expect(serialized).not.toContain(secret);
+		expect(serialized).not.toContain('signingSecret');
 	});
 });
 

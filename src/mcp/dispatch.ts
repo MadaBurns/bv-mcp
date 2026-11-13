@@ -210,6 +210,8 @@ export interface DispatchMcpMethodOptions {
 	bvWebBenchmarkAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
+	/** Validated optional secret deriving per-watch webhook signing keys (register_brand_audit_watch). */
+	watchWebhookSigningSecret?: string;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	asyncBatchQueue?: import('../tools/batch-scan-async').AsyncBatchQueueProducer;
 	asyncBatchKv?: KVNamespace;
@@ -371,6 +373,7 @@ function buildToolsCallRuntimeOptions(options: DispatchMcpMethodOptions): NonNul
 		bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
 		infraProbe: options.infraProbe,
 		brandAuditDb: options.brandAuditDb,
+		watchWebhookSigningSecret: options.watchWebhookSigningSecret,
 		brandAuditQueue: options.brandAuditQueue,
 		asyncBatchQueue: options.asyncBatchQueue,
 		asyncBatchKv: options.asyncBatchKv,

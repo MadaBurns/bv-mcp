@@ -194,6 +194,50 @@ describe('chaos: brand-audit watch webhook delivery', () => {
 		expect(calls.some((c) => c.sql.includes('UPDATE brand_audit_watches SET last_classification_hash'))).toBe(false);
 	});
 
+	it('signs the default caller-URL delivery with the watch-derived key when a signing secret is configured (SQ-587)', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { deriveWatchWebhookSecret } = await import('../../src/lib/watch-webhook-signing');
+		const serverSecret = 'q'.repeat(40);
+		const priorResult = makeBrandAuditResult([]);
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+			watch: {
+				id: 'w-1',
+				owner_id: 'owner-1',
+				domain: 'apple.com',
+				interval: 'weekly',
+				webhook_url: 'https://hooks.example.com/x',
+				last_classification_hash: await computeClassificationHash(priorResult),
+			},
+			priorResult: { result_json: JSON.stringify(priorResult) },
+		});
+		const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+		const savedFetch = globalThis.fetch;
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		try {
+			await processBrandAuditMessage({ auditId: 'aud-1', target: 'apple.com', format: 'json', watchId: 'w-1', ownerId: 'owner-1' }, {
+				db,
+				brandAuditSingle: vi.fn().mockResolvedValue(makeBrandAuditResult([{ domain: 'a.com', bucket: 'consolidated' }])),
+				now: () => 1_750_000_000_000,
+				watchWebhookSigningSecret: serverSecret,
+			} as BrandAuditConsumerDeps);
+		} finally {
+			globalThis.fetch = savedFetch;
+		}
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+		const [, t, v1] = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(new Headers(init.headers).get('X-Blackveil-Signature') ?? '') ?? [];
+		expect(v1).toBeDefined();
+		const watchSecret = await deriveWatchWebhookSecret(serverSecret, 'w-1');
+		const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(watchSecret), { name: 'HMAC', hash: 'SHA-256' }, false, [
+			'sign',
+		]);
+		const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${t}.${String(init.body)}`));
+		expect(v1).toBe(Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, '0')).join(''));
+	});
+
 	it('replays the exact non-empty H0→H1 payload after failure on an unchanged H1 tick', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const h0Result = makeBrandAuditResult([]);

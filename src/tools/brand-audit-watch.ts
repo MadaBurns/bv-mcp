@@ -28,6 +28,7 @@
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { createRejectedRequestBuilder } from './async-start-error-result';
+import { deriveWatchWebhookSecret } from '../lib/watch-webhook-signing';
 import type { BrandAuditWatchInterval, BrandAuditWatchRow } from '../lib/db/brand-audit-schema';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -55,6 +56,21 @@ export interface BrandAuditWatchDeps {
 	generateId?: () => string;
 	/** Clock override for tests (epoch ms). */
 	now?: () => number;
+	/** Validated server secret for webhook signing. Unset = feature off; register returns no secret. */
+	signingSecret?: string;
+}
+
+const SIGNING_SECRET_NOTE =
+	"signingSecret verifies the X-Blackveil-Signature header on this watch's webhook deliveries; it is shown only at registration, so store it now.";
+
+/** Per-watch signing secret fields for the registration result: only for a webhook watch with signing enabled. */
+async function signingSecretFields(
+	watchId: string,
+	webhookUrl: string | undefined,
+	serverSecret: string | undefined,
+): Promise<{ signingSecret?: string; signingSecretNote?: string }> {
+	if (!webhookUrl || !serverSecret) return {};
+	return { signingSecret: await deriveWatchWebhookSecret(serverSecret, watchId), signingSecretNote: SIGNING_SECRET_NOTE };
 }
 
 const errorResult = createRejectedRequestBuilder<'invalidInput' | 'notFound' | 'watchLimitExceeded' | 'persistenceFailure'>(
@@ -144,7 +160,12 @@ async function persistWatch(
 	}
 }
 
-function registeredResult(args: RegisterBrandAuditWatchArgs, row: { watchId: string; domain: string; now: number }): CheckResult {
+async function registeredResult(
+	args: RegisterBrandAuditWatchArgs,
+	row: { watchId: string; domain: string; now: number },
+	serverSecret: string | undefined,
+): Promise<CheckResult> {
+	const signing = await signingSecretFields(row.watchId, args.webhook_url, serverSecret);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
@@ -158,6 +179,7 @@ function registeredResult(args: RegisterBrandAuditWatchArgs, row: { watchId: str
 				interval: args.interval,
 				hasWebhook: Boolean(args.webhook_url),
 				createdAt: row.now,
+				...signing,
 			},
 		),
 	]);
@@ -178,7 +200,7 @@ export async function registerBrandAuditWatch(
 	const row = { watchId, domain: sanitizeDomain(args.domain as string), now };
 
 	const failure = await persistWatch(args, ownerId, deps, row);
-	return failure ?? registeredResult(args, row);
+	return failure ?? (await registeredResult(args, row, deps.signingSecret));
 }
 
 /**
