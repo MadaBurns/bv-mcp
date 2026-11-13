@@ -107,7 +107,7 @@ describe('SQ-564 async batch scan — read-path deadline for abandoned jobs', ()
 		const startInput = { domains: ['example.com'], idempotencyKey: 'stale-key-1' };
 		const makeDeps = (kv: KVNamespace, now: () => number) => ({ kv, queue: { send: vi.fn(async () => undefined) }, now });
 
-		it.each(['running', 'queued'] as const)('starts a new job when the earlier %s job is past the bound and never polled', async (status) => {
+		it.each(['running', 'queued'] as const)('starts a new job over a %s job past the bound that was never polled', async (status) => {
 			const kv = memoryKv();
 			const { jobId, key } = await seedJob(kv, status, 1_000);
 			const deps = makeDeps(kv, () => 1_000 + ASYNC_BATCH_STALE_AFTER_MS + 1);
