@@ -103,20 +103,33 @@ function activeProbesAllowedForScan(runtimeOptions?: ScanRuntimeOptions): boolea
  * authoritative_dns_infra profile runs neither check, so its key is unaffected.
  */
 export function resolveScanCacheKey(domain: string, runtimeOptions?: ScanDomainOptions): string {
-	const explicitProfile = runtimeOptions?.profile;
-	const isExplicit = explicitProfile && explicitProfile !== 'auto';
-	// The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
-	// (US-4 contract addendum): partition its cache key on the gate
-	// so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
-	// caller within the TTL, and the reverse never hides measured capabilities from a paying
-	// caller. Every other profile is unaffected.
-	const infraProfileCacheKeySuffix =
-		isExplicit && explicitProfile === 'authoritative_dns_infra' && activeProbesAllowedForScan(runtimeOptions) ? ':active' : '';
-	const tlsProbeKeySuffix =
-		explicitProfile !== 'authoritative_dns_infra' && tlsProbeEnrichmentActive(runtimeOptions) ? `:${TLS_PROBE_KEY_SEGMENT}` : '';
+	const profile = explicitScanProfile(runtimeOptions);
 	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
-	const baseKey = isExplicit ? buildScanCacheKey(domain, `${explicitProfile}${infraProfileCacheKeySuffix}`) : buildScanCacheKey(domain);
-	return `${baseKey}${tlsProbeKeySuffix}`;
+	const baseKey = profile
+		? buildScanCacheKey(domain, `${profile}${infraProfileCacheKeySuffix(profile, runtimeOptions)}`)
+		: buildScanCacheKey(domain);
+	return `${baseKey}${tlsProbeKeySuffix(profile, runtimeOptions)}`;
+}
+
+/** The caller's explicit scan profile, or undefined when none was given or it is 'auto'. */
+function explicitScanProfile(runtimeOptions?: ScanDomainOptions): string | undefined {
+	const profile = runtimeOptions?.profile;
+	return profile && profile !== 'auto' ? profile : undefined;
+}
+
+/**
+ * The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
+ * (US-4 contract addendum): partition its cache key on the gate
+ * so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
+ * caller within the TTL, and the reverse never hides measured capabilities from a paying
+ * caller. Every other profile is unaffected.
+ */
+function infraProfileCacheKeySuffix(profile: string, runtimeOptions?: ScanDomainOptions): string {
+	return profile === 'authoritative_dns_infra' && activeProbesAllowedForScan(runtimeOptions) ? ':active' : '';
+}
+
+function tlsProbeKeySuffix(profile: string | undefined, runtimeOptions?: ScanDomainOptions): string {
+	return profile !== 'authoritative_dns_infra' && tlsProbeEnrichmentActive(runtimeOptions) ? `:${TLS_PROBE_KEY_SEGMENT}` : '';
 }
 
 /**

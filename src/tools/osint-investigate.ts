@@ -424,14 +424,27 @@ const QUERY_CHECKERS: Record<ReconInvestigationType, QueryChecker> = {
 	username: usernameProblem,
 };
 
+/** "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call. */
+function assertValidQuery(type: ReconInvestigationType, query: string): void {
+	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid query: ${problem}`);
+}
+
+/** Store the owner record, or return the rejection that fails the start (a job nobody can poll must not be handed out). */
+async function ownerRecordRejection(id: string, type: ReconInvestigationType, options: ReconToolOptions): Promise<CheckResult | undefined> {
+	if (await rememberInvestigationOwner(id, options)) return undefined;
+	return buildStartRejection(
+		'persistenceFailure',
+		`OSINT ${type} investigation could not be started: its ownership record could not be stored, so the investigation could not be polled. Retry.`,
+	);
+}
+
 export async function osintInvestigateStart(
 	type: ReconInvestigationType,
 	query: string,
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
-	// "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call.
-	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
-	if (problem) throw new Error(`Invalid query: ${problem}`);
+	assertValidQuery(type, query);
 	const outcome = await callReconInvestigateStart(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -455,12 +468,8 @@ export async function osintInvestigateStart(
 			{ type },
 		);
 	const started = outcome.data;
-	if (!(await rememberInvestigationOwner(started.investigationId, options))) {
-		return buildStartRejection(
-			'persistenceFailure',
-			`OSINT ${type} investigation could not be started: its ownership record could not be stored, so the investigation could not be polled. Retry.`,
-		);
-	}
+	const rejection = await ownerRecordRejection(started.investigationId, type, options);
+	if (rejection) return rejection;
 	await rememberInvestigationTarget(started.investigationId, type, query, options);
 	return buildCheckResult(CATEGORY, [
 		createFinding(

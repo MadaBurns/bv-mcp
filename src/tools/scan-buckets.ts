@@ -410,14 +410,33 @@ function filterBucketPayload(payload: Record<string, unknown>, scope: BucketScan
 	return needsRewrite(split) ? buildScopedPayload(payload, arrayKey, rows.length, split, scope) : payload;
 }
 
+/**
+ * Trust-boundary check before any binding call: the recon watchlist authorises targets, this is the
+ * defence in depth beneath it. "Invalid target:" is a client-visible error prefix (error allowlist).
+ */
+function assertValidTarget(target: string): void {
+	const problem = target === target.trim() ? validateDomain(target).error : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid target: ${problem}`);
+}
+
+/** Store the owner record, or return the rejection that fails the start (a scan nobody can poll must not be handed out). */
+async function ownerRecordRejection(
+	scanId: string,
+	args: { target: string; providers?: string[] },
+	options: ReconToolOptions,
+): Promise<CheckResult | undefined> {
+	if (await rememberBucketScanScope(scanId, { ...args, owner: options.principalId }, options.bucketScanKv)) return undefined;
+	return buildStartRejection(
+		'persistenceFailure',
+		`Bucket scan for ${args.target} could not be started: its ownership record could not be stored, so the scan could not be polled. Retry.`,
+	);
+}
+
 export async function scanBucketsStart(
 	args: { target: string; providers?: string[] },
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
-	// Trust-boundary check before any binding call: the recon watchlist authorises targets, this is the
-	// defence in depth beneath it. "Invalid target:" is a client-visible error prefix (error allowlist).
-	const problem = args.target === args.target.trim() ? validateDomain(args.target).error : 'must not have leading or trailing whitespace';
-	if (problem) throw new Error(`Invalid target: ${problem}`);
+	assertValidTarget(args.target);
 	const started = await callReconBucketScanStart(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -439,12 +458,8 @@ export async function scanBucketsStart(
 		});
 	}
 	const start = started.data;
-	if (!(await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv))) {
-		return buildStartRejection(
-			'persistenceFailure',
-			`Bucket scan for ${args.target} could not be started: its ownership record could not be stored, so the scan could not be polled. Retry.`,
-		);
-	}
+	const rejection = await ownerRecordRejection(start.scanId, args, options);
+	if (rejection) return rejection;
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
