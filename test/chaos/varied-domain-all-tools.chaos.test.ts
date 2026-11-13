@@ -413,6 +413,15 @@ function structuredPayload(result: ToolResult): Record<string, unknown> | null {
 	return match ? (JSON.parse(match[1]) as Record<string, unknown>) : null;
 }
 
+/** Owner records for the scan_buckets_* / osint_investigation_* poller cases above (scanId 's1', investigationId 'i1'). */
+function reconOwnerKv(principalId: string): KVNamespace {
+	const store = new Map<string, string>([
+		['bucket-scan-scope:s1', JSON.stringify({ owner: principalId })],
+		['osint-investigation-owner:i1', principalId],
+	]);
+	return { get: async (key: string) => store.get(key) ?? null, put: async () => undefined } as unknown as KVNamespace;
+}
+
 describe('chaos: varied-domain all-tools scanning', () => {
 	beforeEach(() => {
 		IN_MEMORY_CACHE.clear();
@@ -450,6 +459,9 @@ describe('chaos: varied-domain all-tools scanning', () => {
 			clientType: 'chaos_suite',
 			asyncBatchKv,
 			asyncBatchQueue: { send: vi.fn(async () => undefined) },
+			// The poll tools fail closed without an owner record equal to the caller (SQ-566): seed one for each
+			// poller case's id so they reach their real path instead of answering "not owned".
+			rateLimitKv: reconOwnerKv('chaos-owner'),
 		};
 		const failures: Array<{ name: string; message: string }> = [];
 		const results = new Map<string, ToolResult>();
