@@ -5,6 +5,15 @@
 - **Troubleshooting**: See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues, error codes, and manual request examples.
 - **Client setup**: See [docs/client-setup.md](docs/client-setup.md) for VS Code, Claude Desktop, Claude Code, and Cursor configuration.
 - **Scoring and coverage**: See [docs/scoring.md](docs/scoring.md) for how checks are scored and what they cover.
+- **Building on the service**: See [docs/integrator-guide.md](docs/integrator-guide.md) for storing scores, partial scans, batch jobs, retries, and authority to scan.
+- **Service status**: See the [status page](https://www.blackveilsecurity.com/status) for the hosted endpoint's current state.
+
+## Terms and privacy
+
+- **Terms of Service**: [https://www.blackveilsecurity.com/terms](https://www.blackveilsecurity.com/terms)
+- **Privacy Policy**: [https://www.blackveilsecurity.com/privacy](https://www.blackveilsecurity.com/privacy)
+- What the hosted server records about your requests is described in [docs/client-setup.md](docs/client-setup.md#what-the-hosted-server-logs-about-you).
+- Any service level, response time, or notice period for a commercial customer is set by that customer's agreement, not by this repository.
 
 ## Reporting Issues
 

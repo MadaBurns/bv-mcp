@@ -287,6 +287,8 @@ The `?api_key=<KEY>` fallback is legacy/self-host compatibility only. BlackVeil 
 
 For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
 
+To build the service into a product or a scheduled pipeline (storing scores, partial scans, batch jobs, retries, authority to scan), see the [**integrator guide**](docs/integrator-guide.md).
+
 ---
 
 ## CLI
@@ -403,6 +405,6 @@ The supported self-host path is the stdio bin (`blackveil-dns-mcp`) for non-comm
 
 Built and maintained by [**BLACKVEIL**](https://blackveilsecurity.com) — NZ-owned cybersecurity consultancy.
 
-[Privacy Policy](https://www.blackveilsecurity.com/privacy) · [License](LICENSE) (BUSL-1.1 → MIT on 2030-03-17)
+[Privacy Policy](https://www.blackveilsecurity.com/privacy) · [Terms of Service](https://www.blackveilsecurity.com/terms) · [License](LICENSE) (BUSL-1.1 → MIT on 2030-03-17)
 
 </div>
