@@ -168,14 +168,24 @@ export async function getAsyncBatchJobForRead(
 	now: () => number = Date.now,
 ): Promise<AsyncBatchJob | null> {
 	const job = await getAsyncBatchJob(jobId, principalId, kv);
-	if (!job || (job.status !== 'queued' && job.status !== 'running') || now() - job.updatedAt <= ASYNC_BATCH_STALE_AFTER_MS) return job;
+	if (!job || !isStaleAsyncBatchJob(job, now())) return job;
 	const failed: AsyncBatchJob = { ...job, status: 'failed', error: ASYNC_BATCH_ABANDONED_ERROR };
+	await persistAbandonedJob(failed, kv);
+	return failed;
+}
+
+/** The one stale deadline: a queued/running job whose last write is older than {@link ASYNC_BATCH_STALE_AFTER_MS}. */
+function isStaleAsyncBatchJob(job: AsyncBatchJob, nowMs: number): boolean {
+	const inFlight = job.status === 'queued' || job.status === 'running';
+	return inFlight && nowMs - job.updatedAt > ASYNC_BATCH_STALE_AFTER_MS;
+}
+
+async function persistAbandonedJob(failed: AsyncBatchJob, kv: KVNamespace): Promise<void> {
 	try {
-		await kv.put(jobKey(job.jobId), JSON.stringify(failed), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
+		await kv.put(jobKey(failed.jobId), JSON.stringify(failed), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
 	} catch {
 		// Best effort: the next read recomputes the same verdict.
 	}
-	return failed;
 }
 
 function retryAfter(delaySeconds: number): AsyncBatchVerdict {
