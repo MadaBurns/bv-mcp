@@ -19,6 +19,8 @@ Default hosted Streamable HTTP endpoint:
 
 For MCP clients, configure this endpoint directly.
 
+Building the service into a product or a scheduled pipeline (storing scores, handling partial scans, batch jobs, retries, and authority to scan) is covered in the [integrator guide](integrator-guide.md).
+
 ## Secret Hygiene (Required)
 
 - Never hardcode API keys in scripts, config examples, docs, or committed files.
@@ -633,9 +635,12 @@ On the hosted endpoint, OAuth routes serve the customer flow. On self-hosted dep
 
 Requests to the hosted endpoint (`dns-mcp.blackveilsecurity.com`) generate operational telemetry:
 
-- **Always:** tool name, scanned-domain fingerprint (hashed), country, client type, auth tier, a lossy hash of your IP, and (for authenticated callers) a SHA-256 hash of your credential. Raw IPs are never stored at the default (`coarse`) telemetry level.
+- **Analytics Engine events (aggregate metrics):** tool name, country, client type, auth tier, and a short non-cryptographic fingerprint of the scanned domain. That fingerprint is a plain FNV-1a hash used for grouping; the code itself notes it is **not a privacy control**, because anyone holding a list of candidate domains can recompute it.
+- **Operator access log (a database table, one row per tool call):** tool name, **the scanned domain in plaintext**, country, client type, response time, whether the call was rate-limited, a lossy hash of your IP, a masked IP (for an IPv4 address the last octet is replaced, e.g. `203.0.113.xxx`), and, for authenticated callers, a truncated SHA-256 hash of your credential (the first 16 hex characters). For a batch call that passes a list of domains, one domain from the list (the first) is recorded on that call's row. Raw IPs are not stored in this table at the default (`coarse`) telemetry level.
+- **Rate-limit counters (unauthenticated callers):** the per-IP rate and quota counters use your client IP in the counter key, held in short-lived KV entries (or in the optional quota coordinator's storage when that is enabled). Entries expire when their window ends: up to an hour for the per-minute and per-hour counters, and up to 24 hours for daily counters. This is the one place a raw IP appears at the default telemetry level.
+- **Plan for linkage:** if you authenticate with a single credential and scan many target domains, assume the operator can see that credential's list of targets (and the times you scanned them) for the whole retention window below. Use separate credentials, or do not use the hosted endpoint, where that linkage matters to you.
 - **Operator-elevated levels** (`standard`/`full`, not the public default) additionally capture region/city, user agent, encrypted IP evidence, and — at `full` — a PTR (reverse-DNS) lookup of the calling IP. PTR lookups are resolved via DNS-over-HTTPS and may fall back to Google Public DNS, so at that level the calling IP is disclosed to the DoH resolver.
-- **Retention:** access-log rows are purged on a rolling window (90 days by default, operator-configurable 1–365).
-- **Erasure/export:** to request the data held for your API key or IP, or its deletion, contact the operator — per-subject export and erasure tooling exists on the operator side.
+- **Retention:** access-log rows are purged on a rolling window (90 days by default, operator-configurable 1–365). An operator can optionally archive the non-PII columns of expiring rows (this includes the scanned domain and the credential hash) to object storage instead of deleting them outright; that archive is off by default and its lifetime is set by the operator's bucket configuration, not by this code. The Analytics Engine metrics follow the platform's own retention.
+- **Erasure/export:** to request the data held for your API key or IP, or its deletion, contact the operator. An operator-side erase path deletes access-log rows by credential hash and/or IP hash. It covers the access-log table only, not the rate-limit counters (which expire on their own) or any optional archive. Response times and outcomes for such requests are set by the commercial agreement or the operator's policy, not by this repository.
 
 Self-hosted (BSL) deployments control all of this via `ANALYTICS_PII_LEVEL` and `ANALYTICS_RETENTION_DAYS`.
