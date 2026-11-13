@@ -398,12 +398,18 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				),
 			);
 		} else if (foValues.length === 1 && foValues[0] === '0') {
+			// fo= only selects WHICH failure reports are sent to the ruf= address. With no ruf=
+			// published there is nowhere to send them, so the tag changes nothing: advisory `info`.
+			// The title is unchanged in both branches.
+			const failureReportsReceived = Boolean(facts.ruf);
 			findings.push(
 				createFinding(
 					'dmarc',
 					'Limited DMARC failure reporting coverage',
-					'low',
-					'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. Consider fo=1 for broader failure visibility.',
+					failureReportsReceived ? 'low' : 'info',
+					failureReportsReceived
+						? 'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. Consider fo=1 for broader failure visibility.'
+						: 'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. No forensic address (ruf=) is published, so this setting currently has no effect and carries no penalty.',
 				),
 			);
 		}
@@ -467,13 +473,16 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			);
 		}
 	} else if (rua) {
-		// rua= is present but ruf= is not
+		// rua= is present but ruf= is not. Advisory `info`, not a penalty: ruf= is an optional
+		// tag, a forensic report carries content from a real failed message, and declining to
+		// receive those is a legitimate privacy choice. The title is unchanged — downstream
+		// consumers match it.
 		findings.push(
 			createFinding(
 				'dmarc',
 				'No forensic reporting configured (ruf= absent)',
-				'low',
-				'Aggregate reporting (rua=) is configured but forensic reporting (ruf=) is not. Forensic reports provide detailed failure information useful for troubleshooting.',
+				'info',
+				'Aggregate reporting (rua=) is configured but forensic reporting (ruf=) is not. A forensic address is optional: forensic reports can carry headers and content from real failed messages, so a sender may decline them for privacy. This is reported for information and carries no penalty.',
 			),
 		);
 	}

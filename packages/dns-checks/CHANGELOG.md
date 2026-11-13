@@ -2,6 +2,15 @@
 
 All notable changes to `@blackveil/dns-checks` are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.0]
+
+### Changed (moves scores up; scoring model 2.3.0)
+
+- The DMARC finding "No forensic reporting configured (ruf= absent)" is `info` instead of `low`. It is still reported when `rua=` is published and `ruf=` is not, with the same title, but it no longer deducts 5 points from the `dmarc` category. A forensic address is optional and a sender may decline it for privacy.
+- The DMARC finding "Limited DMARC failure reporting coverage" (`fo=0`) is `info` when the record publishes no `ruf=` address, because the tag then has no effect. It stays `low` when a `ruf=` address is published. The title is unchanged.
+- Six `DMARC_PARITY_FIXTURES` expected scores rise by 5. `PARITY_CORPUS_VERSION` is `2.3.0`.
+- Unchanged: "No aggregate reporting" (`rua=` absent) stays `medium`, and so do the invalid `ruf=` address and invalid `fo=` findings.
+
 ## [2.2.0]
 
 ### Fixed (can move scores; scoring model 2.2.0)

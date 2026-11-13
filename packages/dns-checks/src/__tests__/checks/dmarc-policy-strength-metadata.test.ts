@@ -182,7 +182,8 @@ describe('score neutrality — the signals are observational', () => {
 		expect(result.controlPresent).toBe(true);
 		expect(result.recordPresent).toBe(true);
 		expect(result.findings.some((f) => f.title === 'Subdomain policy weaker than parent policy' && f.severity === 'high')).toBe(true);
-		expect(result.score).toBe(50);
+		// 50 until scoring model 2.3.0, which stopped charging 5 points for an absent ruf=.
+		expect(result.score).toBe(55);
 		expect(result.passed).toBe(true);
 	});
 });
