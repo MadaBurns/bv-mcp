@@ -149,13 +149,16 @@ type BvWebVerdict =
 	/** No usable answer (backend failure status, 5xx, malformed body): validity is unknowable. `reason` is a fixed log-safe token. */
 	| { kind: 'unavailable'; reason: string };
 
+/** Classify a non-2xx validate-key status: the backend's own failure is unavailable, anything else is a plain denial. */
+function classifyBvWebStatus(status: number): BvWebVerdict {
+	if (status >= 500) return { kind: 'unavailable', reason: 'status_5xx' };
+	if (BV_WEB_BACKEND_FAILURE_STATUSES.has(status)) return { kind: 'unavailable', reason: `status_${status}` };
+	return { kind: 'denied' };
+}
+
 /** Classify a validate-key response. Only a well-formed answer is ever definitive. */
 function classifyBvWebValidation(response: Awaited<ReturnType<typeof fetchBvWebValidateKey>>): BvWebVerdict {
-	if (response.kind === 'http') {
-		if (response.status >= 500) return { kind: 'unavailable', reason: 'status_5xx' };
-		if (BV_WEB_BACKEND_FAILURE_STATUSES.has(response.status)) return { kind: 'unavailable', reason: `status_${response.status}` };
-		return { kind: 'denied' };
-	}
+	if (response.kind === 'http') return classifyBvWebStatus(response.status);
 	const parsed = ValidateKeyResponseSchema.safeParse(response.data);
 	if (!parsed.success) return { kind: 'unavailable', reason: 'malformed_body' };
 	return parsed.data.tier === null ? { kind: 'revoked' } : { kind: 'tier', tier: parsed.data.tier };
@@ -171,6 +174,11 @@ function reportBvWebUnavailable(reason: string): TierAuthResult {
 		details: { reason },
 	});
 	return { authenticated: false, storageUnavailable: true };
+}
+
+/** Fixed log-safe token for a thrown validate-key call. */
+function bvWebFailureReason(error: unknown): string {
+	return error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'fetch_error';
 }
 
 /**
@@ -205,7 +213,7 @@ async function resolveViaBvWeb(
 	try {
 		verdict = classifyBvWebValidation(await fetchBvWebValidateKey(bvWeb, internalKey, keyHash));
 	} catch (error) {
-		return reportBvWebUnavailable(error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'fetch_error');
+		return reportBvWebUnavailable(bvWebFailureReason(error));
 	}
 	if (verdict.kind === 'unavailable') return reportBvWebUnavailable(verdict.reason);
 	try {
