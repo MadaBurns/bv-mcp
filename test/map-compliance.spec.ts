@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
-import { evaluateCompliance, formatCompliance, UNASSESSED_COMPLIANCE_CAVEAT, buildAllTransientCaveat } from '../src/tools/map-compliance';
+import { evaluateCompliance, formatCompliance, UNASSESSED_COMPLIANCE_CAVEAT, buildAllTransientCaveat, COMPLIANCE_SCOPE_NOTICE } from '../src/tools/map-compliance';
 import type { ComplianceReport } from '../src/tools/map-compliance';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, tlsaResponse } from './helpers/dns-mock';
 
@@ -1235,5 +1235,22 @@ describe('map_compliance grade uses the display band SSOT', () => {
 		expect(report.score).not.toBeNull();
 		expect(report.grade).toBe(nistScoreToGrade(report.score!));
 		expect(['A+', 'A', 'B', 'C', 'D', 'F']).toContain(report.grade);
+	});
+});
+
+describe('scope notice (DNS-layer indicator, not an attestation)', () => {
+	const cases: Array<[string, () => CheckResult[]]> = [
+		['mixed results', () => [makeCheckResult('spf', true), makeCheckResult('dmarc', false, [{ title: 'p=none', severity: 'medium' }])]],
+		['all-pass', makeAllPassing],
+		['no evidence', () => []],
+	];
+
+	it.each(cases)('is in structured and both text outputs for %s', (_name, build) => {
+		const report = evaluateCompliance(build(), 'scope.example', 70, 'C');
+		expect(report.scopeNotice).toBe(COMPLIANCE_SCOPE_NOTICE);
+		expect(report.scopeNotice).toMatch(/not an audit, certification or attestation/);
+		expect(report.scopeNotice.split(/\s+/).length).toBeLessThan(60);
+		expect(formatCompliance(report, 'compact')).toContain(COMPLIANCE_SCOPE_NOTICE);
+		expect(formatCompliance(report, 'full')).toContain(COMPLIANCE_SCOPE_NOTICE);
 	});
 });

@@ -90,6 +90,8 @@ export interface ComplianceReport {
 	assessed: boolean;
 	/** Populated only when `assessed` is false; `null` otherwise. */
 	caveat: string | null;
+	/** Fixed scope statement, present on every report (text and structured). Not a verdict. */
+	scopeNotice: string;
 	frameworks: Record<ComplianceFramework, ComplianceFrameworkSummary>;
 }
 
@@ -118,6 +120,10 @@ export function buildAllTransientCaveat(attempted: number): string {
 		`This is different from no checks running at all: retry once the transient condition clears.`
 	);
 }
+
+/** Fixed scope statement carried on every report: the mapping is a DNS-layer indicator, never an attestation. */
+export const COMPLIANCE_SCOPE_NOTICE =
+	'Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.';
 
 interface ComplianceControlDef {
 	framework: ComplianceFramework;
@@ -440,7 +446,7 @@ export function evaluateCompliance(
 	// retry once the transient condition clears), even though both report `assessed: false`.
 	const assessed = hasCompletedEvidence(checkResults);
 	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_COMPLIANCE_CAVEAT : buildAllTransientCaveat(checkResults.length);
-	return { domain, score, grade, assessed, caveat, frameworks };
+	return { domain, score, grade, assessed, caveat, scopeNotice: COMPLIANCE_SCOPE_NOTICE, frameworks };
 }
 
 /**
@@ -556,7 +562,7 @@ function fullFrameworkLines(label: string, summary: ComplianceFrameworkSummary):
 function compactComplianceLines(report: ComplianceReport): string[] {
 	const lines = [`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`];
 	if (!report.assessed) lines.push(unassessedCaveat(report));
-	lines.push('');
+	lines.push(report.scopeNotice, '');
 	for (const fw of FRAMEWORK_ORDER) lines.push(...compactFrameworkLines(FRAMEWORK_LABELS[fw], report.frameworks[fw]));
 	return lines;
 }
@@ -567,7 +573,7 @@ function fullComplianceLines(report: ComplianceReport): string[] {
 		`**Score:** ${formatScoreGrade(report.score, report.grade)}`,
 	];
 	if (!report.assessed) lines.push(`> **${unassessedCaveat(report)}**`);
-	lines.push('');
+	lines.push(`> ${report.scopeNotice}`, '');
 	for (const fw of FRAMEWORK_ORDER) lines.push(...fullFrameworkLines(FRAMEWORK_LABELS[fw], report.frameworks[fw]));
 	return lines;
 }

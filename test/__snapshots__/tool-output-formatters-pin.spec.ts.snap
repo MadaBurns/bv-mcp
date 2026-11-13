@@ -3,6 +3,7 @@
 exports[`formatCompliance pins > renders every branch exactly [compact] 1`] = `
 {
   "allPassing": "Compliance: pass.example — 95/100 (A+)
+Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 NIST 800-177: 8/8 controls passing (100%)
  ✓ §4.3.1 SPF Authentication
@@ -34,6 +35,7 @@ CIS Controls: 4/4 controls passing (100%)
  ✓ 3.10 Encrypt Data in Transit
  ✓ 12.1 DNS Infrastructure",
   "mixed": "Compliance: fmt.example — 71/100 (C+)
+Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 NIST 800-177: 5/8 controls passing (63%)
  ~ §4.3.1 SPF Authentication — TXT RRset exceeds UDP limit
@@ -65,6 +67,7 @@ CIS Controls: 0/4 controls passing (0%)
  ~ 3.10 Encrypt Data in Transit — No MTA-STS record
  ~ 12.1 DNS Infrastructure — DNSSEC not enabled",
   "sparse": "Compliance: sparse.example — 50/100 (D)
+Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 NIST 800-177: 1/2 controls passing (50%) | 6 not assessed
  ✓ §4.3.1 SPF Authentication
@@ -97,6 +100,7 @@ CIS Controls: 0/1 controls passing (0%) | 3 not assessed
  ? 12.1 DNS Infrastructure",
   "ungraded": "Compliance: never-measured.example — not measured
 No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.
+Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 NIST 800-177: not measured — 0 of 8 controls assessable
  ? §4.3.1 SPF Authentication
@@ -134,6 +138,7 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
 {
   "allPassing": "# Compliance Report: pass.example
 **Score:** 95/100 (A+)
+> Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 ## NIST 800-177
 **8/8** controls passing (100%) | 0 failing | 0 partial
@@ -174,6 +179,7 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
 ✅ **12.1 DNS Infrastructure** — PASS",
   "mixed": "# Compliance Report: fmt.example
 **Score:** 71/100 (C+)
+> Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 ## NIST 800-177
 **5/8** controls passing (63%) | 2 failing | 1 partial
@@ -235,6 +241,7 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
   - second finding",
   "sparse": "# Compliance Report: sparse.example
 **Score:** 50/100 (D)
+> Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 ## NIST 800-177
 **1/2** controls passing (50%) | 1 failing | 0 partial | 6 not assessed
@@ -281,6 +288,7 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
   "ungraded": "# Compliance Report: never-measured.example
 **Score:** not measured
 > **No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.**
+> Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 ## NIST 800-177
 **No control could be assessed** — 0 of 8 had any check evidence (not measured).
@@ -325,6 +333,7 @@ exports[`formatCompliance pins > renders every branch exactly [full] 1`] = `
 exports[`formatCompliance pins > uses the generic fallback when an unassessed report somehow lacks a caveat 1`] = `
 "Compliance: nocaveat.example — not measured
 This domain could not be assessed.
+Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 NIST 800-177: not measured — 0 of 8 controls assessable
  ? §4.3.1 SPF Authentication
@@ -361,6 +370,7 @@ exports[`formatCompliance pins > uses the generic fallback when an unassessed re
 "# Compliance Report: nocaveat.example
 **Score:** not measured
 > **This domain could not be assessed.**
+> Scope: this mapping covers only what is observable from public DNS and HTTP. It indicates control posture for the listed control ids only and is not an audit, certification or attestation of compliance with any framework. Other controls in these frameworks are out of scope.
 
 ## NIST 800-177
 **No control could be assessed** — 0 of 8 had any check evidence (not measured).
