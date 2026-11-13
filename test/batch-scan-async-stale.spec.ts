@@ -103,6 +103,43 @@ describe('SQ-564 async batch scan — read-path deadline for abandoned jobs', ()
 		expect(kv.values.get(key)).toBe(before);
 	});
 
+	describe('SQ-577 batch_scan_start with a reused idempotency key', () => {
+		const startInput = { domains: ['example.com'], idempotencyKey: 'stale-key-1' };
+		const makeDeps = (kv: KVNamespace, now: () => number) => ({ kv, queue: { send: vi.fn(async () => undefined) }, now });
+
+		it.each(['running', 'queued'] as const)('starts a new job over a %s job past the bound that was never polled', async (status) => {
+			const kv = memoryKv();
+			const { jobId, key } = await seedJob(kv, status, 1_000);
+			const deps = makeDeps(kv, () => 1_000 + ASYNC_BATCH_STALE_AFTER_MS + 1);
+
+			const restarted = await startAsyncBatchScan(startInput, 'principal-a', deps);
+
+			expect(restarted).toMatchObject({ jobId, status: 'queued', createdAt: 1_000 + ASYNC_BATCH_STALE_AFTER_MS + 1 });
+			expect(deps.queue.send).toHaveBeenCalledTimes(1);
+			expect(JSON.parse(kv.values.get(key) as string)).toMatchObject({ status: 'queued', updatedAt: restarted.createdAt });
+		});
+
+		it.each(['running', 'queued'] as const)('replays a %s job still inside the bound without a second queue message', async (status) => {
+			const kv = memoryKv();
+			const { jobId } = await seedJob(kv, status, 1_000);
+			const deps = makeDeps(kv, () => 1_000 + ASYNC_BATCH_STALE_AFTER_MS);
+
+			const replayed = await startAsyncBatchScan(startInput, 'principal-a', deps);
+
+			expect(replayed).toMatchObject({ jobId, status, updatedAt: 1_000 });
+			expect(deps.queue.send).not.toHaveBeenCalled();
+		});
+
+		it('replays a completed job however old it is', async () => {
+			const kv = memoryKv();
+			const { jobId } = await seedJob(kv, 'completed', 1_000);
+			const deps = makeDeps(kv, () => 1_000 + ASYNC_BATCH_STALE_AFTER_MS * 10);
+
+			expect(await startAsyncBatchScan(startInput, 'principal-a', deps)).toMatchObject({ jobId, status: 'completed' });
+			expect(deps.queue.send).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('through the batch_scan_status / batch_scan_findings tools', () => {
 		async function call(name: string, kv: KVNamespace, jobId: string, principalId = 'principal-a') {
 			const { handleToolsCall } = await import('../src/handlers/tools');
