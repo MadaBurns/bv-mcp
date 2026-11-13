@@ -56,6 +56,15 @@ import {
 import type { ClientIpAuditAssessment } from './lib/client-ip-audit';
 import { reapStuckBrandAudits } from './lib/brand-audit-reaper';
 import { runSpfCanary, shouldAlertOnCanary } from './lib/spf-canary';
+import {
+	assessScanCanary,
+	isScanCanaryEnabled,
+	nextScanCanaryState,
+	parseFailureCount,
+	resolveScanCanaryDomain,
+	runScanCanary,
+} from './lib/scan-canary';
+import type { ScanCanaryAssessment, ScanCanaryTransition } from './lib/scan-canary';
 import { resolveAlertWebhookUrl } from './lib/operator-webhook-binding';
 
 interface AnomalyRow {
@@ -127,6 +136,10 @@ export interface ScheduledEnv {
 	ALERT_LATENCY_LOOKBACK_MINUTES?: string;
 	/** Minimum tool calls in a class before its p95 is believed (default 20). Below this, p95 degenerates toward max. */
 	ALERT_MIN_LATENCY_SAMPLES?: string;
+	/** Control domain for the 15-minute scan-path canary (default `isc.org`; see `src/lib/scan-canary.ts`). */
+	SCAN_CANARY_DOMAIN?: string;
+	/** Kill switch for the scan-path canary: the literal string `false` disables it; anything else runs it. */
+	SCAN_CANARY_ENABLED?: string;
 	// ALERT_MIN_ERROR_SAMPLES, ALERT_SPF_NULL_RATE_THRESHOLD, ALERT_BINDING_DEGRADATION_THRESHOLD,
 	// ALERT_QUEUE_FAILURE_THRESHOLD, ALERT_TAIL_EXCEPTION_THRESHOLD, and ALERT_TOOL_OUTCOME_THRESHOLD
 	// are NOT env-configurable — see the file-header comment. Their effective values are the
@@ -545,6 +558,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		});
 		return;
 	}
+
+	// Scan-path canary: one synthetic scan, so a scan outage at low traffic pages even while the
+	// traffic-driven lanes below abstain. Rides the fully-configured path (webhook + AE credentials),
+	// like every other lane here, so an unconfigured self-host makes no outbound scan. Never throws.
+	await handleScanCanary(env);
 
 	// Resolve the AE DATASET name once (defaults to bv_dns_security_mcp — the prod
 	// dataset the MCP_ANALYTICS binding writes to; NOT the binding name). Threaded
@@ -1535,6 +1553,163 @@ export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
 			severity: 'error',
 			category: 'scheduled',
 			details: { message: 'SPF canary failed' },
+		});
+	}
+}
+
+/** KV key (alert-state namespace, `RATE_LIMIT`) holding the scan canary's consecutive-unhealthy-run count. */
+const SCAN_CANARY_COUNTER_KEY = 'scan-canary:consecutive-failures';
+/** Outlives several 15-min ticks, so a counter stranded by a lost clear self-expires instead of lingering. */
+const SCAN_CANARY_COUNTER_TTL_SECONDS = 3600;
+/** `threshold` label shared by the page, its repeat-suppression key and the recovery notice. */
+const SCAN_CANARY_THRESHOLD = 'scan_canary';
+
+async function readScanCanaryFailures(kv: KVNamespace | undefined): Promise<number> {
+	if (!kv) return 0;
+	try {
+		return parseFailureCount(await kv.get(SCAN_CANARY_COUNTER_KEY));
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'scan_canary_state_read_failed' },
+		});
+		return 0;
+	}
+}
+
+async function writeScanCanaryFailures(kv: KVNamespace | undefined, previous: number, failures: number): Promise<void> {
+	if (!kv || failures === previous) return;
+	try {
+		if (failures > 0) {
+			await kv.put(SCAN_CANARY_COUNTER_KEY, String(failures), { expirationTtl: SCAN_CANARY_COUNTER_TTL_SECONDS });
+		} else {
+			await kv.delete(SCAN_CANARY_COUNTER_KEY);
+		}
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'scan_canary_state_write_failed' },
+		});
+	}
+}
+
+function scanCanaryAlertMetrics(
+	domain: string,
+	assessment: ScanCanaryAssessment,
+	failures: number,
+	durationMs: number,
+): Record<string, string | number> {
+	return {
+		control_domain: domain,
+		reason: assessment.reason,
+		consecutive_failures: failures,
+		duration_ms: durationMs,
+		evidence_ratio: assessment.evidenceRatio ?? 'n/a',
+		detail: assessment.detail ?? '(none)',
+	};
+}
+
+/** Send the critical page unless an identical one is still inside its repeat-suppression window. */
+async function pageScanCanary(
+	env: ScheduledEnv,
+	webhookUrl: string,
+	domain: string,
+	assessment: ScanCanaryAssessment,
+	failures: number,
+	durationMs: number,
+): Promise<void> {
+	// Coarse, run-independent reason: a failure mode that flaps (timeout <-> threw) must not re-page every tick.
+	const repeatReason = `scan canary unhealthy for ${domain}`;
+	if (!(await shouldSendRepeat(env, SCAN_CANARY_THRESHOLD, repeatReason))) return;
+	const delivered = await sendAlert(
+		webhookUrl,
+		buildAlertPayload({
+			title: `Scan path canary failing: ${assessment.reason} (${failures} consecutive runs)`,
+			severity: 'critical',
+			metrics: scanCanaryAlertMetrics(domain, assessment, failures, durationMs),
+			threshold: SCAN_CANARY_THRESHOLD,
+		}),
+		alertOptions(env),
+	).catch(() => false);
+	if (delivered) await armRepeatCooldown(env, SCAN_CANARY_THRESHOLD, repeatReason, Date.now());
+}
+
+/** Page (critical) on a sustained failure, or send the recovery notice after one. Repeat suppression bounds the paging. */
+async function notifyScanCanary(
+	env: ScheduledEnv,
+	domain: string,
+	assessment: ScanCanaryAssessment,
+	transition: ScanCanaryTransition,
+	durationMs: number,
+): Promise<void> {
+	if (!transition.page && !transition.recover) return;
+	const webhookUrl = await resolveAlertWebhookUrl(env);
+	if (!webhookUrl) return; // fail-open: an unconfigured alert sink only logs (the outcome is already logged)
+	if (transition.recover) {
+		await recoverRepeatAlert(env, webhookUrl, SCAN_CANARY_THRESHOLD);
+	} else {
+		await pageScanCanary(env, webhookUrl, domain, assessment, transition.failures, durationMs);
+	}
+}
+
+function logScanCanaryOutcome(
+	env: ScheduledEnv,
+	domain: string,
+	assessment: ScanCanaryAssessment,
+	transition: ScanCanaryTransition,
+	durationMs: number,
+): void {
+	logEvent({
+		timestamp: new Date().toISOString(),
+		category: 'scheduled',
+		result: 'scan_canary',
+		severity: assessment.healthy ? 'info' : 'warn',
+		details: {
+			domain,
+			healthy: assessment.healthy,
+			reason: assessment.reason,
+			durationMs,
+			evidenceRatio: assessment.evidenceRatio ?? null,
+			consecutiveFailures: transition.failures,
+			paging: transition.page,
+			recovering: transition.recover,
+			stateAvailable: !!env.RATE_LIMIT,
+			detail: assessment.detail,
+		},
+	});
+}
+
+/**
+ * Scan-path canary — one synthetic `scanDomain` of a fixed control domain per 15-minute tick. Pages
+ * (critical) on the SECOND consecutive unhealthy run, suppresses repeats, and sends a recovery notice
+ * on the first healthy run after a page. Always logs the outcome so the absence of an alert is
+ * verifiable. Never throws: a canary fault must not block the other scheduled lanes.
+ *
+ * The kill switch (`SCAN_CANARY_ENABLED=false`) skips the scan entirely. Without the `RATE_LIMIT` KV
+ * there is no run-to-run state, so it logs but cannot page (a single unhealthy run never pages).
+ */
+export async function handleScanCanary(env: ScheduledEnv): Promise<void> {
+	try {
+		if (!isScanCanaryEnabled(env.SCAN_CANARY_ENABLED)) {
+			logEvent({ timestamp: new Date().toISOString(), category: 'scheduled', result: 'scan_canary_disabled', severity: 'info' });
+			return;
+		}
+		const domain = resolveScanCanaryDomain(env.SCAN_CANARY_DOMAIN);
+		const { outcome, durationMs } = await runScanCanary(domain);
+		const assessment = assessScanCanary(outcome);
+		const previous = await readScanCanaryFailures(env.RATE_LIMIT);
+		const transition = nextScanCanaryState(previous, assessment.healthy);
+		await writeScanCanaryFailures(env.RATE_LIMIT, previous, transition.failures);
+
+		logScanCanaryOutcome(env, domain, assessment, transition, durationMs);
+		await notifyScanCanary(env, domain, assessment, transition, durationMs);
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scheduled',
+			details: { message: 'Scan canary failed' },
 		});
 	}
 }

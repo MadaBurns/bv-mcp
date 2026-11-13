@@ -298,6 +298,33 @@ unset. Set up an external heartbeat:
 - [ ] Configure a Cloudflare **Health Check** (or healthchecks.io ping) against
       `GET /health` with alerting to the ops email.
 
+### 7a. Scan-path canary (every 15 minutes)
+
+`/health` is static and the traffic-driven alert lanes abstain below their
+sample floor, so a scan path that is broken end to end at low traffic would not
+page. The 15-min cron therefore runs ONE full `scan_domain` against a fixed
+control domain (cache bypassed, hard 12 s budget) and logs the outcome as
+`result: "scan_canary"` on every tick, healthy or not.
+
+- **Healthy** = the scan returned, the apex resolved, the result is graded and
+  its completed-check ratio meets the engine's evidence-sufficiency threshold.
+  It never asserts a score or grade, so the control's posture changing does not
+  page.
+- **Paging**: the SECOND consecutive unhealthy run sends one critical alert
+  (`threshold: scan_canary`); repeats are suppressed by the shared
+  repeat-alert helper (a flapping failure reason does not re-page), and the
+  first healthy run afterwards sends an "Alert recovered: scan_canary" notice.
+  The consecutive-failure count lives in the `RATE_LIMIT` KV
+  (`scan-canary:consecutive-failures`); without that KV it logs but cannot page.
+- It runs on the fully-configured alerting path (alert webhook + Analytics
+  Engine credentials), like the other lanes; an unconfigured self-host makes no
+  outbound scan.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SCAN_CANARY_DOMAIN` | `isc.org` | Control domain. Pick a stable, DNSSEC-signed, NOT Cloudflare-hosted public infrastructure domain (a Cloudflare-hosted control measures our own provider, not the scan path). An invalid value falls back to the default. |
+| `SCAN_CANARY_ENABLED` | on | Kill switch: the literal string `false` skips the scan entirely. Any other value (or unset) leaves it on. |
+
 ## 8. Secret rotation quick reference
 
 | Secret                             | Rotate with                                                                                          | Coordinate                                                                                                                                                                                                                    |
