@@ -33,7 +33,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const WEBHOOK = 'https://hooks.slack.com/test';
-const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: WEBHOOK };
+const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', SCAN_CANARY_ENABLED: 'false', ALERT_WEBHOOK_URL: WEBHOOK };
 
 interface Call {
 	url: string;

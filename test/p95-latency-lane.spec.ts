@@ -29,7 +29,8 @@ import { LONG_RUNNING_TOOLS, isLongRunningTool } from '../src/lib/config';
 
 const WEBHOOK = 'https://hooks.slack.com/test';
 
-const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: WEBHOOK };
+// The scan canary has its own specs; here it would run one real scan per simulated tick (96/day) against the mocked fetch.
+const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: WEBHOOK, SCAN_CANARY_ENABLED: 'false' };
 
 interface Call {
 	url: string;

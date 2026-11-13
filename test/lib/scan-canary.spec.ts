@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
 	DEFAULT_SCAN_CANARY_DOMAIN,
 	SCAN_CANARY_PAGE_AFTER,
@@ -174,6 +174,34 @@ describe('runScanCanary', () => {
 		expect(outcome.status).toBe('timeout');
 		expect(signal?.aborted).toBe(true);
 		expect(durationMs).toBeLessThan(2000);
+	});
+
+	describe('default scan engine (lazy-loaded so scheduled.ts does not statically pull in the scan graph)', () => {
+		afterEach(() => {
+			vi.doUnmock('../../src/tools/scan-domain');
+			vi.resetModules();
+		});
+
+		it('loads the engine at run time and runs ONE cache-bypassing scan through it', async () => {
+			const scanDomain = vi.fn(async () => scanResult());
+			vi.resetModules();
+			vi.doMock('../../src/tools/scan-domain', () => ({ scanDomain }));
+			const { runScanCanary: run } = await import('../../src/lib/scan-canary');
+			const { outcome } = await run('isc.org');
+			expect(outcome.status).toBe('returned');
+			expect(scanDomain).toHaveBeenCalledTimes(1);
+			expect(scanDomain).toHaveBeenCalledWith('isc.org', undefined, expect.objectContaining({ forceRefresh: true }));
+		});
+
+		it('reports an engine load failure as threw instead of rejecting', async () => {
+			vi.resetModules();
+			vi.doMock('../../src/tools/scan-domain', () => {
+				throw new Error('module load failed');
+			});
+			const { runScanCanary: run } = await import('../../src/lib/scan-canary');
+			const { outcome } = await run('isc.org');
+			expect(outcome.status).toBe('threw');
+		});
 	});
 
 	it('does not leak an unhandled rejection when the scan rejects after the timeout', async () => {
