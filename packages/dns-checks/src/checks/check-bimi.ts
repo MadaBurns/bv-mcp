@@ -230,6 +230,95 @@ export function logoReferenceIsSvg(url: string): boolean {
 	return path.toLowerCase().endsWith('.svg');
 }
 
+/** What the `_dmarc` lookup established about BIMI's prerequisite. `unknown` = the lookup never concluded. */
+type DmarcEnforcement = 'enforcing' | 'not-enforcing' | 'unknown';
+
+const ENFORCING_POLICY = /\bp=(?:reject|quarantine)\b/i;
+
+/**
+ * BIMI requires DMARC at p=quarantine or p=reject. A SERVFAIL / REFUSED `_dmarc` answer arrives
+ * as an EMPTY record set, byte-identical to a domain with no DMARC, and reading it as
+ * "not enforcing" turns a resolver failure into a `missingControl` finding on a record that may
+ * be fully functional — so it is reported as `unknown`, never as absence.
+ */
+async function probeDmarcEnforcement(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<DmarcEnforcement> {
+	const outcome = await queryWithRcode(queryDNS, `_dmarc.${domain}`, 'TXT', timeout);
+	const record = outcome.records.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
+	if (!record && isInconclusiveRcode(outcome.rcode)) return 'unknown';
+	return record && ENFORCING_POLICY.test(record) ? 'enforcing' : 'not-enforcing';
+}
+
+/** Findings about DMARC enforcement for a domain that DOES publish a BIMI record. */
+function dmarcPrerequisiteFindings(dmarc: DmarcEnforcement, bimiDomain: string): Finding[] {
+	if (dmarc === 'enforcing') return [];
+	if (dmarc === 'unknown') {
+		return [
+			createFinding(
+				'bimi',
+				'BIMI DMARC prerequisite not determined',
+				'info',
+				`BIMI record found at ${bimiDomain}, but the DMARC lookup failed before any resolver answered, so whether DMARC enforcement is in place could not be determined. This is not evidence that DMARC is missing or not enforcing — no penalty is applied. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error' },
+			),
+		];
+	}
+	// BIMI record exists but DMARC is not enforcing — record is non-functional
+	return [
+		createFinding(
+			'bimi',
+			'BIMI record ineffective (DMARC not enforcing)',
+			'medium',
+			`BIMI record found at ${bimiDomain} but DMARC policy is not set to quarantine or reject. Mail clients will not display the BIMI logo until DMARC enforcement is enabled.`,
+			{ missingControl: true },
+		),
+	];
+}
+
+/**
+ * The single finding for a domain with NO BIMI record. Severity is `low` on every branch — BIMI is
+ * an advisory brand-display control (IETF draft, no RFC/NIST mandate), so absence is not a
+ * deficiency and never carries `missingControl` (~95). Only the wording varies with DMARC state.
+ */
+async function absentBimiFinding(
+	domain: string,
+	bimiDomain: string,
+	dmarc: DmarcEnforcement,
+	queryDNS: DNSQueryFunction,
+	timeout: number,
+): Promise<Finding> {
+	if (dmarc === 'not-enforcing') {
+		// (The DMARC-not-enforcing aspect belongs to the DMARC check, not double-counted here.)
+		return createFinding(
+			'bimi',
+			'No BIMI record (DMARC not enforcing)',
+			'low',
+			`No BIMI record found at ${bimiDomain}. BIMI requires DMARC enforcement (p=quarantine or p=reject) before a BIMI record can be validated by mail clients. Set up DMARC enforcement first.`,
+		);
+	}
+	if (dmarc === 'unknown') {
+		// The DMARC lookup never concluded: claim nothing about enforcement in either direction.
+		return createFinding(
+			'bimi',
+			'No BIMI record found',
+			'low',
+			`No BIMI record found at ${bimiDomain}. The DMARC lookup failed before any resolver answered, so whether DMARC enforcement (BIMI's prerequisite) is in place could not be determined.`,
+		);
+	}
+	// DMARC is enforcing, which is BIMI's *prerequisite* — but it is not the whole eligibility test.
+	// BIMI logos only ever render beside mail the domain SENDS, so a domain that publishes an explicit
+	// no-send SPF policy is not "eligible for BIMI" in any useful sense, and telling it to publish a
+	// BIMI record is bad advice. Probe for that before recommending BIMI (wording only, not scoring).
+	const cannotSend = await detectNoSendPolicy(domain, queryDNS, timeout);
+	return createFinding(
+		'bimi',
+		'No BIMI record found',
+		'low',
+		cannotSend
+			? `No BIMI record found at ${bimiDomain}. This domain publishes an SPF policy that authorizes no senders ("-all" with no authorizing mechanisms), so it does not send email and BIMI is not applicable — BIMI logos are only displayed beside messages a domain sends. No action is needed unless this domain starts sending mail.`
+			: `No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
+	);
+}
+
 /**
  * Check BIMI records for a domain.
  * Validates the presence and configuration of BIMI TXT records,
@@ -247,8 +336,9 @@ export async function checkBIMI(
 	const bimiOutcome = await queryWithRcode(queryDNS, bimiDomain, 'TXT', timeout);
 
 	// The BIMI record lookup never concluded, so "No BIMI record found" would be an
-	// absence nobody measured. (The `_dmarc` and apex-SPF lookups below stay fail-soft:
-	// they only shape the wording of a verdict this record lookup has already earned.)
+	// absence nobody measured. (The apex-SPF lookup below stays fail-soft: it only shapes the
+	// wording of a verdict this record lookup has already earned. The `_dmarc` lookup is
+	// three-state — an unanswered one is `unknown`, never "DMARC not enforcing".)
 	if (isInconclusiveRcode(bimiOutcome.rcode)) {
 		return buildRcodeAbstentionResult('bimi', 'BIMI', bimiDomain, 'TXT', bimiOutcome.rcode);
 	}
@@ -263,60 +353,16 @@ export async function checkBIMI(
 	const bimiRecords = bimiMatch ? [bimiMatch[0]] : [];
 
 	// Check DMARC enforcement status — BIMI requires p=quarantine or p=reject
-	const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
-	const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
-	const isEnforcing = dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));
+	const dmarc = await probeDmarcEnforcement(domain, queryDNS, timeout);
 
 	if (bimiRecords.length === 0) {
-		if (!isEnforcing) {
-			findings.push(
-				createFinding(
-					'bimi',
-					'No BIMI record (DMARC not enforcing)',
-					// BIMI is an advisory brand-display control (IETF draft, no RFC/NIST mandate),
-					// so absence is NOT a deficiency → low, no missingControl. Score ~95. (The
-					// DMARC-not-enforcing aspect belongs to the DMARC check, not double-counted here.)
-					'low',
-					`No BIMI record found at ${bimiDomain}. BIMI requires DMARC enforcement (p=quarantine or p=reject) before a BIMI record can be validated by mail clients. Set up DMARC enforcement first.`,
-				),
-			);
-		} else {
-			// DMARC is enforcing, which is BIMI's *prerequisite* — but it is not the
-			// whole eligibility test. BIMI logos only ever render beside mail the
-			// domain SENDS, so a domain that publishes an explicit no-send SPF policy
-			// is not "eligible for BIMI" in any useful sense, and telling it to publish
-			// a BIMI record is bad advice. Probe for that before recommending BIMI.
-			// Severity is `low` on BOTH branches — this is a wording fix, not a
-			// scoring change.
-			const cannotSend = await detectNoSendPolicy(domain, queryDNS, timeout);
-			findings.push(
-				createFinding(
-					'bimi',
-					'No BIMI record found',
-					// Advisory control — absence is not a deficiency → low, no missingControl (~95).
-					'low',
-					cannotSend
-						? `No BIMI record found at ${bimiDomain}. This domain publishes an SPF policy that authorizes no senders ("-all" with no authorizing mechanisms), so it does not send email and BIMI is not applicable — BIMI logos are only displayed beside messages a domain sends. No action is needed unless this domain starts sending mail.`
-						: `No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
-				),
-			);
-		}
+		findings.push(await absentBimiFinding(domain, bimiDomain, dmarc, queryDNS, timeout));
 		// No BIMI record observed → control absent.
 		return buildCheckResult('bimi', findings, false, false);
 	}
 
-	// BIMI record exists but DMARC is not enforcing — record is non-functional
-	if (!isEnforcing) {
-		findings.push(
-			createFinding(
-				'bimi',
-				'BIMI record ineffective (DMARC not enforcing)',
-				'medium',
-				`BIMI record found at ${bimiDomain} but DMARC policy is not set to quarantine or reject. Mail clients will not display the BIMI logo until DMARC enforcement is enabled.`,
-				{ missingControl: true },
-			),
-		);
-	}
+	// BIMI record exists: report whether DMARC (its prerequisite) is enforcing, not enforcing or unmeasured
+	findings.push(...dmarcPrerequisiteFindings(dmarc, bimiDomain));
 
 	// Check for multiple BIMI records in the concatenated data
 	const bimiMatches = concatenatedTxt.match(/v=bimi1/gi);
@@ -420,5 +466,5 @@ export async function checkBIMI(
 	// A record published without DMARC enforcement is non-functional → not an active hardening signal.
 	// recordPresent is the orthogonal publication question and is unconditionally true here: this
 	// branch is only reached with a BIMI record in hand, DMARC enforcement notwithstanding.
-	return buildCheckResult('bimi', findings, Boolean(isEnforcing), true);
+	return buildCheckResult('bimi', findings, dmarc === 'unknown' ? undefined : dmarc === 'enforcing', true);
 }

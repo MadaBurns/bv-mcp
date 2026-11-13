@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { analyzeTlsaRecords, DANE_PIN_NOT_ASSESSED_REASONS, isTransientDanePinReason } from './dane-analysis';
 import type { TlsaVerificationContext } from './dane-analysis';
 
@@ -58,28 +59,9 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 
 	// Step 2: Query TLSA records at _443._tcp.{domain}
 	const tlsaName = `_443._tcp.${domain}`;
-	let tlsaRecords: string[];
-	try {
-		tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
-	} catch {
-		// A THROWN TLSA lookup (transport error / timeout) never got a resolver's answer, so
-		// nothing was measured: abstain in the not-assessed shape (checkStatus 'error', score 0,
-		// partial) so scoring excludes the category. This used to return a COMPLETED `low`
-		// finding scored 95 — a cut probe counted as measured evidence (SQ-201). An answered-empty
-		// or NXDOMAIN lookup does not throw and still reaches the "No DANE TLSA" branch below.
-		// `recordPresent` stays undefined ("not determined"), never false.
-		return buildNotAssessedResult(
-			'dane_https',
-			createFinding(
-				'dane_https',
-				'DANE HTTPS not assessed — TLSA query failed',
-				'info',
-				`DNS query for TLSA records at ${tlsaName} failed before any resolver answered. This is not evidence either way about DANE for ${domain} — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
-				{ inconclusive: true, errorKind: 'dns_error' },
-			),
-			'error',
-		);
-	}
+	const lookup = await lookupTlsaOrAbstain(domain, tlsaName, queryDNS, timeout);
+	if ('abstain' in lookup) return lookup.abstain;
+	const tlsaRecords = lookup.records;
 
 	const hasHttpsTlsa = tlsaRecords.length > 0;
 	if (hasHttpsTlsa) {
@@ -144,6 +126,50 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 	);
 	// A failed AD lookup likewise keeps the half-measured result out of the cache so it is re-tried.
 	return retryable || (dnssecLookupFailed && hasHttpsTlsa) ? { ...result, partial: true } : result;
+}
+
+/**
+ * Look up the TLSA RRset at `_443._tcp.{domain}`, or return the abstention result when the
+ * lookup never concluded. Two shapes are NOT an absence:
+ *
+ * - A THROWN lookup (transport error / timeout) never got a resolver's answer, so nothing was
+ *   measured: abstain in the not-assessed shape (checkStatus 'error', score 0, partial) so scoring
+ *   excludes the category. This used to return a COMPLETED `low` finding scored 95 — a cut probe
+ *   counted as measured evidence (SQ-201).
+ * - A SERVFAIL / REFUSED answer arrives as an EMPTY record set, byte-identical to a name that
+ *   publishes no TLSA, because DoH answers HTTP 200 for both. It abstains through the shared rcode
+ *   channel rather than filing "No DANE TLSA for HTTPS".
+ *
+ * A NOERROR-empty or NXDOMAIN answer is a measured absence and falls through to the caller's
+ * "No DANE TLSA" branch. `recordPresent` stays undefined ("not determined") on both abstentions.
+ */
+async function lookupTlsaOrAbstain(
+	domain: string,
+	tlsaName: string,
+	queryDNS: DNSQueryFunction,
+	timeout: number,
+): Promise<{ records: string[] } | { abstain: CheckResult }> {
+	try {
+		const outcome = await queryWithRcode(queryDNS, tlsaName, 'TLSA', timeout);
+		if (outcome.records.length === 0 && isInconclusiveRcode(outcome.rcode)) {
+			return { abstain: buildRcodeAbstentionResult('dane_https', 'DANE HTTPS', domain, 'TLSA', outcome.rcode) };
+		}
+		return { records: outcome.records };
+	} catch {
+		return {
+			abstain: buildNotAssessedResult(
+				'dane_https',
+				createFinding(
+					'dane_https',
+					'DANE HTTPS not assessed — TLSA query failed',
+					'info',
+					`DNS query for TLSA records at ${tlsaName} failed before any resolver answered. This is not evidence either way about DANE for ${domain} — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+					{ inconclusive: true, errorKind: 'dns_error' },
+				),
+				'error',
+			),
+		};
+	}
 }
 
 /**
