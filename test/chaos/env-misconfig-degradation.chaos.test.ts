@@ -331,6 +331,16 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 		{ name: 'osint_investigation_report', arguments: { investigationId: 'inv-1' } },
 	];
 
+	// The poll tools fail closed without an owner record (SQ-566), so these cases hand them one: otherwise
+	// the poll answers "not owned" and never reaches the missing/failing binding this block is about.
+	function reconOwnerKv(): KVNamespace {
+		const store = new Map<string, string>([
+			['bucket-scan-scope:scan-1', JSON.stringify({ owner: 'p1' })],
+			['osint-investigation-owner:inv-1', 'p1'],
+		]);
+		return { get: async (key: string) => store.get(key) ?? null, put: async () => undefined } as unknown as KVNamespace;
+	}
+
 	it('sanity: exactly 11 recon tool cases are exercised below', () => {
 		expect(RECON_TOOL_CASES).toHaveLength(11);
 	});
@@ -339,7 +349,11 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 		const { handleToolsCall } = await import('../../src/handlers/tools');
 
 		for (const toolCase of RECON_TOOL_CASES) {
-			const result = await handleToolsCall({ name: toolCase.name, arguments: toolCase.arguments }, undefined, { authTier: 'owner' });
+			const result = await handleToolsCall({ name: toolCase.name, arguments: toolCase.arguments }, undefined, {
+				authTier: 'owner',
+				rateLimitKv: reconOwnerKv(),
+				principalId: 'p1',
+			});
 			expect(result.isError, `${toolCase.name} must not be an MCP-level error`).not.toBe(true);
 			expect(JSON.stringify(result), `${toolCase.name} must report unprovisioned when BV_RECON is absent`).toContain('"unprovisioned":true');
 		}
@@ -364,6 +378,8 @@ describe('H4: BV_RECON absent or failing degrades every recon tool, never a 500'
 				reconBinding: rejectingBinding,
 				reconAuthToken: 'tok',
 				authTier: 'owner',
+				rateLimitKv: reconOwnerKv(),
+				principalId: 'p1',
 			});
 			expect(result.isError, `${toolCase.name} must not be an MCP-level error (no 500-equivalent)`).not.toBe(true);
 			const text = JSON.stringify(result);

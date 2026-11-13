@@ -4,13 +4,20 @@ afterEach(() => vi.restoreAllMocks());
 function binding(body: unknown, status = 200) {
 	return { fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) };
 }
-function kv() {
-	const store = new Map<string, string>();
+function kv(seed: Record<string, string> = {}) {
+	const store = new Map<string, string>(Object.entries(seed));
 	return {
 		get: vi.fn(async (key: string) => store.get(key) ?? null),
 		put: vi.fn(async (key: string, value: string) => {
 			store.set(key, value);
 		}),
+	};
+}
+/** Options for the principal 'p1' polling scan `scanId`, whose scope record names 'p1' as its owner. */
+function owned(scanId = 's1', scope: Record<string, unknown> = {}) {
+	return {
+		bucketScanKv: kv({ [`bucket-scan-scope:${scanId}`]: JSON.stringify({ owner: 'p1', ...scope }) }) as unknown as KVNamespace,
+		principalId: 'p1',
 	};
 }
 describe('scan_buckets tools', () => {
@@ -30,7 +37,7 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStart(
 			{ target: 'example.com' },
-			{ reconBinding: binding({ scanId: 'scan_1', status: 'running', unprovisioned: true, tierDenied: true }), reconAuthToken: 'tok' },
+			{ reconBinding: binding({ scanId: 'scan_1', status: 'running', unprovisioned: true, tierDenied: true }), reconAuthToken: 'tok', ...owned() },
 		);
 		// The real result stands: still a started scan, not reclassified as unmeasured/refused.
 		expect(r.findings.some(f => f.metadata?.scanId === 'scan_1')).toBe(true);
@@ -46,7 +53,7 @@ describe('scan_buckets tools', () => {
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		const r = await scanBucketsStart(
 			{ target: 'example.com' },
-			{ reconBinding: binding({ error: 'forbidden', code: 'target_not_authorized' }, 403), reconAuthToken: 't', onBindingDegradation: sink },
+			{ reconBinding: binding({ error: 'forbidden', code: 'target_not_authorized' }, 403), reconAuthToken: 't', ...owned(), onBindingDegradation: sink },
 		);
 		const f = r.findings[0];
 		expect(f.metadata?.reconFailureReason).toBe('target_not_authorized');
@@ -73,19 +80,19 @@ describe('scan_buckets tools', () => {
 	});
 	it('start: returns scanId when started', async () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
-		const r = await scanBucketsStart({ target: 'example.com' }, { reconBinding: binding({ scanId: 'scan_1', status: 'running' }), reconAuthToken: 'tok' });
+		const r = await scanBucketsStart({ target: 'example.com' }, { reconBinding: binding({ scanId: 'scan_1', status: 'running' }), reconAuthToken: 'tok', ...owned() });
 		expect(r.findings.some(f => f.metadata?.scanId === 'scan_1')).toBe(true);
 	});
 	it('status: unprovisioned when absent; passes through payload when bound', async () => {
 		const { scanBucketsStatus } = await import('../src/tools/scan-buckets');
-		expect((await scanBucketsStatus({ scanId: 's1' }, {})).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
-		const r = await scanBucketsStatus({ scanId: 's1' }, { reconBinding: binding({ scanId: 's1', status: 'completed' }), reconAuthToken: 't' });
+		expect((await scanBucketsStatus({ scanId: 's1' }, owned())).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
+		const r = await scanBucketsStatus({ scanId: 's1' }, { reconBinding: binding({ scanId: 's1', status: 'completed' }), reconAuthToken: 't', ...owned() });
 		expect(r.findings.some(f => f.metadata?.summary === true)).toBe(true);
 	});
 	it('findings: unprovisioned when absent; passes through when bound', async () => {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
-		expect((await scanBucketsFindings({ scanId: 's1' }, {})).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
-		const r = await scanBucketsFindings({ scanId: 's1' }, { reconBinding: binding({ findings: [] }), reconAuthToken: 't' });
+		expect((await scanBucketsFindings({ scanId: 's1' }, owned())).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
+		const r = await scanBucketsFindings({ scanId: 's1' }, { reconBinding: binding({ findings: [] }), reconAuthToken: 't', ...owned() });
 		expect(r.findings.some(f => f.metadata?.summary === true)).toBe(true);
 	});
 
@@ -107,22 +114,19 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStart(
 			{ target: 'example.com' },
-			{ reconBinding: binding({ scanId: `s\x1b[1m\`evil\`${'\n'}1`, status: PAYLOAD, bucketName: PAYLOAD }), reconAuthToken: 't' },
+			{ reconBinding: binding({ scanId: 'scan_1', status: PAYLOAD, bucketName: PAYLOAD }), reconAuthToken: 't', ...owned() },
 		);
 		const meta = r.findings[0]!.metadata!;
 		assertSanitized(meta.bucketName as string);
 		assertSanitized(meta.status as string); // explicit `status: started.status ?? ...` must be sanitized too
-		// explicit `scanId: started.scanId` must not re-introduce raw control bytes
-		expect(meta.scanId).not.toMatch(/\x1b/);
-		expect(meta.scanId).not.toContain('`');
-		expect(meta.scanId).not.toMatch(/\n/);
+		expect(meta.scanId).toBe('scan_1');
 	});
 
 	it('status: sanitizes injected upstream values (structured channel)', async () => {
 		const { scanBucketsStatus } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStatus(
 			{ scanId: 's1' },
-			{ reconBinding: binding({ scanId: 's1', status: 'completed', note: PAYLOAD, buckets: [{ name: PAYLOAD }] }), reconAuthToken: 't' },
+			{ reconBinding: binding({ scanId: 's1', status: 'completed', note: PAYLOAD, buckets: [{ name: PAYLOAD }] }), reconAuthToken: 't', ...owned() },
 		);
 		const meta = r.findings[0]!.metadata!;
 		assertSanitized(meta.note as string);
@@ -135,7 +139,7 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsFindings(
 			{ scanId: 's1' },
-			{ reconBinding: binding({ findings: [{ key: PAYLOAD, public: true }] }), reconAuthToken: 't' },
+			{ reconBinding: binding({ findings: [{ key: PAYLOAD, public: true }] }), reconAuthToken: 't', ...owned() },
 		);
 		const meta = r.findings[0]!.metadata!;
 		assertSanitized((meta.findings as Array<Record<string, unknown>>)[0]!.key as string);
@@ -157,7 +161,7 @@ describe('scan_buckets tools', () => {
 					],
 					count: 3,
 				}),
-				reconAuthToken: 't',
+				reconAuthToken: 't', ...owned(),
 			},
 		);
 		const meta = r.findings[0]!.metadata!;
@@ -185,7 +189,7 @@ describe('scan_buckets tools', () => {
 					],
 					count: 5,
 				}),
-				reconAuthToken: 't',
+				reconAuthToken: 't', ...owned(),
 			},
 		);
 		const meta = r.findings[0]!.metadata!;
@@ -214,7 +218,7 @@ describe('scan_buckets tools', () => {
 						],
 						count: 3,
 					}),
-					reconAuthToken: 't',
+					reconAuthToken: 't', ...owned(),
 				},
 			);
 			const meta = r.findings[0]!.metadata!;
@@ -237,7 +241,7 @@ describe('scan_buckets tools', () => {
 					],
 					count: 3,
 				}),
-				reconAuthToken: 't',
+				reconAuthToken: 't', ...owned(),
 			},
 		);
 		const meta = r.findings[0]!.metadata!;
@@ -253,7 +257,7 @@ describe('scan_buckets tools', () => {
 		const rows = Array.from({ length: 250 }, (_, i) => ({ bucketName: `acme-asset-${i}`, provider: 's3' }));
 		const r = await scanBucketsFindings(
 			{ scanId: 's1', target: 'acme.test', providers: ['aws'] },
-			{ reconBinding: binding({ success: true, data: rows, count: 250 }), reconAuthToken: 't' },
+			{ reconBinding: binding({ success: true, data: rows, count: 250 }), reconAuthToken: 't', ...owned() },
 		);
 		const meta = r.findings[0]!.metadata!;
 		const data = meta.data as Array<Record<string, unknown>>;
@@ -273,7 +277,7 @@ describe('scan_buckets tools', () => {
 		const rows = Array.from({ length: 5 }, (_, i) => ({ bucketName: `acme-asset-${i}`, provider: 's3' }));
 		const r = await scanBucketsFindings(
 			{ scanId: 's1', target: 'acme.test', providers: ['aws'] },
-			{ reconBinding: binding({ success: true, data: rows, count: 5 }), reconAuthToken: 't' },
+			{ reconBinding: binding({ success: true, data: rows, count: 5 }), reconAuthToken: 't', ...owned() },
 		);
 		const meta = r.findings[0]!.metadata!;
 		expect((meta.data as unknown[]).length).toBe(5);
@@ -285,7 +289,12 @@ describe('scan_buckets tools', () => {
 		const scanKv = kv();
 		await scanBucketsStart(
 			{ target: 'acme-corp.com', providers: ['azure'] },
-			{ reconBinding: binding({ scanId: 's1', status: 'running' }), reconAuthToken: 't', bucketScanKv: scanKv as unknown as KVNamespace },
+			{
+				reconBinding: binding({ scanId: 's1', status: 'running' }),
+				reconAuthToken: 't',
+				bucketScanKv: scanKv as unknown as KVNamespace,
+				principalId: 'p1',
+			},
 		);
 
 		const r = await scanBucketsFindings(
@@ -301,11 +310,133 @@ describe('scan_buckets tools', () => {
 				}),
 				reconAuthToken: 't',
 				bucketScanKv: scanKv as unknown as KVNamespace,
+				principalId: 'p1',
 			},
 		);
 
 		const meta = r.findings[0]!.metadata!;
 		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['acme-corp-prod']);
 		expect(meta.filteredOutOfScopeCount).toBe(1);
+	});
+});
+
+// SQ-566: the owner check fails CLOSED. A poll is allowed only when the scope record exists, names an
+// owner and that owner is the caller; every other state answers exactly like an ownership mismatch.
+describe('scan_buckets owner check fails closed', () => {
+	const polls = [
+		['status', async (opts: Record<string, unknown>) => (await import('../src/tools/scan-buckets')).scanBucketsStatus({ scanId: 's1' }, opts)],
+		['findings', async (opts: Record<string, unknown>) => (await import('../src/tools/scan-buckets')).scanBucketsFindings({ scanId: 's1' }, opts)],
+	] as const;
+	const throwingKv = {
+		get: vi.fn(async () => {
+			throw new Error('kv read failed');
+		}),
+		put: vi.fn(async () => undefined),
+	} as unknown as KVNamespace;
+
+	for (const [name, poll] of polls) {
+		describe(name, () => {
+			function pollWith(opts: Record<string, unknown>) {
+				const upstream = binding({ scanId: 's1', status: 'completed', findings: [] });
+				return poll({ reconBinding: upstream, reconAuthToken: 't', ...opts }).then((r) => ({ r, upstream }));
+			}
+
+			it('owner matches -> allowed', async () => {
+				const { r, upstream } = await pollWith(owned());
+				expect(r.findings[0]!.metadata?.notOwned).toBeUndefined();
+				expect(r.findings[0]!.metadata?.summary).toBe(true);
+				expect(upstream.fetch).toHaveBeenCalledTimes(1);
+			});
+
+			it('owner differs -> refused, upstream never called', async () => {
+				const { r, upstream } = await pollWith({ ...owned(), principalId: 'someone-else' });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+
+			it('no owner record -> refused with the same response as a mismatch', async () => {
+				const { r, upstream } = await pollWith({ bucketScanKv: kv() as unknown as KVNamespace, principalId: 'p1' });
+				const mismatch = await pollWith({ ...owned(), principalId: 'someone-else' });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(r.findings[0]).toEqual(mismatch.r.findings[0]);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+
+			it('scope record without an owner (target only) -> refused', async () => {
+				const bucketScanKv = kv({ 'bucket-scan-scope:s1': JSON.stringify({ target: 'acme.test' }) }) as unknown as KVNamespace;
+				const { r, upstream } = await pollWith({ bucketScanKv, principalId: 'p1' });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+
+			it('KV get throws -> refused', async () => {
+				const { r, upstream } = await pollWith({ bucketScanKv: throwingKv, principalId: 'p1' });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+
+			it('KV binding absent -> refused', async () => {
+				const { r, upstream } = await pollWith({ principalId: 'p1' });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+
+			it('caller principal missing -> refused even when a record exists', async () => {
+				const { r, upstream } = await pollWith({ bucketScanKv: owned().bucketScanKv });
+				expect(r.findings[0]!.metadata?.notOwned).toBe(true);
+				expect(upstream.fetch).not.toHaveBeenCalled();
+			});
+		});
+	}
+
+	describe('start', () => {
+		it('owner write fails -> start reports a failure and hands out no scan id', async () => {
+			const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+			const failingPut = { get: vi.fn(async () => null), put: vi.fn(async () => { throw new Error('kv write failed'); }) } as unknown as KVNamespace;
+			const r = await scanBucketsStart(
+				{ target: 'example.com' },
+				{ reconBinding: binding({ scanId: 'scan_1', status: 'running' }), reconAuthToken: 't', bucketScanKv: failingPut, principalId: 'p1' },
+			);
+			expect(r.findings[0]!.metadata?.requestRejected).toBe(true);
+			expect(r.findings[0]!.metadata?.rejectionKind).toBe('persistenceFailure');
+			expect(r.findings.some((f) => f.metadata?.scanId !== undefined)).toBe(false);
+			expect(r.findings[0]!.detail).not.toContain('scan_1');
+		});
+
+		it('no KV binding, no principal, or an unsafe scan id -> start reports a failure', async () => {
+			const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+			const cases: Array<[string, Record<string, unknown>, string]> = [
+				['no KV', { principalId: 'p1' }, 'scan_1'],
+				['no principal', { bucketScanKv: kv() as unknown as KVNamespace }, 'scan_1'],
+				['unsafe id', { ...owned() }, 's\x1b[1m`evil`\n1'],
+			];
+			for (const [label, extra, scanId] of cases) {
+				const r = await scanBucketsStart(
+					{ target: 'example.com' },
+					{ reconBinding: binding({ scanId, status: 'running' }), reconAuthToken: 't', ...extra },
+				);
+				expect(r.findings[0]!.metadata?.rejectionKind, label).toBe('persistenceFailure');
+			}
+		});
+
+		it('the creating principal can poll its own scan; another principal cannot', async () => {
+			const { scanBucketsStart, scanBucketsStatus } = await import('../src/tools/scan-buckets');
+			const bucketScanKv = kv() as unknown as KVNamespace;
+			const started = await scanBucketsStart(
+				{ target: 'example.com' },
+				{ reconBinding: binding({ scanId: 'scan_7', status: 'running' }), reconAuthToken: 't', bucketScanKv, principalId: 'p1' },
+			);
+			expect(started.findings[0]!.metadata?.scanId).toBe('scan_7');
+			const mine = await scanBucketsStatus(
+				{ scanId: 'scan_7' },
+				{ reconBinding: binding({ scanId: 'scan_7', status: 'completed' }), reconAuthToken: 't', bucketScanKv, principalId: 'p1' },
+			);
+			expect(mine.findings[0]!.metadata?.summary).toBe(true);
+			const theirs = await scanBucketsStatus(
+				{ scanId: 'scan_7' },
+				{ reconBinding: binding({ scanId: 'scan_7', status: 'completed' }), reconAuthToken: 't', bucketScanKv, principalId: 'p2' },
+			);
+			expect(theirs.findings[0]!.metadata?.notOwned).toBe(true);
+		});
 	});
 });
