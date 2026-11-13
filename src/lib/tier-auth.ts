@@ -132,6 +132,68 @@ export async function fetchBvWebValidateKey(
 	}
 }
 
+type BvWebVerdict =
+	| { kind: 'tier'; tier: McpApiKeyTier }
+	/** Definitive "no entitlement" answer (null tier). */
+	| { kind: 'revoked' }
+	/** Definitive client-side rejection (4xx): the credential is not accepted. */
+	| { kind: 'denied' }
+	/** No usable answer (5xx or malformed body): the credential's validity is unknowable. */
+	| { kind: 'unavailable' };
+
+/** Classify a validate-key response. Only a well-formed answer is ever definitive. */
+function classifyBvWebValidation(response: Awaited<ReturnType<typeof fetchBvWebValidateKey>>): BvWebVerdict {
+	if (response.kind === 'http') return { kind: response.status >= 500 ? 'unavailable' : 'denied' };
+	const parsed = ValidateKeyResponseSchema.safeParse(response.data);
+	if (!parsed.success) return { kind: 'unavailable' };
+	return parsed.data.tier === null ? { kind: 'revoked' } : { kind: 'tier', tier: parsed.data.tier };
+}
+
+/**
+ * Short-lived accelerator for a definitive answer only. A 4xx denial is not cached, and an `unavailable`
+ * verdict never reaches here (a transient outage must not become a lockout).
+ */
+async function cacheBvWebVerdict(
+	kv: KVNamespace | undefined,
+	keyHash: string,
+	verdict: Exclude<BvWebVerdict, { kind: 'unavailable' }>,
+): Promise<void> {
+	if (!kv || verdict.kind === 'denied') return;
+	const entry = verdict.kind === 'tier' ? { tier: verdict.tier, revokedAt: null } : { tier: 'free', revokedAt: Date.now() };
+	await kv.put(`tier:${keyHash}`, JSON.stringify(entry), { expirationTtl: TIER_KV_CACHE_TTL });
+}
+
+/**
+ * Entitlement lookup via the BV_WEB service binding. Fail-closed authorization boundary: never grants a
+ * tier without a definitive positive answer and never serves a stale one. An unreachable or unintelligible
+ * backend (throw, timeout, 5xx, malformed body) is reported with the same `storageUnavailable` marker as
+ * the JWT/trial outage paths so the caller answers a retryable 503 instead of a 401.
+ */
+async function resolveViaBvWeb(
+	bvWeb: Fetcher,
+	internalKey: string,
+	kv: KVNamespace | undefined,
+	keyHash: string,
+	ownerAllowIps: string | undefined,
+	clientIp: string | undefined,
+): Promise<TierAuthResult> {
+	let verdict: BvWebVerdict;
+	try {
+		verdict = classifyBvWebValidation(await fetchBvWebValidateKey(bvWeb, internalKey, keyHash));
+	} catch {
+		return { authenticated: false, storageUnavailable: true };
+	}
+	if (verdict.kind === 'unavailable') return { authenticated: false, storageUnavailable: true };
+	try {
+		await cacheBvWebVerdict(kv, keyHash, verdict);
+	} catch {
+		return { authenticated: false };
+	}
+	if (verdict.kind !== 'tier') return { authenticated: false };
+	const resolvedTier = applyOwnerIpGate(verdict.tier, ownerAllowIps, clientIp);
+	return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+}
+
 /** SHA-256 digest as raw bytes (for constant-time comparison and hex derivation). */
 async function hashTokenRaw(token: string): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
@@ -497,38 +559,7 @@ export async function resolveTier(
 	}
 
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY && !authResolutionRateLimited) {
-		try {
-			const validationResponse = await fetchBvWebValidateKey(env.BV_WEB, env.BV_WEB_INTERNAL_KEY, keyHash);
-
-			if (validationResponse.kind === 'ok') {
-				const keyResult = ValidateKeyResponseSchema.safeParse(validationResponse.data);
-				if (keyResult.success) {
-					const data = keyResult.data;
-					if (data.tier !== null) {
-						// Cache the valid tier result (short-lived, 5 min)
-						if (env.RATE_LIMIT) {
-							await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: data.tier, revokedAt: null }), {
-								expirationTtl: TIER_KV_CACHE_TTL,
-							});
-						}
-						const resolvedTier = applyOwnerIpGate(data.tier, env.OWNER_ALLOW_IPS, clientIp);
-						return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
-					}
-					// Null tier = definitive revocation or unknown key — cache negative result
-					// to avoid repeated service binding calls within the TTL window.
-					// This is a definitive "no entitlement" signal from bv-web.
-					if (env.RATE_LIMIT) {
-						await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
-							expirationTtl: TIER_KV_CACHE_TTL,
-						});
-					}
-				}
-			}
-		} catch {
-			// Entitlement validation is an authorization boundary. Network failures,
-			// timeouts, malformed bodies, and 5xx responses all fail closed. Serving a
-			// stale positive result here would let a revoked bearer survive an outage.
-		}
+		return resolveViaBvWeb(env.BV_WEB, env.BV_WEB_INTERNAL_KEY, env.RATE_LIMIT, keyHash, env.OWNER_ALLOW_IPS, clientIp);
 	}
 
 	return authResolutionRateLimited
