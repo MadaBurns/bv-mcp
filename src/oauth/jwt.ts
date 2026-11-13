@@ -4,6 +4,9 @@
  * Uses Web Crypto — no Node dependencies.
  */
 
+import { isValidOAuthSigningSecret } from '../lib/config';
+import { logEvent } from '../lib/log';
+
 export interface JwtSignOptions {
 	secret: string;
 	ttlSeconds: number;
@@ -14,6 +17,13 @@ export interface JwtSignOptions {
 
 export interface JwtVerifyOptions {
 	secret: string;
+	/**
+	 * Optional retired signing secret (OAUTH_SIGNING_SECRET_PREVIOUS), accepted on VERIFY only so a
+	 * rotation does not invalidate every outstanding token at once. It is tried only after `secret`
+	 * fails to verify; nothing is ever signed with it. Blank, weak or equal-to-`secret` values are
+	 * ignored (see usablePreviousSecret).
+	 */
+	previousSecret?: string;
 	issuer: string;
 	audience: string;
 	clockSkewSeconds?: number;
@@ -75,6 +85,34 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 	return crypto.subtle.importKey('raw', textEncoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
 }
 
+/** Set once per isolate when a configured previous signing secret was ignored. Never logs the value. */
+let previousSecretWarningLogged = false;
+
+function warnPreviousSecretIgnoredOnce(): void {
+	if (previousSecretWarningLogged) return;
+	previousSecretWarningLogged = true;
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'config',
+		result: 'oauth_previous_signing_secret_ignored',
+	});
+}
+
+/**
+ * Apply the rotation-secret rules: unset or whitespace-only means "not configured" (silent); a value
+ * that fails the same strength floor as the current secret, or equals it, is ignored with a one-time
+ * warning so it can never widen verification and never throws on the request path.
+ */
+function usablePreviousSecret(previous: string | undefined, current: string): string | undefined {
+	if (previous === undefined || previous.trim() === '') return undefined;
+	if (!isValidOAuthSigningSecret(previous) || previous === current) {
+		warnPreviousSecretIgnoredOnce();
+		return undefined;
+	}
+	return previous;
+}
+
 export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 	if (a.byteLength !== b.byteLength) return false;
 	let diff = 0;
@@ -102,6 +140,19 @@ export async function signJwt(payload: Partial<JwtClaims> & { sub: string; jti: 
 	return `${unsigned}.${base64UrlEncode(sig)}`;
 }
 
+async function hmacMatches(secret: string, signingInput: string, given: Uint8Array): Promise<boolean> {
+	const key = await hmacKey(secret);
+	const expected = new Uint8Array(await crypto.subtle.sign('HMAC', key, textEncoder.encode(signingInput)));
+	return constantTimeEqual(expected, given);
+}
+
+/** Current secret first; the previous secret only when the current one does not verify. Both comparisons are constant-time. */
+async function signatureVerifies(signingInput: string, given: Uint8Array, opts: JwtVerifyOptions): Promise<boolean> {
+	if (await hmacMatches(opts.secret, signingInput, given)) return true;
+	const previous = usablePreviousSecret(opts.previousSecret, opts.secret);
+	return previous !== undefined && (await hmacMatches(previous, signingInput, given));
+}
+
 async function verifyJwtWithPolicy(token: string, opts: JwtVerifyOptions, allowExpired: boolean): Promise<JwtClaims> {
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('malformed token');
@@ -119,15 +170,13 @@ async function verifyJwtWithPolicy(token: string, opts: JwtVerifyOptions, allowE
 	if (header.alg !== 'HS256') throw new Error('unsupported alg');
 
 	// Verify signature FIRST, before trusting any payload bytes
-	const key = await hmacKey(opts.secret);
-	const expected = new Uint8Array(await crypto.subtle.sign('HMAC', key, textEncoder.encode(`${h}.${p}`)));
 	let given: Uint8Array;
 	try {
 		given = base64UrlDecode(s);
 	} catch {
 		throw new Error('malformed token');
 	}
-	if (!constantTimeEqual(expected, given)) throw new Error('invalid signature');
+	if (!(await signatureVerifies(`${h}.${p}`, given, opts))) throw new Error('invalid signature');
 
 	// Signature verified — safe to parse claims
 	let claims: JwtClaims;

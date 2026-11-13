@@ -33,7 +33,7 @@ Committed Worker vars in `wrangler.jsonc`:
 - `BV_WEB_OAUTH_CONSENT_URL=https://www.blackveilsecurity.com/oauth/mcp/consent`
 
 Production Worker secrets:
-- `OAUTH_SIGNING_SECRET` is required for OAuth token signing and route readiness.
+- `OAUTH_SIGNING_SECRET` is required for OAuth token signing and route readiness. `OAUTH_SIGNING_SECRET_PREVIOUS` is optional and only used while rotating it (verify only, never required for deploy).
 - `BV_MCP_OAUTH_MINT_KEY` is required on bv-mcp and bv-web-prod for grant/trial issuance. `BV_MCP_OAUTH_REVOKE_KEY` is a separate revocation-only value shared only by bv-mcp and bv2-ops. Generate at least 256 random bits for each and never reuse either value or `BV_WEB_INTERNAL_KEY`.
 - `BV_WEB_INTERNAL_KEY` remains the credential for the general bv-web to bv-mcp tool door.
 - `BV_API_KEY` is optional and only needed for legacy owner/admin probes such as `--mode=e2e`; it is not required for customer OAuth redirect verification.

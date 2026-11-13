@@ -526,7 +526,7 @@ owner alias after that key is removed.
 - PKCE is mandatory. `plain` is rejected at the schema layer — only `S256`.
 - `OWNER_ALLOW_IPS` is enforced at the consent step for owner-tier JWT issuance. A stolen owner key from a non-allowlisted IP cannot mint an owner JWT.
 - bv-web OAuth entitlement responses are schema-validated before code issuance and cannot grant `owner` or `partner` tiers.
-- JWT revocation is by JTI. Rotation of `OAUTH_SIGNING_SECRET` invalidates every outstanding JWT at next verify.
+- JWT revocation is by JTI. Replacing `OAUTH_SIGNING_SECRET` outright invalidates every outstanding JWT at next verify; set the optional `OAUTH_SIGNING_SECRET_PREVIOUS` to the retired value first to keep outstanding tokens valid until they expire (see the operator runbook, section 8).
 
 **Reference client** (probes, rotation, and rollback runbook): [`scripts/oauth/README.md`](../scripts/oauth/README.md) and [`scripts/oauth/prod-probe.py`](../scripts/oauth/prod-probe.py).
 

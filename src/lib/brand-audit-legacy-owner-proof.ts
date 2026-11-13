@@ -54,7 +54,7 @@ function hex(bytes: Uint8Array): string {
 export async function resolveLegacyBrandOwnerProof(
 	rawHeader: string | undefined,
 	currentAuth: TierAuthResult,
-	env: { OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string },
+	env: { OAUTH_SIGNING_SECRET?: string; OAUTH_SIGNING_SECRET_PREVIOUS?: string; OAUTH_ISSUER?: string },
 	requestUrl: string,
 ): Promise<LegacyBrandOwnerProofResult> {
 	const token = parseProofBearer(rawHeader);
@@ -74,6 +74,7 @@ export async function resolveLegacyBrandOwnerProof(
 		const issuer = resolveIssuerStrict(requestUrl, env.OAUTH_ISSUER);
 		const claims = await verifyJwtOwnershipProof(token, {
 			secret: env.OAUTH_SIGNING_SECRET,
+			previousSecret: env.OAUTH_SIGNING_SECRET_PREVIOUS,
 			issuer,
 			audience: `${issuer}/mcp`,
 			maxLifetimeSeconds: LEGACY_OAUTH_JWT_MAX_LIFETIME_SECONDS,
