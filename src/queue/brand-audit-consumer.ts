@@ -44,6 +44,7 @@ import type { Tier0Result } from '../lib/brand-tier0-enterprise';
 import type { Tier1Result } from '../lib/brand-tier1-graph';
 import type { Tier2Result } from '../lib/brand-tier2-evidence';
 import { computeClassificationHash, computeDiff } from '../lib/brand-audit-classification-diff';
+import { WATCH_WEBHOOK_SIGNATURE_HEADER, signWatchWebhookBody } from '../lib/watch-webhook-signing';
 import {
 	MCP_SECURITY_CRITICAL_SECRET_KEYS,
 	securityCapabilityCollision,
@@ -234,6 +235,8 @@ export interface BrandAuditConsumerDeps {
 	brandWebhookAuthToken?: string;
 	/** All other MCP-held secrets; the webhook capability must not alias any of them. */
 	brandWebhookPeerAuthTokens?: ReadonlyArray<string | undefined>;
+	/** Validated optional server secret; when set, caller-URL watch webhooks carry `X-Blackveil-Signature`. */
+	watchWebhookSigningSecret?: string;
 	/**
 	 * T13 — runtime-default for `discover_brand_domains` discovery_mode.
 	 * Sourced from `env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` at the queue
@@ -648,6 +651,8 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 						blackVeilBinding: deps.brandWebhookBinding,
 						authToken: deps.brandWebhookAuthToken,
 						peerAuthTokens: deps.brandWebhookPeerAuthTokens,
+						signingSecret: deps.watchWebhookSigningSecret,
+						watchId: message.watchId,
 					}));
 			await deliverWatchWebhookIfShifted({
 				db: deps.db,
@@ -707,6 +712,25 @@ export interface DefaultWebhookDeliveryOptions {
 	authToken?: string;
 	/** Other MCP-held secrets that the dedicated bearer must not reuse. */
 	peerAuthTokens?: ReadonlyArray<string | undefined>;
+	/** Optional server secret deriving the per-watch key; set with {@link watchId} to sign caller-URL deliveries. */
+	signingSecret?: string;
+	/** Watch the delivery belongs to; selects the derived signing key. */
+	watchId?: string;
+}
+
+/** Headers for a caller-supplied URL: JSON plus, when signing is on, a signature over the exact body. */
+async function callerWebhookHeaders(body: string, options: DefaultWebhookDeliveryOptions): Promise<Record<string, string>> {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	if (options.signingSecret && options.watchId) {
+		headers[WATCH_WEBHOOK_SIGNATURE_HEADER] = await signWatchWebhookBody(options.signingSecret, options.watchId, body);
+	}
+	return headers;
+}
+
+/** POST to a caller-supplied URL through the SSRF-validated fetch; redirects are never followed. */
+async function postToCallerUrl(url: string, body: string, signal: AbortSignal, options: DefaultWebhookDeliveryOptions): Promise<Response> {
+	const { safeFetch } = await import('../lib/safe-fetch');
+	return safeFetch(url, { method: 'POST', headers: await callerWebhookHeaders(body, options), body, redirect: 'manual', signal });
 }
 
 function isBlackVeilBrandDriftReceiver(rawUrl: string): URL | null {
@@ -1360,14 +1384,7 @@ export async function defaultDeliverWebhook(
 				signal: controller.signal,
 			});
 		} else {
-			const { safeFetch } = await import('../lib/safe-fetch');
-			response = await safeFetch(url, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body,
-				redirect: 'manual',
-				signal: controller.signal,
-			});
+			response = await postToCallerUrl(url, body, controller.signal, options);
 		}
 		return response.ok;
 	} catch {

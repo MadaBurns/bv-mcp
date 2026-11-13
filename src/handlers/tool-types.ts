@@ -155,6 +155,8 @@ export interface ToolRuntimeOptions {
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
 	brandAuditDb?: D1Database;
+	/** Validated optional secret deriving per-watch webhook signing keys (register_brand_audit_watch). */
+	watchWebhookSigningSecret?: string;
 	/** Cloudflare Queue producer for the brand-audit batch path. Undefined if unprovisioned. */
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** Queue and KV durability bindings for asynchronous batch scans. */

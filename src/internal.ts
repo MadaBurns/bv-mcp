@@ -109,6 +109,7 @@ import {
 	securityCapabilityCollision,
 	type McpSecurityCriticalSecretKey,
 } from './lib/security-capabilities';
+import { resolveWatchWebhookSigningSecret } from './lib/watch-webhook-signing';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -180,6 +181,8 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	BV_MCP_M365_KEY?: string;
 	/** Outbound Brand Drift capability; comparison-only on inbound internal doors. */
 	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	/** OPTIONAL server secret deriving per-watch webhook signing keys; absent = unsigned. */
+	WATCH_WEBHOOK_SIGNING_SECRET?: string;
 	/**
 	 * Independent internal-door credential for the BizFit mobile Worker (`claude-proxy`),
 	 * accepted on /internal/tools/* ONLY — never /analytics/* or /tenants/*.
@@ -870,6 +873,7 @@ internalRoutes.post('/tools/call', async (c) => {
 		// auditId, so the bv2-ops brand-discovery sweep polls forever and
 		// stores nothing. Bound to the same worker as the public path.
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
+		watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
@@ -1284,6 +1288,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						// Async brand-audit subsystem — parity with the single-call door
 						// so a batched brand tool can also reach the D1 store + queue.
 						brandAuditDb: c.env.BRAND_AUDIT_DB,
+						watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 						brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 						rateLimitKv: c.env.RATE_LIMIT,
 						quotaCoordinator: c.env.QUOTA_COORDINATOR,
