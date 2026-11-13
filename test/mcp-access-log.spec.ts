@@ -766,3 +766,201 @@ describe('recordMcpAccessLog attribution without cf-connecting-ip (#876)', () =>
 		expect(ev.ip).toBe('unknown'); // consumer PTR/encrypt short-circuit unchanged
 	});
 });
+
+// Multi-domain calls (batch_scan, batch_scan_start, compare_domains) log ONE row per distinct
+// targeted domain, not just the first. Request-level fields are shared by every row.
+describe('multi-domain access-log fan-out', () => {
+	function queueOptions(send: (m: unknown, o?: { contentType?: 'json' }) => Promise<void>) {
+		return {
+			analyticsQueue: { send },
+			analyticsPiiLevel: 'coarse' as const,
+			ip: '192.0.2.9',
+			ipHash: 'i_x',
+			country: 'NZ',
+			analyticsKeyHash: 'k_abc',
+			clientType: 'cursor',
+			responseTransport: 'json',
+			startTime: Date.now(),
+			waitUntil: (p: Promise<unknown>) => {
+				void p.catch(() => undefined);
+			},
+		};
+	}
+
+	describe('extractAccessLogDomains', () => {
+		it('returns a single-element list for `domain`, which wins over `domains`', async () => {
+			const { extractAccessLogDomains } = await import('../src/mcp/execute');
+			expect(extractAccessLogDomains({ domain: 'a.com', domains: ['b.com'] })).toEqual(['a.com']);
+		});
+
+		it('returns every distinct string of `domains`, collapsing exact duplicates', async () => {
+			const { extractAccessLogDomains } = await import('../src/mcp/execute');
+			expect(extractAccessLogDomains({ domains: ['a.com', 'b.com', 'a.com', 'c.com'] })).toEqual(['a.com', 'b.com', 'c.com']);
+		});
+
+		it('skips non-string and empty entries', async () => {
+			const { extractAccessLogDomains } = await import('../src/mcp/execute');
+			expect(extractAccessLogDomains({ domains: ['', 42, null, { x: 1 }, 'a.com', undefined, 'b.com'] })).toEqual(['a.com', 'b.com']);
+		});
+
+		it('caps the list at 10 distinct domains', async () => {
+			const { extractAccessLogDomains } = await import('../src/mcp/execute');
+			const many = Array.from({ length: 25 }, (_, i) => `d${i}.example.com`);
+			const out = extractAccessLogDomains({ domains: many });
+			expect(out).toHaveLength(10);
+			expect(out).toEqual(many.slice(0, 10));
+		});
+
+		it('returns [] when there is no domain, and extractAccessLogDomain keeps returning the first one', async () => {
+			const { extractAccessLogDomains, extractAccessLogDomain } = await import('../src/mcp/execute');
+			expect(extractAccessLogDomains(undefined)).toEqual([]);
+			expect(extractAccessLogDomains({ domains: 'nope', domain: '' })).toEqual([]);
+			expect(extractAccessLogDomain({ domains: ['', 'a.com', 'b.com'] })).toBe('a.com');
+			expect(extractAccessLogDomain({ domain: 'z.com' })).toBe('z.com');
+			expect(extractAccessLogDomain({})).toBeUndefined();
+		});
+	});
+
+	describe('getToolCallLogInput', () => {
+		it('carries all domains plus the first as the representative domain', async () => {
+			const { getToolCallLogInput } = await import('../src/mcp/access-log');
+			const input = getToolCallLogInput('tools/call', { name: 'batch_scan', arguments: { domains: ['a.com', 'b.com', 'a.com'] } });
+			expect(input).toEqual({ toolName: 'batch_scan', domain: 'a.com', domains: ['a.com', 'b.com'], method: 'tools/call' });
+		});
+
+		it('returns undefined when no usable domain is present', async () => {
+			const { getToolCallLogInput } = await import('../src/mcp/access-log');
+			expect(getToolCallLogInput('tools/call', { name: 'batch_scan', arguments: { domains: ['', 7] } })).toBeUndefined();
+		});
+	});
+
+	describe('recordMcpAccessLog', () => {
+		it('batch of 3 distinct domains -> 3 events with identical request fields and distinct domains', async () => {
+			const { __recordMcpAccessLogForTest } = await import('../src/mcp/execute');
+			const sent: Array<Record<string, unknown>> = [];
+			const options = queueOptions(async (m) => {
+				sent.push(m as Record<string, unknown>);
+			});
+			// @ts-expect-error — internal helper with a minimal options shape
+			__recordMcpAccessLogForTest(options, {
+				toolName: 'batch_scan',
+				domain: 'a.com',
+				domains: ['a.com', 'b.com', 'c.com'],
+				rateLimited: false,
+				method: 'tools/call',
+				status: 'pass',
+			});
+			expect(sent.map((e) => e.domain)).toEqual(['a.com', 'b.com', 'c.com']);
+			const requestFields = sent.map(({ domain: _domain, ...rest }) => rest);
+			for (const fields of requestFields) expect(fields).toEqual(requestFields[0]);
+			expect(requestFields[0]).toMatchObject({
+				toolName: 'batch_scan',
+				keyHash: 'k_abc',
+				ipHash: 'i_x',
+				rateLimited: false,
+				status: 'pass',
+			});
+		});
+
+		it('single `domain` (no `domains`) -> exactly one event, identical to the pre-fan-out shape', async () => {
+			const { __recordMcpAccessLogForTest } = await import('../src/mcp/execute');
+			const sent: Array<Record<string, unknown>> = [];
+			const options = queueOptions(async (m) => {
+				sent.push(m as Record<string, unknown>);
+			});
+			// @ts-expect-error — internal helper with a minimal options shape
+			__recordMcpAccessLogForTest(options, {
+				toolName: 'scan_domain',
+				domain: 'example.com',
+				rateLimited: false,
+				method: 'tools/call',
+				status: 'pass',
+			});
+			// @ts-expect-error — internal helper with a minimal options shape
+			__recordMcpAccessLogForTest(options, {
+				toolName: 'scan_domain',
+				domain: 'example.com',
+				domains: ['example.com'],
+				rateLimited: false,
+				method: 'tools/call',
+				status: 'pass',
+			});
+			expect(sent).toHaveLength(2);
+			expect(sent[0].domain).toBe('example.com');
+			expect(sent[1]).toEqual({ ...sent[0], responseMs: sent[1].responseMs });
+		});
+
+		it('inline-insert fallback writes one row per domain when no queue is bound', async () => {
+			const { __recordMcpAccessLogForTest } = await import('../src/mcp/execute');
+			const fake = createFakeD1();
+			const promises: Promise<unknown>[] = [];
+			const options = {
+				intelligenceDb: fake.db,
+				analyticsPiiLevel: 'coarse' as const,
+				ip: '192.0.2.9',
+				ipHash: 'i_x',
+				responseTransport: 'json',
+				startTime: Date.now(),
+				waitUntil: (p: Promise<unknown>) => promises.push(p),
+			};
+			// @ts-expect-error — internal helper with a minimal options shape
+			__recordMcpAccessLogForTest(options, {
+				toolName: 'compare_domains',
+				domain: 'a.com',
+				domains: ['a.com', 'b.com'],
+				rateLimited: false,
+				method: 'tools/call',
+				status: 'pass',
+			});
+			await Promise.all(promises);
+			expect(fake.prepare).toHaveBeenCalledTimes(2);
+			const boundDomains = fake.bind.mock.calls.map((call) => call[3]);
+			expect(boundDomains).toEqual(['a.com', 'b.com']);
+		});
+
+		it('a rejecting queue send does not throw out of the recorder and every send is still attempted', async () => {
+			const { __recordMcpAccessLogForTest } = await import('../src/mcp/execute');
+			const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+			const send = vi.fn(async () => {
+				throw new Error('queue unavailable');
+			});
+			const promises: Promise<unknown>[] = [];
+			const options = { ...queueOptions(send), waitUntil: (p: Promise<unknown>) => promises.push(p) };
+			expect(() =>
+				// @ts-expect-error — internal helper with a minimal options shape
+				__recordMcpAccessLogForTest(options, {
+					toolName: 'batch_scan',
+					domain: 'a.com',
+					domains: ['a.com', 'b.com', 'c.com'],
+					rateLimited: false,
+					method: 'tools/call',
+					status: 'pass',
+				}),
+			).not.toThrow();
+			await Promise.all(promises);
+			expect(send).toHaveBeenCalledTimes(3);
+			spy.mockRestore();
+		});
+
+		it('recordInternalAccessLog fans out one internal row per domain', async () => {
+			const { recordInternalAccessLog } = await import('../src/mcp/execute');
+			const fake = createFakeD1();
+			const promises: Promise<unknown>[] = [];
+			recordInternalAccessLog({
+				toolName: 'batch_scan',
+				domain: 'a.com',
+				domains: ['a.com', 'b.com'],
+				status: 'pass',
+				clientType: 'svc',
+				intelligenceDb: fake.db,
+				startTime: Date.now(),
+				waitUntil: (p: Promise<unknown>) => promises.push(p),
+			});
+			await Promise.all(promises);
+			expect(fake.bind.mock.calls.map((call) => [call[3], call[24]])).toEqual([
+				['a.com', 'internal'],
+				['b.com', 'internal'],
+			]);
+		});
+	});
+});
