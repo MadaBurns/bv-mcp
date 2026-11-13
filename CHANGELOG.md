@@ -8,6 +8,35 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.113.0] - 2026-11-13
+
+Follow-ups to the v3.112.0 readiness release. **This release moves scores**: scoring model 2.1.0 to 2.2.0 and dns-checks 2.1.1 to 2.2.0. No tool is added, removed or renamed and no argument schema changes.
+
+Behaviour to plan for before deploying or integrating:
+
+- A category whose DNS lookup was never answered is now excluded from the score and the remaining weights are renormalised, where it was scored before. The direction is up or neutral for the affected domains. How many scans this touches is not measured against the corpus. Treat the scoring model change as a break in any stored trend.
+- Callers below partner tier who omit `discovery_mode` on a brand audit get classic discovery when the operator default is `tiered`.
+- Two new Worker secrets are optional and off by default: `OAUTH_SIGNING_SECRET_PREVIOUS` and `WATCH_WEBHOOK_SIGNING_SECRET`. Neither is required to deploy.
+
+### Added
+
+- Optional `OAUTH_SIGNING_SECRET_PREVIOUS` secret. During a rotation it lets access tokens signed with the retired secret keep verifying (verify only; nothing is ever signed with it), so replacing `OAUTH_SIGNING_SECRET` no longer signs every customer out at once. The current secret is tried first; every other check (algorithm, expiry, issuer, audience, token version, revocation) is unchanged. Unset, blank, shorter than 32 bytes, or equal to the current secret means rotation is off (the last two log one fixed-token warning per isolate). The operator runbook has the procedure, and says not to use it when the current secret may be compromised. (SQ-586)
+- Optional origin signatures for brand-audit watch webhooks sent to caller-supplied URLs. When `WATCH_WEBHOOK_SIGNING_SECRET` is set (32+ bytes, distinct from every other security secret), each delivery carries `X-Blackveil-Signature: t=<unix seconds>,v1=<hex>`, an HMAC-SHA256 over `<t>.<exact body bytes>` keyed by a per-watch secret derived from the server secret and the watch id. Nothing is stored per watch and there is no schema change. With the secret unset, deliveries are sent exactly as before. (SQ-587)
+- `register_brand_audit_watch` returns that per-watch secret once, as `signingSecret`, for a watch with a `webhook_url`. `list_brand_audit_watches` never returns it. Watches registered before the secret was set are signed once it is set; their owners re-register to obtain the secret. Receiver verification steps are in `docs/design/brand-audit-watch-webhook.md`. (SQ-587)
+
+### Changed
+
+- Scoring model 2.1.0 to 2.2.0 and dns-checks 2.1.1 to 2.2.0. The scoring model entry also records the `http_security` change that shipped in dns-checks 2.1.1 with v3.112.0: an HTTP status 0 or 5xx answer is unmeasured and excluded from the score. No weight, tier, grade band, severity penalty, missing-control rule or profile-detection rule changed. (SQ-573)
+
+### Fixed
+
+- `check_dane_https`, `check_svcb_https` and `check_ptr` no longer report a missing record when the resolver failed to answer. A SERVFAIL or REFUSED answer for the TLSA, HTTPS, MX or mail-host A lookup now produces an inconclusive result (`errorKind: dns_error`) that scoring excludes, instead of "No DANE TLSA for HTTPS", "No HTTPS record found", "PTR not applicable (no inbound mail)" or "Mail server IPs unresolved". Answered NOERROR-empty and NXDOMAIN lookups keep their findings and scores. (SQ-573)
+- `check_bimi` no longer reports a published BIMI record as "ineffective (DMARC not enforcing)" when the `_dmarc` lookup itself went unanswered; it reports the prerequisite as not determined. (SQ-573)
+- `brand_audit_single` and `brand_audit_batch_start` no longer reach tiered discovery for callers below partner tier when `discovery_mode` is omitted and the operator default `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered` is set. An omitted argument from a lower tier is downgraded to `classic`, and the cache key and queued message carry the mode that actually runs. An explicit `discovery_mode: 'tiered'` from a lower tier is still refused with the existing error. (SQ-584)
+- `osint_investigate_*_start` and `scan_buckets_start` retry the ownership-record write once before failing, so a single transient KV error no longer discards an upstream job that was already created. (SQ-585)
+- A `deep_infrastructure` start whose remembered-target write fails after one retry now flags it with `ctTargetNotRemembered: true` on the start result, instead of silently losing the report's CT-discovery composition. (SQ-585)
+- The "not owned" refusal from `osint_investigation_status`, `osint_investigation_report`, `scan_buckets_status` and `scan_buckets_findings` is marked `partial`, so a transient owner-record read failure is no longer served from the poll cache. (SQ-585)
+
 ## [3.112.0] - 2026-11-13
 
 Production-readiness release. No tool is added or removed and no argument schema changes. Scoring model 2.1.0 is unchanged; dns-checks moves to 2.1.1, and one check now abstains where it used to score (see Fixed).
