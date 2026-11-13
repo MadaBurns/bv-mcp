@@ -2,9 +2,8 @@
 
 // Direct dispatch: the tools with no TOOL_REGISTRY entry, split out of `handlers/tools.ts`'s handleToolsCall.
 
-import { buildScanCacheKey } from '../lib/cache';
 import { unavailableAccessContextResult } from '../mcp/access-context';
-import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
+import { scanDomain, formatScanReport, buildStructuredScanResult, resolveScanCacheKey } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
 import { getAsyncBatchJobForRead, startAsyncBatchScan } from '../tools/batch-scan-async';
@@ -483,9 +482,9 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 
 			let baselineScore: import('@blackveil/dns-checks/scoring').ScanScore;
 			if (baselineStr === 'cached') {
-				// MUST match scanDomain's default-profile top-level key (buildScanCacheKey)
-				// so the versioned cache written by scan_domain is readable here.
-				const cacheKey = buildScanCacheKey(validDomain);
+				// MUST match scanDomain's default-profile top-level key (resolveScanCacheKey, which
+				// carries the caller's TLS-probe partition) so the cache written by scan_domain is readable here.
+				const cacheKey = resolveScanCacheKey(validDomain, runtimeOptions);
 				const cached = scanCacheKV
 					? await import('../lib/cache').then((m) => m.cacheGet<import('../tools/scan-domain').ScanDomainResult>(cacheKey, scanCacheKV))
 					: undefined;

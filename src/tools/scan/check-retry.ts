@@ -115,8 +115,9 @@ export function runDedupedCheck(
 	category: CheckCategory,
 	run: () => Promise<CheckResult>,
 	skipCache?: boolean,
+	keyVariant?: string,
 ): Promise<CheckResult> {
-	return runWithCache(buildScanCheckInflightKey(domain, category), run, undefined, undefined, skipCache, () => false, true);
+	return runWithCache(buildScanCheckInflightKey(domain, category, keyVariant), run, undefined, undefined, skipCache, () => false, true);
 }
 
 /**

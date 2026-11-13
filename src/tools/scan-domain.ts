@@ -32,7 +32,7 @@ import {
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
 import { computeScoringConfigHash } from '../lib/scoring-version';
-import { buildScanCacheKey, cacheGet, cacheSet } from '../lib/cache';
+import { TLS_PROBE_KEY_SEGMENT, buildScanCacheKey, cacheGet, cacheSet } from '../lib/cache';
 import type { DohPrimaryFailureTally, QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
 import { probeApexRcode } from '../lib/apex-resolution';
@@ -57,7 +57,7 @@ import {
 	maybeEmitShardWarmupDegradation,
 } from '../lib/profile-accumulator';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
-import { CHECK_DISPATCH, SCAN_CATEGORIES, CHECKS_WITHOUT_DNS_POOL } from './scan/check-dispatch';
+import { CHECK_DISPATCH, SCAN_CATEGORIES, CHECKS_WITHOUT_DNS_POOL, tlsProbeEnrichmentActive } from './scan/check-dispatch';
 import type { ScanDomainResult, ScanDomainOptions } from './scan/scan-types';
 import { buildUnscoredResult, buildNonResolvingResult, buildDnsBrokenResult } from './scan/early-results';
 import { shouldRetry, mergeAuthoritativeDnsInfraResults, runCheckRetry, runDedupedCheck, safeCheck } from './scan/check-retry';
@@ -92,6 +92,34 @@ function activeProbesAllowedForScan(runtimeOptions?: ScanRuntimeOptions): boolea
 }
 
 /**
+ * The scan-level cache key for a scan under these runtime options: the versioned key, the explicit
+ * profile, the infra-profile gate suffix, and (SQ-567) the TLS-probe partition. Shared by the cache
+ * read, the cache write and `analyze_drift`'s cached baseline so they always agree.
+ *
+ * The TLS-probe segment is present only when `ssl`/`dane_https` actually receive the probe binding
+ * (probe-eligible tier AND binding bound): that enrichment changes their output (`ssl`
+ * metadata.tlsVersionAssessment, `dane_https` finding metadata), so an anonymous caller must not be
+ * served a result computed for an eligible one (or the reverse) within the TTL. The
+ * authoritative_dns_infra profile runs neither check, so its key is unaffected.
+ */
+export function resolveScanCacheKey(domain: string, runtimeOptions?: ScanDomainOptions): string {
+	const explicitProfile = runtimeOptions?.profile;
+	const isExplicit = explicitProfile && explicitProfile !== 'auto';
+	// The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
+	// (US-4 contract addendum): partition its cache key on the gate
+	// so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
+	// caller within the TTL, and the reverse never hides measured capabilities from a paying
+	// caller. Every other profile is unaffected.
+	const infraProfileCacheKeySuffix =
+		isExplicit && explicitProfile === 'authoritative_dns_infra' && activeProbesAllowedForScan(runtimeOptions) ? ':active' : '';
+	const tlsProbeKeySuffix =
+		explicitProfile !== 'authoritative_dns_infra' && tlsProbeEnrichmentActive(runtimeOptions) ? `:${TLS_PROBE_KEY_SEGMENT}` : '';
+	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
+	const baseKey = isExplicit ? buildScanCacheKey(domain, `${explicitProfile}${infraProfileCacheKeySuffix}`) : buildScanCacheKey(domain);
+	return `${baseKey}${tlsProbeKeySuffix}`;
+}
+
+/**
  * Run a full DNS security scan on a domain.
  * Executes all checks in parallel and computes an overall score.
  *
@@ -105,15 +133,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
-	// The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
-	// (US-4 contract addendum): partition its cache key on the gate
-	// so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
-	// caller within the TTL, and the reverse never hides measured capabilities from a paying
-	// caller. Every other profile is unaffected.
-	const infraProfileCacheKeySuffix =
-		isExplicit && explicitProfile === 'authoritative_dns_infra' && activeProbesAllowedForScan(runtimeOptions) ? ':active' : '';
-	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
-	const cacheKey = isExplicit ? buildScanCacheKey(domain, `${explicitProfile}${infraProfileCacheKeySuffix}`) : buildScanCacheKey(domain);
+	const cacheKey = resolveScanCacheKey(domain, runtimeOptions);
 
 	// Fingerprint of the EFFECTIVE scoring config this scan runs under. Stamped onto
 	// every result this function returns so downstream formatting reports the config
@@ -323,6 +343,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 							CHECKS_WITHOUT_DNS_POOL.has(cat) ? undefined : () => dnsSemaphore.saturatedMs(),
 						),
 					forceRefresh,
+					// SQ-567: a probe-enriched ssl/dane_https run must not be joined by a scan that is not entitled to it.
+					tlsProbeEnrichmentActive(runtimeOptions) ? TLS_PROBE_KEY_SEGMENT : undefined,
 				);
 			});
 
