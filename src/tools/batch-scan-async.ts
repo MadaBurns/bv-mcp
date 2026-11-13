@@ -139,6 +139,43 @@ const SCAN_FAILURE_RETRY_DELAY_SECONDS = 30;
 /** KV is eventually consistent: wait this long (per attempt) before re-reading a job that was just written. */
 const JOB_MISSING_RETRY_DELAY_SECONDS = 15;
 
+/**
+ * A non-terminal job whose last write is older than this has lost its consumer on every delivery
+ * (isolate eviction, CPU/memory limit or subrequest ceiling kills the invocation before it can write
+ * `failed`, and the DLQ has no consumer). Derived from the retry numbers above: each of the
+ * ASYNC_BATCH_MAX_ATTEMPTS deliveries can sit for a full running lease before a redelivery may reclaim
+ * it, plus the retry delay between deliveries, plus one more lease as margin so a live job on its last
+ * attempt is never failed by a polling read. 4 x (120s + 30s) + 120s = 12 minutes.
+ */
+export const ASYNC_BATCH_STALE_AFTER_MS =
+	ASYNC_BATCH_MAX_ATTEMPTS * (RUNNING_LEASE_MS + SCAN_FAILURE_RETRY_DELAY_SECONDS * 1000) + RUNNING_LEASE_MS;
+/** Machine-readable `error` for a job failed by the read-path deadline (same field the consumer writes). */
+export const ASYNC_BATCH_ABANDONED_ERROR = 'consumer_abandoned';
+
+/**
+ * Status-read variant of {@link getAsyncBatchJob} (read-path deadline, mirroring brand_audit_status).
+ * A queued/running job past {@link ASYNC_BATCH_STALE_AFTER_MS} is returned as terminally `failed` and the
+ * terminal state is persisted best-effort so later reads agree; a persist failure never changes what is
+ * returned. `updatedAt` stays the job's last real activity so repeated polls render identically.
+ * The queue consumer keeps using the raw {@link getAsyncBatchJob} so its retry behaviour is unchanged.
+ */
+export async function getAsyncBatchJobForRead(
+	jobId: string,
+	principalId: string,
+	kv: KVNamespace,
+	now: () => number = Date.now,
+): Promise<AsyncBatchJob | null> {
+	const job = await getAsyncBatchJob(jobId, principalId, kv);
+	if (!job || (job.status !== 'queued' && job.status !== 'running') || now() - job.updatedAt <= ASYNC_BATCH_STALE_AFTER_MS) return job;
+	const failed: AsyncBatchJob = { ...job, status: 'failed', error: ASYNC_BATCH_ABANDONED_ERROR };
+	try {
+		await kv.put(jobKey(job.jobId), JSON.stringify(failed), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
+	} catch {
+		// Best effort: the next read recomputes the same verdict.
+	}
+	return failed;
+}
+
 function retryAfter(delaySeconds: number): AsyncBatchVerdict {
 	return { action: 'retry', delaySeconds };
 }

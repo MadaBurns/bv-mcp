@@ -7,7 +7,7 @@ import { unavailableAccessContextResult } from '../mcp/access-context';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
-import { getAsyncBatchJob, startAsyncBatchScan } from '../tools/batch-scan-async';
+import { getAsyncBatchJobForRead, startAsyncBatchScan } from '../tools/batch-scan-async';
 import { compareDomains, formatDomainComparison, COMPARE_DOMAINS_SYNC_BUDGET_MS } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -251,7 +251,7 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 			const principalId = runtimeOptions?.principalId;
 			const kv = runtimeOptions?.asyncBatchKv;
 			if (!principalId || !kv) return buildToolErrorResult('Async batch scanning is not provisioned');
-			const job = await getAsyncBatchJob(String(validatedArgs.job_id), principalId, kv);
+			const job = await getAsyncBatchJobForRead(String(validatedArgs.job_id), principalId, kv);
 			if (!job) return buildToolErrorResult('Batch scan job not found');
 			const payload =
 				name === 'batch_scan_findings'
