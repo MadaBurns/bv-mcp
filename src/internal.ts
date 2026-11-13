@@ -53,7 +53,7 @@ import {
 	type ToolPolicyBlock,
 } from './lib/config';
 import { declaredToolArgKeys, normalizeToolName } from './handlers/tool-args';
-import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
+import { recordInternalAccessLog, extractAccessLogDomains } from './mcp/execute';
 import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import { validateDomain, sanitizeDomain, validateOutboundUrl } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
@@ -897,13 +897,14 @@ internalRoutes.post('/tools/call', async (c) => {
 
 	// B1: record an internal-source access-log row for domain-bearing tools (parity
 	// with the public path, which only logs domain-bearing calls). No-domain tools
-	// (extractAccessLogDomain → undefined) write no row. ip/ipHash sentinel 'unknown',
+	// (extractAccessLogDomains → []) write no row. ip/ipHash sentinel 'unknown',
 	// key_hash null, x-bv-caller → client_type. Best-effort via waitUntil.
-	const accessLogDomain = extractAccessLogDomain(body.arguments);
-	if (accessLogDomain) {
+	const accessLogDomains = extractAccessLogDomains(body.arguments);
+	if (accessLogDomains.length > 0) {
 		recordInternalAccessLog({
 			toolName: normalizeToolName(body.name),
-			domain: accessLogDomain,
+			domain: accessLogDomains[0],
+			domains: accessLogDomains,
 			status: result.isError ? 'error' : 'pass',
 			clientType: c.req.header(AGENT_CALLER_HEADER) ?? null,
 			intelligenceDb: c.env.INTELLIGENCE_DB,

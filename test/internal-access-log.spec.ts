@@ -106,6 +106,33 @@ describe('internal /tools/call access logging', () => {
 		expect(fake.prepare.mock.calls.some((call) => String(call[0]).includes('INSERT INTO mcp_access_log'))).toBe(false);
 	});
 
+	it('writes one row per distinct domain for a multi-domain tool call', async () => {
+		mockTxtRecords(['v=spf1 -all']);
+		const { internalRoutes } = await import('../src/internal');
+		const fake = createFakeD1();
+		const { ctx, drain } = createFakeCtx();
+		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: fake.db };
+
+		await internalRoutes.request(
+			'/tools/call',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'x-bv-caller': 'admin-analytics' },
+				body: JSON.stringify({ name: 'batch_scan', arguments: { domains: ['one.example', 'two.example', 'one.example'] } }),
+			},
+			env,
+			ctx,
+		);
+		await drain();
+
+		const rows = fake.bind.mock.calls.filter((call) => call[2] === 'batch_scan');
+		expect(rows.map((call) => call[3])).toEqual(['one.example', 'two.example']);
+		for (const call of rows) {
+			expect(call[18]).toBe('admin-analytics'); // client_type
+			expect(call[24]).toBe('internal'); // source
+		}
+	});
+
 	it('writes no row when neither INTELLIGENCE_DB nor MCP_ANALYTICS_QUEUE is bound (BSL self-host)', async () => {
 		mockTxtRecords(['v=spf1 -all']);
 		const { internalRoutes } = await import('../src/internal');
