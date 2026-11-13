@@ -149,13 +149,16 @@ function classifyBvWebValidation(response: Awaited<ReturnType<typeof fetchBvWebV
 	return parsed.data.tier === null ? { kind: 'revoked' } : { kind: 'tier', tier: parsed.data.tier };
 }
 
-/** Short-lived accelerator only; an `unavailable` verdict is never cached (a transient outage must not become a lockout). */
+/**
+ * Short-lived accelerator for a definitive answer only. A 4xx denial is not cached, and an `unavailable`
+ * verdict never reaches here (a transient outage must not become a lockout).
+ */
 async function cacheBvWebVerdict(
 	kv: KVNamespace | undefined,
 	keyHash: string,
-	verdict: BvWebVerdict & { kind: 'tier' | 'revoked' },
+	verdict: Exclude<BvWebVerdict, { kind: 'unavailable' }>,
 ): Promise<void> {
-	if (!kv) return;
+	if (!kv || verdict.kind === 'denied') return;
 	const entry = verdict.kind === 'tier' ? { tier: verdict.tier, revokedAt: null } : { tier: 'free', revokedAt: Date.now() };
 	await kv.put(`tier:${keyHash}`, JSON.stringify(entry), { expirationTtl: TIER_KV_CACHE_TTL });
 }
@@ -181,13 +184,12 @@ async function resolveViaBvWeb(
 		return { authenticated: false, storageUnavailable: true };
 	}
 	if (verdict.kind === 'unavailable') return { authenticated: false, storageUnavailable: true };
-	if (verdict.kind === 'denied') return { authenticated: false };
 	try {
 		await cacheBvWebVerdict(kv, keyHash, verdict);
 	} catch {
 		return { authenticated: false };
 	}
-	if (verdict.kind === 'revoked') return { authenticated: false };
+	if (verdict.kind !== 'tier') return { authenticated: false };
 	const resolvedTier = applyOwnerIpGate(verdict.tier, ownerAllowIps, clientIp);
 	return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 }

@@ -135,6 +135,26 @@ describe('resolveTier: BV_WEB validate-key backend outage (SQ-565)', () => {
 		expect(JSON.parse(String(tierWrites(put)[0][1]))).toEqual({ tier: 'enterprise', revokedAt: null });
 	});
 
+	it('backend says valid with no KV binding -> authenticated (cache is only an accelerator)', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const web = bvWeb(async () => Response.json({ tier: 'developer' }));
+		const result = await resolveTier(KEY, { ...BASE_ENV, BV_WEB: web }, undefined, 'https://example.com/mcp');
+		expect(result).toMatchObject({ authenticated: true, tier: 'developer' });
+	});
+
+	it('entitlement cache write failing after a definitive answer stays a plain unauthenticated result (unchanged)', async () => {
+		const { kv, put } = memoryKv();
+		put.mockImplementation(async (key: string) => {
+			if (key.startsWith('tier:')) throw new Error('KV put failed');
+		});
+		const result = await tierFor(
+			KEY,
+			bvWeb(async () => Response.json({ tier: 'developer' })),
+			kv,
+		);
+		expect(result).toEqual({ authenticated: false });
+	});
+
 	it('outage then healthy validation of the same key authenticates (outage was not negative-cached)', async () => {
 		const { kv, store } = memoryKv();
 		let healthy = false;
