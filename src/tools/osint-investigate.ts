@@ -235,28 +235,59 @@ interface RememberedTarget {
 }
 
 /**
- * Remember the deep_infrastructure target beside the owner record (same KV, same TTL, same
- * guards). Only a syntactically valid, sanitised domain is stored — the recon service accepts
+ * Run a KV write and retry it ONCE on failure; resolves whether either attempt succeeded. A single
+ * transient KV error must not fail a start whose upstream job already exists (that job id would be
+ * orphaned, never returned to the caller). Running the write inside a promise chain also turns a
+ * synchronous throw into a retryable rejection.
+ */
+function putWithOneRetry(put: () => Promise<unknown>): Promise<boolean> {
+	return Promise.resolve()
+		.then(put)
+		.catch(() => put())
+		.then(
+			() => true,
+			() => false,
+		);
+}
+
+/**
+ * The domain worth remembering for CT discovery, or undefined. Only a syntactically valid,
+ * sanitised domain of a deep_infrastructure investigation qualifies — the recon service accepts
  * IPs and org names for this type too, and `discover_subdomains` must never see those.
+ */
+function rememberableDomain(type: ReconInvestigationType, query: string): string | undefined {
+	if (type !== 'deep_infrastructure' || !validateDomain(query).valid) return undefined;
+	try {
+		return sanitizeDomain(query) || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The KV to write the target record to, or undefined when no write is possible (same guards as the owner record). */
+function targetRecordKv(id: string | undefined, options: ReconToolOptions): KVNamespace | undefined {
+	return id && options.principalId && SAFE_INVESTIGATION_ID.test(id) ? options.reconJobKv : undefined;
+}
+
+/**
+ * Remember the deep_infrastructure target beside the owner record (same KV, same TTL, same
+ * guards). Retried once; when the write still fails the investigation proceeds, but the report's CT
+ * discovery composition will silently have no target, so the start result is told to say so: the
+ * returned metadata is empty when nothing is wrong or nothing applies, and carries
+ * `ctTargetNotRemembered` when a remembered target was wanted and could not be stored.
  */
 async function rememberInvestigationTarget(
 	id: string | undefined,
 	type: ReconInvestigationType,
 	query: string,
 	options: ReconToolOptions,
-): Promise<void> {
-	if (type !== 'deep_infrastructure') return;
-	if (!id || !options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return;
-	if (!validateDomain(query).valid) return;
-	let domain: string;
-	try {
-		domain = sanitizeDomain(query);
-	} catch {
-		return;
-	}
-	if (!domain) return;
+): Promise<Record<string, unknown>> {
+	const domain = rememberableDomain(type, query);
+	const kv = targetRecordKv(id, options);
+	if (!domain || !kv || !id) return {};
 	const value: RememberedTarget = { type, domain };
-	await options.reconJobKv.put(targetKey(id), JSON.stringify(value), { expirationTtl: OSINT_OWNER_TTL_SECONDS }).catch(() => undefined);
+	const stored = await putWithOneRetry(() => kv.put(targetKey(id), JSON.stringify(value), { expirationTtl: OSINT_OWNER_TTL_SECONDS }));
+	return stored ? {} : { ctTargetNotRemembered: true };
 }
 
 /** The remembered target, or null. Callers run the owner check FIRST — this read is not an authority. */
@@ -328,27 +359,32 @@ async function composeCtDiscovery(
 	}
 }
 
+/**
+ * `partial: true` keeps the refusal out of the registry cache (`(r) => !r.partial`): "not owned" is
+ * also what a transient owner-record read failure looks like (the check fails closed), so a cached
+ * refusal could outlive the KV blip that caused it and deny the real owner for the whole TTL.
+ */
 function notOwned(id: string): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, 'OSINT investigation not available', 'info', `OSINT investigation ${id} is not owned by this principal.`, {
-			notOwned: true,
-			investigationId: id,
-		}),
-	]) as CheckResult;
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(CATEGORY, 'OSINT investigation not available', 'info', `OSINT investigation ${id} is not owned by this principal.`, {
+				notOwned: true,
+				investigationId: id,
+			}),
+		]),
+		partial: true,
+	};
 }
 
 /**
- * Store the owner record. Resolves false when it could not be stored (no KV, no principal, unsafe id,
- * or a failed put): a job nobody can later poll must not be handed out, so the start reports a failure.
+ * Store the owner record (the write is retried once). Resolves false when it could not be stored (no
+ * KV, no principal, unsafe id, or a put that failed twice): a job nobody can later poll must not be
+ * handed out, so the start reports a failure.
  */
 async function rememberInvestigationOwner(id: string, options: ReconToolOptions): Promise<boolean> {
-	if (!options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return false;
-	try {
-		await options.reconJobKv.put(ownerKey(id), options.principalId, { expirationTtl: OSINT_OWNER_TTL_SECONDS });
-		return true;
-	} catch {
-		return false;
-	}
+	const { reconJobKv: kv, principalId } = options;
+	if (!kv || !principalId || !SAFE_INVESTIGATION_ID.test(id)) return false;
+	return putWithOneRetry(() => kv.put(ownerKey(id), principalId, { expirationTtl: OSINT_OWNER_TTL_SECONDS }));
 }
 
 /**
@@ -470,7 +506,7 @@ export async function osintInvestigateStart(
 	const started = outcome.data;
 	const rejection = await ownerRecordRejection(started.investigationId, type, options);
 	if (rejection) return rejection;
-	await rememberInvestigationTarget(started.investigationId, type, query, options);
+	const targetMeta = await rememberInvestigationTarget(started.investigationId, type, query, options);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
@@ -482,6 +518,7 @@ export async function osintInvestigateStart(
 				type,
 				status: started.status ?? 'running',
 				pollWith: 'osint_investigation_status',
+				...targetMeta,
 			},
 		),
 	]) as CheckResult;
