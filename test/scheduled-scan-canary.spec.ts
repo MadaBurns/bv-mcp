@@ -70,6 +70,25 @@ function mockWebhook(): Posted[] {
 	return posted;
 }
 
+/** AE fetch mock that makes the tail-exception lane alert-worthy, so a surviving alert proves that lane ran. */
+function mockAnalyticsWithTailAlert(): Posted[] {
+	const posted: Posted[] = [];
+	globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+		const body = (init?.body as string) ?? '';
+		if (url.includes('hooks.slack.com')) {
+			posted.push({ url, body });
+			return new Response('ok');
+		}
+		if (url.includes('analytics_engine/sql')) {
+			if (body.includes("index1 = 'tail'")) return Response.json({ data: [{ exception_count: 250 }] });
+			return Response.json({ data: [] });
+		}
+		return new Response('ok');
+	}) as typeof fetch;
+	return posted;
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.doUnmock('../src/tools/scan-domain');
@@ -185,7 +204,7 @@ describe('scan canary paging', () => {
 
 describe('scan canary kill switch', () => {
 	it('SCAN_CANARY_ENABLED=false -> no scan attempted, no alert, other lanes still run', async () => {
-		const posted = mockWebhook();
+		const posted = mockAnalyticsWithTailAlert();
 		const kv = memoryKv();
 		const { scan, handleScheduled } = await loadWithScan(['throw', 'throw']);
 		const env = { ALERT_WEBHOOK_URL: WEBHOOK, RATE_LIMIT: kv, SCAN_CANARY_ENABLED: 'false', CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't' };
@@ -196,29 +215,12 @@ describe('scan canary kill switch', () => {
 		expect(scan).not.toHaveBeenCalled();
 		expect(kv.store.has('scan-canary:consecutive-failures')).toBe(false);
 		expect(posted.some((p) => p.body.includes('Scan path canary'))).toBe(false);
+		// The other lanes still ran: the alert-worthy tail-exception lane fired on both ticks.
+		expect(posted.filter((p) => p.body.includes('Fatal Worker exceptions')).length).toBeGreaterThanOrEqual(1);
 	});
 });
 
 describe('scan canary isolation', () => {
-	/** AE fetch mock that makes the tail-exception lane alert-worthy, so a surviving alert proves that lane ran. */
-	function mockAnalyticsWithTailAlert(): Posted[] {
-		const posted: Posted[] = [];
-		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-			const body = (init?.body as string) ?? '';
-			if (url.includes('hooks.slack.com')) {
-				posted.push({ url, body });
-				return new Response('ok');
-			}
-			if (url.includes('analytics_engine/sql')) {
-				if (body.includes("index1 = 'tail'")) return Response.json({ data: [{ exception_count: 250 }] });
-				return Response.json({ data: [] });
-			}
-			return new Response('ok');
-		}) as typeof fetch;
-		return posted;
-	}
-
 	it('a throwing scan does not break the other scheduled lanes', async () => {
 		const posted = mockAnalyticsWithTailAlert();
 		const { scan, handleScheduled } = await loadWithScan(['throw']);
