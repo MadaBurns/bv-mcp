@@ -2,7 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, dnssecResponse, tlsaResponse } from './helpers/dns-mock';
-import { DOH_TRANSPORT_FAILURES, expectDnsAbstention } from './helpers/dns-transport-failure';
+import { DOH_TRANSPORT_FAILURES, UNANSWERED_RCODES, expectDnsAbstention, expectRcodeAbstention } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -129,6 +129,34 @@ describe('checkDaneHttps', () => {
 		const result = await run();
 		expectDnsAbstention(result, 'dane_https');
 		expect(result.findings.map((f) => f.title)).toEqual(['DANE HTTPS not assessed — TLSA query failed']);
+	});
+
+	// SQ-573: HTTP 200 + SERVFAIL/REFUSED is an EMPTY answer set on the wire shape the check reads,
+	// byte-identical to a name that publishes no TLSA. It must abstain, not file "No DANE TLSA".
+	it.each(UNANSWERED_RCODES)('abstains rather than reporting "No DANE TLSA" when the TLSA lookup answers $label', async ({ status }) => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('_443._tcp.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
+				return Promise.resolve(createDohResponse([{ name: '_443._tcp.example.com', type: 52 }], [], { status }));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expectRcodeAbstention(result, 'dane_https');
+		expect(result.findings.map((f) => f.title)).toEqual(['DANE HTTPS check error']);
+		expect(result.findings.some((f) => f.title === 'No DANE TLSA for HTTPS')).toBe(false);
+	});
+
+	it('an answered NOERROR with no TLSA keeps the "No DANE TLSA" finding and score exactly', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(emptyResponse('example.com', 1)));
+
+		const result = await run();
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.recordPresent).toBe(false);
+		expect(result.findings.map((f) => f.title)).toEqual(['No DANE TLSA for HTTPS']);
+		expect(result.findings[0].severity).toBe('low');
+		expect(result.score).toBe(95);
 	});
 
 	it('an answered NXDOMAIN for _443._tcp is still a measured absence, not an abstention', async () => {

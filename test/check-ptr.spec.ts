@@ -534,3 +534,50 @@ describe('checkPtr — FCrDNS across all PTR names and failed lookups (T6 item 4
 		expect(note!.metadata?.errorKind).toBe('dns_error');
 	});
 });
+
+// SQ-573: the two lookups BEFORE the per-IP phase (MX, then each host's A) used the string-only
+// projection, so a SERVFAIL on either read as "no mail" / "no addresses" and produced a confident
+// not-applicable or unresolved verdict from a lookup the resolver never answered.
+describe('checkPtr — SERVFAIL on the MX / mail-host A lookups abstains (SQ-573)', () => {
+	it('does not conclude "no inbound mail" when the MX lookup SERVFAILs', async () => {
+		routeDnsWithServfail({ 'MX example.com': ['10 mail.example.org.'] }, ['MX example.com']);
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.category).toBe('ptr');
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => /not applicable/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.applicable === false)).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'dns_error')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('keeps "not applicable (no inbound mail)" for an MX lookup answered NOERROR with no records', async () => {
+		routeDnsWithServfail({});
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.map((f) => f.title)).toEqual(['PTR not applicable (no inbound mail)']);
+		expect(result.findings[0].metadata?.applicable).toBe(false);
+	});
+
+	it('does not report "Mail server IPs unresolved" when every mail-host A lookup SERVFAILs', async () => {
+		routeDnsWithServfail({ 'MX example.com': ['10 mail.example.org.'] }, ['A mail.example.org']);
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => /unresolved/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'dns_error')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.controlPresent === false)).toBe(false);
+	});
+
+	it('keeps "Mail server IPs unresolved" when the mail-host A lookup is answered NOERROR with no addresses', async () => {
+		routeDnsWithServfail({ 'MX example.com': ['10 mail.example.org.'] });
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.map((f) => f.title)).toEqual(['Mail server IPs unresolved']);
+	});
+});

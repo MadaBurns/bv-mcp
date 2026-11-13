@@ -62,3 +62,27 @@ export function expectDnsAbstention(result: CheckResult, category: string): void
 		expect(finding.metadata?.missingControl, finding.title).not.toBe(true);
 	}
 }
+
+/** DoH response codes (RFC 1035 §4.1.1) that mean the resolver could NOT answer: SERVFAIL, REFUSED. */
+export const UNANSWERED_RCODES: ReadonlyArray<{ label: string; status: number }> = [
+	{ label: 'SERVFAIL', status: 2 },
+	{ label: 'REFUSED', status: 5 },
+];
+
+/**
+ * The abstention an unanswered (SERVFAIL / REFUSED) lookup must produce. HTTP 200 carries the
+ * failure only in `Status`, so nothing throws and an empty answer set looks exactly like a
+ * measured absence. The result must be the not-assessed shape with an inconclusive `dns_error`
+ * finding and NO claim that the control is absent (`missingControl`, `recordPresent: false`).
+ */
+export function expectRcodeAbstention(result: CheckResult, category: string): void {
+	expect(result.category).toBe(category);
+	expect(result.checkStatus).toBe('error');
+	expect(result.score).toBe(0);
+	expect(result.passed).toBe(false);
+	expect(result.partial).toBe(true);
+	expect(result.recordPresent).toBeUndefined();
+	expect(result.controlPresent).toBeUndefined();
+	expect(result.findings.some((f) => f.metadata?.inconclusive === true && f.metadata?.errorKind === 'dns_error')).toBe(true);
+	for (const finding of result.findings) expect(finding.metadata?.missingControl, finding.title).not.toBe(true);
+}
