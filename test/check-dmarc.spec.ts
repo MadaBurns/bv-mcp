@@ -188,12 +188,20 @@ describe('checkDmarc', () => {
 		expect(f!.severity).toBe('medium');
 	});
 
-	it('warns when fo=0 limits forensic visibility', async () => {
-		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; fo=0; rua=mailto:d@example.com']);
+	it('warns when fo=0 limits forensic visibility and a ruf= address receives the reports', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; fo=0; rua=mailto:d@example.com; ruf=mailto:f@example.com']);
 		const r = await run();
 		const f = r.findings.find((f) => /Limited DMARC failure reporting coverage/i.test(f.title));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('low');
+	});
+
+	it('reports fo=0 as info when no ruf= address is published (the tag selects reports nobody receives)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; fo=0; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Limited DMARC failure reporting coverage/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('info');
 	});
 
 	// URI Validation Tests
@@ -399,11 +407,12 @@ describe('checkDmarc', () => {
 
 	// --- Missing ruf= when rua= is present ---
 
-	it('flags missing ruf= when rua= is present', async () => {
+	it('reports missing ruf= as info when rua= is present (optional tag, no penalty)', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
 		const r = await run();
 		const f = r.findings.find((f) => /No forensic reporting configured/i.test(f.title));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
+		expect(f!.severity).toBe('info');
+		expect(r.score).toBe(100);
 	});
 });

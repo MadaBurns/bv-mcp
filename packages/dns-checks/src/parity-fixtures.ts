@@ -40,7 +40,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '2.2.0';
+export const PARITY_CORPUS_VERSION = '2.3.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -300,41 +300,45 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		// Model 1.26.0: quarantine is PARTIAL enforcement — the finding moves low (−5) →
 		// medium (−15) and declares `metadata.partialEnforcement`, so the category now sits
 		// BELOW reject (was 85, score-identical to the p=reject+rua shape). Arithmetic:
-		// 100 − 15 (quarantine) − 5 (ruf absent) − 5 (relaxed adkim) = 75; aspf=r is
-		// advisory info (#842). NOT a missing control: quarantine must never collapse into
-		// the p=none / no-record bucket above.
+		// 100 − 15 (quarantine) − 5 (relaxed adkim) = 80; aspf=r is advisory info (#842) and
+		// so is an absent ruf= since model 2.3.0 (was −5, 75). NOT a missing control:
+		// quarantine must never collapse into the p=none / no-record bucket above.
 		name: 'p=quarantine + rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=quarantine; rua=mailto:d@example.com'] },
-		expectedScore: 75,
+		expectedScore: 80,
 		expectedMissingControl: false,
 	},
 	{
 		check: 'dmarc',
 		// Model 1.26.0: a staged pct= is partial enforcement whatever p= says. Category
 		// arithmetic is UNCHANGED by 1.26.0 (the pct finding was already medium):
-		// 100 − 5 (no sp=) − 15 (pct<100) − 5 (ruf absent) − 5 (relaxed adkim) = 70. What the
+		// 100 − 5 (no sp=) − 15 (pct<100) − 5 (relaxed adkim) = 75 (70 before model 2.3.0,
+		// when an absent ruf= still cost 5). What the
 		// fixture pins is the `partialEnforcement` declaration riding on the pct finding — the
 		// engine's 94 ceiling arms on it, so p=reject;pct=50 can never print A+.
 		name: 'p=reject; pct=50; rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=reject; pct=50; rua=mailto:d@example.com'] },
-		expectedScore: 70,
+		expectedScore: 75,
 		expectedMissingControl: false,
 	},
 	{
 		check: 'dmarc',
 		// Model 1.26.0: both partial-enforcement shapes on one record — quarantine (−15,
-		// medium since 1.26.0) AND pct<100 (−15). 100 − 15 − 15 − 5 (ruf) − 5 (adkim) = 60
-		// (was 70 under 1.25.0). Two declarations on one category still arm the ceiling once.
+		// medium since 1.26.0) AND pct<100 (−15). 100 − 15 − 15 − 5 (adkim) = 65 (was 70
+		// under 1.25.0, and 60 until model 2.3.0 stopped charging for an absent ruf=). Two
+		// declarations on one category still arm the ceiling once.
 		name: 'p=quarantine; pct=50; rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=quarantine; pct=50; rua=mailto:d@example.com'] },
-		expectedScore: 60,
+		expectedScore: 65,
 		expectedMissingControl: false,
 	},
 	{
 		check: 'dmarc',
+		// Model 2.3.0: an absent ruf= is advisory info, so a strict enforcing record with
+		// aggregate reporting has nothing left to deduct (was 95).
 		name: 'p=reject strict alignment + rua',
 		query: '_dmarc.example.com',
 		records: {
@@ -342,7 +346,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 				'v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s; rua=mailto:d@example.com',
 			],
 		},
-		expectedScore: 95,
+		expectedScore: 100,
 		expectedMissingControl: false,
 	},
 	{
@@ -350,7 +354,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		name: 't=y test mode (1.3.0 superset)',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=reject; t=y; rua=mailto:d@example.com'] },
-		expectedScore: 70,
+		expectedScore: 75,
 		expectedMissingControl: false,
 	},
 	{
@@ -358,7 +362,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		name: 'np=none spoofable (1.3.0 superset)',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=reject; np=none; rua=mailto:d@example.com'] },
-		expectedScore: 70,
+		expectedScore: 75,
 		expectedMissingControl: false,
 	},
 	{
