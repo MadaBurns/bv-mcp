@@ -26,21 +26,20 @@ function maskIp(ip: string): string {
 /** Hard defensive cap on access-log rows per call; the tools' own schemas cap `domains` at 10 (batch_scan) or 5 (compare_domains). */
 const MAX_ACCESS_LOG_DOMAINS = 10;
 
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0;
+}
+
 /**
  * Every domain a tool call targets, for access-log fan-out: `args.domain` as a single entry, else the
  * distinct non-empty strings of `args.domains` (exact-match de-dupe, first occurrence wins, capped at
  * {@link MAX_ACCESS_LOG_DOMAINS}). Empty when the call carries no domain.
  */
 export function extractAccessLogDomains(args: Record<string, unknown> | undefined): string[] {
-	if (!args) return [];
-	if (typeof args.domain === 'string' && args.domain.length > 0) return [args.domain];
-	if (!Array.isArray(args.domains)) return [];
-	const distinct = new Set<string>();
-	for (const value of args.domains) {
-		if (typeof value === 'string' && value.length > 0) distinct.add(value);
-		if (distinct.size === MAX_ACCESS_LOG_DOMAINS) break;
-	}
-	return [...distinct];
+	const { domain, domains } = args ?? {};
+	if (isNonEmptyString(domain)) return [domain];
+	const candidates: unknown[] = Array.isArray(domains) ? domains : [];
+	return [...new Set(candidates.filter(isNonEmptyString))].slice(0, MAX_ACCESS_LOG_DOMAINS);
 }
 
 /** The first targeted domain only — for callers that need one representative domain (distinct-domain quota). */
@@ -198,16 +197,24 @@ function fanOutByDomain(base: AccessLogEvent, domains: readonly string[] | undef
 	return domains.map((domain) => ({ ...base, domain }));
 }
 
+/** Route one event: internal rollup counter, else the queue, else the inline insert fallback. */
+function recordAccessLogEvent(
+	options: ExecuteMcpRequestOptions,
+	event: AccessLogEvent,
+	level: AnalyticsPiiLevel,
+	logger: AccessLogLogger,
+): void {
+	if (recordAccessRollup(options, event, logger)) return;
+	if (enqueueAccessLog(options, event, level, logger)) return;
+	options.waitUntil?.(fireAndForget(insertAccessLogInline(options, event, level), logger, 'mcp_access_log_insert'));
+}
+
 export function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: AccessLogInput): void {
 	if (!hasAccessLogSink(options)) return;
 	const logger = getLogger();
 	const level = options.analyticsPiiLevel ?? 'coarse';
 	const base = buildMcpAccessLogEvent(options, input, level);
-	for (const event of fanOutByDomain(base, input.domains)) {
-		if (recordAccessRollup(options, event, logger)) continue;
-		if (enqueueAccessLog(options, event, level, logger)) continue;
-		options.waitUntil?.(fireAndForget(insertAccessLogInline(options, event, level), logger, 'mcp_access_log_insert'));
-	}
+	for (const event of fanOutByDomain(base, input.domains)) recordAccessLogEvent(options, event, level, logger);
 }
 
 /** Test-only handle to exercise the recorder without booting a request. */
