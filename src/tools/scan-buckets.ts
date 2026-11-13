@@ -13,6 +13,7 @@ import {
 	type BindingDegradationSink,
 } from '../lib/recon-binding';
 import { extractBrandName, getRegistrableDomain } from '../lib/public-suffix';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 
 // F7 (OWASP LLM01): upstream bv-recon strings spread into finding metadata below
 // are sanitized at the `createFinding` chokepoint (`@blackveil/dns-checks/scoring`,
@@ -279,15 +280,25 @@ function notOwned(id: string): CheckResult {
 	]) as CheckResult;
 }
 
-async function rememberBucketScanScope(scanId: string | undefined, scope: BucketScanScope, kv: KVNamespace | undefined): Promise<void> {
-	if (!scanId || !kv || !SAFE_SCAN_ID.test(scanId)) return;
-	const target = normalizeTarget(scope.target);
-	if (!target && !scope.providers?.length && !scope.owner) return;
-	await kv
-		.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers, owner: scope.owner }), {
-			expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS,
-		})
-		.catch(() => undefined);
+/**
+ * Store the scope record, which carries the owner. Resolves false when it could not be stored (no KV,
+ * no owner, unsafe id, or a failed put): a scan nobody can later poll must not be handed out, so the
+ * start reports a failure.
+ */
+async function rememberBucketScanScope(scanId: string, scope: BucketScanScope, kv: KVNamespace | undefined): Promise<boolean> {
+	if (!kv || !scope.owner || !SAFE_SCAN_ID.test(scanId)) return false;
+	try {
+		await kv.put(
+			scopeKey(scanId),
+			JSON.stringify({ target: normalizeTarget(scope.target), providers: scope.providers, owner: scope.owner }),
+			{
+				expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS,
+			},
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function loadBucketScanScope(scanId: string | undefined, kv: KVNamespace | undefined): Promise<BucketScanScope> {
@@ -306,9 +317,16 @@ async function loadBucketScanScope(scanId: string | undefined, kv: KVNamespace |
 	}
 }
 
-function ownerMismatch(scope: BucketScanScope, caller: string | undefined): boolean {
-	return Boolean(scope.owner && scope.owner !== caller);
+/**
+ * Fail closed: a poll is allowed only when the scope record names an owner AND it is the caller. A
+ * missing or unreadable record (loaded as `{}`), an absent KV binding or a missing principal all read
+ * as "not the owner".
+ */
+function callerOwnsScan(scope: BucketScanScope, caller: string | undefined): boolean {
+	return Boolean(scope.owner && caller && scope.owner === caller);
 }
+
+const buildStartRejection = createRejectedRequestBuilder<'persistenceFailure'>(CATEGORY, 'Bucket scan start');
 
 /** How many out-of-scope bucket names `filteredOutOfScopeSamples` reports. */
 const FILTERED_SAMPLE_LIMIT = 5;
@@ -421,7 +439,12 @@ export async function scanBucketsStart(
 		});
 	}
 	const start = started.data;
-	await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv);
+	if (!(await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv))) {
+		return buildStartRejection(
+			'persistenceFailure',
+			`Bucket scan for ${args.target} could not be started: its ownership record could not be stored, so the scan could not be polled. Retry.`,
+		);
+	}
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
@@ -440,7 +463,7 @@ export async function scanBucketsStart(
 
 export async function scanBucketsStatus(args: { scanId: string }, options: ReconToolOptions = {}): Promise<CheckResult> {
 	const scope = await loadBucketScanScope(args.scanId, options.bucketScanKv);
-	if (ownerMismatch(scope, options.principalId)) return notOwned(args.scanId);
+	if (!callerOwnsScan(scope, options.principalId)) return notOwned(args.scanId);
 	const s = await callReconBucketScanStatus(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -480,7 +503,7 @@ export async function scanBucketsStatus(args: { scanId: string }, options: Recon
 
 export async function scanBucketsFindings(args: BucketScanFindingArgs, options: ReconToolOptions = {}): Promise<CheckResult> {
 	const rememberedScope = await loadBucketScanScope(args.scanId, options.bucketScanKv);
-	if (ownerMismatch(rememberedScope, options.principalId)) return notOwned(args.scanId);
+	if (!callerOwnsScan(rememberedScope, options.principalId)) return notOwned(args.scanId);
 	const f = await callReconBucketFindings(
 		options.reconBinding,
 		options.reconAuthToken,
