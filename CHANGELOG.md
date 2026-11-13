@@ -8,6 +8,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.111.4] - 2026-11-13
+
+Operations patch release; no tool, argument-schema, scoring or runtime behaviour changes. This deploy moves the access log to its own database.
+
+### Changed
+
+- The `mcp_access_log` store moves from the decommissioned `bv-intelligence` database to `mcp-access-log-v1`, which bv-mcp owns (SQ-187, `docs/operator-runbook.md` §3a). The binding name `INTELLIGENCE_DB` and the schema are unchanged; existing rows were copied with their ids before this deploy.
+
+### Fixed
+
+- The access-log cut-over tool (`scripts/access-log/copy-from-intelligence.mjs`) now copies strings that contain a NUL character exactly, as a UTF-8 blob cast to text, instead of aborting the copy (#1398).
+- A wall-clock test of the CT-index tailer's fetch phase no longer fails on slow CI runners (#1395, #1396).
+
 ## [3.111.3] - 2026-11-12
 
 Deploy-tooling patch release; no tool, argument-schema, scoring or runtime behaviour changes.
