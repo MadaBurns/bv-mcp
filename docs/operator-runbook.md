@@ -366,6 +366,7 @@ control domain (cache bypassed, hard 12 s budget) and logs the outcome as
 | `BV_MCP_BRAND_WEBHOOK_KEY`         | `npx wrangler secret put BV_MCP_BRAND_WEBHOOK_KEY`                                                   | Same distinct strong value on bv-mcp + bv-web-prod only; carried only over `BV_WEB` to the exact first-party Brand Drift receiver                                                                                             |
 | `BV_API_KEY`                       | `npx wrangler secret put BV_API_KEY`                                                                 | Update Claude Desktop MCPB extension/connector configs                                                                                                                                                                        |
 | `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                                                       | Rotating it directly invalidates ALL outstanding OAuth JWTs — customers re-consent. Use the zero-downtime procedure below (`OAUTH_SIGNING_SECRET_PREVIOUS`) instead                                                          |
+| `WATCH_WEBHOOK_SIGNING_SECRET`     | `npx wrangler secret put WATCH_WEBHOOK_SIGNING_SECRET`                                               | Optional; unset means watch webhooks to caller-supplied URLs go unsigned. Needs 32+ bytes, distinct from every other secret. Rotating changes every per-watch secret: owners re-register their watches to get new ones       |
 | `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION`                                 | Old ciphertexts need the old key retained in the vault for forensics                                                                                                                                                          |
 | `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                                                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                                                                                                                           |
 | `ALERT_WEBHOOK_URL`                | `printf %s "<url>" \| npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc` | Static fallback only — `resolveAlertWebhookUrl` tries the dynamic bv-web-prod lookup first (§ "Two exceptions" in the bv-mcp-operations skill). Pipe the value; never pass it as an argv, which would leak into shell history |
@@ -399,6 +400,12 @@ half-finished rotation cannot weaken verification or take the Worker down.
    entitlement-bounded token is shorter), plus the 30 second
    `OAUTH_JWT_CLOCK_SKEW_SECONDS`. Allow a few minutes of margin past one hour.
 5. `npx wrangler secret delete OAUTH_SIGNING_SECRET_PREVIOUS` and deploy again.
+
+**Do not use this procedure when the current secret may be compromised.**
+Setting `OAUTH_SIGNING_SECRET_PREVIOUS` to a leaked value keeps tokens forged
+with it valid for the whole window. In that case rotate `OAUTH_SIGNING_SECRET`
+directly, leave the previous secret unset, and accept that customers
+re-consent.
 
 Only the OAuth bearer path and the Brand Audit legacy owner proof read the
 previous secret. The access-context principal pseudonym, the OAuth token
