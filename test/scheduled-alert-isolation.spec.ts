@@ -63,7 +63,7 @@ function alertTitles(calls: Call[]): string[] {
 	return calls.filter((c) => c.url.includes('hooks.slack.com')).map((c) => c.body);
 }
 
-const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: WEBHOOK };
+const ENV = { CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', SCAN_CANARY_ENABLED: 'false', ALERT_WEBHOOK_URL: WEBHOOK };
 
 afterEach(() => {
 	vi.restoreAllMocks();

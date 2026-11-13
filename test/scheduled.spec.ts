@@ -74,6 +74,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			ALERT_ERROR_THRESHOLD: '5',
 			ALERT_P95_THRESHOLD: '10000',
@@ -112,6 +113,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		});
 
@@ -142,6 +144,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		});
 
@@ -180,6 +183,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		});
 
@@ -218,6 +222,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		});
 
@@ -248,7 +253,12 @@ describe('handleScheduled', () => {
 		}) as typeof fetch;
 
 		const { handleScheduled } = await import('../src/scheduled');
-		await handleScheduled({ CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' });
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'a',
+			CF_ANALYTICS_TOKEN: 't',
+			SCAN_CANARY_ENABLED: 'false',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		});
 		expect(fetchCalls.filter((u) => u.includes('hooks.slack.com'))).toHaveLength(0);
 	});
 
@@ -270,7 +280,12 @@ describe('handleScheduled', () => {
 		}) as typeof fetch;
 
 		const { handleScheduled } = await import('../src/scheduled');
-		await handleScheduled({ CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' });
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'a',
+			CF_ANALYTICS_TOKEN: 't',
+			SCAN_CANARY_ENABLED: 'false',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		});
 		expect(fetchCalls.filter((u) => u.includes('hooks.slack.com'))).toHaveLength(0);
 	});
 
@@ -301,6 +316,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		});
 
@@ -324,6 +340,7 @@ describe('handleScheduled', () => {
 		await handleScheduled({
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as ScheduledEnv);
 
@@ -395,6 +412,7 @@ describe('alert repeat suppression (#1164)', () => {
 		const env = {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			RATE_LIMIT: rateLimit,
 		} as unknown as ScheduledEnv;
@@ -412,6 +430,7 @@ describe('alert repeat suppression (#1164)', () => {
 		const env = {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			RATE_LIMIT: rateLimit,
 		} as unknown as ScheduledEnv;
@@ -432,6 +451,7 @@ describe('alert repeat suppression (#1164)', () => {
 		const env = {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			RATE_LIMIT: rateLimit,
 		} as unknown as ScheduledEnv;
@@ -448,6 +468,7 @@ describe('alert repeat suppression (#1164)', () => {
 		const env = {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 		} as unknown as ScheduledEnv;
 
@@ -731,6 +752,7 @@ describe('scheduled.ts alert webhook resolution', () => {
 			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static-should-not-be-used',
 			CF_ACCOUNT_ID: 'acct',
 			CF_ANALYTICS_TOKEN: 'token',
+			SCAN_CANARY_ENABLED: 'false',
 		};
 
 		await handleScheduled(env);

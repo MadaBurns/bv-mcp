@@ -18,7 +18,6 @@
  * SPF canary.
  */
 
-import { scanDomain } from '../tools/scan-domain';
 import type { ScanDomainResult } from '../tools/scan-domain';
 import { isEvidenceSufficient, isGraded } from './scoring';
 import { sanitizeDomain, validateDomain } from './sanitize';
@@ -117,6 +116,13 @@ type ScanFn = (
 	options?: { forceRefresh?: boolean; scanTimeoutMs?: number; signal?: AbortSignal },
 ) => Promise<ScanDomainResult>;
 
+/**
+ * Default scan: loads the engine at run time. A static import would pull the whole scan graph (including the
+ * `cloudflare:workers` Durable Object module) into every importer of scheduled.ts. A load failure rejects, which
+ * {@link scanWithDeadline} reports as `threw`, inside the same deadline.
+ */
+const lazyScanDomain: ScanFn = async (domain, kv, options) => (await import('../tools/scan-domain')).scanDomain(domain, kv, options);
+
 /** One scan raced against a hard deadline; the signal is aborted when the deadline wins. Never throws. */
 async function scanWithDeadline(domain: string, scan: ScanFn, timeoutMs: number): Promise<ScanCanaryOutcome> {
 	const controller = new AbortController();
@@ -156,7 +162,7 @@ export async function runScanCanary(
 	options: { timeoutMs?: number; scan?: ScanFn } = {},
 ): Promise<{ outcome: ScanCanaryOutcome; durationMs: number }> {
 	const startedAt = Date.now();
-	const outcome = await scanWithDeadline(domain, options.scan ?? scanDomain, options.timeoutMs ?? SCAN_CANARY_TIMEOUT_MS);
+	const outcome = await scanWithDeadline(domain, options.scan ?? lazyScanDomain, options.timeoutMs ?? SCAN_CANARY_TIMEOUT_MS);
 	return { outcome, durationMs: Date.now() - startedAt };
 }
 

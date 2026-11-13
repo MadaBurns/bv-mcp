@@ -58,6 +58,7 @@ describe('alert cooldown is armed on delivery, not before it (T10)', () => {
 		return {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
+			SCAN_CANARY_ENABLED: 'false',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
 			RATE_LIMIT: rateLimit,
 		} as unknown as ScheduledEnv;
