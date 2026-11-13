@@ -141,6 +141,17 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 	},
 ];
 
+/**
+ * Git pathspecs appended after every sidecar's `watchPaths`: test files under a watched directory are not
+ * bundled by `cf deploy`, so a test-only commit is not drift `deploy:<sidecar>` could fix. 3.111.4 was
+ * blocked on bv-ct-index by #1396, which changed only `src/__tests__/tailer/fanout.test.ts`.
+ */
+export const TEST_PATH_EXCLUDES: readonly string[] = [
+	':(exclude,glob)**/__tests__/**',
+	':(exclude,glob)**/*.test.ts',
+	':(exclude,glob)**/*.spec.ts',
+];
+
 /** The Wrangler `name` of the Worker `deploy:prod` DOES deploy — excluded from the sidecar set. */
 export const MAIN_WORKER_NAME = 'bv-dns-security-mcp';
 

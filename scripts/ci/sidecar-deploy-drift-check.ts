@@ -27,6 +27,7 @@ import {
 	selectCommitsAfter,
 	SIDECAR_OVERRIDE_ENV,
 	SIDECAR_TARGETS,
+	TEST_PATH_EXCLUDES,
 	type SidecarDriftVerdict,
 	type SidecarProbe,
 	type SidecarTarget,
@@ -131,7 +132,7 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	// represented by the merge commit, whose committer date is when it reached
 	// main — which is what "deployed after this" must be measured against.
 	let driftCommits: string[] = [];
-	const log = spawnSync('git', ['log', '--first-parent', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], {
+	const log = spawnSync('git', ['log', '--first-parent', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths, ...TEST_PATH_EXCLUDES], {
 		encoding: 'utf8',
 		timeout: GIT_LOCAL_TIMEOUT_MS,
 	});
