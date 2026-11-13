@@ -167,6 +167,13 @@ export function buildCheckCacheKey(
 }
 
 /**
+ * Key segment for a scan (or per-check run) computed with the TLS-probe enrichment active (SQ-567).
+ * Appended only when the caller is probe-eligible AND the probe binding is bound, so anonymous
+ * traffic and deployments without the binding keep their existing key.
+ */
+export const TLS_PROBE_KEY_SEGMENT = 'tls-probe';
+
+/**
  * Build the versioned cache key for a top-level scan result.
  * Shape: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>` (default profile) or
  * `…:<domain>:profile:<profile>` when an explicit profile is set.
@@ -193,9 +200,12 @@ export function buildScanCacheKey(
  * metadata, while the scan's run is wrapped in its own per-check timeout, abort signal, fetch
  * budget and zone context. Sharing one in-flight promise handed each caller the other's result,
  * including the scan's cancellation. Scans still share runs with each other under this key.
+ *
+ * `variant` (SQ-567) partitions runs whose output depends on a caller capability, e.g.
+ * {@link TLS_PROBE_KEY_SEGMENT}; omitted, the key is unchanged.
  */
-export function buildScanCheckInflightKey(domain: string, checkName: string): string {
-	return `${buildScanCacheKey(domain)}:scan-check:${checkName}`;
+export function buildScanCheckInflightKey(domain: string, checkName: string, variant?: string): string {
+	return `${buildScanCacheKey(domain)}:scan-check:${checkName}${variant ? `:${variant}` : ''}`;
 }
 
 /** In-flight promise map for cache stampede (thundering herd) protection */

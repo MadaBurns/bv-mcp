@@ -88,7 +88,9 @@ export async function startAsyncBatchScan(
 		scoringConfigHash,
 	});
 	const jobId = `bs_${(await sha256(fingerprint)).slice(0, 40)}`;
-	const existing = await deps.kv.get<AsyncBatchJob>(jobKey(jobId), 'json');
+	// Same read-path deadline as batch_scan_status: a job abandoned past the stale bound reads as
+	// `failed` here too, so a reused key starts a new job instead of replaying a dead one (SQ-577).
+	const existing = await getAsyncBatchJobForRead(jobId, principalId, deps.kv, deps.now);
 	if (existing && existing.status !== 'failed') return existing;
 
 	const now = (deps.now ?? Date.now)();
@@ -138,6 +140,53 @@ export const ASYNC_BATCH_MAX_ATTEMPTS = 4;
 const SCAN_FAILURE_RETRY_DELAY_SECONDS = 30;
 /** KV is eventually consistent: wait this long (per attempt) before re-reading a job that was just written. */
 const JOB_MISSING_RETRY_DELAY_SECONDS = 15;
+
+/**
+ * A non-terminal job whose last write is older than this has lost its consumer on every delivery
+ * (isolate eviction, CPU/memory limit or subrequest ceiling kills the invocation before it can write
+ * `failed`, and the DLQ has no consumer). Derived from the retry numbers above: each of the
+ * ASYNC_BATCH_MAX_ATTEMPTS deliveries can sit for a full running lease before a redelivery may reclaim
+ * it, plus the retry delay between deliveries, plus one more lease as margin so a live job on its last
+ * attempt is never failed by a polling read. 4 x (120s + 30s) + 120s = 12 minutes.
+ */
+export const ASYNC_BATCH_STALE_AFTER_MS =
+	ASYNC_BATCH_MAX_ATTEMPTS * (RUNNING_LEASE_MS + SCAN_FAILURE_RETRY_DELAY_SECONDS * 1000) + RUNNING_LEASE_MS;
+/** Machine-readable `error` for a job failed by the read-path deadline (same field the consumer writes). */
+export const ASYNC_BATCH_ABANDONED_ERROR = 'consumer_abandoned';
+
+/**
+ * Status-read variant of {@link getAsyncBatchJob} (read-path deadline, mirroring brand_audit_status).
+ * A queued/running job past {@link ASYNC_BATCH_STALE_AFTER_MS} is returned as terminally `failed` and the
+ * terminal state is persisted best-effort so later reads agree; a persist failure never changes what is
+ * returned. `updatedAt` stays the job's last real activity so repeated polls render identically.
+ * The queue consumer keeps using the raw {@link getAsyncBatchJob} so its retry behaviour is unchanged.
+ */
+export async function getAsyncBatchJobForRead(
+	jobId: string,
+	principalId: string,
+	kv: KVNamespace,
+	now: () => number = Date.now,
+): Promise<AsyncBatchJob | null> {
+	const job = await getAsyncBatchJob(jobId, principalId, kv);
+	if (!job || !isStaleAsyncBatchJob(job, now())) return job;
+	const failed: AsyncBatchJob = { ...job, status: 'failed', error: ASYNC_BATCH_ABANDONED_ERROR };
+	await persistAbandonedJob(failed, kv);
+	return failed;
+}
+
+/** The one stale deadline: a queued/running job whose last write is older than {@link ASYNC_BATCH_STALE_AFTER_MS}. */
+function isStaleAsyncBatchJob(job: AsyncBatchJob, nowMs: number): boolean {
+	const inFlight = job.status === 'queued' || job.status === 'running';
+	return inFlight && nowMs - job.updatedAt > ASYNC_BATCH_STALE_AFTER_MS;
+}
+
+async function persistAbandonedJob(failed: AsyncBatchJob, kv: KVNamespace): Promise<void> {
+	try {
+		await kv.put(jobKey(failed.jobId), JSON.stringify(failed), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
+	} catch {
+		// Best effort: the next read recomputes the same verdict.
+	}
+}
 
 function retryAfter(delaySeconds: number): AsyncBatchVerdict {
 	return { action: 'retry', delaySeconds };

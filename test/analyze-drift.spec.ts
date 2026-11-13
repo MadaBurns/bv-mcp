@@ -319,6 +319,25 @@ describe('analyzeDrift', () => {
 			expect(drift.improvements.map((f) => f.title)).toContain(CACHED_ONLY_FINDING);
 		});
 
+		it('reads the cached baseline from the caller\'s TLS-probe-partitioned key (SQ-567)', async () => {
+			installResolvingDnsFetch();
+			const binding = { fetch: (async () => new Response('{}')) as typeof fetch };
+			const { resolveScanCacheKey } = await import('../src/tools/scan-domain');
+			const ownerKey = resolveScanCacheKey('drift-probe.com', { authTier: 'owner', tlsProbeBinding: binding });
+			expect(ownerKey).not.toBe(buildScanCacheKey('drift-probe.com'));
+			const kv = makeKv({ [ownerKey]: cachedScan() });
+			const { handleToolsCall } = await import('../src/handlers/tools');
+
+			const result = await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'drift-probe.com' } }, kv, {
+				authTier: 'owner',
+				tlsProbeBinding: binding,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const drift = result.structuredContent as { scoreDelta: number | null };
+			expect(drift.scoreDelta).toBeLessThan(0);
+		});
+
 		it('overwrites the cache entry with the fresh measurement after reading the baseline', async () => {
 			installResolvingDnsFetch();
 			const kv = makeKv({ [buildScanCacheKey('drift-probe.com')]: cachedScan() });

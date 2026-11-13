@@ -101,8 +101,25 @@ Caveats:
   KV/D1 data or secrets. If the bad deploy ran a D1 migration, see §3.
 - If the bad deploy came from a bad overlay (not bad code), fix
   `.dev/wrangler.deploy.jsonc` and redeploy forward instead.
+- Rollback does NOT revert Durable Object storage or Durable Object migrations
+  either. Whatever state the bad version wrote into a Durable Object stays
+  there, and a migration it applied is not undone. Rehearse the first rollback
+  across a migrations boundary (a version that added or changed a Durable
+  Object class) outside an incident, never for the first time during one; the
+  rehearsal steps are in the `bv-mcp-operations` skill (`.claude/skills/bv-mcp-operations/SKILL.md`).
+- After rollback, confirm the Durable Object-backed features are answering
+  before calling the rollback done: quota and rate-limit coordination (the
+  `QUOTA_COORDINATOR` binding) and the registry instance that lives in the same
+  coordinator class (see §8a). Do this with a real call, not by trusting that
+  the deploy succeeded.
 - After rollback, re-run the §1 verification and re-deploy forward from a fixed
   commit as soon as possible — rollback is a stopgap, not a state.
+
+Lower-risk path: prefer the staged deploy to a straight `deploy:prod`.
+`npm run deploy:prod:staged` uploads the new version without sending it traffic,
+and `npm run deploy:prod:promote -- <version-id>` (see
+`scripts/deploy-prod-promote.mjs`) moves traffic to it afterwards, so a bad
+version can be caught before it serves requests and no rollback is needed.
 
 ## 3. D1 backup & restore (INTELLIGENCE_DB, BRAND_AUDIT_DB)
 
@@ -134,6 +151,15 @@ Restore rehearsal (do quarterly; ~15 min):
 Note: the access-log retention cron hard-DELETEs rows past
 `ANALYTICS_RETENTION_DAYS`; enable `ANALYTICS_ARCHIVE_ENABLED=true` +
 `MCP_ACCESS_LOG_ARCHIVE` R2 binding if pre-deletion archiving is wanted.
+
+The two databases above are the only stores this runbook covers. The tenant D1
+databases have their own drill in [tenant-ops-runbook.md](./tenant-ops-runbook.md).
+No backup or restore procedure is documented anywhere for the Workers KV
+namespaces (rate-limit counters, scan cache, sessions and OAuth state, async
+batch jobs), for Durable Object storage (the quota coordinator, including its
+registry instance, and the profile accumulator), or for the R2 buckets (report
+storage and the optional access-log archive). Treat those as having no recovery
+path until one is written.
 
 ### 3a. Moving the access log to mcp-access-log-v1 (SQ-187 cut-over)
 
@@ -297,6 +323,33 @@ unset. Set up an external heartbeat:
       trigger exists after every deploy (the overlay must carry it).
 - [ ] Configure a Cloudflare **Health Check** (or healthchecks.io ping) against
       `GET /health` with alerting to the ops email.
+
+### 7a. Scan-path canary (every 15 minutes)
+
+`/health` is static and the traffic-driven alert lanes abstain below their
+sample floor, so a scan path that is broken end to end at low traffic would not
+page. The 15-min cron therefore runs ONE full `scan_domain` against a fixed
+control domain (cache bypassed, hard 12 s budget) and logs the outcome as
+`result: "scan_canary"` on every tick, healthy or not.
+
+- **Healthy** = the scan returned, the apex resolved, the result is graded and
+  its completed-check ratio meets the engine's evidence-sufficiency threshold.
+  It never asserts a score or grade, so the control's posture changing does not
+  page.
+- **Paging**: the SECOND consecutive unhealthy run sends one critical alert
+  (`threshold: scan_canary`); repeats are suppressed by the shared
+  repeat-alert helper (a flapping failure reason does not re-page), and the
+  first healthy run afterwards sends an "Alert recovered: scan_canary" notice.
+  The consecutive-failure count lives in the `RATE_LIMIT` KV
+  (`scan-canary:consecutive-failures`); without that KV it logs but cannot page.
+- It runs on the fully-configured alerting path (alert webhook + Analytics
+  Engine credentials), like the other lanes; an unconfigured self-host makes no
+  outbound scan.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SCAN_CANARY_DOMAIN` | `blackveilsecurity.com` | Control domain. The canary scans it every 15 minutes, including HTTP fetches to its hosts, so use only a domain the operator owns or has permission to scan on that cadence. The health check asserts that a graded scan with enough evidence came back, never a particular score. An invalid value falls back to the default. |
+| `SCAN_CANARY_ENABLED` | on | Kill switch: the literal string `false` skips the scan entirely. Any other value (or unset) leaves it on. |
 
 ## 8. Secret rotation quick reference
 

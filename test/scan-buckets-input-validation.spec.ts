@@ -28,10 +28,22 @@ const HOSTILE = [
 	'isc.org ',
 ];
 
+/** RATE_LIMIT stand-in: a started scan must be able to store its owner record or the start is refused (SQ-566). */
+function kv() {
+	const store = new Map<string, string>();
+	return {
+		get: vi.fn(async (key: string) => store.get(key) ?? null),
+		put: vi.fn(async (key: string, value: string) => {
+			store.set(key, value);
+		}),
+	} as unknown as KVNamespace;
+}
+
 function start(target: string, b: ReturnType<typeof binding>) {
 	return handleToolsCall({ name: 'scan_buckets_start', arguments: { target } }, undefined, {
 		reconBinding: b,
 		reconAuthToken: 'tok',
+		rateLimitKv: kv(),
 		principalId: 'owner-a',
 	});
 }

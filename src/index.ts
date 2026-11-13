@@ -1762,6 +1762,9 @@ app.on('GET', ['/.well-known/oauth-authorization-server', '/.well-known/oauth-au
 app.on('GET', ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'], (c) =>
 	oauthGuarded(c, () => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
 );
+// RFC 9116: the MCP host redirects to the one canonical security.txt so a second copy never goes stale.
+const SECURITY_TXT_CANONICAL_URL = 'https://www.blackveilsecurity.com/.well-known/security.txt';
+app.get('/.well-known/security.txt', (c) => c.redirect(SECURITY_TXT_CANONICAL_URL, 302));
 app.post('/oauth/register', (c) => oauthGuarded(c, () => handleRegister(c)));
 app.get('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizeGet(c)));
 app.post('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizePost(c)));

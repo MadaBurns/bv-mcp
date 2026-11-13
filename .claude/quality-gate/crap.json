@@ -1,5 +1,5 @@
 {
-	"sources": ["packages/bv-ct-index/src"],
+	"sources": ["src", "packages/dns-checks/src", "packages/bv-whois/src", "packages/bv-ct-index/src"],
 	"exclude": ["**/__tests__/**", "**/*.test.ts", "**/*.d.ts"],
 	"max": 6,
 	"base": "origin/main",

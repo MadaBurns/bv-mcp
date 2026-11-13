@@ -41,6 +41,7 @@ import { piiAllows } from '../lib/analytics-pii';
 import { extractProtocolHeaders, readJsonRpcErrorPayload } from './response';
 import {
 	extractAccessLogDomain,
+	extractAccessLogDomains,
 	getDomainFromParams,
 	getToolCallLogInput,
 	isMeteredForceRefresh,
@@ -64,6 +65,7 @@ import {
 // Re-exports: every name that was exported from this module before the split stays importable from here.
 export {
 	extractAccessLogDomain,
+	extractAccessLogDomains,
 	encryptIpEvidence,
 	decryptIpEvidence,
 	__recordMcpAccessLogForTest,

@@ -4,6 +4,17 @@ afterEach(() => vi.restoreAllMocks());
 function binding(body: unknown, status = 200) {
 	return { fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) };
 }
+/** An owner record must be storable or the start is refused (SQ-566). */
+function startOpts() {
+	const store = new Map<string, string>();
+	const reconJobKv = {
+		get: vi.fn(async (key: string) => store.get(key) ?? null),
+		put: vi.fn(async (key: string, value: string) => {
+			store.set(key, value);
+		}),
+	} as unknown as KVNamespace;
+	return { reconJobKv, principalId: 'p1' };
+}
 describe('people-OSINT tier gate', () => {
 	it('denies a developer-tier caller and makes NO bv-recon call', async () => {
 		const { osintInvestigateUsernameStart } = await import('../src/tools/osint-people');
@@ -21,12 +32,12 @@ describe('people-OSINT tier gate', () => {
 	});
 	it('allows owner tier and starts the investigation', async () => {
 		const { osintInvestigateUsernameStart } = await import('../src/tools/osint-people');
-		const r = await osintInvestigateUsernameStart('alice', { reconBinding: binding({ investigationId: 'inv_1', status: 'running' }), reconAuthToken: 't', authTier: 'owner' });
+		const r = await osintInvestigateUsernameStart('alice', { reconBinding: binding({ investigationId: 'inv_1', status: 'running' }), reconAuthToken: 't', authTier: 'owner', ...startOpts() });
 		expect(r.findings.some((f) => f.metadata?.investigationId === 'inv_1')).toBe(true);
 	});
 	it('allows enterprise tier (email)', async () => {
 		const { osintInvestigateEmailStart } = await import('../src/tools/osint-people');
-		const r = await osintInvestigateEmailStart('a@b.com', { reconBinding: binding({ investigationId: 'inv_2' }), reconAuthToken: 't', authTier: 'enterprise' });
+		const r = await osintInvestigateEmailStart('a@b.com', { reconBinding: binding({ investigationId: 'inv_2' }), reconAuthToken: 't', authTier: 'enterprise', ...startOpts() });
 		expect(r.findings.some((f) => f.metadata?.investigationId === 'inv_2')).toBe(true);
 	});
 });

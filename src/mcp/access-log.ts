@@ -23,13 +23,28 @@ function maskIp(ip: string): string {
 	return 'masked';
 }
 
+/** Hard defensive cap on access-log rows per call; the tools' own schemas cap `domains` at 10 (batch_scan) or 5 (compare_domains). */
+const MAX_ACCESS_LOG_DOMAINS = 10;
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Every domain a tool call targets, for access-log fan-out: `args.domain` as a single entry, else the
+ * distinct non-empty strings of `args.domains` (exact-match de-dupe, first occurrence wins, capped at
+ * {@link MAX_ACCESS_LOG_DOMAINS}). Empty when the call carries no domain.
+ */
+export function extractAccessLogDomains(args: Record<string, unknown> | undefined): string[] {
+	const { domain, domains } = args ?? {};
+	if (isNonEmptyString(domain)) return [domain];
+	const candidates: unknown[] = Array.isArray(domains) ? domains : [];
+	return [...new Set(candidates.filter(isNonEmptyString))].slice(0, MAX_ACCESS_LOG_DOMAINS);
+}
+
+/** The first targeted domain only — for callers that need one representative domain (distinct-domain quota). */
 export function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
-	if (!args) return undefined;
-	if (typeof args.domain === 'string' && args.domain.length > 0) return args.domain;
-	if (Array.isArray(args.domains)) {
-		return args.domains.find((value): value is string => typeof value === 'string' && value.length > 0);
-	}
-	return undefined;
+	return extractAccessLogDomains(args)[0];
 }
 
 /**
@@ -51,17 +66,26 @@ export function isMeteredForceRefresh(toolName: string, argsRaw: unknown): boole
 export function getToolCallLogInput(
 	method: string,
 	params: Record<string, unknown> | undefined,
-): { toolName: string; domain: string; method: string } | undefined {
+): { toolName: string; domain: string; domains: string[]; method: string } | undefined {
 	if (method !== 'tools/call') return undefined;
 	const toolNameRaw = params && typeof params === 'object' && 'name' in params ? params.name : undefined;
 	const argsRaw = params && typeof params === 'object' && 'arguments' in params ? params.arguments : undefined;
 	const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
-	const domain = extractAccessLogDomain(args);
-	if (typeof toolNameRaw !== 'string' || !domain) return undefined;
-	return { toolName: normalizeToolName(toolNameRaw), domain, method };
+	const domains = extractAccessLogDomains(args);
+	if (typeof toolNameRaw !== 'string' || domains.length === 0) return undefined;
+	return { toolName: normalizeToolName(toolNameRaw), domain: domains[0], domains, method };
 }
 
-type AccessLogInput = { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string };
+type AccessLogInput = {
+	toolName: string;
+	/** Representative (first) domain; the sole domain when `domains` is absent. */
+	domain: string;
+	/** Every domain of a multi-domain call: one event is recorded per entry. Absent/empty → just `domain`. */
+	domains?: readonly string[];
+	rateLimited: boolean;
+	method?: string;
+	status?: string;
+};
 type AccessLogLogger = ReturnType<typeof getLogger>;
 
 /** Copy `keys` from `src`, defaulting each absent (undefined/null) value to `null`; key order follows `keys`. */
@@ -167,14 +191,30 @@ function hasAccessLogSink(options: ExecuteMcpRequestOptions): boolean {
 	return !!(options.intelligenceDb || options.analyticsQueue);
 }
 
+/** One event per targeted domain, all sharing the request-level fields of `base` (a single-domain call yields `base` itself). */
+function fanOutByDomain(base: AccessLogEvent, domains: readonly string[] | undefined): AccessLogEvent[] {
+	if (!domains || domains.length < 2) return [base];
+	return domains.map((domain) => ({ ...base, domain }));
+}
+
+/** Route one event: internal rollup counter, else the queue, else the inline insert fallback. */
+function recordAccessLogEvent(
+	options: ExecuteMcpRequestOptions,
+	event: AccessLogEvent,
+	level: AnalyticsPiiLevel,
+	logger: AccessLogLogger,
+): void {
+	if (recordAccessRollup(options, event, logger)) return;
+	if (enqueueAccessLog(options, event, level, logger)) return;
+	options.waitUntil?.(fireAndForget(insertAccessLogInline(options, event, level), logger, 'mcp_access_log_insert'));
+}
+
 export function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: AccessLogInput): void {
 	if (!hasAccessLogSink(options)) return;
 	const logger = getLogger();
 	const level = options.analyticsPiiLevel ?? 'coarse';
-	const event = buildMcpAccessLogEvent(options, input, level);
-	if (recordAccessRollup(options, event, logger)) return;
-	if (enqueueAccessLog(options, event, level, logger)) return;
-	options.waitUntil?.(fireAndForget(insertAccessLogInline(options, event, level), logger, 'mcp_access_log_insert'));
+	const base = buildMcpAccessLogEvent(options, input, level);
+	for (const event of fanOutByDomain(base, input.domains)) recordAccessLogEvent(options, event, level, logger);
 }
 
 /** Test-only handle to exercise the recorder without booting a request. */
@@ -184,6 +224,8 @@ export const __recordMcpAccessLogForTest = recordMcpAccessLog;
 export interface RecordInternalAccessLogInput {
 	toolName: string;
 	domain: string;
+	/** Every domain of a multi-domain call (one row each); absent → just `domain`. */
+	domains?: readonly string[];
 	/** Tool outcome — `'pass'` | `'error'` (mirrors the public path's status mapping). */
 	status: string;
 	/** x-bv-caller header value, stored in the `client_type` column. */
@@ -242,6 +284,7 @@ export function recordInternalAccessLog(input: RecordInternalAccessLogInput): vo
 	recordMcpAccessLog(options, {
 		toolName: input.toolName,
 		domain: input.domain,
+		domains: input.domains,
 		rateLimited: false,
 		method: 'tools/call',
 		status: input.status,

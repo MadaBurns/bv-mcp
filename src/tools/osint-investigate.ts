@@ -20,6 +20,7 @@ import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { BLOCKED_HOSTS } from '../lib/config';
 import { isPublicSmtpAddress } from '../lib/smtp-starttls-targets';
 import { markUnmeasured } from '../lib/unmeasured-result';
+import { createRejectedRequestBuilder } from './async-start-error-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
 	callReconInvestigateStart,
@@ -336,16 +337,31 @@ function notOwned(id: string): CheckResult {
 	]) as CheckResult;
 }
 
-async function rememberInvestigationOwner(id: string | undefined, options: ReconToolOptions): Promise<void> {
-	if (!id || !options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return;
-	await options.reconJobKv.put(ownerKey(id), options.principalId, { expirationTtl: OSINT_OWNER_TTL_SECONDS }).catch(() => undefined);
+/**
+ * Store the owner record. Resolves false when it could not be stored (no KV, no principal, unsafe id,
+ * or a failed put): a job nobody can later poll must not be handed out, so the start reports a failure.
+ */
+async function rememberInvestigationOwner(id: string, options: ReconToolOptions): Promise<boolean> {
+	if (!options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return false;
+	try {
+		await options.reconJobKv.put(ownerKey(id), options.principalId, { expirationTtl: OSINT_OWNER_TTL_SECONDS });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
-async function investigationOwnerMismatch(id: string, options: ReconToolOptions): Promise<boolean> {
-	if (!options.reconJobKv || !SAFE_INVESTIGATION_ID.test(id)) return false;
+/**
+ * Fail closed: a poll is allowed only when an owner record exists AND equals the caller. A missing
+ * record, a KV read error, an absent binding or a missing principal are all "not owned".
+ */
+async function investigationOwnedByCaller(id: string, options: ReconToolOptions): Promise<boolean> {
+	if (!options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return false;
 	const owner = await options.reconJobKv.get(ownerKey(id)).catch(() => null);
-	return Boolean(owner && owner !== options.principalId);
+	return owner === options.principalId;
 }
+
+const buildStartRejection = createRejectedRequestBuilder<'persistenceFailure'>(CATEGORY, 'OSINT investigation start');
 
 /**
  * Trust-boundary validation for the `query` forwarded to bv-recon. Each checker returns a
@@ -408,14 +424,27 @@ const QUERY_CHECKERS: Record<ReconInvestigationType, QueryChecker> = {
 	username: usernameProblem,
 };
 
+/** "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call. */
+function assertValidQuery(type: ReconInvestigationType, query: string): void {
+	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
+	if (problem) throw new Error(`Invalid query: ${problem}`);
+}
+
+/** Store the owner record, or return the rejection that fails the start (a job nobody can poll must not be handed out). */
+async function ownerRecordRejection(id: string, type: ReconInvestigationType, options: ReconToolOptions): Promise<CheckResult | undefined> {
+	if (await rememberInvestigationOwner(id, options)) return undefined;
+	return buildStartRejection(
+		'persistenceFailure',
+		`OSINT ${type} investigation could not be started: its ownership record could not be stored, so the investigation could not be polled. Retry.`,
+	);
+}
+
 export async function osintInvestigateStart(
 	type: ReconInvestigationType,
 	query: string,
 	options: ReconToolOptions = {},
 ): Promise<CheckResult> {
-	// "Invalid query:" is a client-visible error prefix (see the error allowlist); thrown before any binding call.
-	const problem = query === query.trim() ? QUERY_CHECKERS[type](query) : 'must not have leading or trailing whitespace';
-	if (problem) throw new Error(`Invalid query: ${problem}`);
+	assertValidQuery(type, query);
 	const outcome = await callReconInvestigateStart(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -439,7 +468,8 @@ export async function osintInvestigateStart(
 			{ type },
 		);
 	const started = outcome.data;
-	await rememberInvestigationOwner(started.investigationId, options);
+	const rejection = await ownerRecordRejection(started.investigationId, type, options);
+	if (rejection) return rejection;
 	await rememberInvestigationTarget(started.investigationId, type, query, options);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
@@ -540,7 +570,7 @@ function shortText(s: string, max: number): string {
 }
 
 export async function osintInvestigationStatus(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
-	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
+	if (!(await investigationOwnedByCaller(id, options))) return notOwned(id);
 	const outcome = await callReconInvestigationStatus(
 		options.reconBinding,
 		options.reconAuthToken,
@@ -577,7 +607,7 @@ export async function osintInvestigationStatus(id: string, options: ReconToolOpt
 }
 
 export async function osintInvestigationReport(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
-	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
+	if (!(await investigationOwnedByCaller(id, options))) return notOwned(id);
 	const outcome = await callReconInvestigationReport(
 		options.reconBinding,
 		options.reconAuthToken,
