@@ -1564,16 +1564,17 @@ const SCAN_CANARY_COUNTER_TTL_SECONDS = 3600;
 /** `threshold` label shared by the page, its repeat-suppression key and the recovery notice. */
 const SCAN_CANARY_THRESHOLD = 'scan_canary';
 
+/** Counter-state KV faults are logged and swallowed: the canary degrades to "no history", never throws. */
+function logScanCanaryStateFault(err: unknown, message: string): void {
+	logError(err instanceof Error ? err : String(err), { severity: 'warn', category: 'scheduled', details: { message } });
+}
+
 async function readScanCanaryFailures(kv: KVNamespace | undefined): Promise<number> {
 	if (!kv) return 0;
 	try {
 		return parseFailureCount(await kv.get(SCAN_CANARY_COUNTER_KEY));
 	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'scheduled',
-			details: { message: 'scan_canary_state_read_failed' },
-		});
+		logScanCanaryStateFault(err, 'scan_canary_state_read_failed');
 		return 0;
 	}
 }
@@ -1587,11 +1588,7 @@ async function writeScanCanaryFailures(kv: KVNamespace | undefined, previous: nu
 			await kv.delete(SCAN_CANARY_COUNTER_KEY);
 		}
 	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'scheduled',
-			details: { message: 'scan_canary_state_write_failed' },
-		});
+		logScanCanaryStateFault(err, 'scan_canary_state_write_failed');
 	}
 }
 

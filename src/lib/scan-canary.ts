@@ -70,6 +70,32 @@ export function isScanCanaryEnabled(flag: string | undefined): boolean {
 	return flag?.trim().toLowerCase() !== 'false';
 }
 
+/** Flattened, bounded text of a thrown value — log/alert safe. */
+function boundedErrorText(error: unknown): string {
+	const text = error instanceof Error ? error.message : String(error);
+	return text.replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function isUnresolved(resolves: ScanDomainResult['resolves']): boolean {
+	return resolves === false || resolves === 'broken';
+}
+
+function isUngraded(score: ScanDomainResult['score']): boolean {
+	return !isGraded(score) || !!score.evidenceInsufficient;
+}
+
+function hasSufficientEvidence(score: ScanDomainResult['score']): boolean {
+	return !!score.evidence && isEvidenceSufficient(score.evidence);
+}
+
+/** First failing health condition of a returned scan, or 'ok'. */
+function returnedReason(result: Pick<ScanDomainResult, 'resolves' | 'score'>): ScanCanaryReason {
+	if (isUnresolved(result.resolves)) return 'unresolved';
+	if (isUngraded(result.score)) return 'ungraded';
+	if (!hasSufficientEvidence(result.score)) return 'insufficient_evidence';
+	return 'ok';
+}
+
 /**
  * Health predicate (pure). Healthy only when the scan returned, the apex resolved (`measured`), the
  * result is graded, and the completed-check ratio meets the engine's sufficiency threshold. Never
@@ -77,19 +103,9 @@ export function isScanCanaryEnabled(flag: string | undefined): boolean {
  */
 export function assessScanCanary(outcome: ScanCanaryOutcome): ScanCanaryAssessment {
 	if (outcome.status === 'timeout') return { healthy: false, reason: 'timeout' };
-	if (outcome.status === 'threw') {
-		const text = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-		return { healthy: false, reason: 'threw', detail: text.replace(/\s+/g, ' ').trim().slice(0, 200) };
-	}
-
-	const { result } = outcome;
-	const evidenceRatio = result.score.evidence?.ratio;
-	if (result.resolves === false || result.resolves === 'broken') return { healthy: false, reason: 'unresolved', evidenceRatio };
-	if (!isGraded(result.score) || result.score.evidenceInsufficient) return { healthy: false, reason: 'ungraded', evidenceRatio };
-	if (!result.score.evidence || !isEvidenceSufficient(result.score.evidence)) {
-		return { healthy: false, reason: 'insufficient_evidence', evidenceRatio };
-	}
-	return { healthy: true, reason: 'ok', evidenceRatio };
+	if (outcome.status === 'threw') return { healthy: false, reason: 'threw', detail: boundedErrorText(outcome.error) };
+	const reason = returnedReason(outcome.result);
+	return { healthy: reason === 'ok', reason, evidenceRatio: outcome.result.score.evidence?.ratio };
 }
 
 type ScanFn = (
@@ -97,6 +113,33 @@ type ScanFn = (
 	kv?: KVNamespace,
 	options?: { forceRefresh?: boolean; scanTimeoutMs?: number; signal?: AbortSignal },
 ) => Promise<ScanDomainResult>;
+
+/** One scan raced against a hard deadline; the signal is aborted when the deadline wins. Never throws. */
+async function scanWithDeadline(domain: string, scan: ScanFn, timeoutMs: number): Promise<ScanCanaryOutcome> {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<'timeout'>((resolve) => {
+		timer = setTimeout(() => {
+			controller.abort();
+			resolve('timeout');
+		}, timeoutMs);
+	});
+	try {
+		const run = scan(domain, undefined, {
+			forceRefresh: true,
+			scanTimeoutMs: Math.min(SCAN_CANARY_SCAN_BUDGET_MS, timeoutMs),
+			signal: controller.signal,
+		});
+		// A scan rejecting AFTER the timeout already won must not become an unhandled rejection.
+		run.catch(() => undefined);
+		const winner = await Promise.race([run, timedOut]);
+		return winner === 'timeout' ? { status: 'timeout' } : { status: 'returned', result: winner };
+	} catch (error) {
+		return controller.signal.aborted ? { status: 'timeout' } : { status: 'threw', error };
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 /**
  * Run ONE full scan of `domain`, bypassing the scan cache, under a hard timeout. Never throws.
@@ -109,34 +152,8 @@ export async function runScanCanary(
 	domain: string,
 	options: { timeoutMs?: number; scan?: ScanFn } = {},
 ): Promise<{ outcome: ScanCanaryOutcome; durationMs: number }> {
-	const timeoutMs = options.timeoutMs ?? SCAN_CANARY_TIMEOUT_MS;
-	const scan = options.scan ?? scanDomain;
 	const startedAt = Date.now();
-	const controller = new AbortController();
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timedOut = new Promise<'timeout'>((resolve) => {
-		timer = setTimeout(() => {
-			controller.abort();
-			resolve('timeout');
-		}, timeoutMs);
-	});
-
-	let outcome: ScanCanaryOutcome;
-	try {
-		const run = scan(domain, undefined, {
-			forceRefresh: true,
-			scanTimeoutMs: Math.min(SCAN_CANARY_SCAN_BUDGET_MS, timeoutMs),
-			signal: controller.signal,
-		});
-		// A scan rejecting AFTER the timeout already won must not become an unhandled rejection.
-		run.catch(() => undefined);
-		const winner = await Promise.race([run, timedOut]);
-		outcome = winner === 'timeout' ? { status: 'timeout' } : { status: 'returned', result: winner };
-	} catch (error) {
-		outcome = controller.signal.aborted ? { status: 'timeout' } : { status: 'threw', error };
-	} finally {
-		clearTimeout(timer);
-	}
+	const outcome = await scanWithDeadline(domain, options.scan ?? scanDomain, options.timeoutMs ?? SCAN_CANARY_TIMEOUT_MS);
 	return { outcome, durationMs: Date.now() - startedAt };
 }
 
