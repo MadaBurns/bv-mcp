@@ -648,6 +648,75 @@ describe('osint owner check fails closed', () => {
 			expect(r.findings[0]!.detail).not.toContain('inv_f2');
 		});
 
+		/** A KV whose `put` for keys containing `fragment` rejects the first `failures` times, then behaves. */
+		function flakyPutKv(fragment: string, failures: number) {
+			const kv = kvStub();
+			const realPut = kv.put as unknown as (k: string, v: string) => Promise<void>;
+			let remaining = failures;
+			(kv as { put: unknown }).put = vi.fn(async (k: string, v: string) => {
+				if (k.includes(fragment) && remaining > 0) {
+					remaining -= 1;
+					throw new Error('kv write failed');
+				}
+				return realPut(k, v);
+			});
+			return kv;
+		}
+
+		it('one transient owner write failure is retried -> the start succeeds and the id is pollable', async () => {
+			const m = await import('../src/tools/osint-investigate');
+			const reconJobKv = flakyPutKv('osint-investigation-owner:', 1);
+			const r = await m.osintInvestigateDomainStart('example.com', {
+				reconBinding: binding({ investigationId: 'inv_r1' }),
+				reconAuthToken: 't',
+				reconJobKv,
+				principalId: 'p1',
+			});
+			expect(r.findings[0]!.metadata?.requestRejected).toBeUndefined();
+			expect(r.findings[0]!.metadata?.investigationId).toBe('inv_r1');
+			expect(reconJobKv.map.get('osint-investigation-owner:inv_r1')).toBe('p1');
+		});
+
+		it('an owner write that fails on the retry too -> start still reports persistenceFailure', async () => {
+			const m = await import('../src/tools/osint-investigate');
+			const reconJobKv = flakyPutKv('osint-investigation-owner:', 2);
+			const r = await m.osintInvestigateDomainStart('example.com', {
+				reconBinding: binding({ investigationId: 'inv_r2' }),
+				reconAuthToken: 't',
+				reconJobKv,
+				principalId: 'p1',
+			});
+			expect(r.findings[0]!.metadata?.rejectionKind).toBe('persistenceFailure');
+		});
+
+		it('a lost remembered target is retried once, then surfaced on the start result', async () => {
+			const m = await import('../src/tools/osint-investigate');
+			const run = (kv: ReturnType<typeof kvStub>, id: string) =>
+				m.osintInvestigateInfrastructureStart('acme.com', {
+					reconBinding: binding({ investigationId: id }),
+					reconAuthToken: 't',
+					reconJobKv: kv,
+					principalId: 'p1',
+				});
+			const recovered = flakyPutKv('osint-investigation-target:', 1);
+			const ok = await run(recovered, 'inv_r3');
+			expect(ok.findings[0]!.metadata?.ctTargetNotRemembered).toBeUndefined();
+			expect(recovered.map.get('osint-investigation-target:inv_r3')).toBeDefined();
+
+			const lost = flakyPutKv('osint-investigation-target:', 2);
+			const flagged = await run(lost, 'inv_r4');
+			expect(flagged.findings[0]!.metadata?.investigationId).toBe('inv_r4');
+			expect(flagged.findings[0]!.metadata?.ctTargetNotRemembered).toBe(true);
+			expect(lost.map.get('osint-investigation-target:inv_r4')).toBeUndefined();
+		});
+
+		it('a not-owned refusal is partial so the registry never caches it', async () => {
+			const m = await import('../src/tools/osint-investigate');
+			const opts = { reconBinding: binding({ status: 'completed' }), reconAuthToken: 't', reconJobKv: kvStub(), principalId: 'p1' };
+			expect((await m.osintInvestigationStatus('inv_r5', opts)).partial).toBe(true);
+			expect((await m.osintInvestigationReport('inv_r5', opts)).partial).toBe(true);
+		});
+
 		it('no KV binding, no principal, or an unsafe investigation id -> start reports a failure', async () => {
 			const m = await import('../src/tools/osint-investigate');
 			const cases: Array<[string, Record<string, unknown>, string]> = [

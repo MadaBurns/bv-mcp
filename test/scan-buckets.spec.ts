@@ -403,6 +403,53 @@ describe('scan_buckets owner check fails closed', () => {
 			expect(r.findings[0]!.detail).not.toContain('scan_1');
 		});
 
+		/** A KV whose `put` rejects the first `failures` times, then stores normally. */
+		function flakyPutKv(failures: number) {
+			const store = kv();
+			const realPut = (store as unknown as { put: (k: string, v: string) => Promise<void> }).put;
+			let remaining = failures;
+			(store as unknown as { put: unknown }).put = vi.fn(async (k: string, v: string) => {
+				if (remaining > 0) {
+					remaining -= 1;
+					throw new Error('kv write failed');
+				}
+				return realPut(k, v);
+			});
+			return store as unknown as KVNamespace;
+		}
+
+		it('one transient owner write failure is retried -> the start succeeds and the scan is pollable', async () => {
+			const { scanBucketsStart, scanBucketsStatus } = await import('../src/tools/scan-buckets');
+			const bucketScanKv = flakyPutKv(1);
+			const r = await scanBucketsStart(
+				{ target: 'example.com' },
+				{ reconBinding: binding({ scanId: 'scan_r1', status: 'running' }), reconAuthToken: 't', bucketScanKv, principalId: 'p1' },
+			);
+			expect(r.findings[0]!.metadata?.requestRejected).toBeUndefined();
+			expect(r.findings[0]!.metadata?.scanId).toBe('scan_r1');
+			const mine = await scanBucketsStatus(
+				{ scanId: 'scan_r1' },
+				{ reconBinding: binding({ status: 'running' }), reconAuthToken: 't', bucketScanKv, principalId: 'p1' },
+			);
+			expect(mine.findings[0]!.metadata?.notOwned).toBeUndefined();
+		});
+
+		it('an owner write that fails on the retry too -> start still reports persistenceFailure', async () => {
+			const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+			const r = await scanBucketsStart(
+				{ target: 'example.com' },
+				{ reconBinding: binding({ scanId: 'scan_r2', status: 'running' }), reconAuthToken: 't', bucketScanKv: flakyPutKv(2), principalId: 'p1' },
+			);
+			expect(r.findings[0]!.metadata?.rejectionKind).toBe('persistenceFailure');
+		});
+
+		it('a not-owned refusal is partial so the registry never caches it', async () => {
+			const { scanBucketsStatus, scanBucketsFindings } = await import('../src/tools/scan-buckets');
+			const opts = { reconBinding: binding({ status: 'running' }), reconAuthToken: 't', bucketScanKv: kv() as unknown as KVNamespace, principalId: 'p1' };
+			expect((await scanBucketsStatus({ scanId: 'scan_r3' }, opts)).partial).toBe(true);
+			expect((await scanBucketsFindings({ scanId: 'scan_r3' }, opts)).partial).toBe(true);
+		});
+
 		it('no KV binding, no principal, or an unsafe scan id -> start reports a failure', async () => {
 			const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 			const cases: Array<[string, Record<string, unknown>, string]> = [
