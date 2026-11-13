@@ -241,12 +241,9 @@ export async function checkHTTPSecurity(
 	// The `checkStatus` set alongside is what makes the scoring engine EXCLUDE the category
 	// rather than score the 0 — see `transientFailures` in scoring/engine.ts.
 	//
-	// Deliberately NOT set on the two other `inconclusive` branches, which never carried
-	// `missingControl` and so are not part of this defect:
-	//   - the 5xx "Server error" branch — the origin WAS reached and answered (score 85);
-	//   - the robots.txt skip — a voluntary abstention, not a failed probe (score 100).
-	// Generalising "inconclusive ⇒ zero" would silently rescore both. It is scoped to the
-	// branches that made the contradictory claim.
+	// A server/intermediary error also withholds header evidence, even though an HTTP
+	// responder was reached. Normalize that transient non-answer too (#1402).
+	// The robots.txt skip remains a distinct voluntary policy abstention.
 	let unmeasuredZero = false;
 	// Set on the TRANSIENT unmeasured branches: the two no-content (204/205) answers (issue
 	// #806 follow-up — an egress blip or challenge, not an origin-persistent state) and the
@@ -317,12 +314,15 @@ export async function checkHTTPSecurity(
 			findings.push(...analyzeSecurityHeaders(response.headers));
 		} else if (response.status === 0 || response.status >= 500) {
 			inconclusive = 'error';
+			unmeasuredZero = true;
+			transientUnmeasured = true;
 			findings.push(
 				createFinding(
 					'http_security',
 					'Server error',
 					'medium',
 					`HTTPS returned status ${response.status} for ${domain}. Cannot analyze security headers.`,
+					{ inconclusive: true, errorKind: 'http_server_error', httpStatus: response.status },
 				),
 			);
 		} else if (response.status >= 300 && response.status < 400) {
@@ -336,7 +336,7 @@ export async function checkHTTPSecurity(
 			// little remains for a real answer.
 			const remainingMs = Math.max(0, timeoutMs - (Date.now() - headStartedAt));
 			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, remainingMs);
-			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
+			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400) || getResponse.status === 0 || getResponse.status >= 500)) {
 				// Same shared-budget contract as the HEAD-triggered call above (#1093): what's LEFT
 				// of timeoutMs, not a fresh copy of it.
 				const getFollowed = await followRedirects(getResponse, fetchFn, Math.max(0, timeoutMs - (Date.now() - headStartedAt)));
@@ -354,7 +354,18 @@ export async function checkHTTPSecurity(
 					findings.push(redirectLoopFinding(domain));
 				} else {
 					const followed = getFollowed.response;
-					if (NO_CONTENT_STATUSES.has(followed.status)) {
+					if (followed.status === 0 || followed.status >= 500) {
+						inconclusive = 'error';
+						unmeasuredZero = true;
+						transientUnmeasured = true;
+						findings.push(createFinding(
+							'http_security',
+							'Server error',
+							'medium',
+							`HTTPS returned status ${followed.status} for ${domain}. Cannot analyze security headers.`,
+							{ inconclusive: true, errorKind: 'http_server_error', httpStatus: followed.status },
+						));
+					} else if (NO_CONTENT_STATUSES.has(followed.status)) {
 						// Issue #806 — the GET fallback's terminal response is accepted here, so the
 						// same no-content guard applies before analysis.
 						inconclusive = 'error';

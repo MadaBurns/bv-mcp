@@ -18,9 +18,8 @@
  *      is exactly what a naive "just delete the flag" fix would have shipped.
  *
  * `checkStatus` is what makes the scoring engine EXCLUDE the category rather than score
- * the 0. The two OTHER inconclusive branches (5xx server error, robots.txt skip) never
- * carried `missingControl` and are deliberately untouched — pinned below so a future
- * "generalise inconclusive ⇒ zero" refactor can't silently rescore them.
+ * the 0. HTTP server errors now follow the same unmeasured contract (#1402), while
+ * voluntary robots.txt abstention remains distinct.
  *
  * Imports the SOURCE module, not the built `@blackveil/dns-checks` — this assertion must
  * be meaningful without a dist rebuild.
@@ -78,14 +77,43 @@ describe('checkHTTPSecurity — a never-completed probe is inconclusive, not a m
 		expect(appliance!.metadata?.missingControl).toBeUndefined();
 	});
 
-	it('the 5xx server-error branch is NOT zeroed — the origin was reached and answered', async () => {
+	it('withholds a verdict and caching when an HTTP 503 prevents header analysis', async () => {
 		const result = await checkHTTPSecurity('example.com', async () => new Response(null, { status: 503 }));
-		// Never carried missingControl, so it is not part of this defect and must not be
-		// swept up by a "generalise inconclusive ⇒ zero" refactor.
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
 		expect(result.checkStatus).toBe('error');
-		expect(result.score).toBe(85);
-		expect(result.passed).toBe(true);
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+	});
+
+	it.each([403, 405])('withholds a verdict and caching when HEAD %s falls back to GET 503', async (headStatus) => {
+		const fetchFn: FetchFunction = async (_url, init) => new Response(null, { status: init?.method === 'HEAD' ? headStatus : 503 });
+		const result = await checkHTTPSecurity('example.com', fetchFn);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('Server error');
+		expect(result.findings[0].metadata).toMatchObject({ inconclusive: true, errorKind: 'http_server_error', httpStatus: 503 });
+		expect(result.findings[0].metadata?.missingControl).toBeUndefined();
+	});
+
+	it('does not analyse headers when a GET-fallback redirect terminates in HTTP 500', async () => {
+		const fetchFn: FetchFunction = async (url, init) => {
+			if (url === 'https://example.com/final') return new Response(null, { status: 500 });
+			if (init?.method === 'HEAD') return new Response(null, { status: 403 });
+			return new Response(null, { status: 302, headers: { location: 'https://example.com/final' } });
+		};
+		const result = await checkHTTPSecurity('example.com', fetchFn);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('Server error');
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('the robots.txt skip is NOT zeroed — a voluntary abstention, not a failed probe', async () => {

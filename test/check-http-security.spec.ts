@@ -82,6 +82,10 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings[0].severity).toBe('medium');
 		expect(result.findings[0].title).toBe('Server error');
 		expect(result.findings[0].detail).toContain('500');
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
 	});
 
 	it('abstains (not a scored analysis) when every hop keeps redirecting to itself (SQ-204)', async () => {
