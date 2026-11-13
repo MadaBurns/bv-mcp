@@ -79,6 +79,53 @@ function captureResult(runtimeOptions: ToolRuntimeOptions | undefined, result: C
 }
 
 /**
+ * Tools that accept `discovery_mode`. Only `brand_audit_single` and `brand_audit_batch_start`
+ * leave it unset after validation (the discover_brand_domains schema defaults it to
+ * 'classic'), so only those two can be tiered by the operator env default alone.
+ */
+const DISCOVERY_MODE_TOOLS: ReadonlySet<string> = new Set([
+	'discover_brand_domains',
+	'discover_brand_domains_start',
+	'brand_audit_single',
+	'brand_audit_batch_start',
+]);
+
+/**
+ * Tier gate: discovery_mode='tiered' activates the Tier-0/1/2 lookups against private
+ * BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE service bindings (operator-deploy only).
+ * Restricted to partner, enterprise or owner. Developer was removed because the prior
+ * self-asserted ownership_verified attestation was not cryptographically verifiable, opening a
+ * cost/abuse vector against third-party domains. On BSL self-hosts the bindings are unprovisioned
+ * and the pipeline degrades to classic regardless, so this gate is a no-op there.
+ *
+ * The gate applies to the EFFECTIVE mode (explicit argument, else the env default). An explicit
+ * 'tiered' from a lower tier is refused. An omitted argument that only becomes tiered through
+ * the env default is downgraded to an explicit 'classic' instead, so callers who work today keep
+ * working and the cache key / queue message carry the mode that will actually run.
+ */
+function gateDiscoveryMode(
+	name: string,
+	args: Record<string, unknown>,
+	runtimeOptions: ToolRuntimeOptions | undefined,
+): { args: Record<string, unknown>; refusal?: string } {
+	if (!DISCOVERY_MODE_TOOLS.has(name) || isTieredDiscoveryTier(runtimeOptions?.authTier)) return { args };
+	if (args.discovery_mode === 'tiered') {
+		return { args, refusal: "Invalid discovery_mode: 'tiered' requires enterprise tier or higher" };
+	}
+	if (isTieredByEnvDefault(args, runtimeOptions)) return { args: { ...args, discovery_mode: 'classic' } };
+	return { args };
+}
+
+function isTieredDiscoveryTier(tier: string | undefined): boolean {
+	return tier === 'partner' || tier === 'enterprise' || tier === 'owner';
+}
+
+/** An omitted `discovery_mode` that the operator env default turns into 'tiered'. */
+function isTieredByEnvDefault(args: Record<string, unknown>, runtimeOptions: ToolRuntimeOptions | undefined): boolean {
+	return args.discovery_mode === undefined && runtimeOptions?.discoveryModeDefault === 'tiered';
+}
+
+/**
  * Handle the MCP tools/call method.
  * Dispatches to the appropriate tool function based on the tool name.
  *
@@ -131,7 +178,7 @@ export async function handleToolsCall(
 	let logResult = 'unknown';
 	let logDetails: unknown;
 	try {
-		const validatedArgs = validateToolArgs(name, args);
+		let validatedArgs = validateToolArgs(name, args);
 		if (toolRequiresDomain(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
 		}
@@ -165,29 +212,11 @@ export async function handleToolsCall(
 				}
 			}
 
-			// Tier gate: discovery_mode='tiered' activates the Tier-0/1/2 lookups
-			// against private BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE
-			// service bindings (operator-deploy only). Restricted to enterprise tier
-			// or higher (enterprise, partner, owner). Developer was removed because
-			// the prior self-asserted ownership_verified attestation was not
-			// cryptographically verifiable, opening a cost/abuse vector against
-			// third-party domains. On BSL self-hosts the bindings are unprovisioned
-			// and the pipeline degrades to classic regardless, so this gate is a
-			// no-op there.
-			if (
-				name === 'discover_brand_domains' ||
-				name === 'discover_brand_domains_start' ||
-				name === 'brand_audit_single' ||
-				name === 'brand_audit_batch_start'
-			) {
-				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
-				if (requestedMode === 'tiered') {
-					const tier = runtimeOptions?.authTier;
-					if (tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
-						return buildToolErrorResult("Invalid discovery_mode: 'tiered' requires enterprise tier or higher");
-					}
-				}
-			}
+			// Tier gate: discovery_mode='tiered' (explicit, or implied by the
+			// BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env) — see gateDiscoveryMode.
+			const discoveryGate = gateDiscoveryMode(name, validatedArgs, runtimeOptions);
+			if (discoveryGate.refusal) return buildToolErrorResult(discoveryGate.refusal);
+			validatedArgs = discoveryGate.args;
 
 			// Tier gate: depth='deep' expands candidate seeding + enrichment fanout
 			// (roughly 3× the per-call compute cost of 'standard'). Restricted to
