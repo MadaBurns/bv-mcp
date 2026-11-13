@@ -136,7 +136,7 @@ export interface ScheduledEnv {
 	ALERT_LATENCY_LOOKBACK_MINUTES?: string;
 	/** Minimum tool calls in a class before its p95 is believed (default 20). Below this, p95 degenerates toward max. */
 	ALERT_MIN_LATENCY_SAMPLES?: string;
-	/** Control domain for the 15-minute scan-path canary (default `isc.org`; see `src/lib/scan-canary.ts`). */
+	/** Control domain for the 15-minute scan-path canary (default `blackveilsecurity.com`; see `src/lib/scan-canary.ts`). */
 	SCAN_CANARY_DOMAIN?: string;
 	/** Kill switch for the scan-path canary: the literal string `false` disables it; anything else runs it. */
 	SCAN_CANARY_ENABLED?: string;

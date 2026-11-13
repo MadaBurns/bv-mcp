@@ -123,7 +123,7 @@ describe('scan canary paging', () => {
 		expect(posted).toHaveLength(1);
 		expect(posted[0].body).toContain('Critical');
 		expect(posted[0].body).toContain('Scan path canary failing');
-		expect(posted[0].body).toContain('isc.org');
+		expect(posted[0].body).toContain('blackveilsecurity.com');
 		expect(posted[0].body).toContain('threw');
 		await handleScanCanary(env);
 		expect(posted).toHaveLength(1);

@@ -24,10 +24,13 @@ import { isEvidenceSufficient, isGraded } from './scoring';
 import { sanitizeDomain, validateDomain } from './sanitize';
 
 /**
- * Default control domain: public DNS-infrastructure operator, DNSSEC-signed, NOT hosted on Cloudflare
- * (a Cloudflare-hosted control would measure our own provider's behaviour, not the scan path).
+ * Default control domain: the operator's own domain. A canary scans its target every 15 minutes
+ * indefinitely, including HTTP fetches to the target's hosts, so the default must be a domain the
+ * operator has authority over. The health predicate asserts liveness, never a score, so the
+ * target's own posture and hosting do not matter. Override with `SCAN_CANARY_DOMAIN`, and only
+ * with a domain the operator owns or has permission to scan on this cadence.
  */
-export const DEFAULT_SCAN_CANARY_DOMAIN = 'isc.org';
+export const DEFAULT_SCAN_CANARY_DOMAIN = 'blackveilsecurity.com';
 
 /**
  * Hard wall-clock ceiling for the canary's one scan. Sits below the cron invocation's limits and above

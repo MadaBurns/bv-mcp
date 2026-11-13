@@ -348,7 +348,7 @@ control domain (cache bypassed, hard 12 s budget) and logs the outcome as
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SCAN_CANARY_DOMAIN` | `isc.org` | Control domain. Pick a stable, DNSSEC-signed, NOT Cloudflare-hosted public infrastructure domain (a Cloudflare-hosted control measures our own provider, not the scan path). An invalid value falls back to the default. |
+| `SCAN_CANARY_DOMAIN` | `blackveilsecurity.com` | Control domain. The canary scans it every 15 minutes, including HTTP fetches to its hosts, so use only a domain the operator owns or has permission to scan on that cadence. The health check asserts that a graded scan with enough evidence came back, never a particular score. An invalid value falls back to the default. |
 | `SCAN_CANARY_ENABLED` | on | Kill switch: the literal string `false` skips the scan entirely. Any other value (or unset) leaves it on. |
 
 ## 8. Secret rotation quick reference
