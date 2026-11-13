@@ -9,8 +9,9 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, DNSQueryOutcome, Finding } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 
 /**
  * Parse ALPN protocols from an HTTPS record data string (presentation format).
@@ -188,6 +189,16 @@ function queryFailedResult(domain: string): CheckResult {
 	);
 }
 
+/**
+ * An EMPTY HTTPS answer set is only an absence under a conclusive rcode (NOERROR / NXDOMAIN).
+ * SERVFAIL / REFUSED is byte-identical to it on the wire shape the checks consume, and "No HTTPS
+ * record found" would certify an absence the resolver never reported — abstain instead.
+ */
+function emptyHttpsLookupResult(domain: string, rcode: number | undefined): CheckResult {
+	if (isInconclusiveRcode(rcode)) return buildRcodeAbstentionResult('svcb_https', 'SVCB/HTTPS', domain, 'HTTPS', rcode);
+	return noHttpsRecordResult(domain);
+}
+
 function noHttpsRecordResult(domain: string): CheckResult {
 	return buildCheckResult(
 		'svcb_https',
@@ -339,14 +350,15 @@ export async function checkSVCBHTTPS(
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 
-	let httpsRecords: string[] = [];
+	let outcome: DNSQueryOutcome;
 	try {
-		httpsRecords = await queryDNS(domain, 'HTTPS', { timeout });
+		outcome = await queryWithRcode(queryDNS, domain, 'HTTPS', timeout);
 	} catch {
 		return queryFailedResult(domain);
 	}
 
-	if (httpsRecords.length === 0) return noHttpsRecordResult(domain);
+	const httpsRecords = outcome.records;
+	if (httpsRecords.length === 0) return emptyHttpsLookupResult(domain, outcome.rcode);
 
 	return buildCheckResult('svcb_https', analyzeHttpsRecords(domain, httpsRecords), undefined, true);
 }

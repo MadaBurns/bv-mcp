@@ -699,7 +699,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 					webhook_url: args.webhook_url as string | undefined,
 				},
 				principalId,
-				{ db },
+				{ db, signingSecret: ro?.watchWebhookSigningSecret },
 			);
 		},
 		cacheTtlSeconds: 0,

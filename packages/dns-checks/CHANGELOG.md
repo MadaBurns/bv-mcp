@@ -2,6 +2,16 @@
 
 All notable changes to `@blackveil/dns-checks` are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0]
+
+### Fixed (can move scores; scoring model 2.2.0)
+
+- `checkDANEHTTPS` and `checkSVCBHTTPS` read a SERVFAIL or REFUSED answer for the TLSA / HTTPS lookup as "record absent" ("No DANE TLSA for HTTPS", "No HTTPS record found"), because a DoH resolver answers HTTP 200 for those and only the response code differs. They now use the rcode channel (`queryWithRcode`, `buildRcodeAbstentionResult`) and abstain: `checkStatus: 'error'`, an `inconclusive` finding with `errorKind: 'dns_error'`, never `missingControl`, so the scoring engine excludes the category. A NOERROR-empty or NXDOMAIN answer keeps its finding and score exactly. A thrown lookup already abstained and is unchanged.
+- `checkBIMI` reads the `_dmarc` prerequisite lookup three-state. An unanswered lookup was treated as "DMARC not enforcing", which reported a published BIMI record as "BIMI record ineffective (DMARC not enforcing)" (`medium`, `missingControl`). It now reports an info finding "BIMI DMARC prerequisite not determined" with `inconclusive` and `errorKind: 'dns_error'` and leaves `controlPresent` undefined; an absent BIMI record no longer asserts DMARC state in that case. Answered `_dmarc` lookups behave as before.
+- Checked and left unchanged: the DKIM CNAME-chain follow (`checkDKIM`) only attributes a selector to a SaaS provider after the TXT lookup has already found the key, so a failed CNAME hop cannot turn a present key into an absent one.
+- `http_security` (dns-checks 2.1.1) now counts toward scoring model 2.2.0: an HTTP status 0 or 5xx answer is unmeasured and excluded, where it was scored before 2.1.1.
+- The Worker-side PTR check (`src/tools/check-ptr.ts`, not part of this package) abstains for an unanswered MX lookup and for an unanswered A lookup of every mail host instead of reporting "no inbound mail" / "Mail server IPs unresolved". The corpus frequency of these cases is not measured.
+
 ## [2.1.1]
 
 ### Fixed (can move scores; scoring model unchanged at 2.1.0)

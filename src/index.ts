@@ -202,6 +202,8 @@ type BvMcpEnv = Env & {
 	BV_MCP_WATCH_CLEANUP_KEY?: string;
 	/** Dedicated outbound capability for the exact bv-web Brand Drift receiver. */
 	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	/** OPTIONAL server secret deriving per-watch HMAC keys that sign caller-URL watch webhooks. Unset = unsigned. */
+	WATCH_WEBHOOK_SIGNING_SECRET?: string;
 	/** Dedicated inbound capability for /internal/tenants/* orchestration. */
 	BV_MCP_TENANT_KEY?: string;
 	/** Least-privilege mobile capability accepted only for scan_domain on /internal/tools/call. */
@@ -240,6 +242,8 @@ type BvMcpEnv = Env & {
 	BV_WEB_OAUTH_CONSENT_URL?: string;
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
+	/** Optional retired signing secret for a rotation window: verify only, never signs. Unset outside rotation. */
+	OAUTH_SIGNING_SECRET_PREVIOUS?: string;
 	BV_INTERNAL_DEV_KEY?: string;
 	/** Second independent static internal-dev key (owner tier, OWNER_ALLOW_IPS-gated). Lets a per-machine key be added without rotating BV_INTERNAL_DEV_KEY. */
 	BV_INTERNAL_DEV_KEY_2?: string;
@@ -1138,6 +1142,7 @@ app.post('/mcp', async (c) => {
 					bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 					infraProbe: c.env.BV_INFRA_PROBE,
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
+					watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 					asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
 					asyncBatchKv: c.env.SCAN_CACHE,
@@ -1257,6 +1262,7 @@ app.post('/mcp', async (c) => {
 		bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 		infraProbe: c.env.BV_INFRA_PROBE,
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
+		watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
 		asyncBatchKv: c.env.SCAN_CACHE,
@@ -1477,6 +1483,7 @@ app.post('/mcp/messages', async (c) => {
 				bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 				infraProbe: c.env.BV_INFRA_PROBE,
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
+				watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 				asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
 				asyncBatchKv: c.env.SCAN_CACHE,
@@ -1794,6 +1801,7 @@ import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
 import { brandWebhookPeerSecretsFromEnv, handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
 import { securityConfigurationCollision } from './lib/security-capabilities';
+import { resolveWatchWebhookSigningSecret } from './lib/watch-webhook-signing';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from './tenants/scheduled-handlers';
 // Phase 2 scheduler core. The crons (`* * * * *`, `*/30 * * * *`) are in
@@ -2113,6 +2121,7 @@ export default {
 					brandWebhookBinding: env.BV_WEB,
 					brandWebhookAuthToken: env.BV_MCP_BRAND_WEBHOOK_KEY,
 					brandWebhookPeerAuthTokens: brandWebhookPeerSecretsFromEnv(env),
+					watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(env),
 					discoveryModeDefault,
 					whoisBinding: env.BV_WHOIS,
 					certstream: env.BV_CERTSTREAM,

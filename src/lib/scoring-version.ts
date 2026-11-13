@@ -849,8 +849,26 @@
  *   is now `high` "malformed" like 2048/4096 instead of a heuristic 512/1024/2048 estimate. The
  *   affected populations are UNMEASURED against the corpus. No weight, tier, grade band,
  *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 2.2.0 — Unanswered lookups abstain instead of scoring (Sidequest SQ-573, US-20; dns-checks 2.2.0,
+ *   which also carries the 2.1.1 `http_security` change that shipped without a model bump). SCORE-BEARING,
+ *   direction UP or neutral for the affected domains: a category whose evidence never arrived is now
+ *   EXCLUDED and renormalised (shown n/a) where it was scored before. (a) `dane_https`, `svcb_https` and
+ *   `ptr` read a SERVFAIL/REFUSED answer (HTTP 200, empty answer set, failure only in the DoH `Status`) as
+ *   "record absent": "No DANE TLSA for HTTPS" and "No HTTPS record found" (`low`, score 95) and PTR's
+ *   "not applicable (no inbound mail)" / "Mail server IPs unresolved" now abstain (`checkStatus: 'error'`,
+ *   `inconclusive` + `errorKind: 'dns_error'`, never `missingControl`). PTR does so for an unanswered MX
+ *   lookup and for an unanswered A lookup of every mail host. `dane_https` and `svcb_https` carry nonzero
+ *   importance in most profiles, so their exclusion can move the overall score; `ptr` and `bimi` are
+ *   importance 0 in every profile, so for them only the category result changes. (b) `bimi`: a published BIMI record whose
+ *   `_dmarc` lookup was unanswered was reported "BIMI record ineffective (DMARC not enforcing)" (`medium`,
+ *   `missingControl`); it now carries an info "BIMI DMARC prerequisite not determined" and no
+ *   `controlPresent` claim, and an absent BIMI record no longer asserts the DMARC state. (c) `http_security`
+ *   (dns-checks 2.1.1, #1404): an HTTP status 0 or 5xx answer is now unmeasured and excluded, where it was
+ *   scored before. NOERROR-empty and NXDOMAIN answers keep their existing findings and scores exactly. The
+ *   affected populations are UNMEASURED against the corpus; no frequency is claimed. No weight, tier, grade
+ *   band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '2.1.0';
+export const SCORING_MODEL_VERSION = '2.2.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

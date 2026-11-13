@@ -16,6 +16,8 @@ export const MCP_SECURITY_CRITICAL_SECRET_KEYS = [
 	'BV_MCP_TOOL_DELEGATION_KEY',
 	'BV_MCP_WATCH_CLEANUP_KEY',
 	'BV_MCP_BRAND_WEBHOOK_KEY',
+	// OPTIONAL: unset = brand-audit watch webhook deliveries stay unsigned.
+	'WATCH_WEBHOOK_SIGNING_SECRET',
 	'BV_MCP_TENANT_KEY',
 	'BV_MOBILE_INTERNAL_KEY',
 	'BV_INTERNAL_DEV_KEY',
@@ -26,6 +28,8 @@ export const MCP_SECURITY_CRITICAL_SECRET_KEYS = [
 	'CERTSPOTTER_TOKEN',
 	'TYPESAFE_AI_API_KEY',
 	'OAUTH_SIGNING_SECRET',
+	// Optional rotation-window secret (verify only). Never required for deploy; see PRODUCTION_REQUIRED_SECRETS.
+	'OAUTH_SIGNING_SECRET_PREVIOUS',
 	'MCP_ACCESS_LOG_IP_ENCRYPTION_KEY',
 	'KV_ENVELOPE_KEY',
 	'BV_BROWSER_RENDERER_KEY',
@@ -74,15 +78,29 @@ export interface McpSecurityConfigurationCollision {
 	right: McpSecurityCriticalSecretKey;
 }
 
+function withoutRedundantPreviousSigningSecret(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
+): Partial<Record<McpSecurityCriticalSecretKey, unknown>> {
+	const previous = env.OAUTH_SIGNING_SECRET_PREVIOUS;
+	// Copy the env only in the rare equal case; the common (unset) path stays allocation-free.
+	return typeof previous === 'string' && previous === env.OAUTH_SIGNING_SECRET ? { ...env, OAUTH_SIGNING_SECRET_PREVIOUS: undefined } : env;
+}
+
 /**
  * Detect any global security-secret alias before public auth/tier/JWT handling.
  * A route-local rejection cannot contain an escalation once the holder of one
  * capability already knows the value of an owner, signing, encryption, or
  * other internal authority.
+ *
+ * One alias is tolerated: OAUTH_SIGNING_SECRET_PREVIOUS equal to OAUTH_SIGNING_SECRET is the same
+ * authority named twice (a half-finished rotation), not an escalation. The JWT verifier ignores it
+ * with a one-time warning, so it must not turn into a Worker-wide 503. Equality with any OTHER
+ * inventory entry still collides.
  */
 export function securityConfigurationCollision(
-	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
+	rawEnv: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
 ): McpSecurityConfigurationCollision | null {
+	const env = withoutRedundantPreviousSigningSecret(rawEnv);
 	for (let leftIndex = 0; leftIndex < MCP_SECURITY_CRITICAL_SECRET_KEYS.length; leftIndex += 1) {
 		const left = MCP_SECURITY_CRITICAL_SECRET_KEYS[leftIndex];
 		const leftValue = env[left];

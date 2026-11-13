@@ -14,7 +14,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
-import { queryDnsRecords, queryDnsRecordsWithRcode, queryMxRecords } from '../lib/dns';
+import { queryDnsRecordsWithRcode, queryMxRecordsWithRcode } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { mapConcurrent } from '../lib/map-concurrent';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
@@ -59,6 +59,12 @@ interface MailHostIp {
 	ip: string;
 }
 
+/** One mail host's A lookup: the addresses plus whether the resolver failed to answer (SERVFAIL/REFUSED). */
+interface HostIpLookup {
+	records: string[];
+	inconclusive: boolean;
+}
+
 /** Per-IP FCrDNS outcome. `detail` is the human-readable fragment for this IP. */
 interface PtrOutcome {
 	status: 'confirmed' | 'mismatched' | 'missing' | 'inconclusive';
@@ -68,9 +74,53 @@ interface PtrOutcome {
 /** Max PTR names forward-confirmed per IP (one forward A lookup each, serial, early exit on a match). */
 const MAX_PTR_NAMES_PER_IP = 4;
 
+/**
+ * Result for a domain whose MX lookup produced no usable mail host. A SERVFAIL/REFUSED lookup is the
+ * resolver failing to answer, NOT a domain without inbound mail, so it abstains in the shared
+ * not-assessed shape; only a conclusive empty answer (or an RFC 7505 null MX) is "not applicable".
+ */
+function noMailHostsResult(domain: string, nullMx: boolean, lookupInconclusive: boolean): CheckResult {
+	if (lookupInconclusive) {
+		return buildDnsErrorResult('ptr', 'PTR', new Error(`DNS query failed: the MX lookup for ${domain} was not answered`));
+	}
+	// Mirrors check_dane's no-inbound-mail fork: the domain does not accept email,
+	// so PTR/FCrDNS is NOT APPLICABLE — not a measurement that failed.
+	return buildCheckResult('ptr', [
+		createFinding(
+			'ptr',
+			'PTR not applicable (no inbound mail)',
+			'info',
+			`${domain} publishes no usable MX records (${nullMx ? 'an RFC 7505 null MX' : 'none'}), so it does not accept inbound email. Reverse DNS (PTR / forward-confirmed reverse DNS) for mail servers is therefore not applicable.`,
+			{ applicable: false, nullMx, mailHostCount: 0 },
+		),
+	]);
+}
+
+/**
+ * Result when mail hosts EXIST but none yielded an address, so FCrDNS could not be evaluated.
+ * If any host's A lookup was a SERVFAIL/REFUSED the emptiness is not a measurement, so abstain
+ * rather than file "Mail server IPs unresolved".
+ */
+function unresolvedMailHostsResult(mxHosts: string[], lookupInconclusive: boolean): CheckResult {
+	if (lookupInconclusive) {
+		return buildDnsErrorResult('ptr', 'PTR', new Error(`DNS query failed: A lookups for ${mxHosts.length} mail server host(s) were not answered`));
+	}
+	return buildCheckResult('ptr', [
+		createFinding(
+			'ptr',
+			'Mail server IPs unresolved',
+			'info',
+			`Could not resolve A records for ${mxHosts.length} mail server host(s) (${mxHosts.join(', ')}); reverse DNS could not be evaluated.`,
+			{ controlPresent: false, mailHostCount: mxHosts.length },
+		),
+	]);
+}
+
 export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
-		const mx = await queryMxRecords(domain, dnsOptions);
+		// The rcode is kept: an MX lookup that SERVFAILed returns the same empty list as a domain
+		// that publishes no MX, and "no inbound mail" must never be concluded from a failed lookup.
+		const { records: mx, inconclusive: mxLookupInconclusive } = await queryMxRecordsWithRcode(domain, dnsOptions);
 
 		// An RFC 7505 null MX ("0 .") parses to an EMPTY exchange, so a null-MX domain
 		// still yields `mx.length === 1` while carrying no mail host at all. Filter those
@@ -80,20 +130,7 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 		// emit the degenerate "could not resolve A records for 0 mail server host(s)".
 		const mxHosts = mx.map((r) => r.exchange.replace(/\.$/, '').toLowerCase()).filter((h) => h.length > 0 && h !== '.');
 
-		if (mxHosts.length === 0) {
-			// Mirrors check_dane's no-inbound-mail fork: the domain does not accept email,
-			// so PTR/FCrDNS is NOT APPLICABLE — not a measurement that failed.
-			const nullMx = mx.length > 0;
-			return buildCheckResult('ptr', [
-				createFinding(
-					'ptr',
-					'PTR not applicable (no inbound mail)',
-					'info',
-					`${domain} publishes no usable MX records (${nullMx ? 'an RFC 7505 null MX' : 'none'}), so it does not accept inbound email. Reverse DNS (PTR / forward-confirmed reverse DNS) for mail servers is therefore not applicable.`,
-					{ applicable: false, nullMx, mailHostCount: 0 },
-				),
-			]);
-		}
+		if (mxHosts.length === 0) return noMailHostsResult(domain, mx.length > 0, mxLookupInconclusive);
 
 		// Managed-provider credit: the provider controls PTR; treat the control as present.
 		const signatures = await loadProviderSignatures({
@@ -133,18 +170,19 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 		// a failure.
 		let firstError: unknown;
 
-		const ipsPerHost = await mapConcurrent(mxHosts, PTR_LOOKUP_CONCURRENCY, async (host) => {
-			if (firstError !== undefined) return [] as string[];
+		const ipsPerHost = await mapConcurrent(mxHosts, PTR_LOOKUP_CONCURRENCY, async (host): Promise<HostIpLookup> => {
+			if (firstError !== undefined) return { records: [], inconclusive: false };
 			try {
-				return await queryDnsRecords(host, 'A', dnsOptions);
+				return await queryDnsRecordsWithRcode(host, 'A', dnsOptions);
 			} catch (err) {
 				firstError ??= err;
-				return [] as string[];
+				return { records: [], inconclusive: false };
 			}
 		});
 		if (firstError !== undefined) throw firstError;
 
-		const mailHostIps: MailHostIp[] = mxHosts.flatMap((host, index) => ipsPerHost[index].map((ip) => ({ host, ip })));
+		const mailHostIps: MailHostIp[] = mxHosts.flatMap((host, index) => ipsPerHost[index].records.map((ip) => ({ host, ip })));
+		const hostLookupInconclusive = ipsPerHost.some((lookup) => lookup.inconclusive);
 
 		const outcomes = await mapConcurrent(mailHostIps, PTR_LOOKUP_CONCURRENCY, async ({ host, ip }): Promise<PtrOutcome | null> => {
 			if (firstError !== undefined) return null;
@@ -217,20 +255,7 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 			);
 		}
 
-		if (totalIps === 0) {
-			// Genuine resolution failure: mail hosts EXIST (mxHosts is non-empty by the
-			// guard above) but none of them resolved to an A record, so FCrDNS could not
-			// be evaluated. Distinct from the not-applicable fork above.
-			return buildCheckResult('ptr', [
-				createFinding(
-					'ptr',
-					'Mail server IPs unresolved',
-					'info',
-					`Could not resolve A records for ${mxHosts.length} mail server host(s) (${mxHosts.join(', ')}); reverse DNS could not be evaluated.`,
-					{ controlPresent: false, mailHostCount: mxHosts.length },
-				),
-			]);
-		}
+		if (totalIps === 0) return unresolvedMailHostsResult(mxHosts, hostLookupInconclusive);
 
 		const detail = detailParts.join('; ');
 

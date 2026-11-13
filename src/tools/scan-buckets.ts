@@ -271,34 +271,51 @@ function findingInTargetScope(finding: Record<string, unknown>, tokens: TargetSc
 	return tokens.segment.some((token) => segments.has(token));
 }
 
+/**
+ * `partial: true` keeps the refusal out of the registry cache (`(r) => !r.partial`): "not owned" is
+ * also what a transient scope-record read failure looks like (the check fails closed), so a cached
+ * refusal could outlive the KV blip that caused it and deny the real owner for the whole TTL.
+ */
 function notOwned(id: string): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, 'Bucket scan not available', 'info', `Bucket scan ${id} is not owned by this principal.`, {
-			notOwned: true,
-			scanId: id,
-		}),
-	]) as CheckResult;
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(CATEGORY, 'Bucket scan not available', 'info', `Bucket scan ${id} is not owned by this principal.`, {
+				notOwned: true,
+				scanId: id,
+			}),
+		]),
+		partial: true,
+	};
 }
 
 /**
- * Store the scope record, which carries the owner. Resolves false when it could not be stored (no KV,
- * no owner, unsafe id, or a failed put): a scan nobody can later poll must not be handed out, so the
- * start reports a failure.
+ * Run a KV write and retry it ONCE on failure; resolves whether either attempt succeeded. A single
+ * transient KV error must not fail a start whose upstream job already exists (that job id would be
+ * orphaned, never returned to the caller). Running the write inside a promise chain also turns a
+ * synchronous throw into a retryable rejection.
+ */
+function putWithOneRetry(put: () => Promise<unknown>): Promise<boolean> {
+	return Promise.resolve()
+		.then(put)
+		.catch(() => put())
+		.then(
+			() => true,
+			() => false,
+		);
+}
+
+/**
+ * Store the scope record, which carries the owner (the write is retried once). Resolves false when it
+ * could not be stored (no KV, no owner, unsafe id, or a put that failed twice): a scan nobody can later
+ * poll must not be handed out, so the start reports a failure.
  */
 async function rememberBucketScanScope(scanId: string, scope: BucketScanScope, kv: KVNamespace | undefined): Promise<boolean> {
 	if (!kv || !scope.owner || !SAFE_SCAN_ID.test(scanId)) return false;
-	try {
-		await kv.put(
-			scopeKey(scanId),
-			JSON.stringify({ target: normalizeTarget(scope.target), providers: scope.providers, owner: scope.owner }),
-			{
-				expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS,
-			},
-		);
-		return true;
-	} catch {
-		return false;
-	}
+	return putWithOneRetry(() =>
+		kv.put(scopeKey(scanId), JSON.stringify({ target: normalizeTarget(scope.target), providers: scope.providers, owner: scope.owner }), {
+			expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS,
+		}),
+	);
 }
 
 async function loadBucketScanScope(scanId: string | undefined, kv: KVNamespace | undefined): Promise<BucketScanScope> {

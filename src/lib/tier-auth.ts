@@ -327,6 +327,8 @@ export async function resolveTier(
 		BV_WEB?: Fetcher;
 		BV_WEB_INTERNAL_KEY?: string;
 		OAUTH_SIGNING_SECRET?: string;
+		/** Optional retired signing secret, accepted on verify only during a rotation window. */
+		OAUTH_SIGNING_SECRET_PREVIOUS?: string;
 		OAUTH_ISSUER?: string;
 		SESSION_STORE?: KVNamespace;
 		QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator>;
@@ -389,6 +391,7 @@ export async function resolveTier(
 			const issuer = resolveIssuerStrict(requestUrl, env.OAUTH_ISSUER);
 			const claims = await verifyJwt(token, {
 				secret: env.OAUTH_SIGNING_SECRET,
+				previousSecret: env.OAUTH_SIGNING_SECRET_PREVIOUS,
 				issuer,
 				audience: `${issuer}/mcp`,
 				clockSkewSeconds: OAUTH_JWT_CLOCK_SKEW_SECONDS,

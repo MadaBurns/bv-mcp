@@ -158,3 +158,70 @@ describe('checkBimi', () => {
 		expect(finding!.severity).toBe('medium');
 	});
 });
+
+// SQ-573: the `_dmarc` lookup that decides BIMI's prerequisite read SERVFAIL/REFUSED as "no DMARC",
+// so a published BIMI record was reported "ineffective (DMARC not enforcing)" with `missingControl`
+// off a resolver failure. HTTP 200 carries the failure only in `Status`; nothing throws.
+describe('checkBimi — unanswered _dmarc lookup (SQ-573)', () => {
+	/** BIMI TXT answers from `mapping`; the `_dmarc` lookup answers empty with `dmarcStatus`. */
+	function mockWithDmarcStatus(mapping: Record<string, string[]>, dmarcStatus: number) {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(url).searchParams.get('name') ?? '';
+			if (name.startsWith('_dmarc.')) return Promise.resolve(createDohResponse([{ name, type: 16 }], [], { status: dmarcStatus }));
+			const answers = (mapping[name] ?? []).map((data) => ({ name, type: 16, TTL: 300, data: `"${data}"` }));
+			return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
+		});
+	}
+
+	const BIMI_RECORD = { 'default._bimi.example.com': ['v=BIMI1; l=https://example.com/logo.svg'] };
+
+	async function run() {
+		const { checkBimi } = await import('../src/tools/check-bimi');
+		return checkBimi('example.com');
+	}
+
+	it.each([
+		['SERVFAIL', 2],
+		['REFUSED', 5],
+	])('does not call a published BIMI record ineffective when the _dmarc lookup answers %s', async (_label, status) => {
+		mockWithDmarcStatus(BIMI_RECORD, status);
+		const result = await run();
+		expect(result.findings.some((f) => /ineffective|DMARC not enforcing/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		const note = result.findings.find((f) => f.title === 'BIMI DMARC prerequisite not determined');
+		expect(note?.severity).toBe('info');
+		expect(note?.metadata?.inconclusive).toBe(true);
+		expect(note?.metadata?.errorKind).toBe('dns_error');
+		// The BIMI record itself WAS measured; only its prerequisite is unknown, so controlPresent is undetermined.
+		expect(result.recordPresent).toBe(true);
+		expect(result.controlPresent).toBeUndefined();
+	});
+
+	it('still reports a published BIMI record as ineffective when _dmarc is answered NOERROR with p=none', async () => {
+		mockMultipleTxtRecords({ ...BIMI_RECORD, '_dmarc.example.com': ['v=DMARC1; p=none'] });
+		const result = await run();
+		const finding = result.findings.find((f) => f.title === 'BIMI record ineffective (DMARC not enforcing)');
+		expect(finding?.severity).toBe('medium');
+		expect(finding?.metadata?.missingControl).toBe(true);
+		expect(result.controlPresent).toBe(false);
+	});
+
+	it('still reports a published BIMI record as ineffective when _dmarc is answered NOERROR with no record', async () => {
+		mockWithDmarcStatus(BIMI_RECORD, 0);
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'BIMI record ineffective (DMARC not enforcing)')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'BIMI DMARC prerequisite not determined')).toBe(false);
+	});
+
+	it('claims nothing about DMARC enforcement for an absent BIMI record when _dmarc SERVFAILs', async () => {
+		mockWithDmarcStatus({}, 2);
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('No BIMI record found');
+		expect(result.findings[0].severity).toBe('low');
+		expect(result.findings[0].detail).toMatch(/could not be determined/i);
+		expect(result.findings[0].detail).not.toMatch(/eligible for BIMI/i);
+		expect(result.controlPresent).toBe(false);
+	});
+});

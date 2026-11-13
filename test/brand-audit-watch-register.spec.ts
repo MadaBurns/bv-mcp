@@ -151,3 +151,49 @@ describe('registerBrandAuditWatch — persistence outcomes', () => {
 		expect(f.detail).toBe('Failed to register watch: plain-string-failure');
 	});
 });
+
+describe('registerBrandAuditWatch — webhook signing secret (SQ-587)', () => {
+	const SERVER_SECRET = 'r'.repeat(40);
+	const webhookArgs = { domain: 'apple.com', interval: 'daily', webhook_url: 'https://hooks.example.com/abc' };
+
+	async function registerWith(args: Record<string, unknown>, db: D1Database, signingSecret: string | undefined, id = 'wid-1') {
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		return registerBrandAuditWatch(args as never, 'owner-1', { ...deps(db), generateId: () => id, signingSecret });
+	}
+
+	it('returns the derived per-watch secret once, with a note, when signing is enabled', async () => {
+		const { deriveWatchWebhookSecret } = await import('../src/lib/watch-webhook-signing');
+		const { db } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const f = onlyFinding(await registerWith(webhookArgs, db, SERVER_SECRET));
+		expect(f.metadata?.signingSecret).toBe(await deriveWatchWebhookSecret(SERVER_SECRET, 'wid-1'));
+		expect(f.metadata?.signingSecretNote).toMatch(/shown only at registration/);
+		// The secret never lands in the human-readable fields.
+		expect(`${f.title} ${f.detail}`).not.toContain(String(f.metadata?.signingSecret));
+	});
+
+	it('gives two watches different secrets', async () => {
+		const { db } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const a = onlyFinding(await registerWith(webhookArgs, db, SERVER_SECRET, 'wid-a'));
+		const b = onlyFinding(await registerWith(webhookArgs, db, SERVER_SECRET, 'wid-b'));
+		expect(a.metadata?.signingSecret).not.toBe(b.metadata?.signingSecret);
+	});
+
+	it('omits the secret when signing is disabled', async () => {
+		const { db } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const f = onlyFinding(await registerWith(webhookArgs, db, undefined));
+		expect(f.metadata).not.toHaveProperty('signingSecret');
+		expect(f.metadata).not.toHaveProperty('signingSecretNote');
+	});
+
+	it('omits the secret for a logging-only watch (no webhook to sign)', async () => {
+		const { db } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const f = onlyFinding(await registerWith({ domain: 'apple.com', interval: 'daily' }, db, SERVER_SECRET));
+		expect(f.metadata).not.toHaveProperty('signingSecret');
+	});
+
+	it('omits the secret when the INSERT is refused at the cap', async () => {
+		const { db } = makeDb(async () => ({ meta: { changes: 0 } }));
+		const f = onlyFinding(await registerWith(webhookArgs, db, SERVER_SECRET));
+		expect(JSON.stringify(f)).not.toContain('signingSecret');
+	});
+});

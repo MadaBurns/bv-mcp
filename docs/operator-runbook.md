@@ -365,7 +365,8 @@ control domain (cache bypassed, hard 12 s budget) and logs the outcome as
 | `BV_MCP_M365_KEY`                  | `npx wrangler secret put BV_MCP_M365_KEY`                                                            | Set the same dedicated value only on bv-mcp and bv-web-prod; never reuse the fleet-wide `BV_WEB_INTERNAL_KEY`                                                                                                                 |
 | `BV_MCP_BRAND_WEBHOOK_KEY`         | `npx wrangler secret put BV_MCP_BRAND_WEBHOOK_KEY`                                                   | Same distinct strong value on bv-mcp + bv-web-prod only; carried only over `BV_WEB` to the exact first-party Brand Drift receiver                                                                                             |
 | `BV_API_KEY`                       | `npx wrangler secret put BV_API_KEY`                                                                 | Update Claude Desktop MCPB extension/connector configs                                                                                                                                                                        |
-| `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                                                       | Invalidates ALL outstanding OAuth JWTs — customers re-consent                                                                                                                                                                 |
+| `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                                                       | Rotating it directly invalidates ALL outstanding OAuth JWTs — customers re-consent. Use the zero-downtime procedure below (`OAUTH_SIGNING_SECRET_PREVIOUS`) instead                                                          |
+| `WATCH_WEBHOOK_SIGNING_SECRET`     | `npx wrangler secret put WATCH_WEBHOOK_SIGNING_SECRET`                                               | Optional; unset means watch webhooks to caller-supplied URLs go unsigned. Needs 32+ bytes, distinct from every other secret. Rotating changes every per-watch secret: owners re-register their watches to get new ones       |
 | `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION`                                 | Old ciphertexts need the old key retained in the vault for forensics                                                                                                                                                          |
 | `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                                                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                                                                                                                           |
 | `ALERT_WEBHOOK_URL`                | `printf %s "<url>" \| npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc` | Static fallback only — `resolveAlertWebhookUrl` tries the dynamic bv-web-prod lookup first (§ "Two exceptions" in the bv-mcp-operations skill). Pipe the value; never pass it as an argv, which would leak into shell history |
@@ -374,6 +375,42 @@ Trial-key revocation requires `QUOTA_COORDINATOR`: the revoke route writes an
 authoritative deny marker before deleting the eventually consistent KV record.
 If strong state is unavailable it returns 503 and leaves the KV record intact;
 do not treat that response as a completed revocation.
+
+### Rotating `OAUTH_SIGNING_SECRET` without signing customers out
+
+`OAUTH_SIGNING_SECRET_PREVIOUS` is an optional secret that holds the retired
+signing secret during a rotation. The Worker signs only with
+`OAUTH_SIGNING_SECRET`; a token that does not verify under the current secret is
+retried against the previous one, and every other check (algorithm, expiry,
+issuer, audience, token version, revocation) still applies. It is never
+required for deploy. Unset, empty or whitespace-only means rotation is off and
+behaviour is unchanged. A previous value shorter than 32 bytes, or equal to the
+current secret, is ignored and logged once per isolate as
+`oauth_previous_signing_secret_ignored` (the value is never logged), so a
+half-finished rotation cannot weaken verification or take the Worker down.
+
+1. `npx wrangler secret put OAUTH_SIGNING_SECRET_PREVIOUS` with the CURRENT
+   signing secret value (pipe it on stdin; never pass it as an argument).
+2. `openssl rand -hex 32 | npx wrangler secret put OAUTH_SIGNING_SECRET` with the
+   NEW value.
+3. Deploy. New tokens are now signed with the new secret; tokens minted under the
+   old one keep verifying.
+4. Wait at least the longest token lifetime the server issues:
+   `OAUTH_JWT_TTL_SECONDS` in `src/lib/config.ts` is 3600 seconds (one hour; an
+   entitlement-bounded token is shorter), plus the 30 second
+   `OAUTH_JWT_CLOCK_SKEW_SECONDS`. Allow a few minutes of margin past one hour.
+5. `npx wrangler secret delete OAUTH_SIGNING_SECRET_PREVIOUS` and deploy again.
+
+**Do not use this procedure when the current secret may be compromised.**
+Setting `OAUTH_SIGNING_SECRET_PREVIOUS` to a leaked value keeps tokens forged
+with it valid for the whole window. In that case rotate `OAUTH_SIGNING_SECRET`
+directly, leave the previous secret unset, and accept that customers
+re-consent.
+
+Only the OAuth bearer path and the Brand Audit legacy owner proof read the
+previous secret. The access-context principal pseudonym, the OAuth token
+minting path and every other use of `OAUTH_SIGNING_SECRET` keep using the
+current secret only.
 
 ### Temporary roaming owner access
 

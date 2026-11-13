@@ -268,8 +268,20 @@ export async function queryCaaRecords(domain: string, opts?: QueryDnsOptions): P
  * Query MX records and parse them into priority + exchange pairs.
  */
 export async function queryMxRecords(domain: string, opts?: QueryDnsOptions): Promise<Array<{ priority: number; exchange: string }>> {
-	const records = await queryDnsRecords(domain, 'MX', opts);
-	return records.flatMap((record) => {
+	return (await queryMxRecordsWithRcode(domain, opts)).records;
+}
+
+/**
+ * {@link queryMxRecords} with the "resolver could not answer" signal kept. An empty `records`
+ * with `inconclusive: true` is a SERVFAIL/REFUSED, NOT a domain that publishes no MX — a caller
+ * concluding "no inbound mail" from emptiness must check it. Same lookup, same cost.
+ */
+export async function queryMxRecordsWithRcode(
+	domain: string,
+	opts?: QueryDnsOptions,
+): Promise<{ records: Array<{ priority: number; exchange: string }>; inconclusive: boolean }> {
+	const outcome = await queryDnsRecordsWithRcode(domain, 'MX', opts);
+	const records = outcome.records.flatMap((record) => {
 		const parts = record.trim().split(/\s+/);
 		const priority = parseUnsignedInteger(parts[0], 65_535);
 		const rawExchange = parts.slice(1).join(' ');
@@ -280,6 +292,7 @@ export async function queryMxRecords(domain: string, opts?: QueryDnsOptions): Pr
 			exchange,
 		};
 	});
+	return { records, inconclusive: outcome.inconclusive };
 }
 
 /**

@@ -23,6 +23,7 @@ export {
 	queryDnsRecords,
 	queryDnsRecordsWithRcode,
 	queryMxRecords,
+	queryMxRecordsWithRcode,
 	queryPtrRecords,
 	querySrvRecords,
 	queryTxtRecords,

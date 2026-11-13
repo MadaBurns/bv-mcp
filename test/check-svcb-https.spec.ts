@@ -2,7 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
-import { DOH_TRANSPORT_FAILURES, expectDnsAbstention } from './helpers/dns-transport-failure';
+import { DOH_TRANSPORT_FAILURES, UNANSWERED_RCODES, expectDnsAbstention, expectRcodeAbstention } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -228,6 +228,33 @@ describe('checkSvcbHttps', () => {
 		const result = await run();
 		expectDnsAbstention(result, 'svcb_https');
 		expect(result.findings.map((f) => f.title)).toEqual(['SVCB/HTTPS not assessed — HTTPS record query failed']);
+	});
+
+	// SQ-573: HTTP 200 + SERVFAIL/REFUSED is an EMPTY answer set on the wire shape the check reads,
+	// byte-identical to a name that publishes no HTTPS record. It must abstain, not file "No HTTPS record found".
+	it.each(UNANSWERED_RCODES)('abstains rather than reporting "No HTTPS record found" when the lookup answers $label', async ({ status }) => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=HTTPS') || url.includes('type=65')) {
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 65 }], [], { status }));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expectRcodeAbstention(result, 'svcb_https');
+		expect(result.findings.map((f) => f.title)).toEqual(['SVCB/HTTPS check error']);
+	});
+
+	it('an answered NOERROR with no HTTPS record keeps the "No HTTPS record found" finding and score exactly', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(emptyResponse('example.com', 1)));
+
+		const result = await run();
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.recordPresent).toBe(false);
+		expect(result.findings.map((f) => f.title)).toEqual(['No HTTPS record found']);
+		expect(result.findings[0].severity).toBe('low');
+		expect(result.score).toBe(95);
 	});
 
 	it('an answered NXDOMAIN for the HTTPS record is still a measured absence, not an abstention', async () => {

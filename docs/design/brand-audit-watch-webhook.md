@@ -129,6 +129,78 @@ identical candidate+bucket sets always produce the same hash.
 
 ---
 
+## Origin signature (optional, caller-supplied URLs)
+
+The URL token proves nothing about who is calling it. When the operator has
+enabled signing, every delivery to a caller-supplied `webhook_url` carries one
+extra header, so a receiver can check that the request came from this service
+and that the body was not altered in transit:
+
+```
+X-Blackveil-Signature: t=<unix seconds>,v1=<lowercase hex>
+```
+
+- `t` is the Unix time in seconds at which the delivery attempt was signed. A
+  replayed outbox entry is signed again, so `t` always reflects the latest
+  attempt.
+- `v1` is HMAC-SHA256 over the ASCII string `<t>.` followed by the exact request
+  body bytes, hex-encoded in lowercase. The signature is computed over the same
+  string that is sent, never a re-serialisation.
+- The HMAC key is the per-watch signing secret, used as its 64-character hex
+  text (its UTF-8 bytes), not decoded to raw bytes.
+
+The first-party BlackVeil receiver path is not signed; it keeps its dedicated
+service-binding bearer.
+
+### How the per-watch secret works
+
+Nothing is stored per watch and there is no schema change. The per-watch secret
+is derived on demand as `hex(HMAC-SHA256(server secret, label + watchId))`,
+where the server secret is the Worker secret `WATCH_WEBHOOK_SIGNING_SECRET` and
+the label is the fixed string `blackveil:brand-audit-watch-webhook:v1:`. Each
+watch therefore has its own key, and the same watch always has the same key.
+
+`register_brand_audit_watch` returns the secret once, as `signingSecret` in the
+result (with a one-sentence note that it is shown only at registration), and only
+for a watch that has a `webhook_url`. `list_brand_audit_watches` and every other
+read never return it. The server secret, the derived key and signatures are
+never logged.
+
+### How a receiver verifies a delivery
+
+1. Read the raw request body bytes before any JSON parsing.
+2. Parse `t` and `v1` from the `X-Blackveil-Signature` header; reject a header
+   that does not match the format above.
+3. Reject the request if `t` is older (or further in the future) than a
+   tolerance you choose. Five minutes is a sensible starting point.
+4. Compute HMAC-SHA256 with the watch's `signingSecret` as the key over
+   `<t>.<raw body>` and hex-encode it in lowercase.
+5. Compare it with `v1` using a constant-time comparison. Reject on mismatch.
+
+Signature checks do not replace the idempotency guidance below: delivery is
+still at least once, so deduplicate with `watchId + auditId + currentHash`.
+
+### Operator step to enable it
+
+Signing is off by default and the secret is never required for a deploy.
+
+1. Generate a strong value of at least 32 bytes (for example
+   `openssl rand -base64 48`) that is different from every other secret on the
+   Worker.
+2. `npx wrangler secret put WATCH_WEBHOOK_SIGNING_SECRET` and deploy.
+
+If the value is unset, empty, shorter than 32 bytes or equal to another
+security-critical secret, signing stays off: deliveries are sent exactly as
+before with no signature header, and registration returns no `signingSecret`.
+
+Watches registered before the secret was set are signed as soon as it is set,
+because their keys are derived rather than stored. Their owners did not receive
+a secret at registration, so they must re-register the watch to obtain one.
+Rotating the server secret changes every derived key; owners need to re-register
+to get new secrets.
+
+---
+
 ## Receiver guidance (bv-web-prod G1 / customer webhooks)
 
 1. **Verify `schemaVersion === 1`** — reject and log any unknown version rather
