@@ -136,6 +136,75 @@ describe('discovery_mode=tiered tier gate', () => {
 		}
 	});
 
+	// SQ-584: the operator env default (BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered) makes an OMITTED
+	// discovery_mode effectively tiered on brand_audit_single / brand_audit_batch_start. The gate must
+	// see that effective mode, not just the explicit argument.
+	describe('effective mode from BRAND_AUDIT_DISCOVERY_MODE_DEFAULT', () => {
+		const IMPLICIT_TOOLS = ['brand_audit_single', 'brand_audit_batch_start'] as const;
+
+		/** Run a tool with a recording mock and return the discovery_mode the underlying tool received. */
+		async function runAndCaptureMode(
+			tool: (typeof IMPLICIT_TOOLS)[number],
+			authTier: string,
+			discoveryModeDefault: string | undefined,
+			explicit?: 'tiered' | 'classic',
+		) {
+			const single = vi.fn().mockResolvedValue(okResult);
+			const batch = vi.fn().mockResolvedValue(okResult);
+			vi.doMock('../src/tools/brand-audit-single', () => ({ brandAuditSingle: single }));
+			vi.doMock('../src/tools/brand-audit-batch-start', () => ({ brandAuditBatchStart: batch }));
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const result = await handleToolsCall({ name: tool, arguments: makeArgs(tool, explicit) }, undefined, {
+				authTier,
+				discoveryModeDefault,
+				brandAuditDb: {},
+				brandAuditQueue: {},
+			} as never);
+			const call = (tool === 'brand_audit_single' ? single : batch).mock.calls[0];
+			// brandAuditSingle(domain, options, deps) and brandAuditBatchStart(domains, options, principal, deps)
+			// both take the options object second.
+			const options = call?.[1] as { discovery_mode?: string } | undefined;
+			return { result, called: call !== undefined, mode: options?.discovery_mode };
+		}
+
+		for (const tool of IMPLICIT_TOOLS) {
+			it(`${tool}: lower tier + omitted + env default tiered is downgraded to classic, not refused`, async () => {
+				const { result, called, mode } = await runAndCaptureMode(tool, 'developer', 'tiered');
+				expect(result.isError).not.toBe(true);
+				expect(called).toBe(true);
+				expect(mode).toBe('classic');
+			});
+
+			it(`${tool}: lower tier + explicit tiered is still refused with the existing error`, async () => {
+				const { result, called } = await runAndCaptureMode(tool, 'developer', 'tiered', 'tiered');
+				expect(result.isError).toBe(true);
+				const first = result.content[0];
+				expect(first && 'text' in first ? first.text : '').toMatch(
+					/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/,
+				);
+				expect(called).toBe(false);
+			});
+
+			it(`${tool}: eligible tier + omitted + env default tiered stays undefined so the default applies (tiered)`, async () => {
+				const { result, mode } = await runAndCaptureMode(tool, 'enterprise', 'tiered');
+				expect(result.isError).not.toBe(true);
+				expect(mode).toBeUndefined();
+			});
+
+			it(`${tool}: env default unset leaves an omitted mode untouched for a lower tier`, async () => {
+				const { result, mode } = await runAndCaptureMode(tool, 'developer', undefined);
+				expect(result.isError).not.toBe(true);
+				expect(mode).toBeUndefined();
+			});
+
+			it(`${tool}: a non-tiered env default is not treated as tiered`, async () => {
+				const { result, mode } = await runAndCaptureMode(tool, 'developer', 'classic');
+				expect(result.isError).not.toBe(true);
+				expect(mode).toBeUndefined();
+			});
+		}
+	});
+
 	it("discovery_mode='classic' is never gated, regardless of tier", async () => {
 		mockUnderlyingTools();
 		const { handleToolsCall } = await import('../src/handlers/tools');
