@@ -62,7 +62,10 @@ export function sqlLiteral(value) {
 		return String(value);
 	}
 	if (typeof value === 'string') {
-		if (value.includes('\u0000')) throw new Error('cannot copy a string containing a NUL character');
+		// A quoted literal cannot carry a NUL: SQLite's text functions stop at it, so even 'a' || char(0) || 'b' reads back
+		// as 'a'. A UTF-8 blob cast to TEXT keeps every byte (verified against D1, which returns it exactly). Recorded
+		// hostile input put NULs in mcp_access_log.domain, so the bulk copy must carry them.
+		if (value.includes('\u0000')) return `CAST(X'${Buffer.from(value, 'utf8').toString('hex').toUpperCase()}' AS TEXT)`;
 		return `'${value.replaceAll("'", "''")}'`;
 	}
 	throw new Error(`cannot copy a value of type ${value === undefined ? 'undefined' : typeof value}`);
