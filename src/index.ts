@@ -240,6 +240,8 @@ type BvMcpEnv = Env & {
 	BV_WEB_OAUTH_CONSENT_URL?: string;
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
+	/** Optional retired signing secret for a rotation window: verify only, never signs. Unset outside rotation. */
+	OAUTH_SIGNING_SECRET_PREVIOUS?: string;
 	BV_INTERNAL_DEV_KEY?: string;
 	/** Second independent static internal-dev key (owner tier, OWNER_ALLOW_IPS-gated). Lets a per-machine key be added without rotating BV_INTERNAL_DEV_KEY. */
 	BV_INTERNAL_DEV_KEY_2?: string;

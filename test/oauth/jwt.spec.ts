@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const SECRET = 'x'.repeat(32);
 const NOW = 1_700_000_000; // fixed epoch seconds for determinism
@@ -142,5 +142,135 @@ describe('oauth/jwt', () => {
 		await expect(
 			verifyJwt(token, { secret: SECRET, issuer: 'https://x', audience: 'https://y', now: NOW }),
 		).rejects.toThrow(/alg|algorithm/i);
+	});
+});
+
+// SQ-586: OAUTH_SIGNING_SECRET_PREVIOUS is accepted on VERIFY only, so rotating the signing
+// secret does not invalidate every outstanding access token at once.
+
+const CURRENT = 'c'.repeat(32);
+const PREVIOUS = 'p'.repeat(32);
+const THIRD = 't'.repeat(32);
+const BASE = { issuer: 'https://x', audience: 'https://y', now: NOW } as const;
+
+async function mint(secret: string, ttlSeconds = 60): Promise<string> {
+	const { signJwt } = await import('../../src/oauth/jwt');
+	return signJwt({ sub: 'owner', jti: 'j1' }, { secret, ttlSeconds, ...BASE });
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.resetModules();
+});
+
+describe('oauth/jwt previous signing secret (verify only)', () => {
+	it('a token signed with the current secret verifies with and without a previous secret', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await mint(CURRENT);
+		await expect(verifyJwt(token, { secret: CURRENT, ...BASE })).resolves.toMatchObject({ sub: 'owner' });
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: PREVIOUS, ...BASE })).resolves.toMatchObject({ sub: 'owner' });
+	});
+
+	it('a token signed with the previous secret verifies ONLY when the previous secret is configured', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await mint(PREVIOUS);
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: PREVIOUS, ...BASE })).resolves.toMatchObject({ jti: 'j1' });
+		await expect(verifyJwt(token, { secret: CURRENT, ...BASE })).rejects.toThrow(/signature/i);
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: undefined, ...BASE })).rejects.toThrow(/signature/i);
+	});
+
+	it('a token signed with a third secret is rejected whether or not a previous secret is configured', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await mint(THIRD);
+		await expect(verifyJwt(token, { secret: CURRENT, ...BASE })).rejects.toThrow(/signature/i);
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: PREVIOUS, ...BASE })).rejects.toThrow(/signature/i);
+	});
+
+	it('every other validation still runs on a previous-secret token (expired, wrong issuer, lifetime ceiling)', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const opts = { secret: CURRENT, previousSecret: PREVIOUS } as const;
+		const expired = await mint(PREVIOUS, 10);
+		await expect(verifyJwt(expired, { ...opts, ...BASE, now: NOW + 100 })).rejects.toThrow(/expired/i);
+		const token = await mint(PREVIOUS);
+		await expect(verifyJwt(token, { ...opts, ...BASE, issuer: 'https://evil' })).rejects.toThrow(/issuer/i);
+		await expect(verifyJwt(token, { ...opts, ...BASE, audience: 'https://evil' })).rejects.toThrow(/audience/i);
+		await expect(verifyJwt(token, { ...opts, ...BASE, maxLifetimeSeconds: 30 })).rejects.toThrow(/lifetime/i);
+	});
+
+	it('the ownership-proof verifier also honours the previous secret', async () => {
+		const { verifyJwtOwnershipProof } = await import('../../src/oauth/jwt');
+		const token = await mint(PREVIOUS);
+		await expect(
+			verifyJwtOwnershipProof(token, { secret: CURRENT, previousSecret: PREVIOUS, maxLifetimeSeconds: 3600, ...BASE }),
+		).resolves.toMatchObject({ sub: 'owner' });
+		await expect(verifyJwtOwnershipProof(token, { secret: CURRENT, maxLifetimeSeconds: 3600, ...BASE })).rejects.toThrow(/signature/i);
+	});
+
+	it.each([
+		['empty', ''],
+		['whitespace-only', '   \t '],
+	])('an %s previous secret is treated as unset: previous-signed tokens fail and nothing is logged', async (_label, blank) => {
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await mint(PREVIOUS);
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: blank, ...BASE })).rejects.toThrow(/signature/i);
+		expect(log).not.toHaveBeenCalled();
+	});
+
+	it('a previous secret below the strength floor is ignored, even though it signed the token', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const weak = 'w'.repeat(31);
+		const token = await mint(weak);
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: weak, ...BASE })).rejects.toThrow(/signature/i);
+	});
+
+	it('a previous secret equal to the current secret is ignored without affecting current-secret tokens', async () => {
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const token = await mint(CURRENT);
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: CURRENT, ...BASE })).resolves.toMatchObject({ sub: 'owner' });
+		await expect(verifyJwt(await mint(THIRD), { secret: CURRENT, previousSecret: CURRENT, ...BASE })).rejects.toThrow(/signature/i);
+	});
+
+	it('an ignored previous secret logs one fixed-token warning per isolate and never the secret value', async () => {
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		const weak = 'weak-previous-secret-value';
+		const token = await mint(THIRD);
+		for (let i = 0; i < 3; i += 1) {
+			await expect(verifyJwt(token, { secret: CURRENT, previousSecret: weak, ...BASE })).rejects.toThrow(/signature/i);
+		}
+		await expect(verifyJwt(token, { secret: CURRENT, previousSecret: CURRENT, ...BASE })).rejects.toThrow(/signature/i);
+		expect(log).toHaveBeenCalledTimes(1);
+		const line = String(log.mock.calls[0][0]);
+		expect(line).toContain('oauth_previous_signing_secret_ignored');
+		expect(line).toContain('"severity":"warn"');
+		expect(line).not.toContain(weak);
+		expect(line).not.toContain(CURRENT);
+	});
+
+	it('signJwt signs with the given secret only: the verify-side previous secret never reaches signing', async () => {
+		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
+		// signJwt has no previous-secret input; a token it mints under CURRENT must not verify under PREVIOUS alone.
+		const token = await signJwt({ sub: 'owner', jti: 'j1' }, { secret: CURRENT, ttlSeconds: 60, ...BASE });
+		await expect(verifyJwt(token, { secret: PREVIOUS, ...BASE })).rejects.toThrow(/signature/i);
+		await expect(verifyJwt(token, { secret: THIRD, previousSecret: PREVIOUS, ...BASE })).rejects.toThrow(/signature/i);
+	});
+});
+
+describe('securityConfigurationCollision with OAUTH_SIGNING_SECRET_PREVIOUS', () => {
+	it('tolerates previous === current (same authority named twice) but not an alias of another capability', async () => {
+		const { securityConfigurationCollision } = await import('../../src/lib/security-capabilities');
+		expect(securityConfigurationCollision({ OAUTH_SIGNING_SECRET: CURRENT, OAUTH_SIGNING_SECRET_PREVIOUS: CURRENT })).toBeNull();
+		expect(securityConfigurationCollision({ OAUTH_SIGNING_SECRET: CURRENT, OAUTH_SIGNING_SECRET_PREVIOUS: PREVIOUS })).toBeNull();
+		expect(securityConfigurationCollision({ BV_API_KEY: PREVIOUS, OAUTH_SIGNING_SECRET_PREVIOUS: PREVIOUS })).toEqual({
+			left: 'BV_API_KEY',
+			right: 'OAUTH_SIGNING_SECRET_PREVIOUS',
+		});
+		// Equal to the current signing secret AND to another capability: the other alias still collides.
+		expect(
+			securityConfigurationCollision({ BV_API_KEY: CURRENT, OAUTH_SIGNING_SECRET: CURRENT, OAUTH_SIGNING_SECRET_PREVIOUS: CURRENT }),
+		).toEqual({ left: 'BV_API_KEY', right: 'OAUTH_SIGNING_SECRET' });
 	});
 });

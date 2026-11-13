@@ -82,6 +82,22 @@ describe('POST /mcp Bearer JWT acceptance', () => {
 		expect(res.status).toBe(401);
 	});
 
+	it('rotation window: JWT signed with OAUTH_SIGNING_SECRET_PREVIOUS → authenticated; a third secret → 401', async () => {
+		// SQ-586: the retired secret is accepted on verify only while it is configured.
+		const rotatingEnv = { ...jwtEnv, OAUTH_SIGNING_SECRET_PREVIOUS: 'b'.repeat(32) } as TestEnv;
+		const retired = await mintOwnerJwt({ secret: 'b'.repeat(32) });
+		const ctx = createExecutionContext();
+		const accepted = await worker.fetch(mcpInitRequest(retired.token), rotatingEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(accepted.status).not.toBe(401);
+
+		const unrelated = await mintOwnerJwt({ secret: 'z'.repeat(32) });
+		const ctx2 = createExecutionContext();
+		const rejected = await worker.fetch(mcpInitRequest(unrelated.token), rotatingEnv, ctx2);
+		await waitOnExecutionContext(ctx2);
+		expect(rejected.status).toBe(401);
+	});
+
 	it('JWT with revoked jti → 401', async () => {
 		const { token, jti } = await mintOwnerJwt();
 		await revokeJti(env.SESSION_STORE, jti, 60, env.QUOTA_COORDINATOR);
