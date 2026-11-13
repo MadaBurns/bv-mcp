@@ -8,6 +8,46 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.112.0] - 2026-11-13
+
+Production-readiness release. No tool is added or removed and no argument schema changes. Scoring model 2.1.0 is unchanged; dns-checks moves to 2.1.1, and one check now abstains where it used to score (see Fixed).
+
+Behaviour to plan for before deploying or integrating:
+
+- An API key that cannot be validated because the entitlement backend is failing now gets `503` with `Retry-After: 5` instead of `401`.
+- Recon jobs started before this deploy, and jobs older than the 24 hour owner-record lifetime, can no longer be polled.
+- A multi-domain call writes up to 10 access-log rows instead of one.
+- The scan-path canary can page once the alert webhook and analytics credentials are configured.
+
+### Added
+
+- A scan-path canary on the existing 15-minute cron: one cache-bypassing `scan_domain` of a fixed control domain (default `blackveilsecurity.com`, override `SCAN_CANARY_DOMAIN`, disable with `SCAN_CANARY_ENABLED=false`). It pages critically on the second consecutive unhealthy run (threw, timed out, ungraded or too little evidence), suppresses repeats, and sends a recovery notice on the first healthy run, so a scan path broken end to end is caught even when traffic is below the alert lanes' sample floor. It never asserts a score or grade and logs its outcome every tick. Both variables are documented in `docs/operator-runbook.md` (SQ-570).
+- The MCP host answers `GET /.well-known/security.txt` with a 302 redirect to the canonical security.txt on the main site, so the disclosure contact is discoverable on this host without a second copy that could go stale (SQ-571).
+- New `docs/integrator-guide.md` covers version stamps, partial scans, batch and asynchronous jobs, quotas, authority to scan, and error handling. The README, the support page and the client setup guide link to it, and the README and support page link the public terms of service (SQ-572).
+
+### Security
+
+- The recon job poll tools (`osint_investigation_status`, `osint_investigation_report`, `scan_buckets_status`, `scan_buckets_findings`) answer only when an owner record exists and names the caller. A missing record, a failed KV read, an absent KV binding or a missing caller identity gets the same "not owned by this principal" response as an ownership mismatch, so a job id can no longer be polled by a caller who never started it. A start tool that cannot store its owner record reports a failure instead of returning a job id nobody could poll (SQ-566).
+
+### Changed
+
+- `map_compliance` carries a fixed `scopeNotice` on every result, in both the text output and the structured output, stating that the mapping reflects only what is observable from public DNS and HTTP, indicates control posture for the listed control ids, and is not an audit, certification or attestation. Totals and per-control verdicts are unchanged (SQ-569).
+- `check_resolver_consistency` no longer reports three or more distinct answer sets as suspected poisoning. Two or more distinct sets are reported as divergent answers with the cause not established, because answer-set count alone cannot separate geographic steering, rotating pools, propagation and an integrity problem. The `SUSPICIOUS` status remains for compatibility but answer diversity alone no longer emits it (#1401, #1404).
+- The "What the hosted server logs about you" section of the client setup guide separates the aggregate analytics events (which carry only a non-cryptographic domain fingerprint) from the operator access log (which stores the scanned domain in plaintext next to a truncated credential hash), and says that unauthenticated rate-limit counters use the client IP in short-lived keys. It states the retention default, the optional archive, and what the erase path covers. The code did not change (SQ-572).
+- The operator runbook's rollback section covers Durable Object state, points to the staged deploy scripts, and lists the stores that have no documented backup (SQ-572).
+
+### Fixed
+
+- An opaque API key whose entitlement lookup could not be answered (backend error, timeout, 5xx or unreadable response) gets a retryable `503` with `Retry-After: 5`, the same response the OAuth storage-outage path already gives, instead of a `401` that made clients discard a good key. The request is still refused at every tier, no stale entitlement is served, and the outage is never cached (SQ-565).
+- A backend answer of 401, 403, 404, 408 or 429 to that lookup describes the backend or the internal channel, not the customer key, so it is treated as the same outage. The only definitive "no entitlement" answer is a successful response carrying `tier: null`; any other rejecting status still yields `401`. Each outage writes one structured `validate_key_unavailable` warning carrying only a fixed reason token (SQ-578).
+- `batch_scan_status` and `batch_scan_findings` report an async batch job as `failed` (with `error: "consumer_abandoned"`) when it is still queued or running but has not been updated for 12 minutes. Previously a job whose consumer was killed on every delivery stayed `running` until its result expired (SQ-564).
+- `batch_scan_start` applies the same stale-job deadline when an idempotency key is reused, so a new job starts instead of handing back a dead one. A live job inside the bound is still replayed (SQ-577).
+- The scan-level cache key (and the per-check in-flight key) carries a `:tls-probe` segment when the caller's tier is probe-eligible and the TLS probe binding is bound, so an anonymous caller is no longer served a result computed for a paid tier within the 5-minute TTL, and the reverse. No score, grade, TTL or tool output field changes (SQ-567).
+- A multi-domain tool call (`batch_scan`, `batch_scan_start`, `compare_domains`) writes one `mcp_access_log` event per distinct domain, capped at 10, instead of only the first (SQ-568).
+- `check_http_security` (dns-checks 2.1.1): an HTTP server error (status 0 or 5xx, including on the GET fallback) is reported as an inconclusive finding with `errorKind: 'http_server_error'` and the category is left out of the score. Previously such an answer was scored without any header evidence. This can move the score of a domain whose site is answering 5xx at scan time (#1402, #1404).
+- The sidecar freshness deploy gate ignores test-only commits, so a sidecar test change no longer blocks `deploy:prod` (#1400).
+- The scan-path canary loads the scan engine at run time, so importing `src/scheduled.ts` from Node-project tests no longer pulls in the scan graph (SQ-581).
+
 ## [3.111.4] - 2026-11-13
 
 Operations patch release; no tool, argument-schema, scoring or runtime behaviour changes. This deploy moves the access log to its own database.

@@ -2,6 +2,12 @@
 
 All notable changes to `@blackveil/dns-checks` are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.1]
+
+### Fixed (can move scores; scoring model unchanged at 2.1.0)
+
+- `checkHTTPSecurity` treats an HTTP server error (status 0 or 5xx, on the first request or on the GET fallback) as unmeasured: the finding carries `inconclusive: true`, `errorKind: 'http_server_error'` and `httpStatus`, and the result is marked so the scoring engine excludes the category. Previously the answer was scored although no header evidence was available. The robots.txt skip remains a separate voluntary abstention.
+
 ## [2.1.0]
 
 ### Fixed (can move scores; scoring model 2.1.0)
