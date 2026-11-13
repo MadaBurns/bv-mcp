@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { parseJsonc } from '../../scripts/brand-audit-schema-preflight.mjs';
-import { MAIN_WORKER_NAME, SIDECAR_TARGETS, type SidecarTarget } from '../../scripts/sidecar-deploy-drift';
+import { MAIN_WORKER_NAME, SIDECAR_TARGETS, TEST_PATH_EXCLUDES, type SidecarTarget } from '../../scripts/sidecar-deploy-drift';
 import {
 	isInvokedDirectly,
 	probeSidecar,
@@ -121,7 +121,7 @@ describe('sidecar drift CLI — process contract', () => {
 		expect(args[0]).toBe('log');
 		expect(args).toContain('HEAD');
 		expect(args).not.toContain('origin/main');
-		expect(args.slice(args.indexOf('--') + 1)).toEqual(WHOIS.watchPaths);
+		expect(args.slice(args.indexOf('--') + 1)).toEqual([...WHOIS.watchPaths, ...TEST_PATH_EXCLUDES]);
 	});
 
 	it('a non-zero wrangler status BLOCKS — stdout is never parsed without it', () => {
@@ -371,6 +371,64 @@ describe('probeSidecar uses the merge date, not the side-branch committer date (
 			expect(probe.driftCommits[0]).toContain('Merge feature');
 		} finally {
 			process.chdir(prevCwd);
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('probeSidecar ignores test-only commits under a watched directory (3.111.4 — real git repo)', () => {
+	// #1396 changed only packages/bv-ct-index/src/__tests__/tailer/fanout.test.ts and blocked the 3.111.4 deploy:
+	// test files are not bundled by `cf deploy`, so no sidecar deploy could clear that "drift".
+	it('a commit touching only __tests__/ or *.test.ts / *.spec.ts files is not drift; a runtime commit still is', () => {
+		const repo = mkdtempSync(join(tmpdir(), 'sidecar-test-excludes-'));
+		const run = (args: string[], date: string) =>
+			execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+		const commit = (path: string, message: string, date: string) => {
+			execFileSync('mkdir', ['-p', dirname(join(repo, path))]);
+			writeFileSync(join(repo, path), `${message}\n`);
+			run(['add', path], date);
+			run(['commit', '-q', '-m', message], date);
+		};
+
+		try {
+			run(['init', '-q', '-b', 'main'], '2026-01-01T00:00:00Z');
+			run(['config', 'user.email', 'test@example.com'], '2026-01-01T00:00:00Z');
+			run(['config', 'user.name', 'Test'], '2026-01-01T00:00:00Z');
+			commit('pkg/src/tailer.ts', 'base', '2026-01-01T00:00:00Z');
+			// All after the 2026-02-01 deployment below.
+			commit('pkg/src/__tests__/tailer/fanout.test.ts', 'test: nested __tests__ only', '2026-03-01T00:00:00Z');
+			commit('pkg/src/tailer.spec.ts', 'test: colocated spec only', '2026-03-02T00:00:00Z');
+			commit('pkg/src/tailer.test.ts', 'test: colocated test only', '2026-03-03T00:00:00Z');
+
+			const target: SidecarTarget = {
+				worker: 'fixture-sidecar',
+				configPath: 'fixture.jsonc',
+				deploymentsSelector: ['--config', 'fixture.jsonc'],
+				watchPaths: ['pkg/src'],
+				deployCommand: 'npm run deploy:fixture',
+			};
+			const spawn = fakeSpawn((command, args) => {
+				if (command === 'npx') return { status: 0, stdout: JSON.stringify([{ created_on: '2026-02-01T00:00:00Z' }]), stderr: '' };
+				return { status: 0, stdout: execFileSync(command, args, { cwd: repo, encoding: 'utf8' }), stderr: '' };
+			});
+
+			// Positive control: without the excludes, the same history IS three drift commits.
+			const unfiltered = execFileSync('git', ['log', '--first-parent', '--format=%s', 'HEAD', '--', 'pkg/src'], {
+				cwd: repo,
+				encoding: 'utf8',
+			});
+			expect(unfiltered.trim().split('\n')).toHaveLength(4);
+
+			const testOnly = probeSidecar(target, spawn);
+			expect(testOnly.unverifiedReason).toBeNull();
+			expect(testOnly.driftCommits).toEqual([]);
+
+			commit('pkg/src/tailer.ts', 'fix: runtime change', '2026-03-04T00:00:00Z');
+			const runtime = probeSidecar(target, spawn);
+			expect(runtime.driftCommits).toHaveLength(1);
+			expect(runtime.driftCommits[0]).toContain('fix: runtime change');
+			expect(TEST_PATH_EXCLUDES.length).toBeGreaterThan(0);
+		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}
 	});
