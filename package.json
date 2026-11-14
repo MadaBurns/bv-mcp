@@ -109,7 +109,7 @@
 		"zod": "4.6.7"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-plugin": "^1.4.12",
+		"@cloudflare/vitest-plugin": "^1.6.0",
 		"@types/node": "26.6.6",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.11",
@@ -121,7 +121,7 @@
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.72.1",
 		"vitest": "4.1.12",
-		"wrangler": "4.156.1"
+		"wrangler": "4.158.0"
 	},
 	"pnpm": {
 		"overrides": {
