@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.114.0] - 2026-11-14
+
+**This release moves scores up**: scoring model 2.2.0 to 2.3.0 and dns-checks 2.2.0 to 2.3.0. No tool is added or removed and no argument schema changes.
+
 ### Changed
 
 - Scoring model 2.3.0 (dns-checks 2.3.0): a DMARC record that publishes aggregate reporting (`rua=`) without a forensic address (`ruf=`) no longer loses 5 points. The finding "No forensic reporting configured (ruf= absent)" is still reported, with the same title, at `info` instead of `low`. A forensic address is optional, and a forensic report carries content from a real failed message, so a sender may decline it for privacy. Scores move up only: +5 on the `dmarc` category for every such domain.
