@@ -129,3 +129,29 @@ describe('tool-args helpers', () => {
 		})).toThrow('Invalid');
 	});
 });
+
+describe('candidate_domains entries are validated like a domain argument', () => {
+	const tools = ['discover_brand_domains', 'discover_brand_domains_start', 'brand_audit_single'] as const;
+	const reserved = ['localhost', '127.0.0.1', '169.254.169.254', 'example.com/../etc', 'a..b.com'];
+
+	it.each(tools)('%s refuses a reserved or malformed entry and names its position', (tool) => {
+		for (const bad of reserved) {
+			expect(() => validateToolArgs(tool, { domain: 'example.com', candidate_domains: ['example.org', bad] })).toThrow(
+				'Invalid candidate_domains.1: each entry must be a public domain name',
+			);
+		}
+	});
+
+	it('brand_audit_batch_start refuses the same entries', () => {
+		expect(() => validateToolArgs('brand_audit_batch_start', { domains: ['example.com'], candidate_domains: ['localhost'] })).toThrow(
+			'Invalid candidate_domains.0: each entry must be a public domain name',
+		);
+	});
+
+	it.each(tools)('%s still accepts ordinary, uppercase and trailing-dot candidates', (tool) => {
+		const candidates = ['example.org', 'EXAMPLE.NET', 'sub.example.co.nz', 'example.com.'];
+		expect(validateToolArgs(tool, { domain: 'example.com', candidate_domains: candidates }).candidate_domains).toEqual(candidates);
+		expect(validateToolArgs(tool, { domain: 'example.com', candidate_domains: [] }).candidate_domains).toEqual([]);
+		expect(validateToolArgs(tool, { domain: 'example.com' }).candidate_domains).toBeUndefined();
+	});
+});

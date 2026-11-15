@@ -14,6 +14,7 @@ import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
+import { tierToolDailyLimit } from '../src/lib/config';
 import { AUTH_RESOLUTION_MINUTE_LIMIT } from '../src/lib/tier-auth';
 
 const TEST_API_KEY = 'test-api-key';
@@ -263,6 +264,75 @@ describe('bound public door', () => {
 		expect(response.status).toBe(200);
 		expect(events.length).toBe(2);
 		expect(events.map((event) => event.source)).toEqual(['binding', 'binding']);
+	});
+
+	/** Env whose companion-app key lookup answers with `lookup`; every other key path stays as in keyedEnv. */
+	function lookupEnvWith(events: unknown[], lookup: () => Response): Env {
+		return {
+			...keyedEnv(events),
+			BV_WEB: { fetch: async () => lookup() } as unknown as Fetcher,
+			BV_WEB_INTERNAL_KEY: 'internal-key-for-the-lookup-binding-0123456789',
+		} as Env;
+	}
+	const initializeWith = (door: Door, doorEnv: Env, key: string) =>
+		send(door, doorEnv, mcpRequest({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }, { Authorization: `Bearer ${key}` }));
+
+	it('labels a rate-limited call through the bound door as "binding" too', async () => {
+		const events: Array<{ source?: string; rateLimited?: boolean }> = [];
+		const freeKeyEnv = lookupEnvWith(events, () => Response.json({ tier: 'free' }));
+		const auth = { Authorization: 'Bearer a-free-tier-key-for-the-quota-row' };
+		const init = await send(boundDoor, freeKeyEnv, mcpRequest({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }, auth));
+		expect(init.status).toBe(200);
+		const session = { ...auth, 'Mcp-Session-Id': init.headers.get('mcp-session-id')! };
+		const call = (id: number) =>
+			send(
+				boundDoor,
+				freeKeyEnv,
+				mcpRequest(
+					{ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'cymru_asn', arguments: { domain: 'example.com' } } },
+					session,
+				),
+			);
+		const dailyLimit = tierToolDailyLimit('free', 'cymru_asn');
+		expect(dailyLimit).toBeGreaterThan(0);
+		// Finite and small enough to walk in a test: an unlimited tier would never reach the refusal below.
+		expect(dailyLimit).toBeLessThanOrEqual(100);
+
+		// Control: calls inside the daily allowance are served and none is recorded as rate-limited.
+		for (let i = 1; i <= dailyLimit; i++) expect((await call(i)).status).toBe(200);
+		expect(events.filter((event) => event.rateLimited)).toEqual([]);
+
+		const overLimit = await call(dailyLimit + 1);
+		expect(overLimit.status).toBe(429);
+		const limited = events.filter((event) => event.rateLimited);
+		expect(limited.length).toBe(1);
+		expect(limited[0].source).toBe('binding');
+	});
+
+	it('passes a throttled key lookup through the bound door as 429, not as a missing key', async () => {
+		const revokedEnv = lookupEnvWith([], () => Response.json({ tier: null }));
+		// Control: an un-throttled key the lookup does not know is refused 401 at the bound door.
+		expect((await initializeWith(boundDoor, revokedEnv, 'junk-bound-baseline')).status).toBe(401);
+
+		// Each unique junk key spends one unit of the door's own lookup bucket; drain it.
+		let drained: Response | undefined;
+		for (let i = 0; i <= AUTH_RESOLUTION_MINUTE_LIMIT; i++) drained = await initializeWith(boundDoor, revokedEnv, `junk-bound-${i}`);
+		expect(drained!.status).toBe(429);
+		expect(Number(drained!.headers.get('retry-after'))).toBeGreaterThan(0);
+
+		// Control: that was the door's bucket, so a default-door caller with no client IP is not throttled by it.
+		expect((await initializeWith(defaultDoor, revokedEnv, 'junk-default-after-bound')).status).toBe(401);
+	});
+
+	it('passes an unreadable key lookup through the bound door as 503, not as a missing key', async () => {
+		const outageEnv = lookupEnvWith([], () => new Response('upstream error', { status: 500 }));
+		const response = await initializeWith(boundDoor, outageEnv, 'key-during-a-lookup-outage');
+		expect(response.status).toBe(503);
+		expect(response.headers.get('retry-after')).toBe('5');
+
+		// Control: the same key with the lookup answering "no such key" is the ordinary 401.
+		const revokedEnv = lookupEnvWith([], () => Response.json({ tier: null }));
+		expect((await initializeWith(boundDoor, revokedEnv, 'key-the-lookup-does-not-know')).status).toBe(401);
 	});
 
 	it('is exported as a named entry point class that serves the same door', async () => {

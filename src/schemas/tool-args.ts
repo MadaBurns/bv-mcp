@@ -5,6 +5,7 @@ import { z } from 'zod';
 // reverse edge must stay `import type` — erased at build time, so the module
 // graph stays a one-way DAG and no runtime cycle is introduced.
 import type { ToolName } from './tool-definitions';
+import { validateDomain } from '../lib/sanitize';
 import {
 	DomainSchema,
 	FormatSchema,
@@ -399,8 +400,17 @@ const BrandAliasesArg = z
 	.optional()
 	.describe('Optional public brand aliases to seed, such as product or legal-entity labels.');
 
+// Each entry gets the same structural and reserved-target rules as a `domain` argument
+// (validateDomain), so a list naming `localhost` or an IP literal is refused here, not
+// silently ignored by the detectors downstream.
 const BrandCandidateDomainsArg = z
-	.array(z.string().min(1).max(253))
+	.array(
+		z
+			.string()
+			.min(1)
+			.max(253)
+			.refine((value) => validateDomain(value).valid, { message: 'each entry must be a public domain name' }),
+	)
 	.max(250)
 	.optional()
 	.describe('Optional candidate domains supplied by the caller for corroboration.');
