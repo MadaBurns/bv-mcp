@@ -149,15 +149,20 @@ class and `handleBoundPublicDoorRequest` in `src/index.ts`; tests
 - Serves **`/mcp` only** (exact path). Everything else, `/internal/*` included,
   is **404** before the app sees it. A binding to this name cannot reach the
   default handler.
+- Serves **GET, POST and DELETE only**; any other method is **405** with an
+  `Allow` header. No browser calls this door, so it answers no CORS preflight
+  (the default handler answers `OPTIONS` before auth).
 - A bound request is recognised by **object identity** (a module-private
   `WeakSet<Request>` filled only by the entry point), never by a header. Nothing
   a public-internet caller sends can set it.
-- **A valid key is mandatory**: no key → **401** on every method, including
-  `get_access_context`; a wrong key → **401**. One exception, identical to the
-  default handler: an unrecognised key on `get_access_context` gets that
-  diagnostic's **503** "unavailable" answer, because its read-only key lookup
-  cannot tell an unknown key from an unreadable one. Tier, quotas, sessions and
-  paid-only gating are the ordinary public ones.
+- **A valid key is mandatory**: no key or a wrong key → **401**. On an ordinary
+  call a throttled (429) or unreadable (503) credential keeps that status.
+  ⚠️ `get_access_context` differs from the default handler: its key lookup is
+  read-only and reports every key it cannot place as "unreadable", so the door
+  refuses any caller it cannot authenticate there with **401** (the default
+  handler serves a 503 "unavailable" receipt). Consequence: over this door the
+  diagnostic works only for keys that resolve read-only (static keys, JWTs).
+  Tier, quotas, sessions and paid-only gating are the ordinary public ones.
 - **`cf-connecting-ip` from the caller is dropped at the door.** A bound call
   has no edge-set client IP, and a header the calling Worker set itself is only
   its claim. So every bound request is IP `unknown`: there is no IP to put an
@@ -167,12 +172,12 @@ class and `handleBoundPublicDoorRequest` in `src/index.ts`; tests
 - ⚠️ With `OWNER_ALLOW_IPS` set, an **owner** key over this door is downgraded
   to `partner`: the gate needs a client IP and there is none
   (`applyOwnerIpGate`, `src/lib/tier-auth.ts`).
-- ⚠️ Bound callers share ONE key-resolution rate bucket: it is keyed on the
-  client IP, which is `unknown` for all of them (`authResolutionRateKey`). The
-  same bucket serves every default-handler request that arrives with no
-  `cf-connecting-ip` (plain bindings; public traffic during a zone header
-  regression). Junk keys from any of those can throttle a bound caller whose
-  key is not cached or static. Open: give the door its own bucket.
+- The door has **its own key-resolution rate bucket** (`BOUND_DOOR_RATE_PRINCIPAL`,
+  passed to `resolveTier` as `ratePrincipal`; also used for the access-context
+  limiter). It is separate from the `unknown` bucket that default-handler
+  requests with no `cf-connecting-ip` share, so junk keys sent there cannot
+  throttle the door, nor the reverse. ⚠️ All bound callers still share that one
+  door bucket with each other.
 - ⚠️ A plain binding (no `entrypoint`) still reaches the default handler and is
   logged as `public` with no client IP. Use the named entry point.
 

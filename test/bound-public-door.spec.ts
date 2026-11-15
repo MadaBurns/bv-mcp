@@ -14,6 +14,7 @@ import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
+import { AUTH_RESOLUTION_MINUTE_LIMIT } from '../src/lib/tier-auth';
 
 const TEST_API_KEY = 'test-api-key';
 
@@ -151,16 +152,60 @@ describe('bound public door', () => {
 		expect(events.map((event) => event.ipMasked)).toEqual(events.map(() => '203.0.113.xxx'));
 	});
 
-	it('answers an unrecognised key on the access-context diagnostic exactly as the default door does, and never with a 200', async () => {
+	it('refuses an unrecognised key on the access-context diagnostic with 401, where the default door answers "unavailable"', async () => {
 		const diagnostic = () =>
 			mcpRequest(
 				{ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: 'get_access_context', arguments: {} } },
 				{ Authorization: 'Bearer wrong-key' },
 			);
-		const viaDefault = await send(defaultDoor, keyedEnv([]), diagnostic());
 		const viaBound = await send(boundDoor, keyedEnv([]), diagnostic());
-		expect(viaBound.status).toBe(viaDefault.status);
-		expect(viaBound.status).not.toBe(200);
+		expect(viaBound.status).toBe(401);
+		// Control: the default door serves its read-only "unavailable" receipt for the same request.
+		const viaDefault = await send(defaultDoor, keyedEnv([]), diagnostic());
+		expect(viaDefault.status).toBe(503);
+	});
+
+	it('refuses methods the bound door has no use for, before the app answers a preflight', async () => {
+		const preflight = () =>
+			new Request('http://example.com/mcp', {
+				method: 'OPTIONS',
+				headers: { Origin: 'http://example.com', 'Access-Control-Request-Method': 'POST' },
+			});
+		const viaBound = await send(boundDoor, keyedEnv([]), preflight());
+		expect(viaBound.status).toBe(405);
+		expect(viaBound.headers.get('Allow')).toBe('GET, POST, DELETE');
+		// Control: the default door answers the same preflight itself.
+		const viaDefault = await send(defaultDoor, keyedEnv([]), preflight());
+		expect(viaDefault.status).not.toBe(405);
+	});
+
+	it('keeps its key-lookup rate limit apart from default-door callers that have no client IP', async () => {
+		// A companion-app lookup that knows no key: every unique junk key spends one lookup unit.
+		const lookupEnv = {
+			...keyedEnv([]),
+			BV_WEB: { fetch: async () => Response.json({ valid: false }) } as unknown as Fetcher,
+			BV_WEB_INTERNAL_KEY: 'internal-key-for-the-lookup-binding-0123456789',
+		} as Env;
+		const junk = (door: Door, key: string) =>
+			send(door, lookupEnv, mcpRequest({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }, { Authorization: `Bearer ${key}` }));
+
+		// Baseline: what an un-throttled junk key gets (the lookup's own answer, never a 429).
+		const baseline = await junk(defaultDoor, 'junk-default-baseline');
+		expect(baseline.status).not.toBe(429);
+		expect(baseline.status).not.toBe(200);
+
+		// Drain the shared no-IP bucket through the default door.
+		let drained: Response | undefined;
+		for (let i = 0; i <= AUTH_RESOLUTION_MINUTE_LIMIT; i++) drained = await junk(defaultDoor, `junk-default-${i}`);
+		expect(drained!.status).toBe(429);
+
+		// The bound door is not throttled by that: its junk key gets the un-throttled answer.
+		const viaBound = await junk(boundDoor, 'junk-bound-0');
+		expect(viaBound.status).toBe(baseline.status);
+
+		// Control: the default door's bucket is still drained, so the bound call above did not reset anything.
+		const stillDrained = await junk(defaultDoor, 'junk-default-after');
+		expect(stillDrained.status).toBe(429);
 	});
 
 	it.each(['/internal/tools/call', '/internal/analytics/summary', '/health', '/mcp/messages', '/oauth/token', '/mcp/', '/MCP'])(

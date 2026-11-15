@@ -24,6 +24,17 @@ export const BOUND_DOOR_SOURCE = 'binding';
 /** The only path the bound door serves. Exact match: no trailing slash, no case folding. */
 export const BOUND_DOOR_PATH = '/mcp';
 
+/** Methods the bound door serves. It has no browser callers, so no CORS preflight (`OPTIONS`). */
+export const BOUND_DOOR_METHODS: readonly string[] = ['GET', 'POST', 'DELETE'];
+
+/**
+ * Rate-limit principal for bound-door requests, in place of the client IP they do not have.
+ * Without it they would share the `'unknown'` bucket with every default-handler request that
+ * arrives with no `cf-connecting-ip`, and junk keys sent there could throttle the door. It is
+ * not an IP literal, so no public caller's address can collide with it.
+ */
+export const BOUND_DOOR_RATE_PRINCIPAL = 'bound-door';
+
 /** Whether the bound door serves this URL path. Everything else is "not found" there. */
 export function isBoundDoorPath(pathname: string): boolean {
 	return pathname === BOUND_DOOR_PATH;
