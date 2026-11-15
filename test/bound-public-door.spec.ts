@@ -175,6 +175,51 @@ describe('bound public door', () => {
 		},
 	);
 
+	it('control: two of those paths are real routes on the default door, so the 404 is the bound door refusing them', async () => {
+		const health = await send(defaultDoor, keyedEnv([]), new Request('http://example.com/health'));
+		expect(health.status).toBe(200);
+		const viaBound = await send(boundDoor, keyedEnv([]), new Request('http://example.com/health'));
+		expect(viaBound.status).toBe(404);
+		// /internal/* on the default door is guarded by its own key, not absent: anything but 404.
+		const internal = await send(
+			defaultDoor,
+			keyedEnv([]),
+			mcpRequest({ name: 'check_spf', arguments: { domain: 'example.com' } }, { Authorization: `Bearer ${TEST_API_KEY}` }, '/internal/tools/call'),
+		);
+		expect(internal.status).not.toBe(404);
+	});
+
+	it.each(['GET', 'DELETE'])('refuses a keyless %s /mcp through the bound door', async (method) => {
+		const request = () => new Request('http://example.com/mcp', { method, headers: { Accept: 'text/event-stream' } });
+		const viaBound = await send(boundDoor, keyedEnv([]), request());
+		expect(viaBound.status).toBe(401);
+		// Control: the default door does not answer the same keyless request with 401.
+		const viaDefault = await send(defaultDoor, keyedEnv([]), request());
+		expect(viaDefault.status).not.toBe(401);
+	});
+
+	it('labels every call in a JSON-RPC batch through the bound door as "binding"', async () => {
+		const events: Array<{ source?: string }> = [];
+		const doorEnv = keyedEnv(events);
+		const auth = { Authorization: `Bearer ${TEST_API_KEY}` };
+		const init = await send(boundDoor, doorEnv, mcpRequest({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }, auth));
+		const sessionId = init.headers.get('mcp-session-id')!;
+		const call = (id: number, domain: string) => ({
+			jsonrpc: '2.0',
+			id,
+			method: 'tools/call',
+			params: { name: 'check_spf', arguments: { domain } },
+		});
+		const response = await send(
+			boundDoor,
+			doorEnv,
+			mcpRequest([call(1, 'example.com'), call(2, 'example.org')], { ...auth, 'Mcp-Session-Id': sessionId }),
+		);
+		expect(response.status).toBe(200);
+		expect(events.length).toBe(2);
+		expect(events.map((event) => event.source)).toEqual(['binding', 'binding']);
+	});
+
 	it('is exported as a named entry point class that serves the same door', async () => {
 		const ctx = createExecutionContext();
 		const door = new BoundPublicDoor(ctx, keyedEnv([]));
