@@ -16,7 +16,14 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { Hono, type Context } from 'hono';
-import { BOUND_DOOR_SOURCE, isBoundDoorPath, isBoundDoorRequest, markBoundDoorRequest } from './lib/bound-door';
+import {
+	BOUND_DOOR_METHODS,
+	BOUND_DOOR_RATE_PRINCIPAL,
+	BOUND_DOOR_SOURCE,
+	isBoundDoorPath,
+	isBoundDoorRequest,
+	markBoundDoorRequest,
+} from './lib/bound-door';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 
@@ -619,10 +626,14 @@ for (const path of authedPaths) {
 
 		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 		const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
+		// A bound-door request has no client IP: meter it under the door's own principal, so junk
+		// sent to the default handler with no IP cannot throttle the door (and the reverse).
+		const boundDoor = isBoundDoorRequest(c.req.raw);
+		const ratePrincipal = boundDoor ? BOUND_DOOR_RATE_PRINCIPAL : undefined;
 		if (accessContextBody) {
 			// This path returns before every other limiter, so meter it here. No bindings
 			// are passed: the per-isolate in-memory window keeps the path free of storage writes.
-			const rate = await checkControlPlaneRateLimit(resolvedClientIp);
+			const rate = await checkControlPlaneRateLimit(ratePrincipal ?? resolvedClientIp);
 			if (!rate.allowed) {
 				const retryAfterSeconds = Math.max(1, Math.ceil((rate.retryAfterMs ?? 0) / 1000));
 				return Response.json(
@@ -631,10 +642,13 @@ for (const path of authedPaths) {
 				);
 			}
 		}
-		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url, accessContextBody ? { readOnly: true } : undefined);
-		// A bound-door caller has no client IP to rate-limit by, so it must sign in. A throttled
-		// or unreadable credential keeps its own 429/503 below; it is not a missing key.
-		if (isBoundDoorRequest(c.req.raw) && !tierResult.authenticated && !tierResult.rateLimited && !tierResult.storageUnavailable) {
+		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url, { readOnly: accessContextBody !== undefined, ratePrincipal });
+		// A bound-door caller has no client IP to rate-limit by, so it must sign in. On an ordinary
+		// call a throttled or unreadable credential keeps its own 429/503 below; it is not a missing
+		// key. The access-context diagnostic resolves read-only and reports every key it cannot place
+		// as "unreadable", so there an unauthenticated bound caller is refused outright.
+		const credentialPending = accessContextBody === undefined && (tierResult.rateLimited || tierResult.storageUnavailable);
+		if (boundDoor && !tierResult.authenticated && !credentialPending) {
 			return unauthorizedResponse(unauthChallengeParams(c));
 		}
 		if (accessContextBody) {
@@ -1920,6 +1934,14 @@ function fetchWithConfigurationGuard(req: Request, env: BvMcpEnv, ctx: Execution
 export function handleBoundPublicDoorRequest(req: Request, env: BvMcpEnv, ctx: ExecutionContext): Response | Promise<Response> {
 	if (!isBoundDoorPath(new URL(req.url).pathname)) {
 		return Response.json({ error: 'Not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+	}
+	// No browser calls this door, so it answers no CORS preflight: refuse other methods before
+	// the app's CORS layer can reply to an `OPTIONS` without a key.
+	if (!BOUND_DOOR_METHODS.includes(req.method)) {
+		return Response.json(
+			{ error: 'Method not allowed' },
+			{ status: 405, headers: { Allow: BOUND_DOOR_METHODS.join(', '), 'Cache-Control': 'no-store' } },
+		);
 	}
 	// A bound call has no edge-set client IP. Whatever `cf-connecting-ip` the calling Worker
 	// sent is its own claim, so drop it: otherwise a caller could choose the IP that the owner

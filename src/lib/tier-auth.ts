@@ -336,7 +336,11 @@ export async function resolveTier(
 	},
 	clientIp: string | undefined,
 	requestUrl: string,
-	options: { readOnly?: boolean } = {},
+	options: {
+		readOnly?: boolean;
+		/** Bucket for the key-resolution limiter when the caller has no client IP of its own (the bound door). Defaults to the client IP. */
+		ratePrincipal?: string;
+	} = {},
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
@@ -588,7 +592,11 @@ export async function resolveTier(
 	let authResolutionRateLimited = false;
 	let authResolutionRetryAfterMs: number | undefined;
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
-		const resolutionRate = await checkControlPlaneRateLimit(await authResolutionRateKey(clientIp), env.RATE_LIMIT, env.QUOTA_COORDINATOR);
+		const resolutionRate = await checkControlPlaneRateLimit(
+			await authResolutionRateKey(options.ratePrincipal ?? clientIp),
+			env.RATE_LIMIT,
+			env.QUOTA_COORDINATOR,
+		);
 		authResolutionRateLimited = !resolutionRate.allowed;
 		authResolutionRetryAfterMs = resolutionRate.retryAfterMs;
 	}
