@@ -90,8 +90,8 @@ cache. Orchestration, post-processing and the maturity ladder:
 
 ## Scoring
 
-Three-tier model (`computeScanScore`): **Core 70%**, **Protective 20%**,
-**Hardening 10%** (bonus-only), across six profiles in
+Weighted model (`computeScanScore`): **Core 75%**, **Protective 25%** (the
+hardening tier was retired in model 2.0.0; its split is 0), across six profiles in
 `packages/dns-checks/src/scoring/profiles.ts`. Full rule set, incident evidence,
 corpus measurements and the weight-change checklist: **`bv-mcp-scoring`**.
 
