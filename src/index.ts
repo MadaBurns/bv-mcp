@@ -14,7 +14,9 @@
  *   POST /mcp/messages  - Legacy HTTP+SSE client-to-server messages
  */
 
+import { WorkerEntrypoint } from 'cloudflare:workers';
 import { Hono, type Context } from 'hono';
+import { BOUND_DOOR_SOURCE, isBoundDoorPath, isBoundDoorRequest, markBoundDoorRequest } from './lib/bound-door';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 
@@ -630,6 +632,11 @@ for (const path of authedPaths) {
 			}
 		}
 		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url, accessContextBody ? { readOnly: true } : undefined);
+		// A bound-door caller has no client IP to rate-limit by, so it must sign in. A throttled
+		// or unreadable credential keeps its own 429/503 below; it is not a missing key.
+		if (isBoundDoorRequest(c.req.raw) && !tierResult.authenticated && !tierResult.rateLimited && !tierResult.storageUnavailable) {
+			return unauthorizedResponse(unauthChallengeParams(c));
+		}
 		if (accessContextBody) {
 			const contentTypeError = validateContentType(c.req.header('content-type'));
 			if (contentTypeError)
@@ -1004,6 +1011,9 @@ app.post('/mcp', async (c) => {
 	const m365Identity = resolveM365PrincipalIdentity(tierAuthResult);
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
+	// Access-log door label. Undefined keeps the recorder's 'public' default; only a request
+	// the named entry point marked is 'binding' (never a header: see lib/bound-door.ts).
+	const source = isBoundDoorRequest(c.req.raw) ? BOUND_DOOR_SOURCE : undefined;
 	// Edge colo (`cf.colo`, e.g. AKL/SYD) — appended as the trailing analytics blob so
 	// per-datacenter p95/error-rate can be isolated (a single-colo regression otherwise
 	// averages out across the global aggregate). Undefined off-CF / in tests → 'unknown'.
@@ -1095,6 +1105,7 @@ app.post('/mcp', async (c) => {
 					accept,
 					startTime,
 					correlationId,
+					source,
 					ip,
 					isAuthenticated,
 					tierAuthResult,
@@ -1215,6 +1226,7 @@ app.post('/mcp', async (c) => {
 		accept,
 		startTime,
 		correlationId,
+		source,
 		ip,
 		isAuthenticated,
 		tierAuthResult,
@@ -1880,23 +1892,54 @@ export function routeCron(cron: string): CronRoute {
 	return 'unknown';
 }
 
+/** The one request path into the app, shared by the default handler and the bound door. */
+function fetchWithConfigurationGuard(req: Request, env: BvMcpEnv, ctx: ExecutionContext): Response | Promise<Response> {
+	const collision = securityConfigurationCollision(env);
+	if (collision) {
+		// Fail before tier resolution, OAuth JWT verification, or any internal
+		// route can treat one aliased security capability as another authority.
+		// The peer name is intentionally omitted from the public response.
+		return new Response(JSON.stringify({ error: 'Service authentication configuration invalid' }), {
+			status: 503,
+			headers: {
+				'Cache-Control': 'no-store',
+				'Content-Type': 'application/json; charset=utf-8',
+			},
+		});
+	}
+	return app.fetch(req, env, ctx);
+}
+
+/**
+ * The bound public door, as a plain function so tests can drive it without a binding.
+ * Serves `/mcp` only: every other path (`/internal/*` above all) is "not found" before
+ * the app sees it. The request is marked by object identity, then takes the ordinary
+ * public pipeline, where the mark makes a valid key mandatory and labels the access-log
+ * row `source: 'binding'`.
+ */
+export function handleBoundPublicDoorRequest(req: Request, env: BvMcpEnv, ctx: ExecutionContext): Response | Promise<Response> {
+	if (!isBoundDoorPath(new URL(req.url).pathname)) {
+		return Response.json({ error: 'Not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+	}
+	markBoundDoorRequest(req);
+	return fetchWithConfigurationGuard(req, env, ctx);
+}
+
+/**
+ * Named entry point for another Worker on the same account that should use the public
+ * tool surface under its own API key, over a service binding instead of the public
+ * address. The caller's wrangler config names it:
+ * `{ "binding": "BV_MCP", "service": "<this worker>", "entrypoint": "BoundPublicDoor" }`.
+ * A binding to this name cannot reach the default handler, so it cannot reach `/internal/*`.
+ */
+export class BoundPublicDoor extends WorkerEntrypoint<BvMcpEnv> {
+	async fetch(req: Request): Promise<Response> {
+		return handleBoundPublicDoorRequest(req, this.env, this.ctx);
+	}
+}
+
 export default {
-	fetch: (req: Request, env: BvMcpEnv, ctx: ExecutionContext) => {
-		const collision = securityConfigurationCollision(env);
-		if (collision) {
-			// Fail before tier resolution, OAuth JWT verification, or any internal
-			// route can treat one aliased security capability as another authority.
-			// The peer name is intentionally omitted from the public response.
-			return new Response(JSON.stringify({ error: 'Service authentication configuration invalid' }), {
-				status: 503,
-				headers: {
-					'Cache-Control': 'no-store',
-					'Content-Type': 'application/json; charset=utf-8',
-				},
-			});
-		}
-		return app.fetch(req, env, ctx);
-	},
+	fetch: fetchWithConfigurationGuard,
 	/**
 	 * Tail-consumer handler. `wrangler.jsonc` registers this Worker as its own
 	 * `tail_consumers` target, so Cloudflare delivers a batch of this Worker's

@@ -138,6 +138,34 @@ Beyond that guard the capabilities are **distinct keys, not one shared secret**:
   tenant capabilities; the fleet web key is rejected for them.
 - Mutating calls support durable `Idempotency-Key` replay protection.
 
+## Bound public door (`BoundPublicDoor`)
+
+A third way in, for another Worker on the same account that should use the
+public tool surface under **its own API key** over a service binding. The caller
+binds with `"entrypoint": "BoundPublicDoor"`. Code: `src/lib/bound-door.ts`, the
+class and `handleBoundPublicDoorRequest` in `src/index.ts`; tests
+`test/bound-public-door.spec.ts`.
+
+- Serves **`/mcp` only** (exact path). Everything else, `/internal/*` included,
+  is **404** before the app sees it. A binding to this name cannot reach the
+  default handler.
+- A bound request is recognised by **object identity** (a module-private
+  `WeakSet<Request>` filled only by the entry point), never by a header. Nothing
+  a public-internet caller sends can set it.
+- **A valid key is mandatory**: no key or a wrong key → **401**, including for
+  `get_access_context`. A bound call has no `cf-connecting-ip`, so there is no
+  IP to put an anonymous caller in a rate-limit bucket by. Tier, quotas, sessions
+  and paid-only gating are the ordinary public ones.
+- Access-log rows carry **`source = 'binding'`**. The client-IP audit counts
+  `source = 'public'` only, so bound traffic neither trips nor dilutes it.
+- ⚠️ With `OWNER_ALLOW_IPS` set, an **owner** key over this door is downgraded
+  to `partner`: the gate needs a client IP and there is none
+  (`applyOwnerIpGate`, `src/lib/tier-auth.ts`).
+- ⚠️ Bound callers share ONE key-resolution rate bucket: it is keyed on the
+  client IP, which is `unknown` for all of them (`authResolutionRateKey`).
+- ⚠️ A plain binding (no `entrypoint`) still reaches the default handler and is
+  logged as `public` with no client IP. Use the named entry point.
+
 ## Enterprise Managed Auth (jwt-bearer / ID-JAG)
 
 `POST /oauth/token` `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` (`handleJwtBearerGrant` → `acceptIdJag`, `src/oauth/token.ts`; the 600/min per-IP ceiling runs before the body read for every grant, then jwt-bearer uses only its (IP, issuer) 120/min bucket and never the 30/min shared bucket). Customer guide `docs/enterprise-managed-auth.md`; seeding `docs/operator-runbook.md` §8a.

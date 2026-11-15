@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- A named Worker entry point, `BoundPublicDoor`, so another Worker on the same Cloudflare account can call `/mcp` over a service binding under its own API key instead of the public address. It serves `/mcp` only and answers 404 for every other path, including `/internal/*`. A call with no valid key gets 401, because a bound call carries no client IP address to rate-limit by. Its access-log rows are written with `source = 'binding'`, so they are not counted by the public-door client-IP audit. The default handler, the public address and `/internal/*` are unchanged. No tool is added or removed and no score moves. Not yet exercised over a real binding on a deployed Worker.
+
 ## [3.114.0] - 2026-11-14
 
 **This release moves scores up**: scoring model 2.2.0 to 2.3.0 and dns-checks 2.2.0 to 2.3.0. No tool is added or removed and no argument schema changes.
