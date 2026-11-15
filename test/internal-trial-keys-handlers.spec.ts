@@ -200,5 +200,20 @@ describe('GET /internal/trial-keys (list) handler', () => {
 		expect(kv.list).toHaveBeenLastCalledWith({ prefix: 'trial:', limit: 1000 });
 		await internalRoutes.request('/trial-keys', { headers: AUTH }, { BV_MCP_OAUTH_MINT_KEY: MINT_KEY, RATE_LIMIT: kv });
 		expect(kv.list).toHaveBeenLastCalledWith({ prefix: 'trial:', limit: 100 });
+		await internalRoutes.request('/trial-keys?limit=7', { headers: AUTH }, { BV_MCP_OAUTH_MINT_KEY: MINT_KEY, RATE_LIMIT: kv });
+		expect(kv.list).toHaveBeenLastCalledWith({ prefix: 'trial:', limit: 7 });
+	});
+
+	it.each(['abc', '0', '-5', '1.5', '', '1e3', ' 5'])('400s "Invalid limit" for ?limit=%j without calling KV list', async (limit) => {
+		const { internalRoutes } = await import('../src/internal');
+		const kv = createMockKv();
+		const res = await internalRoutes.request(
+			`/trial-keys?limit=${encodeURIComponent(limit)}`,
+			{ headers: AUTH },
+			{ BV_MCP_OAUTH_MINT_KEY: MINT_KEY, RATE_LIMIT: kv },
+		);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toMatch(/^Invalid limit/);
+		expect(kv.list).not.toHaveBeenCalled();
 	});
 });

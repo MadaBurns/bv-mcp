@@ -22,6 +22,42 @@ describe('POST /internal/analytics/erase', () => {
 		expect(res.status).toBe(400);
 	});
 
+	it.each([
+		['ip_hash=abc', /^Invalid ip_hash/],
+		['ip_hash=i_', /^Invalid ip_hash/],
+		['ip_hash=i_123456789', /^Invalid ip_hash/],
+		['ip_hash=x_1a2b', /^Invalid ip_hash/],
+		['ip_hash=i_1A2B', /^Invalid ip_hash/],
+		['ip_hash=%27%20OR%201%3D1%20--', /^Invalid ip_hash/],
+		['key_hash=kh', /^Invalid key_hash/],
+		['key_hash=0123456789abcde', /^Invalid key_hash/],
+		['key_hash=0123456789ABCDEF', /^Invalid key_hash/],
+		['key_hash=0123456789abcdef0', /^Invalid key_hash/],
+		['ip_hash=i_1a2b&key_hash=nope', /^Invalid key_hash/],
+	])('400s "Invalid …" on a malformed hash (%s) before any SQL is prepared', async (query, message) => {
+		const { internalRoutes } = await import('../src/internal');
+		const prepare = vi.fn();
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request(`/analytics/erase?${query}`, { method: 'POST', headers: { authorization: 'Bearer right' } }, env);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toMatch(message);
+		expect(prepare).not.toHaveBeenCalled();
+	});
+
+	it.each(['i_1a2b3c4d', 'n_0', 'unknown'])('accepts the stored ip_hash shape %s', async (ipHash) => {
+		const { internalRoutes } = await import('../src/internal');
+		const run = vi.fn(async () => ({ success: true, meta: { changes: 0 } }));
+		const prepare = vi.fn(() => ({ bind: () => ({ run }) }));
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request(
+			`/analytics/erase?ip_hash=${ipHash}`,
+			{ method: 'POST', headers: { authorization: 'Bearer right' } },
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(prepare).toHaveBeenCalled();
+	});
+
 	it('deletes matching rows, returns the count, and writes a self-audit row', async () => {
 		const { internalRoutes } = await import('../src/internal');
 		const auditRun = vi.fn(async () => ({ success: true }));
@@ -34,7 +70,7 @@ describe('POST /internal/analytics/erase', () => {
 		);
 		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request(
-			'/analytics/erase?key_hash=abc123',
+			'/analytics/erase?key_hash=0123456789abcdef',
 			{ method: 'POST', headers: { authorization: 'Bearer right' } },
 			env,
 		);
@@ -64,12 +100,12 @@ describe('POST /internal/analytics/erase', () => {
 		);
 		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
 		const res = await internalRoutes.request(
-			'/analytics/erase?ip_hash=iph&key_hash=kh',
+			'/analytics/erase?ip_hash=i_1a2b3c4d&key_hash=fedcba9876543210',
 			{ method: 'POST', headers: { authorization: 'Bearer right' } },
 			env,
 		);
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ deleted: 3, key_hash: 'kh', ip_hash: 'iph' });
+		expect(await res.json()).toEqual({ deleted: 3, key_hash: 'fedcba9876543210', ip_hash: 'i_1a2b3c4d' });
 		expect(deleteRun).toHaveBeenCalledTimes(1);
 		expect(auditRun).toHaveBeenCalledTimes(1);
 		// Both filters present => AND-ed in the DELETE.

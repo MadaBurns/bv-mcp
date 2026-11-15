@@ -15,6 +15,41 @@ describe('GET /internal/analytics/forensics', () => {
 		expect(r401.status).toBe(401);
 	});
 
+	it.each([
+		['ip_hash=abc', /^Invalid ip_hash/],
+		['ip_hash=i_123456789', /^Invalid ip_hash/],
+		['ip_hash=%27%20OR%201%3D1%20--', /^Invalid ip_hash/],
+		['key_hash=kh', /^Invalid key_hash/],
+		['key_hash=0123456789ABCDEF', /^Invalid key_hash/],
+		['ip_hash=i_1a2b&key_hash=nope', /^Invalid key_hash/],
+	])('400s "Invalid …" on a malformed hash (%s) before any SQL is prepared', async (query, message) => {
+		const { internalRoutes } = await import('../src/internal');
+		const prepare = vi.fn();
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request(`/analytics/forensics?${query}`, { headers: { authorization: 'Bearer right' } }, env);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: string }).error).toMatch(message);
+		expect(prepare).not.toHaveBeenCalled();
+	});
+
+	it('accepts well-formed ip_hash and key_hash filters and binds them', async () => {
+		const { internalRoutes } = await import('../src/internal');
+		const bound: unknown[][] = [];
+		const auditRun = vi.fn(async () => ({ success: true }));
+		const all = vi.fn(async () => ({ results: [] }));
+		const prepare = vi.fn((sql: string) =>
+			sql.includes('mcp_access_log_audit') ? { bind: () => ({ run: auditRun }) } : { bind: (...a: unknown[]) => (bound.push(a), { all }) },
+		);
+		const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request(
+			'/analytics/forensics?ip_hash=n_1a2b3c4d&key_hash=0123456789abcdef',
+			{ headers: { authorization: 'Bearer right' } },
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(bound[0].slice(1)).toEqual(['n_1a2b3c4d', '0123456789abcdef']);
+	});
+
 	it('with the strict bearer: returns decrypted IPs and writes an audit row', async () => {
 		const { encryptIpEvidence } = await import('../src/mcp/execute');
 		const key = btoa(String.fromCharCode(...new Uint8Array(32))); // 32 zero bytes

@@ -1501,7 +1501,11 @@ internalRoutes.get('/trial-keys', async (c) => {
 	}
 
 	const url = new URL(c.req.url);
-	const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 1000);
+	const limitParam = url.searchParams.get('limit');
+	// Positive integers only (NaN, 0, negatives, fractions, exponents → 400); above the cap is clamped, as before.
+	const requested = limitParam === null ? 100 : /^[0-9]+$/.test(limitParam) ? Number(limitParam) : 0;
+	if (requested < 1) return c.json({ error: 'Invalid limit: expected an integer from 1 to 1000' }, 400);
+	const limit = Math.min(requested, 1000);
 
 	const kvEnvelopeKeyForList = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit }, kvEnvelopeKeyForList);
@@ -2136,6 +2140,23 @@ const internalStrictAuthGate: import('hono').MiddlewareHandler<{ Bindings: Inter
 internalRoutes.use('/analytics/forensics', internalStrictAuthGate);
 
 /**
+ * Stored shapes of the `mcp_access_log` hash columns, so a value that cannot match any
+ * row is rejected before SQL (erase must never DELETE for an arbitrary string).
+ * ip_hash: `i_`/`n_` + FNV-1a hex (hashIpForAnalytics / hashNetworkLocalityForAnalytics,
+ * src/lib/analytics.ts) or the internal door's `'unknown'` sentinel (recordInternalAccessLog).
+ * key_hash: first 16 hex chars of the SHA-256 key digest (`analyticsKeyHash`, src/index.ts).
+ */
+const ACCESS_LOG_IP_HASH_PATTERN = /^(?:[in]_[0-9a-f]{1,8}|unknown)$/;
+const ACCESS_LOG_KEY_HASH_PATTERN = /^[0-9a-f]{16}$/;
+
+/** Returns an `Invalid …` message for the first malformed hash filter, else null. Absent/empty filters are not checked. */
+function invalidAccessLogHashFilter(ipHash: string | null, keyHash: string | null): string | null {
+	if (ipHash && !ACCESS_LOG_IP_HASH_PATTERN.test(ipHash)) return 'Invalid ip_hash: expected an i_/n_ analytics hash';
+	if (keyHash && !ACCESS_LOG_KEY_HASH_PATTERN.test(keyHash)) return 'Invalid key_hash: expected 16 lowercase hex characters';
+	return null;
+}
+
+/**
  * GET /internal/analytics/forensics (D1, STRICT) — recent events with DECRYPTED IP.
  *
  * Operator-only re-identification surface; every call writes a self-audit row
@@ -2151,6 +2172,8 @@ internalRoutes.get('/analytics/forensics', async (c) => {
 	const windowSec = days * 86400;
 	const ipHash = url.searchParams.get('ip_hash');
 	const keyHash = url.searchParams.get('key_hash');
+	const invalidHash = invalidAccessLogHashFilter(ipHash, keyHash);
+	if (invalidHash) return c.json({ error: invalidHash }, 400);
 	try {
 		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
 		const binds: unknown[] = [windowSec];
@@ -2223,6 +2246,8 @@ internalRoutes.post('/analytics/erase', async (c) => {
 	const ipHash = url.searchParams.get('ip_hash');
 	const keyHash = url.searchParams.get('key_hash');
 	if (!ipHash && !keyHash) return c.json({ error: 'Missing required parameter: key_hash or ip_hash' }, 400);
+	const invalidHash = invalidAccessLogHashFilter(ipHash, keyHash);
+	if (invalidHash) return c.json({ error: invalidHash }, 400);
 	try {
 		const filters: string[] = [];
 		const binds: unknown[] = [];
