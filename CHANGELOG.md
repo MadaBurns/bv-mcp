@@ -16,6 +16,10 @@ No tool is added, removed or renamed, no argument schema changes and no score mo
 
 - A named Worker entry point, `BoundPublicDoor`, so another Worker on the same Cloudflare account can call `/mcp` over a service binding under its own API key instead of the public address. It serves `/mcp` only and answers 404 for every other path, including `/internal/*`. A call with no valid key gets 401, because a bound call carries no client IP address to rate-limit by. Its access-log rows are written with `source = 'binding'`, so they are not counted by the public-door client-IP audit. The default handler, the public address and `/internal/*` are unchanged. No tool is added or removed and no score moves. Not yet exercised over a real binding on a deployed Worker.
 
+### Fixed
+
+- `/internal/*` parameter validation (SQ-549): `GET /internal/trial-keys` answers 400 `Invalid limit` for a `limit` that is not a positive integer (a value above 1000 is still clamped), and `/internal/analytics/forensics` and `/internal/analytics/erase` answer 400 `Invalid ip_hash` or `Invalid key_hash` for a value that cannot match the stored access-log shape, before any SQL is prepared. Callers that send well-formed values see no change.
+
 ## [3.114.0] - 2026-11-14
 
 **This release moves scores up**: scoring model 2.2.0 to 2.3.0 and dns-checks 2.2.0 to 2.3.0. No tool is added or removed and no argument schema changes.
