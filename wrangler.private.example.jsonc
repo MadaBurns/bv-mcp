@@ -1,7 +1,10 @@
 // Template for .dev/wrangler.deploy.jsonc — the PRIVATE OVERLAY, not a standalone config.
 //
-// scripts/inject-private-config.cjs merges this file onto the public wrangler.jsonc and
-// writes wrangler.production.jsonc, which is what actually deploys. Only the keys below
+// This file feeds cloudflare.config.ts in production mode: its binding IDs and targets
+// are read via scripts/lib/overlay-merge.mjs and declared in the `cf` deploy
+// (`cf deploy --mode production`). scripts/inject-private-config.cjs still merges it onto
+// the public wrangler.jsonc and writes wrangler.production.jsonc, which only the
+// wrangler-based D1/KV preflights, drift check and rollback read. Only the keys below
 // are merged: kv_namespaces, d1_databases, r2_buckets, analytics_engine_datasets,
 // services, queues, vars. Everything else — name, main, compatibility_date,
 // durable_objects, migrations, observability, limits, triggers, tail_consumers — is owned
@@ -42,7 +45,7 @@
 				"queue": "bv-scanner-queue",
 				"max_batch_size": 25,
 				"max_retries": 3,
-				// Create the DLQ first with `npx wrangler queues create bv-scanner-dlq`,
+				// Create the DLQ first with `cf queues create --queue-name bv-scanner-dlq`,
 				// THEN add this field here and redeploy — see docs/tenant-ops-runbook.md's
 				// "Dead-Letter Queue Setup" subsection. Without it, a message that exhausts
 				// max_retries is dropped with no durable marker (SQ-169).
@@ -74,7 +77,7 @@
 		]
 	},
 	"vars": {
-		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
+		// Set BV_API_KEY with `cf workers secrets update BV_API_KEY --worker bv-dns-security-mcp --text "$v"`.
 		"PROVIDER_SIGNATURES_URL": "",
 		// The injector refuses to generate a production config without these three, and it
 		// PINS OAUTH_ISSUER to the value below. A fork serving the Worker from a different
@@ -86,7 +89,8 @@
 		"REQUIRE_PRODUCTION_BINDINGS": "true"
 		// ALERT_WEBHOOK_URL is deliberately NOT a var here (#1073) — it is a capability
 		// secret. Set it with:
-		//   printf %s "https://your-alert-webhook" | npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc
+		//   cf workers secrets update ALERT_WEBHOOK_URL --worker bv-dns-security-mcp --text "https://your-alert-webhook"
+		//   (`cf workers secrets update` does not read stdin; it takes the value via --text.)
 		// scripts/inject-private-config.cjs fails the deploy closed unless
 		// `wrangler secret list` shows it provisioned, and fails closed (a different
 		// message) if it is ALSO present here as a var — a name cannot be both.
