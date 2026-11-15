@@ -35,6 +35,7 @@ import { logError, logEvent } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall, INTERNAL_BATCH_SAFE_TOOLS } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
+import { BOUND_DOOR_SOURCE } from './lib/bound-door';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
@@ -2049,11 +2050,13 @@ internalRoutes.get('/analytics/usage', async (c) => {
 	const windowSec = days * 86400;
 	const keyHash = url.searchParams.get('key_hash') ?? undefined;
 	// Differentiate internal (bv-web service-binding `/internal/tools/*`) from external
-	// (public `/mcp`) traffic. Legacy rows predate the `source` column → COALESCE to
+	// traffic: 'public' (the `/mcp` default handler) and 'binding' (the bound public door,
+	// lib/bound-door.ts). Legacy rows predate the `source` column → COALESCE to
 	// 'public'. An unrecognized `?source=` value is ignored (treated as 'all'), matching
 	// the endpoint's lenient posture — only the known set is ever bound into the filter.
 	const sourceParam = url.searchParams.get('source');
-	const sourceFilter = sourceParam === 'public' || sourceParam === 'internal' ? sourceParam : undefined;
+	const sourceFilter =
+		sourceParam === 'public' || sourceParam === 'internal' || sourceParam === BOUND_DOOR_SOURCE ? sourceParam : undefined;
 	try {
 		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
 		const binds: unknown[] = [windowSec];
