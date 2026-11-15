@@ -14,7 +14,7 @@ No tool is added, removed or renamed, no argument schema changes and no score mo
 
 ### Added
 
-- A named Worker entry point, `BoundPublicDoor`, so another Worker on the same Cloudflare account can call `/mcp` over a service binding under its own API key instead of the public address. It serves `/mcp` only and answers 404 for every other path, including `/internal/*`. A call with no valid key gets 401, because a bound call carries no client IP address to rate-limit by. Its access-log rows are written with `source = 'binding'`, so they are not counted by the public-door client-IP audit. The default handler, the public address and `/internal/*` are unchanged. No tool is added or removed and no score moves. Not yet exercised over a real binding on a deployed Worker.
+- A named Worker entry point, `BoundPublicDoor`, so another Worker on the same Cloudflare account can call `/mcp` over a service binding under its own API key instead of the public address. It serves `/mcp` only and answers 404 for every other path, including `/internal/*`. A call with no key gets 401, because a bound call carries no client IP address to rate-limit by; a `cf-connecting-ip` header set by the calling Worker is dropped. A wrong key gets 401, except on `get_access_context`, where an unrecognised key gets the same 503 answer as on the public address. Its access-log rows are written with `source = 'binding'`, so they are not counted by the public-door client-IP audit. The default handler, the public address and `/internal/*` are unchanged. No tool is added or removed and no score moves. Not yet exercised over a real binding on a deployed Worker.
 
 ### Fixed
 
