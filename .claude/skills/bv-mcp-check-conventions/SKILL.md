@@ -128,6 +128,13 @@ parallelizing them is a scoring change (measured: 90 → 60). Pinned by
   `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>[:check:<name>|:profile:<p>]`; build them with
   `buildCheckCacheKey` / `buildScanCacheKey`. 5-min TTL (`cacheTtlSeconds` override); `force_refresh` →
   `skipCache`. Both predicates are `!partial`.
+- ⚠️ **A scan writes NO per-check entries.** During `scan_domain` no scanned check writes a
+  `:check:<name>` key: not the 19 scored categories, not the web-posture checks (SQ-498,
+  `runDedupedCheck` in `scan/check-retry.ts`); only direct `check_*` calls do. A scan persists only
+  the scan-level entry. Concurrent scans of one domain share an in-flight run, but under the scan's
+  own key (`buildScanCheckInflightKey`, SQ-561), so a scan and a direct call never join each
+  other's run. Don't assume a per-check key exists after a scan. A cached scan replays for a caller
+  that wants the web-posture section only if it already carries one (`canReplayCachedScan`).
 - **Mutating-tool request-dedup**: `handleToolsCall` wraps mutating `*_start` /
   `register_*` tools in `withRequestDedup` (`lib/request-dedup.ts`, ~90s KV
   window keyed `sha256(principal + tool + canonicalArgs)`). `MUTATING_DEDUP_TOOLS`
