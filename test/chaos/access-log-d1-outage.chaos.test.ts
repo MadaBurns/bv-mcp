@@ -273,7 +273,7 @@ describe('Chaos B: access-log D1 (INTELLIGENCE_DB) outage', () => {
 			const env = { BV_WEB_INTERNAL_KEY: 'right', INTELLIGENCE_DB: outage.db };
 
 			const res = await internalRoutes.request(
-				'/analytics/erase?key_hash=abc123',
+				'/analytics/erase?key_hash=0a1b2c3d4e5f6071',
 				{ method: 'POST', headers: { authorization: 'Bearer right' } },
 				env,
 			);
