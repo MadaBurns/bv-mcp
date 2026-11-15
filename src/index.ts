@@ -1913,16 +1913,22 @@ function fetchWithConfigurationGuard(req: Request, env: BvMcpEnv, ctx: Execution
 /**
  * The bound public door, as a plain function so tests can drive it without a binding.
  * Serves `/mcp` only: every other path (`/internal/*` above all) is "not found" before
- * the app sees it. The request is marked by object identity, then takes the ordinary
- * public pipeline, where the mark makes a valid key mandatory and labels the access-log
+ * the app sees it. A copy of the request without `cf-connecting-ip` is marked by object
+ * identity, then takes the ordinary public pipeline, where the mark makes a valid key mandatory and labels the access-log
  * row `source: 'binding'`.
  */
 export function handleBoundPublicDoorRequest(req: Request, env: BvMcpEnv, ctx: ExecutionContext): Response | Promise<Response> {
 	if (!isBoundDoorPath(new URL(req.url).pathname)) {
 		return Response.json({ error: 'Not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
 	}
-	markBoundDoorRequest(req);
-	return fetchWithConfigurationGuard(req, env, ctx);
+	// A bound call has no edge-set client IP. Whatever `cf-connecting-ip` the calling Worker
+	// sent is its own claim, so drop it: otherwise a caller could choose the IP that the owner
+	// allowlist, the per-IP limits and the audit hash key on.
+	const headers = new Headers(req.headers);
+	headers.delete('cf-connecting-ip');
+	const bound = new Request(req, { headers });
+	markBoundDoorRequest(bound);
+	return fetchWithConfigurationGuard(bound, env, ctx);
 }
 
 /**

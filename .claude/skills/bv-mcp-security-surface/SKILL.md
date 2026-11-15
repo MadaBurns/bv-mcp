@@ -152,17 +152,27 @@ class and `handleBoundPublicDoorRequest` in `src/index.ts`; tests
 - A bound request is recognised by **object identity** (a module-private
   `WeakSet<Request>` filled only by the entry point), never by a header. Nothing
   a public-internet caller sends can set it.
-- **A valid key is mandatory**: no key or a wrong key → **401**, including for
-  `get_access_context`. A bound call has no `cf-connecting-ip`, so there is no
-  IP to put an anonymous caller in a rate-limit bucket by. Tier, quotas, sessions
-  and paid-only gating are the ordinary public ones.
+- **A valid key is mandatory**: no key → **401** on every method, including
+  `get_access_context`; a wrong key → **401**. One exception, identical to the
+  default handler: an unrecognised key on `get_access_context` gets that
+  diagnostic's **503** "unavailable" answer, because its read-only key lookup
+  cannot tell an unknown key from an unreadable one. Tier, quotas, sessions and
+  paid-only gating are the ordinary public ones.
+- **`cf-connecting-ip` from the caller is dropped at the door.** A bound call
+  has no edge-set client IP, and a header the calling Worker set itself is only
+  its claim. So every bound request is IP `unknown`: there is no IP to put an
+  anonymous caller in a rate-limit bucket by, which is why the key is mandatory.
 - Access-log rows carry **`source = 'binding'`**. The client-IP audit counts
   `source = 'public'` only, so bound traffic neither trips nor dilutes it.
 - ⚠️ With `OWNER_ALLOW_IPS` set, an **owner** key over this door is downgraded
   to `partner`: the gate needs a client IP and there is none
   (`applyOwnerIpGate`, `src/lib/tier-auth.ts`).
 - ⚠️ Bound callers share ONE key-resolution rate bucket: it is keyed on the
-  client IP, which is `unknown` for all of them (`authResolutionRateKey`).
+  client IP, which is `unknown` for all of them (`authResolutionRateKey`). The
+  same bucket serves every default-handler request that arrives with no
+  `cf-connecting-ip` (plain bindings; public traffic during a zone header
+  regression). Junk keys from any of those can throttle a bound caller whose
+  key is not cached or static. Open: give the door its own bucket.
 - ⚠️ A plain binding (no `entrypoint`) still reaches the default handler and is
   logged as `public` with no client IP. Use the named entry point.
 

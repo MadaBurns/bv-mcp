@@ -134,6 +134,35 @@ describe('bound public door', () => {
 		expect(response.status).toBe(401);
 	});
 
+	it('ignores a client-IP header the bound caller sets itself', async () => {
+		const events: Array<{ ipMasked?: string; source?: string }> = [];
+		const response = await callToolThrough(boundDoor, keyedEnv(events), { 'cf-connecting-ip': '203.0.113.7' });
+		expect(response.status).toBe(200);
+		expect(events.length).toBeGreaterThan(0);
+		expect(events.map((event) => event.source)).toEqual(events.map(() => 'binding'));
+		expect(events.filter((event) => event.ipMasked === '203.0.113.xxx')).toEqual([]);
+	});
+
+	it('control: the default door does record that client-IP header', async () => {
+		const events: Array<{ ipMasked?: string }> = [];
+		const response = await callToolThrough(defaultDoor, keyedEnv(events), { 'cf-connecting-ip': '203.0.113.7' });
+		expect(response.status).toBe(200);
+		expect(events.length).toBeGreaterThan(0);
+		expect(events.map((event) => event.ipMasked)).toEqual(events.map(() => '203.0.113.xxx'));
+	});
+
+	it('answers an unrecognised key on the access-context diagnostic exactly as the default door does, and never with a 200', async () => {
+		const diagnostic = () =>
+			mcpRequest(
+				{ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: 'get_access_context', arguments: {} } },
+				{ Authorization: 'Bearer wrong-key' },
+			);
+		const viaDefault = await send(defaultDoor, keyedEnv([]), diagnostic());
+		const viaBound = await send(boundDoor, keyedEnv([]), diagnostic());
+		expect(viaBound.status).toBe(viaDefault.status);
+		expect(viaBound.status).not.toBe(200);
+	});
+
 	it.each(['/internal/tools/call', '/internal/analytics/summary', '/health', '/mcp/messages', '/oauth/token', '/mcp/', '/MCP'])(
 		'answers "not found" for %s, so the bound door cannot reach any other route',
 		async (path) => {
