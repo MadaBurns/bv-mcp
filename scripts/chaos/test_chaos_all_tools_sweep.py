@@ -191,6 +191,24 @@ class RunnerHelpersTest(unittest.TestCase):
                 fh.write("OTHER=1\n")
             self.assertIsNone(M.resolve_key(path))
 
+    def test_host_must_be_https_or_local(self):
+        self.assertTrue(M.host_is_allowed("https://example.com/mcp"))
+        self.assertTrue(M.host_is_allowed("http://127.0.0.1:8787/mcp"))
+        self.assertTrue(M.host_is_allowed("http://localhost:8787/mcp"))
+        self.assertFalse(M.host_is_allowed("http://example.com/mcp"))
+        self.assertFalse(M.host_is_allowed("ftp://example.com/mcp"))
+        self.assertFalse(M.host_is_allowed("example.com/mcp"))
+
+    def test_clear_text_remote_host_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "vars")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("BV_INTERNAL_DEV_KEY=synthetic-value\n")
+            self.assertEqual(M.main(["--dev-vars", path, "--host", "http://example.com/mcp"]), 2)
+
+    def test_redirects_are_not_followed(self):
+        self.assertIsNone(M.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/"))
+
     def test_missing_key_exits_two_before_any_network_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "vars")

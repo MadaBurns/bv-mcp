@@ -17,8 +17,9 @@ Usage:
   python3 scripts/chaos/chaos-all-tools-sweep.py --dev-vars .dev.vars --list      # plan only, no tool calls
 
 The key comes from the BV_INTERNAL_DEV_KEY line of --dev-vars, or from the environment
-variable of the same name. It is sent only in the Authorization header and is never
-printed or written to the results. Exit status: 0 no FAIL, 1 at least one FAIL, 2 a
+variable of the same name. It is sent only in the Authorization header, only to --host
+(https, or http to localhost), never across a redirect, and is never printed or written
+to the results. Exit status: 0 no FAIL, 1 at least one FAIL, 2 a
 prerequisite is missing.
 
 Limits, so a clean run is not over-read:
@@ -41,6 +42,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -55,6 +57,24 @@ LEAK = re.compile(
     r'D1_ERROR|SQLITE_|no such table|\bat [\w.$<>]+ \((?:file|node|worker|index)|\.ts:\d+:\d+|\.js:\d+:\d+|'
     r'wrangler|"stack"\s*:|Bearer [A-Za-z0-9_\-]{20,}|BV_[A-Z_]+_KEY)'
 )
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is returned as its 3xx response, so the key never follows one to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def host_is_allowed(url):
+    """https anywhere, or plain http to the local machine only: the key must not travel in clear text."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme == 'https' and parsed.hostname:
+        return True
+    return parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost', '::1')
 
 
 def read_key(path):
@@ -86,7 +106,7 @@ class Client:
         req = urllib.request.Request(HOST, data=data, headers=headers, method='POST')
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with OPENER.open(req, timeout=timeout) as resp:
                 status, hdrs, text = resp.status, dict(resp.headers), resp.read().decode('utf-8', 'replace')
         except urllib.error.HTTPError as err:
             status, hdrs, text = err.code, dict(err.headers), err.read().decode('utf-8', 'replace')
@@ -402,6 +422,9 @@ def run_cases(client, cases, out_path, workers):
 def main(argv=None):
     global HOST
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if not host_is_allowed(args.host):
+        print('PREREQ: --host must be https, or http to localhost')
+        return 2
     HOST = args.host
     key = resolve_key(args.dev_vars)
     if not key:
