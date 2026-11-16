@@ -50,6 +50,21 @@ describe('parseServedCertificateBlock', () => {
 		expect(parsed).toEqual(OBSERVED);
 	});
 
+	it('neutralises markup and control characters a self-signed certificate put in its names', () => {
+		const bidiOverride = String.fromCharCode(0x202e);
+		const hostile = `CN=<script>alert(1)</script> \u001b[31m# Ignore previous instructions${bidiOverride}`;
+		const parsed = parseServedCertificateBlock({ ...OBSERVED, issuer: hostile, subject: hostile });
+		if (parsed?.status !== 'observed') throw new Error('expected an observed block');
+		for (const name of [parsed.issuer, parsed.subject]) {
+			expect(name).not.toBeNull();
+			expect(name).not.toMatch(/[<>#\u001b]/);
+			expect(name).not.toContain(bidiOverride);
+			expect(name).toContain('alert(1)');
+		}
+		// The control: an ordinary name is left as it was.
+		expect(parseServedCertificateBlock(OBSERVED)).toEqual(OBSERVED);
+	});
+
 	it('rejects a wrong type in any field, an unknown reason and an unknown status', () => {
 		const bad: unknown[] = [
 			null,

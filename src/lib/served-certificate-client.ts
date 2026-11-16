@@ -9,6 +9,7 @@
  */
 
 import { normalizeInfraHostname, type InfraProbeBinding } from './authoritative-dns-infra/probe-client';
+import { sanitizeDnsData } from './output-sanitize';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import {
 	SERVED_CERTIFICATE_EXPIRY_BANDS,
@@ -51,8 +52,10 @@ export function parseServedCertificateBlock(body: unknown): ServedCertificateBlo
 	if (typeof b.fingerprintSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(b.fingerprintSha256)) return null;
 	return {
 		status: 'observed',
-		issuer: b.issuer,
-		subject: b.subject,
+		// A self-signed certificate lets the host choose these two strings outright, so
+		// they are treated like any other scanned-host data before reaching a caller.
+		issuer: b.issuer === null ? null : sanitizeDnsData(b.issuer),
+		subject: b.subject === null ? null : sanitizeDnsData(b.subject),
 		notBefore: b.notBefore,
 		notAfter: b.notAfter,
 		expiryBand,
