@@ -68,6 +68,21 @@ green (it dedups by name), `mergeStateStatus` read `UNSTABLE`, and `gh pr merge`
      pre-commit gates section). Do not restore them without rewording, e.g. spacing the
      digits, and do not widen .gitleaks.toml or use --no-verify to work around it. -->
 
+**Run the script; the rule below is what it implements.**
+
+```bash
+.claude/skills/bv-mcp-merge-queue/scripts/wait-for-ci.sh <n>             # waits, then prints one verdict
+.claude/skills/bv-mcp-merge-queue/scripts/wait-for-ci.sh <n> --no-wait   # the last-moment re-check before merging
+```
+
+It resolves the PR's full head SHA, waits for `ci.yml`'s own run on that SHA, lists every
+check-run of the four required names, and says whether the head still contains `main`.
+Exit 0 `READY` prints the exact `gh pr merge <n> --merge --match-head-commit <sha>` line;
+1 `FAILED`; 3 `BEHIND` (run `gh pr update-branch <n>` and wait again); 4 `TIMEOUT`, which
+includes "the docs `build-and-test` is green but the suite has not finished". Hand-rolled
+poll loops are how this gate gets misread: `gh run list --commit` returns nothing for a
+short SHA, and `gh run watch` can exit before the run ends.
+
 **Rule, not a footnote:**
 
 1. Before merging a PR that touches any non-docs path, run:
@@ -139,7 +154,7 @@ of the rest then needs its own cycle before it can merge:
 
 ```bash
 gh pr update-branch <n>
-gh run list --branch <head-ref> --workflow ci.yml --json databaseId,conclusion,status   # wait for it (~5 min since #1117's 3-shard layout)
+.claude/skills/bv-mcp-merge-queue/scripts/wait-for-ci.sh <n>   # ~5 min since #1117's 3-shard layout; merge only on READY
 ```
 
 **Re-check `mergeStateStatus` in the LAST moment before `gh pr merge`, not once at manifest

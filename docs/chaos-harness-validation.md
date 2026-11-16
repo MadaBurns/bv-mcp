@@ -24,6 +24,10 @@ This command exercises harness logic, not the live service. CI runs it once in `
 
 `chaos-fix-regression.py` is the bounded read-only release probe. It accepts an owner credential through `BV_VERIFY_KEY` or the approved local key source. `chaos-test-clients.py` uses `BV_API_KEY` and includes concurrent traffic; run it only with authorization for that target. Both verify owner tier before suite execution and stop on missing credentials, transport failure, invalid response, or downgrade. Credentials never appear in curl argv; redirects do not carry credentials to another host.
 
+`chaos-all-tools-sweep.py` is the breadth probe. It reads `tools/list`, builds malformed and hostile arguments for every tool from its input schema, and classifies each reply as PASS, FAIL, REVIEW, TIER or SKIP. It exits 1 on any FAIL: a 5xx, an internal JSON-RPC error, an internal-detail leak in a body, or an SSRF-class value that was accepted. It reads the key from `--dev-vars <file>` or the `BV_INTERNAL_DEV_KEY` environment variable and never prints it. Its limits are stated in the script header: it measures whichever tier the key resolves to from the calling address, mutating tools only ever receive one malformed parameter, and REVIEW rows need a human read. `--list` prints the plan without calling any tool, and `--only a,b` narrows the run. A full run is a few thousand requests against the target, so run it only with authorization for that target.
+
+The exit codes below describe `chaos-fix-regression.py` and `chaos-test-clients.py`.
+
 Default exit codes:
 
 - **0:** all required external checks passed with exercised coverage.
