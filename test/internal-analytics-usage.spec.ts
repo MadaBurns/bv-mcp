@@ -56,6 +56,18 @@ describe('GET /internal/analytics/usage', () => {
 		expect(bind).toHaveBeenCalledWith(7 * 86400, 'internal');
 	});
 
+	it('filters to bound-door rows when ?source=binding', async () => {
+		const { internalRoutes } = await import('../src/internal');
+		const all = vi.fn(async () => ({ results: [] }));
+		const bind = vi.fn(() => ({ all }));
+		const prepare = vi.fn(() => ({ bind }));
+		const env = { REQUIRE_INTERNAL_AUTH: 'false', INTELLIGENCE_DB: { prepare } as unknown as D1Database };
+		const res = await internalRoutes.request('/analytics/usage?days=7&source=binding', {}, env);
+		expect(res.status).toBe(200);
+		expect((await res.json<{ source: string }>()).source).toBe('binding');
+		expect(bind).toHaveBeenCalledWith(7 * 86400, 'binding');
+	});
+
 	it('ignores an unrecognized ?source= value (treats as all, no extra bind)', async () => {
 		const { internalRoutes } = await import('../src/internal');
 		const all = vi.fn(async () => ({ results: [] }));

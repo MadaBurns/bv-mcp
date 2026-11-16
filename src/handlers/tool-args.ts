@@ -136,14 +136,28 @@ export function declaredToolArgKeys(toolName: string): ReadonlySet<string> {
 export function validateToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
 	if (!isRegisteredToolName(toolName)) return args;
 	const schema = TOOL_SCHEMA_MAP[toolName];
+	let parsed: Record<string, unknown>;
 	try {
-		return schema.parse(args) as Record<string, unknown>;
+		parsed = schema.parse(args) as Record<string, unknown>;
 	} catch (err) {
 		if (err instanceof ZodError) {
 			throw new Error(formatUnknownArgs(err.issues[0]) ?? formatZodError(err, toolName));
 		}
 		throw err;
 	}
+	assertCandidateDomainsArePublic(parsed.candidate_domains);
+	return parsed;
+}
+
+/**
+ * `candidate_domains` entries get the same structural and reserved-target rules as a `domain`
+ * argument, so a list naming `localhost` or an IP literal is refused, not silently ignored by
+ * the detectors downstream. Runs after the schema, which has already checked the list's shape.
+ */
+function assertCandidateDomainsArePublic(candidates: unknown): void {
+	if (!Array.isArray(candidates)) return;
+	const invalidIndex = candidates.findIndex((candidate) => !validateDomain(candidate as string).valid);
+	if (invalidIndex !== -1) throw new Error(`Invalid candidate_domains.${invalidIndex}: each entry must be a public domain name`);
 }
 
 export function extractAndValidateDomain(args: Record<string, unknown>): string {

@@ -399,6 +399,9 @@ const BrandAliasesArg = z
 	.optional()
 	.describe('Optional public brand aliases to seed, such as product or legal-entity labels.');
 
+// Shape only. Each entry also gets the `domain` argument's structural and reserved-target
+// rules in validateToolArgs (handlers/tool-args.ts): this file is loaded by plain-Node
+// scripts, which cannot import lib/sanitize.
 const BrandCandidateDomainsArg = z
 	.array(z.string().min(1).max(253))
 	.max(250)

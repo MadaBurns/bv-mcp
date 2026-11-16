@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- `candidate_domains` on `discover_brand_domains`, `discover_brand_domains_start`, `brand_audit_single` and `brand_audit_batch_start` is now validated entry by entry with the same rules as a `domain` argument. A list that names a reserved hostname, an IP literal or a malformed name is refused with `Invalid candidate_domains.<n>: each entry must be a public domain name`; before, such entries were accepted and silently ignored. Ordinary, uppercase and trailing-dot names are accepted as before. No score moves.
+
+### Fixed
+
+- `GET /internal/analytics/usage` accepts `?source=binding`, so calls that arrived through the bound door can be selected on their own. Before, that value was treated as no filter. `?source=public` still returns default-handler rows only; the unfiltered answer already grouped bound-door rows separately.
+
 ## [3.115.0] - 2026-11-15
 
 No tool is added, removed or renamed, no argument schema changes and no score moves.
