@@ -38,7 +38,7 @@ npm run build                               # tsup (npm pkg + stdio CLI)
 npx wrangler dev                            # localhost:8787
 npm run typecheck                           # tsc --noEmit
 npm run typecheck:tests                     # per-file ratchet (baseline test/typecheck-baseline.json)
-npm run lint[:fix]
+npm run lint[:fix]                          # `npm run ci:local` = CI preflight + fast-checks, before pushing
 npm run deploy:prod                         # Inject private bindings + deploy (OPERATOR-run)
 npm run check:tool-surface                  # Verify advertised tool counts match TOOL_DEFS
 npm run generate:tool-surface               # Rewrite them from the registry (after adding/removing a tool)
@@ -193,6 +193,7 @@ with a cache-buster every time. Full flow: **`bv-mcp-release`**.
 | Bindings, workflows, deploy modes, analytics, subrequest ceiling, service-binding door | `bv-mcp-operations` |
 | Reviewing and merging the open-PR backlog: required vs advisory checks, the same-name `build-and-test` hole, strict-serialization order, post-merge worktree/ticket hygiene | `bv-mcp-merge-queue` |
 | Version bump, changelog, tags, MCP Registry publish | `bv-mcp-release` |
+| Cost of running bv-mcp: a COGS reading, D1 rows written/read per database, before/after a cost fix, tool calls by tier | `bv-mcp-cogs` |
 
 Fleet-wide concerns (change control, cross-repo seams, shell portability,
 verification discipline) live in the global skills — see `~/.claude/CLAUDE.md`.

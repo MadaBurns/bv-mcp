@@ -54,6 +54,7 @@
 		"publish:registry": "npm run check:release-integrity:publish && mcp-publisher publish",
 		"precheck:bindings": "npm -w packages/dns-checks run build",
 		"check:bindings": "node scripts/check-bindings.mjs",
+		"ci:local": "bash scripts/ci/local-preflight.sh",
 		"precheck:bindings:prod": "npm -w packages/dns-checks run build",
 		"check:bindings:prod": "node scripts/check-bindings.mjs --config wrangler.production.jsonc",
 		"check:cf-binding-parity": "node scripts/ci/cf-binding-diff.mjs",
