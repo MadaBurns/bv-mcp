@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.116.0] - 2026-11-16
+
+**One argument is validated more strictly**: a `candidate_domains` list with a reserved or malformed entry is now refused. No tool is added, removed or renamed and no score moves.
+
 ### Changed
 
 - `candidate_domains` on `discover_brand_domains`, `discover_brand_domains_start`, `brand_audit_single` and `brand_audit_batch_start` is now validated entry by entry with the same rules as a `domain` argument. A list that names a reserved hostname, an IP literal or a malformed name is refused with `Invalid candidate_domains.<n>: each entry must be a public domain name`; before, such entries were accepted and silently ignored. Ordinary, uppercase and trailing-dot names are accepted as before. No score moves.
