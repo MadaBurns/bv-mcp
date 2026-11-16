@@ -1256,6 +1256,42 @@ describe('mapSupplyChain — catalog batch v3.3.27 (G1/G2/G3)', () => {
 			},
 		);
 
+		it.each([
+			['ns4.ntc.net.pk', 'ntc.net.pk'],
+			['ns.cyber.net.pk', 'cyber.net.pk'],
+			['ns1.example.gov.pk', 'example.gov.pk'],
+			['dns1.ssc-spc.gc.ca', 'ssc-spc.gc.ca'],
+		])('resolves %s to its operator %s, not to the shared suffix (#1423)', async (host, parent) => {
+			const { getEffectiveParentDomain } = await import('../src/tools/map-supply-chain');
+			expect(getEffectiveParentDomain(host)).toBe(parent);
+		});
+
+		it.each([
+			// Hosts the old curated list already handled, and plain two-label parents: unchanged.
+			['ns1.anz.co.nz', 'anz.co.nz'],
+			['ns-123.awsdns-12.co.uk', 'awsdns-12.co.uk'],
+			['a1-1.akam.net', 'akam.net'],
+			// Private suffixes stay off: a cloud host keeps its company's name.
+			['inbound-smtp.us-east-1.amazonaws.com', 'amazonaws.com'],
+			['mx.example.github.io', 'github.io'],
+			// No registrable name to find: the old two-label answer is kept.
+			['203.0.113.5', '113.5'],
+			['5.254', '5.254'],
+			['net.pk', 'net.pk'],
+			['ns1', 'ns1'],
+		])('keeps %s → %s', async (host, parent) => {
+			const { getEffectiveParentDomain } = await import('../src/tools/map-supply-chain');
+			expect(getEffectiveParentDomain(host)).toBe(parent);
+		});
+
+		it('does not report one provider named after a shared suffix for unrelated operators under it (#1423)', async () => {
+			mockDnsResponses({ domain: 'example.gov.pk', nsHosts: ['ns4.ntc.net.pk', 'ns.cyber.net.pk'] });
+			const r = await run('example.gov.pk');
+			expect(r.dependencies.some((d) => d.provider === 'net.pk')).toBe(false);
+			expect(r.dependencies.some((d) => d.provider === 'ntc.net.pk')).toBe(true);
+			expect(r.dependencies.some((d) => d.provider === 'cyber.net.pk')).toBe(true);
+		});
+
 		it('does not surface ad.jp as a DNS provider when the NS lives under it (rakuten.co.jp regression)', async () => {
 			mockDnsResponses({ domain: 'rakuten.co.jp', nsHosts: ['ns1.dnsweb.org.ad.jp', 'ns2.dnsweb.org.ad.jp'] });
 			const r = await run('rakuten.co.jp');

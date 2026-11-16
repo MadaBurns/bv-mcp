@@ -20,6 +20,7 @@ import {
 	TRUNCATION_MARKER,
 } from '@blackveil/dns-checks';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { getIcannRegistrableDomain } from '../lib/public-suffix';
 import { logEvent } from '../lib/log';
 import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
 import { detectCdnFromAsn, detectHostingFromAsn } from '../lib/cdn-asn-detection';
@@ -183,105 +184,30 @@ function sourceToRole(source: string): string {
 }
 
 /**
- * Common ccTLD second-level domains (SLDs) where the registrable parent domain
- * is 3 labels deep, not 2 (e.g. `ns1.anz.co.nz` → `anz.co.nz`, not `co.nz`).
+ * Resolve a hostname to its registrable parent domain. Used to group NS and
+ * MX hostnames by the operator's zone.
  *
- * This is a curated short list covering >95% of real-world ccTLD-2LD cases;
- * the proper long-term fix is the Public Suffix List, but its ~9KB dataset
- * and fuzzy-matching cost isn't justified for a DNS-derived heuristic that
- * only needs to avoid labelling registry suffixes as third-party providers.
- *
- * Extend as new false positives surface (defect surfaced 2026-05-28 against
- * `anz.co.nz`, where `co.nz` was reported as a DNS hosting provider).
- */
-const PUBLIC_SUFFIX_SECOND_LEVEL: ReadonlySet<string> = new Set([
-	// United Kingdom
-	'co.uk',
-	'org.uk',
-	'ac.uk',
-	'gov.uk',
-	'me.uk',
-	'ltd.uk',
-	'plc.uk',
-	// New Zealand
-	'co.nz',
-	'org.nz',
-	'net.nz',
-	'ac.nz',
-	'govt.nz',
-	'school.nz',
-	// Australia
-	'com.au',
-	'net.au',
-	'org.au',
-	'edu.au',
-	'gov.au',
-	'asn.au',
-	'id.au',
-	// South Africa
-	'co.za',
-	'org.za',
-	'web.za',
-	// Japan — covers JPRS-managed organisational 2LDs. The missing
-	// `ad.jp` (network admin) / `ed.jp` (primary+secondary education) /
-	// `gr.jp` (groups) / `lg.jp` (local government) entries surfaced
-	// `ad.jp` as a "DNS provider" row on rakuten.co.jp scans (its NS lives
-	// under `*.ad.jp`); without these, any NS at a 3-label JP host collapses
-	// to the registry suffix instead of the operator's registrable domain.
-	'co.jp',
-	'ac.jp',
-	'ne.jp',
-	'or.jp',
-	'go.jp',
-	'ad.jp',
-	'ed.jp',
-	'gr.jp',
-	'lg.jp',
-	// India
-	'co.in',
-	'org.in',
-	'net.in',
-	'gov.in',
-	'ac.in',
-	// South Korea
-	'co.kr',
-	'or.kr',
-	'ne.kr',
-	'go.kr',
-	// Brazil
-	'com.br',
-	'net.br',
-	'org.br',
-	'gov.br',
-	// Mexico
-	'com.mx',
-	'gob.mx',
-	'edu.mx',
-	// Singapore
-	'com.sg',
-	'edu.sg',
-	'org.sg',
-	'gov.sg',
-]);
-
-/**
- * Resolve a hostname to its registrable parent domain, accounting for common
- * ccTLD second-level domains. Used to group NS hostnames by provider zone.
+ * Uses the ICANN section of the Public Suffix List, so a host under any
+ * registry suffix resolves to the operator's own name: `ns4.ntc.net.pk` →
+ * `ntc.net.pk`, not `net.pk` (#1423). A hand-kept list of second-level
+ * suffixes did this before and missed every suffix nobody had added.
+ * Private suffixes stay off, so a cloud host keeps its company's domain.
  *
  * Examples:
  *   ns1.akam.net      → akam.net
  *   ns1.anz.co.nz     → anz.co.nz   (not co.nz — co.nz is a registry suffix)
- *   ns1.example.co.uk → example.co.uk
+ *   ns4.ntc.net.pk    → ntc.net.pk  (not net.pk)
  *   ns1               → ns1         (degenerate; returned as-is)
+ *
+ * With no registrable name (an IP address, a bare suffix, a single label) the
+ * last two labels are returned, as before.
  */
 export function getEffectiveParentDomain(host: string): string {
+	const registrable = getIcannRegistrableDomain(host);
+	if (registrable) return registrable;
 	const parts = host.split('.');
 	if (parts.length < 2) return host;
-	const twoLabel = parts.slice(-2).join('.');
-	if (parts.length >= 3 && PUBLIC_SUFFIX_SECOND_LEVEL.has(twoLabel)) {
-		return parts.slice(-3).join('.');
-	}
-	return twoLabel;
+	return parts.slice(-2).join('.');
 }
 
 /** Map SRV target hostnames to known provider names. */
