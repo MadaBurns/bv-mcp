@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.117.0] - 2026-11-16
+
+**One tool reports more**: `check_ssl` now also reports the certificate a host actually serves. No tool is added, removed or renamed and no score moves. The new field needs the `bv-infra-probe` sidecar redeployed from this version (`npm run deploy:infra-probe`).
+
 ### Added
 
 - `check_ssl` now also reports the certificate a host actually serves. Until now its issuer and expiry came only from Certificate Transparency logs, which describe the most recently logged certificate: the next one whenever a renewal has been issued but not deployed, and another authority's whenever a host is moving between them. The new `metadata.servedCertificate` field carries the issuer, subject, validity dates, expiry band, serial and SHA-256 fingerprint read from a direct connection to port 443, and the text output gains a "Served certificate" section beside the logged one. The existing `metadata.certificate` field is unchanged. The field is always present on a direct `check_ssl` call: when the certificate could not be read it says `status: "not_assessed"` with a reason (for example the host has no public address, the network cannot be connected to directly, or the server only negotiates TLS 1.3, whose certificate is encrypted in transit). It is unscored and adds no finding, so no score moves. `scan_domain` does not request it (#1424).
