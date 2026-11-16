@@ -192,16 +192,51 @@ describe('queryMultiResolver', () => {
 			expect(result.status).toBe('CONSISTENT');
 		});
 
-		// Follow-up review finding on #811: normalizeAnswerData() does textual
-		// quote-stripping, not RFC 1035 unescaping, so a TXT value containing a
-		// literal/escaped quote is only partially handled. Pin the SAFE direction
-		// here: Cloudflare's escaped-quote form and Google's bare form must never
-		// collapse to CONSISTENT when their content differs after only an outer
-		// unwrap (a spurious SPLIT_HORIZON is acceptable; a false CONSISTENT is not).
-		it('reports SPLIT_HORIZON (never a false CONSISTENT) for a TXT value containing an escaped quote', async () => {
+		// A quote-wrapped answer is in presentation format, so its interior
+		// escapes are undone after the outer unwrap. Cloudflare's escaped-quote
+		// form and Google's bare form are the same logical value.
+		it('treats a TXT value containing an escaped quote as CONSISTENT across both conventions', async () => {
 			// Real content: he said "hi" — Cloudflare wraps + backslash-escapes the
 			// interior quotes; Google returns the bare value with real quote chars.
 			mockPerResolverTxt(['"he said \\"hi\\""'], ['he said "hi"']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('CONSISTENT');
+		});
+
+		// Seen live: a verification token published with a literal backslash.
+		// Cloudflare presents it wrapped with the backslash doubled; Google
+		// returns it bare with the single backslash.
+		it('treats a TXT value containing a literal backslash as CONSISTENT across both conventions', async () => {
+			mockPerResolverTxt(['"site-verification\\\\u003dabc"'], ['site-verification\\u003dabc']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('CONSISTENT');
+		});
+
+		it('decodes a three-digit byte escape inside a quote-wrapped TXT value', async () => {
+			mockPerResolverTxt(['"tab\\009here"'], ['tab\there']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('CONSISTENT');
+		});
+
+		it('still reports a difference when escaped values genuinely differ', async () => {
+			mockPerResolverTxt(['"token\\\\u003dabc"'], ['token\\u003dxyz']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(['SPLIT_HORIZON', 'SUSPICIOUS']).toContain(result.status);
+		});
+
+		// A bare answer is never unescaped: its backslashes are content, so it
+		// must not collapse onto a different value that only matches once a
+		// backslash is dropped.
+		it('does not unescape a bare answer', async () => {
+			mockPerResolverTxt(['"a\\\\b"'], ['a\\\\b']);
 
 			const result = await queryMultiResolver('example.com', 'TXT');
 
