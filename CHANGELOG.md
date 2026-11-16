@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.116.1] - 2026-11-16
+
+**One tool names providers more accurately**: `map_supply_chain` no longer merges unrelated operators under a shared registry suffix. No tool is added, removed or renamed and no score moves.
+
 ### Fixed
 
 - `map_supply_chain` no longer names a provider after a shared registry suffix. A name-server or mail host under a suffix that was missing from a hand-kept list (`net.pk`, `gov.pk`, `gc.ca` and others) was reported as the suffix itself, so unrelated operators such as `ntc.net.pk` and `cyber.net.pk` were merged into one provider named `net.pk`. The parent is now found with the ICANN section of the Public Suffix List, which the repo already uses elsewhere, and the hand-kept list is removed. Hosts the old list covered, cloud hosts such as `amazonaws.com`, and IP addresses resolve as before. The tool is unscored, so no score moves (#1423).
