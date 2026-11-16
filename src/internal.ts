@@ -2037,6 +2037,9 @@ async function handleAnalyticsKeyUsage(c: import('hono').Context<InternalAppEnv>
 	}
 }
 
+/** `?source=` values the usage endpoint filters on; anything else means "all". */
+const USAGE_SOURCE_FILTERS: ReadonlySet<string> = new Set(['public', 'internal', BOUND_DOOR_SOURCE]);
+
 /**
  * GET /internal/analytics/usage  (D1, precise — not sampled)
  * Per-customer (key_hash) call counts over a bounded window.
@@ -2055,8 +2058,7 @@ internalRoutes.get('/analytics/usage', async (c) => {
 	// 'public'. An unrecognized `?source=` value is ignored (treated as 'all'), matching
 	// the endpoint's lenient posture — only the known set is ever bound into the filter.
 	const sourceParam = url.searchParams.get('source');
-	const sourceFilter =
-		sourceParam === 'public' || sourceParam === 'internal' || sourceParam === BOUND_DOOR_SOURCE ? sourceParam : undefined;
+	const sourceFilter = sourceParam && USAGE_SOURCE_FILTERS.has(sourceParam) ? sourceParam : undefined;
 	try {
 		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
 		const binds: unknown[] = [windowSec];
