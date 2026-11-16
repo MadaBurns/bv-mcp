@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.116.2] - 2026-11-16
+
+**One tool stops raising a false alarm**: `check_resolver_consistency` no longer reports identical TXT records as differing. No tool is added, removed or renamed and no domain score moves.
+
+### Fixed
+
+- `check_resolver_consistency` no longer reports identical TXT records as differing when a record contains a backslash or a quote. A quote-wrapped answer is in presentation format, so its interior escapes are now undone after the outer quotes are stripped; a bare answer is left as it is. Before, one resolver's doubled backslash and another's single backslash read as two different records and the tool reported a split. This also stops a quoted value and a bare value that differ only by a doubled backslash from reading as the same record. The category is intelligence-only, so no domain score or grade moves; the tool's own result for an affected domain changes from a split to consistent (#1427).
+
 ## [3.116.1] - 2026-11-16
 
 **One tool names providers more accurately**: `map_supply_chain` no longer merges unrelated operators under a shared registry suffix. No tool is added, removed or renamed and no score moves.
