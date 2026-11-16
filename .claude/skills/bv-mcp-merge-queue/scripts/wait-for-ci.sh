@@ -113,10 +113,15 @@ if [ "$code_files" -gt 0 ]; then
 	esac
 fi
 
+# A check-run is finished when its status is completed, or when it carries both a conclusion
+# and a completion time: GitHub has left a finished required check listed as in_progress
+# for minutes (measured on #1421) while branch protection already accepted it. Those rows
+# are marked so the reader can see it. A row with no conclusion is still pending.
 # Every check-run of a required name must be completed and green: GitHub has no "or"
 # across same-named checks, and neither does this.
 runs=$(gh api "repos/$repo/commits/$sha/check-runs" --paginate \
-	--jq '.check_runs[] | [.name, .status, (.conclusion // "-")] | @tsv' 2>/dev/null) || runs=''
+	--jq '.check_runs[] | (.status != "completed" and .conclusion != null and .completed_at != null) as $stale
+		| [.name, (if $stale then "completed" else .status end), (.conclusion // "-"), (if $stale then "stale" else "-" end)] | @tsv' 2>/dev/null) || runs=''
 if [ -z "$runs" ]; then
 	echo 'PREREQ: could not read check-runs for the head SHA' >&2
 	exit 2
@@ -135,7 +140,7 @@ for name in $REQUIRED_CHECKS; do
 	else
 		total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 		green=$(printf '%s\n' "$rows" | awk -F '\t' '$2 == "completed" && ($3 == "success" || $3 == "skipped" || $3 == "neutral")' | wc -l | tr -d ' ')
-		detail=$(printf '%s\n' "$rows" | awk -F '\t' '{ printf "%s%s/%s", (NR > 1 ? ", " : ""), $2, $3 }')
+		detail=$(printf '%s\n' "$rows" | awk -F '\t' '{ printf "%s%s/%s%s", (NR > 1 ? ", " : ""), $2, $3, ($4 == "stale" ? " [GitHub still lists it in_progress]" : "") }')
 		echo "  $name: $green/$total green ($detail)"
 		[ "$green" -eq "$total" ] || required_bad=1
 	fi
