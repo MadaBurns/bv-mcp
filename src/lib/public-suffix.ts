@@ -18,6 +18,20 @@ export function getRegistrableDomain(domain: string): string | null {
 }
 
 /**
+ * Return the registrable domain for a hostname using ICANN suffixes only.
+ *
+ * Unlike {@link getRegistrableDomain}, private suffixes are off, so a host on
+ * a cloud provider keeps that provider's own domain
+ * (`inbound-smtp.us-east-1.amazonaws.com` → `amazonaws.com`) rather than
+ * becoming a tenant name. Returns `null` for an IP address, a single label,
+ * or a name that is itself a suffix.
+ */
+export function getIcannRegistrableDomain(domain: string): string | null {
+	if (!domain) return null;
+	return parse(domain, { allowPrivateDomains: false }).domain ?? null;
+}
+
+/**
  * Determine the effective TLD for a domain using the Public Suffix List.
  *
  * Returns `null` if the input is empty, single-label, or is itself a public
