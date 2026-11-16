@@ -91,15 +91,20 @@ function buildUrl(endpoint: string, domain: string, type: RecordTypeName): strin
  * both representations to the same bare logical string before comparing.
  * Non-TXT types are unaffected.
  *
- * LIMITATION (deliberate, reviewed under #811): this is textual normalization
- * for the two observed DoH conventions, NOT an RFC 1035 presentation-format
- * unescaper — a full parser is out of scope here. A TXT value that itself
- * contains a literal `"` is presented with a backslash escape (`\"`); this
- * function strips the outer quote pair but does not unescape interior
- * `\"` sequences, so an escaped-quote payload can still compare unequal
- * across resolvers (safe direction: a spurious SPLIT_HORIZON, never a false
- * collapse of genuinely different values into CONSISTENT — see
- * `dns-multi-resolver.spec.ts`'s "escaped-quote" case).
+ * A quote-wrapped answer is in presentation format, so its interior also
+ * carries RFC 1035 escapes: a literal backslash is `\\`, a literal quote is
+ * `\"`, and a non-printable byte is `\DDD`. The bare convention carries none.
+ * Once the outer pair has been stripped, those escapes are undone so both
+ * conventions reach the same logical string. Without that step a record that
+ * merely contains a backslash (seen live: a verification token pasted with a
+ * literal `=`) compared unequal on every lookup and read as
+ * SPLIT_HORIZON. A bare answer is never unescaped: its backslashes are content.
+ *
+ * LIMITATION: this stays a per-answer textual normalization, not a full
+ * presentation-format parser. A `\DDD` escape is decoded to a single byte
+ * value, so a multi-byte UTF-8 character can still compare unequal against a
+ * resolver that returns it decoded (safe direction: a spurious SPLIT_HORIZON,
+ * never a false collapse of genuinely different values into CONSISTENT).
  *
  * The outer-pair strip below is additionally guarded to only fire when BOTH
  * the first and last characters are unescaped `"` and the interior has no
@@ -117,7 +122,16 @@ function normalizeAnswerData(data: string, type: RecordTypeName): string {
 	const stripped = data.replace(/\.$/, '');
 	if (type !== 'TXT') return stripped.toLowerCase();
 	const joined = stripped.replace(/"\s+"/g, ''); // collapse multi-string segment separators
-	return stripOuterQuotePairIfUnambiguous(joined).toLowerCase();
+	const unwrapped = stripOuterQuotePairIfUnambiguous(joined);
+	const logical = unwrapped === joined ? joined : unescapePresentationFormat(unwrapped);
+	return logical.toLowerCase();
+}
+
+/** Undo RFC 1035 presentation escapes: `\DDD` is one byte value, `\X` is the literal `X`. */
+function unescapePresentationFormat(s: string): string {
+	return s.replace(/\\(\d{3}|[\s\S])/g, (_match, escaped: string) =>
+		escaped.length === 3 ? String.fromCharCode(Number(escaped)) : escaped,
+	);
 }
 
 /** True if the character at index `i` in `s` is preceded by an odd number of
