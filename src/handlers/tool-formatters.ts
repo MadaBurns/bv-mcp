@@ -240,6 +240,7 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 	if (options.trailerLines) lines.push(...options.trailerLines);
 
 	appendCertificateSection(lines, result);
+	appendServedCertificateSection(lines, result);
 
 	return lines.join('\n');
 }
@@ -290,4 +291,44 @@ function appendCertificateSection(lines: string[], result: CheckResult): void {
 	lines.push(
 		'- Source: Certificate Transparency logs — describes the most recently logged certificate, which may differ from the certificate currently served.',
 	);
+}
+
+const SERVED_NOT_ASSESSED_TEXT: Record<string, string> = {
+	no_public_address: 'the name has no public address',
+	runtime_blocked_address: 'this scanner cannot open a direct connection to that network',
+	connect_failed: 'the connection to port 443 failed',
+	timeout: 'the server did not answer in time',
+	tls12_refused: 'the server would not negotiate TLS 1.2, the only version whose certificate can be read without completing the handshake',
+	handshake_unreadable: 'the server did not send a readable handshake',
+	certificate_unparseable: 'the certificate sent could not be decoded',
+	socket_unavailable: 'this runtime has no raw-socket support',
+	probe_not_configured: 'this deployment has no direct-connection probe configured',
+	probe_unavailable: 'the direct-connection probe did not return a usable answer',
+};
+
+/**
+ * Narrate `CheckResult.metadata.servedCertificate`: the certificate read from a live
+ * connection, shown beside the logged one so a reader can see when they differ.
+ *
+ * NON-SCORING. A `not_assessed` block is printed with its reason, never dropped: a
+ * missing section would read as "served matches logged".
+ */
+function appendServedCertificateSection(lines: string[], result: CheckResult): void {
+	const served = (result as { metadata?: { servedCertificate?: unknown } }).metadata?.servedCertificate;
+	if (!served || typeof served !== 'object') return;
+	const s = served as Record<string, unknown>;
+	const str = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? sanitizeOutputText(v, 200) : 'unknown');
+
+	lines.push('');
+	lines.push('### Served certificate');
+	if (s.status !== 'observed') {
+		const reason = typeof s.reason === 'string' ? s.reason : '';
+		lines.push(`- Not assessed: ${SERVED_NOT_ASSESSED_TEXT[reason] ?? 'the certificate could not be read'}.`);
+		return;
+	}
+	const expires = typeof s.notAfter === 'string' && s.notAfter.trim() !== '' ? sanitizeOutputText(s.notAfter.slice(0, 10), 20) : 'unknown';
+	const remaining = typeof s.daysRemaining === 'number' && Number.isFinite(s.daysRemaining) ? `${s.daysRemaining} days` : 'unknown';
+	lines.push(`- Issuer: ${str(s.issuer)}`);
+	lines.push(`- Expires: ${expires} (${remaining} remaining, band: ${str(s.expiryBand)})`);
+	lines.push('- Source: a direct connection to port 443 from this scanner. Another network location may be served a different certificate.');
 }
