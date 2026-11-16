@@ -195,9 +195,11 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 	},
 	check_dnssec: { cacheKey: () => 'dnssec', execute: (d, _args, ro) => checkDnssec(d, buildDnsOptions(ro)) },
 	check_ssl: {
-		cacheKey: (_a, ro) => (ro?.tlsProbeBinding ? 'ssl:tls-probe' : 'ssl'),
+		// The served-certificate block differs with the sidecar binding, so it is part of the key.
+		cacheKey: (_a, ro) => `ssl${ro?.tlsProbeBinding ? ':tls-probe' : ''}${ro?.infraProbe ? ':served' : ''}`,
 		execute: (d, _args, ro) =>
 			checkSsl(d, {
+				infraProbe: ro?.infraProbe,
 				tlsProbeBinding: ro?.tlsProbeBinding,
 				tlsProbeAuthToken: ro?.tlsProbeAuthToken,
 				onBindingDegradation: ro?.onBindingDegradation,

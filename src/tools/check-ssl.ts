@@ -13,6 +13,8 @@ import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { callTlsProbe, mergeTlsFinding, TLS_VERSION_ENRICHMENT_ENABLED } from '../lib/tls-probe-binding';
 import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
+import { fetchServedCertificate } from '../lib/served-certificate-client';
+import type { InfraProbeBinding } from '../lib/authoritative-dns-infra/probe-client';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
 import { safeFetch } from '../lib/safe-fetch';
@@ -75,6 +77,12 @@ export async function checkSsl(
 		 * turn on everywhere; there isn't one on this Worker today.
 		 */
 		certMetadata?: boolean;
+		/**
+		 * The infra-probe sidecar, which reads the certificate actually served on port
+		 * 443. Consulted only under `certMetadata`. Absent (every deployment without the
+		 * sidecar) → `metadata.servedCertificate` says `not_assessed: probe_not_configured`.
+		 */
+		infraProbe?: InfraProbeBinding;
 		/**
 		 * Total wall-clock this check's fetches may collectively consume (issue #641).
 		 *
@@ -158,9 +166,19 @@ export async function checkSsl(
 	// not to the scanned domain, so the target's robots.txt has no authority over
 	// it. It IS abort-composed, so a scan-/per-check timeout cancels the in-flight
 	// CT subrequest rather than leaking it from the subrequest budget (R7).
-	const result = tlsProbeOptions.certMetadata
-		? await enrichWithCertificateMetadata(base, domain, budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal)))
-		: base;
+	//
+	// The served certificate is observed alongside it, by the infra-probe sidecar over
+	// a raw connection to port 443, and attaches as `metadata.servedCertificate`. Also
+	// NON-SCORING, and it runs only after the robots-gated legs above have completed, so
+	// a host that disallowed this scanner is never connected to. Both run under the same
+	// opt-in: the fan-out callers surface neither field.
+	const [logged, servedCertificate] = tlsProbeOptions.certMetadata
+		? await Promise.all([
+				enrichWithCertificateMetadata(base, domain, budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal))),
+				fetchServedCertificate(domain, tlsProbeOptions.infraProbe, tlsProbeOptions.signal),
+			])
+		: [base, null];
+	const result = servedCertificate ? { ...logged, metadata: { ...logged.metadata, servedCertificate } } : logged;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
 	// NOTE this one DOES affect scoring (it appends a High finding), unlike the
 	// certificate-metadata enrichment above.

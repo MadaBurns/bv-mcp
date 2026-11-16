@@ -4,6 +4,7 @@ import { probeDelegationConsistency, type DelegationProbeDependencies } from '..
 import { probeAuthoritativeDns, type AuthoritativeProbeDependencies } from '../lib/authoritative-dns-infra/authoritative-probe';
 import { probeRootServerSet, type RootSetProbeDependencies } from '../lib/authoritative-dns-infra/root-set-probe';
 import { normalizeInfraHostname } from '../lib/authoritative-dns-infra/probe-client';
+import { observeServedCertificate, type ServedCertificateDeps } from '../lib/served-certificate';
 import { readBoundedText } from '../lib/request-body';
 
 interface AuthoritativeProbeRequest {
@@ -98,6 +99,28 @@ export async function handleDelegationConsistencyProbe(
 	}
 }
 
+/**
+ * Read the certificate a host serves on port 443. Always answers 200 with a block:
+ * a host that could not be read is a `not_assessed` result with its reason, not an
+ * error, so the caller never has to tell "could not look" from "the lane is down".
+ */
+export async function handleServedCertificateProbe(request: Request, dependencies: ServedCertificateDeps = {}): Promise<Response> {
+	if (request.method !== 'POST') {
+		return jsonResponse({ error: 'method_not_allowed' }, 405);
+	}
+
+	const parsed = await readJson(request);
+	if (!parsed.ok) return jsonResponse({ error: parsed.status === 413 ? 'request_body_too_large' : 'invalid_json' }, parsed.status);
+	const body = parsed.value as AuthoritativeProbeRequest;
+	const rawHostname = typeof body.hostname === 'string' ? body.hostname : '';
+	const hostname = normalizeInfraHostname(rawHostname);
+	if (!validHostname(hostname)) {
+		return jsonResponse({ error: 'invalid_hostname' }, 400);
+	}
+
+	return jsonResponse(await observeServedCertificate(hostname, dependencies));
+}
+
 export async function handleRootServerSetProbe(
 	request: Request,
 	dependencies: RootSetProbeDependencies = {},
@@ -125,6 +148,9 @@ export default {
 		}
 		if (url.pathname === '/probe/delegation-consistency') {
 			return handleDelegationConsistencyProbe(request);
+		}
+		if (url.pathname === '/probe/served-certificate') {
+			return handleServedCertificateProbe(request);
 		}
 		if (url.pathname === '/probe/root-server-set') {
 			return handleRootServerSetProbe(request);

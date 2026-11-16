@@ -257,7 +257,7 @@ const TOOL_DEFS = {
 	},
 	check_ssl: {
 		description:
-			'Check HTTPS/TLS posture: reachability, HSTS, HTTP-to-HTTPS redirect, and certificate issuer, expiry, days remaining and SAN count from public CT logs (the latest LOGGED certificate, which may differ from the one served). TLS protocol versions and cipher suites are not assessed. Use to verify HTTPS/HSTS and certificate expiry.',
+			'Check HTTPS/TLS posture: reachability, HSTS, HTTP-to-HTTPS redirect, and certificate issuer, expiry and SAN count from CT logs (the latest LOGGED certificate, which may differ from the one served). servedCertificate gives the issuer and expiry of the one actually SERVED on port 443, or not_assessed with a reason. TLS versions and cipher suites are not assessed.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
