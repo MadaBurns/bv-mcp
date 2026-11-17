@@ -247,3 +247,67 @@ describe('workflow supply-chain pinning audit (F11 — SHA-pinned actions)', () 
 		expect(offenders, `SHA-pinned actions must carry a \`# vX.Y.Z\` comment:\n${offenders.map((o) => `  ${o.file}:${o.line}`).join('\n')}`).toEqual([]);
 	});
 });
+
+// npm publishing returned on 2026-11-17 as its own dispatch-only workflow using
+// OIDC trusted publishing. These pin the properties that make it safe to keep:
+// no unattended trigger, no token, and the OIDC permission held only by a job
+// that runs no repository code.
+describe('npm-publish.yml (OIDC trusted publishing)', () => {
+	const npmPublish = workflowByName('npm-publish.yml');
+	const jobs = parseJobs(npmPublish);
+	const lines = npmPublish.split('\n');
+	const jobBody = (name: string): string => {
+		const start = lines.findIndex((l) => l === `  ${name}:`);
+		if (start === -1) throw new Error(`job not found: ${name}`);
+		return blockBody(lines, start, 2).join('\n');
+	};
+
+	it('is dispatch-only: no push, tag, schedule or pull_request trigger', () => {
+		const onIdx = lines.findIndex((l) => /^on:\s*$/.test(l));
+		expect(onIdx, 'npm-publish.yml must declare a block-form `on:`').toBeGreaterThan(-1);
+		const triggers = blockBody(lines, onIdx, 0)
+			.filter((l) => indentOf(l) === 2)
+			.map((l) => l.trim().replace(/:.*$/, ''));
+		expect(triggers).toEqual(['workflow_dispatch']);
+	});
+
+	it('is read-only at workflow scope and grants id-token: write to the publish job alone', () => {
+		const top = topLevelPermissions(npmPublish);
+		expect(top, 'npm-publish.yml must declare a workflow-level permissions block').not.toBeNull();
+		expect(top).toEqual({ contents: 'read' });
+		expect(jobs.map((j) => j.name).sort()).toEqual(['pack', 'publish']);
+		expect(jobs.filter((j) => hasWrite(j.permissions, 'id-token')).map((j) => j.name)).toEqual(['publish']);
+		expect(jobs.filter((j) => hasWrite(j.permissions, 'contents')).map((j) => j.name)).toEqual([]);
+	});
+
+	it('gates the publish job on the production environment', () => {
+		expect(jobBody('publish')).toMatch(/^ {4}environment: production$/m);
+		expect(jobBody('pack')).not.toMatch(/^ {4}environment:/m);
+	});
+
+	it('the job holding the OIDC permission checks out and installs nothing from the repository', () => {
+		const publish = jobBody('publish');
+		expect(publish).not.toContain('actions/checkout');
+		expect(publish).not.toMatch(/npm (ci|install|i) /);
+		expect(publish).not.toContain('npx ');
+		expect(publish).not.toContain('npm run ');
+		// The control: the job that does run repository code is the one without OIDC.
+		expect(jobBody('pack')).toContain('npm ci --ignore-scripts');
+	});
+
+	it('uses no npm token of any kind', () => {
+		expect(npmPublish).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN|_authToken/);
+		expect(npmPublish).not.toContain('secrets.');
+	});
+
+	it('publishes only the ref it was dispatched on, and only a release tag', () => {
+		expect(npmPublish).toContain('if [ "$REF_TYPE" != "tag" ]; then');
+		expect(jobBody('pack')).not.toMatch(/^\s+ref:/m);
+	});
+
+	it('defaults to a dry run', () => {
+		const dryRunIdx = lines.findIndex((l) => /^ {6}dry_run:\s*$/.test(l));
+		expect(dryRunIdx).toBeGreaterThan(-1);
+		expect(blockBody(lines, dryRunIdx, 6).map((l) => l.trim())).toContain('default: true');
+	});
+});

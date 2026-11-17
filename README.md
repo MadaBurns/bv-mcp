@@ -307,7 +307,7 @@ blackveil evidence verify baseline.json
 
 Commands: `scan`, `check`, `batch`, `policy`, `drift save|compare`, `evidence verify`. Output formats (`--format`): `human` (default), `json`, `ndjson`, `evidence`; `--out <file>` writes to a file, `--fail-below <0-100>` or `--policy <file>` turns a scan into a pass/fail gate. Exit codes: `0` pass, `1` verified policy or integrity failure, `2` usage/input, `3` auth/quota/transport/tool error, `4` ungraded/inconclusive. `blackveil --help` prints the full usage (source of truth: `src/cli/command.ts`).
 
-The npm package `blackveil-dns` is frozen at 2.13.0 (published 2026-05-12), and that artifact carries only the `blackveil-dns-mcp` stdio bin, not `blackveil`, so `npm i -g blackveil-dns` does not install this CLI. Publishing is closed by policy ([#719](https://github.com/MadaBurns/bv-mcp/issues/719), closed as not planned). Build from source (`npm ci && npm run build`) for the CLI, or use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action) in CI; it calls the hosted endpoint and needs no npm package.
+The npm package `blackveil-dns` is published from release tags by a manually dispatched workflow, and not every release is published, so npm can be behind this repository: `npm view blackveil-dns version` shows what is there. Versions from 3.100.1 carry both the `blackveil` CLI and the `blackveil-dns-mcp` stdio bin; 2.13.0 carries only `blackveil-dns-mcp`. Build from source (`npm ci && npm run build`) for the CLI at the current commit, or use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action) in CI; it calls the hosted endpoint and needs no npm package.
 
 ---
 

@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- A manually dispatched workflow, `.github/workflows/npm-publish.yml`, that publishes `@blackveil/dns-checks` and `blackveil-dns` to npm with OIDC trusted publishing: no npm token is used, and npm records a provenance attestation for each package. It runs only when dispatched on a release tag, defaults to a dry run, and waits for the `production` environment approval before publishing. No runtime behaviour change, and no score moves. It has not yet been run against the real registry.
+
+### Changed
+
+- The README and `docs/client-setup.md` no longer say the npm package is frozen at 2.13.0; they say npm can be behind this repository and how to check.
+
 ## [3.117.1] - 2026-11-17
 
 **One field reads correctly for wildcard certificates**: `check_ssl` keeps the asterisk in a wildcard served certificate's subject. No tool is added, removed or renamed and no score moves.
