@@ -288,7 +288,8 @@ describe('npm-publish.yml (OIDC trusted publishing)', () => {
 	it('the job holding the OIDC permission checks out and installs nothing from the repository', () => {
 		const publish = jobBody('publish');
 		expect(publish).not.toContain('actions/checkout');
-		expect(publish).not.toMatch(/npm (ci|install)(?! -g npm@)/);
+		expect(publish).not.toMatch(/npm (ci|install|i) /);
+		expect(publish).not.toContain('npx ');
 		expect(publish).not.toContain('npm run ');
 		// The control: the job that does run repository code is the one without OIDC.
 		expect(jobBody('pack')).toContain('npm ci --ignore-scripts');
