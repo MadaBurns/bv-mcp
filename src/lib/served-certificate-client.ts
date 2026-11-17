@@ -31,6 +31,21 @@ function isNullableText(value: unknown, maxLength: number): value is string | nu
 	return value === null || (typeof value === 'string' && value.length <= maxLength);
 }
 
+/** The first common name whose value starts with a wildcard label, split around its asterisk. */
+const WILDCARD_COMMON_NAME = /^(.*?\bCN=)\*(\..*)$/s;
+
+/**
+ * Sanitise a subject, keeping the asterisk of a wildcard common name (`CN=*.example.com`).
+ * The shared sanitiser replaces every asterisk because a pair of them is markdown emphasis,
+ * which turned a wildcard subject into `CN= .example.com`. Only the first such asterisk is
+ * kept, so the result can never hold a pair; the text on either side is sanitised as usual.
+ */
+function sanitizeSubject(subject: string): string {
+	const wildcard = WILDCARD_COMMON_NAME.exec(subject);
+	if (!wildcard) return sanitizeDnsData(subject);
+	return `${sanitizeDnsData(wildcard[1])}*${sanitizeDnsData(wildcard[2])}`;
+}
+
 /**
  * Rebuild the block from validated fields only. The body crossed a process boundary as
  * an unchecked cast, so nothing is passed through: an unknown reason, a wrong type or
@@ -55,7 +70,7 @@ export function parseServedCertificateBlock(body: unknown): ServedCertificateBlo
 		// A self-signed certificate lets the host choose these two strings outright, so
 		// they are treated like any other scanned-host data before reaching a caller.
 		issuer: b.issuer === null ? null : sanitizeDnsData(b.issuer),
-		subject: b.subject === null ? null : sanitizeDnsData(b.subject),
+		subject: b.subject === null ? null : sanitizeSubject(b.subject),
 		notBefore: b.notBefore,
 		notAfter: b.notAfter,
 		expiryBand,

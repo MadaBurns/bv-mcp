@@ -65,6 +65,25 @@ describe('parseServedCertificateBlock', () => {
 		expect(parseServedCertificateBlock(OBSERVED)).toEqual(OBSERVED);
 	});
 
+	it('keeps the asterisk of a wildcard common name, and only that one', () => {
+		const subjectOf = (subject: string) => {
+			const parsed = parseServedCertificateBlock({ ...OBSERVED, subject });
+			if (parsed?.status !== 'observed') throw new Error('expected an observed block');
+			return parsed.subject;
+		};
+		expect(subjectOf('CN=*.example.com')).toBe('CN=*.example.com');
+		expect(subjectOf('C=GB, O=Example Ltd, CN=*.example.com')).toBe('C=GB, O=Example Ltd, CN=*.example.com');
+		// A second wildcard value, an asterisk elsewhere and a bare asterisk are still replaced,
+		// so a host-chosen subject can never carry a pair of them.
+		expect(subjectOf('CN=*.a.example, CN=*.b.example')).toBe('CN=*.a.example, CN= .b.example');
+		expect(subjectOf('O=*bold*, CN=*.example.com')).toBe('O= bold , CN=*.example.com');
+		expect(subjectOf('CN=*')).toBe('CN=');
+		expect(subjectOf('CN=*.<script>#x')).not.toMatch(/[<>#]/);
+		// The issuer has no wildcard form, so it keeps the shared rule.
+		const issuer = parseServedCertificateBlock({ ...OBSERVED, issuer: 'CN=*.example.com' });
+		expect(issuer?.status === 'observed' ? issuer.issuer : undefined).toBe('CN= .example.com');
+	});
+
 	it('rejects a wrong type in any field, an unknown reason and an unknown status', () => {
 		const bad: unknown[] = [
 			null,
