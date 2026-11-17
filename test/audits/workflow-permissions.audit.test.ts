@@ -305,6 +305,14 @@ describe('npm-publish.yml (OIDC trusted publishing)', () => {
 		expect(jobBody('pack')).not.toMatch(/^\s+ref:/m);
 	});
 
+	// A bare `tarballs/x.tgz` is parsed by npm as a GitHub `user/repo` shorthand; the
+	// first dry run on GitHub failed on exactly that (run 44001126127).
+	it('passes every tarball to npm publish as an explicit ./ path', () => {
+		const tarballArgs = [...jobBody('publish').matchAll(/publish_one "[^"]+" "[^"]+" "([^"]+)"/g)].map((m) => m[1]);
+		expect(tarballArgs).toHaveLength(2);
+		for (const arg of tarballArgs) expect(arg).toMatch(/^\.\/tarballs\/.+\.tgz$/);
+	});
+
 	it('defaults to a dry run', () => {
 		const dryRunIdx = lines.findIndex((l) => /^ {6}dry_run:\s*$/.test(l));
 		expect(dryRunIdx).toBeGreaterThan(-1);

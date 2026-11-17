@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- The npm publish workflow passes each tarball to `npm publish` as an explicit `./` path. Its first dry run failed because npm read the bare relative path as a GitHub repository shorthand; nothing was published. Release tooling only: no runtime behaviour changes and no score moves.
+
 ## [3.117.2] - 2026-11-17
 
 **Release tooling only**: a workflow that can publish the npm packages with trusted publishing. No runtime behaviour changes, no tool is added, removed or renamed and no score moves.
