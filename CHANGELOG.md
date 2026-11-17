@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.117.2] - 2026-11-17
+
+**Release tooling only**: a workflow that can publish the npm packages with trusted publishing. No runtime behaviour changes, no tool is added, removed or renamed and no score moves.
+
 ### Added
 
 - A manually dispatched workflow, `.github/workflows/npm-publish.yml`, that publishes `@blackveil/dns-checks` and `blackveil-dns` to npm with OIDC trusted publishing: no npm token is used, and npm records a provenance attestation for each package. It runs only when dispatched on a release tag, defaults to a dry run, and waits for the `production` environment approval before publishing. No runtime behaviour change, and no score moves. It has not yet been run against the real registry.
