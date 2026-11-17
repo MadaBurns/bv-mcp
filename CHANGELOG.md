@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.117.1] - 2026-11-17
+
+**One field reads correctly for wildcard certificates**: `check_ssl` keeps the asterisk in a wildcard served certificate's subject. No tool is added, removed or renamed and no score moves.
+
 ### Fixed
 
 - `check_ssl` no longer shows a wildcard served certificate's subject as `CN= .example.com`. The asterisk of a wildcard common name is kept in `metadata.servedCertificate.subject`, so it reads `CN=*.example.com`. Only the first such asterisk is kept; every other asterisk and all other markup in the name is still replaced, and the issuer is unchanged. The field is unscored, so no score moves.
