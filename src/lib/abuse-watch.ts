@@ -58,6 +58,16 @@ function count(value: number | string | undefined): number {
 }
 
 /**
+ * Reduce a caller-controlled value to characters that cannot form a mention,
+ * link or markup in the alert channel. The declared client name is whatever the
+ * client sent, so it must never reach the webhook text verbatim.
+ */
+export function safeLabel(value: string | undefined, fallback = 'unknown'): string {
+	const cleaned = (value ?? '').replace(/[^a-z0-9 ._-]/gi, '?').slice(0, 64);
+	return cleaned.length > 0 ? cleaned : fallback;
+}
+
+/**
  * Parse the comma-separated watch list. Entries are trimmed and lowercased (the
  * stored name is lowercase), and anything that is not purely alphanumeric is
  * dropped rather than escaped.
@@ -83,7 +93,7 @@ export function assessWatchedClients(rows: readonly WatchedClientRow[], windowHo
 	if (seen.length === 0) return null;
 	const total = seen.reduce((sum, row) => sum + count(row.sessions), 0);
 	const breakdown = seen
-		.map((row) => `${row.client} (${row.country ?? 'unknown'}, ${row.tier ?? 'anon'}) x${count(row.sessions)}`)
+		.map((row) => `${safeLabel(row.client)} (${safeLabel(row.country, 'unknown')}, ${safeLabel(row.tier, 'anon')}) x${count(row.sessions)}`)
 		.join(' · ');
 	return {
 		title: `Watched MCP client name declared: ${total} session(s) (last ${windowHours}h)`,

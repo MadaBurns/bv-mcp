@@ -105,6 +105,17 @@ describe('assessWatchedClients', () => {
 	});
 });
 
+describe('safeLabel', () => {
+	it('neutralises mentions, links and markup in a caller-controlled name', async () => {
+		const { safeLabel, assessWatchedClients } = await import('../src/lib/abuse-watch');
+		expect(safeLabel('alphaclient <@everyone> https://evil.test/x')).toBe('alphaclient ??everyone? https???evil.test?x');
+		expect(safeLabel('')).toBe('unknown');
+		expect(safeLabel('x'.repeat(200))).toHaveLength(64);
+		const alert = assessWatchedClients([{ client: 'alphaclient<@everyone>', country: 'AA', tier: 'anon', sessions: 1 }]);
+		expect(String(alert?.metrics.clients)).not.toMatch(/[<>@:/]/);
+	});
+});
+
 describe('assessGatedRefusals', () => {
 	it('stays quiet below the threshold', async () => {
 		const { assessGatedRefusals } = await import('../src/lib/abuse-watch');
