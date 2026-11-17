@@ -38,6 +38,7 @@ import { buildAlertPayload, buildDigestPayload, sendAlert, sendFuzzingAlert } fr
 import { shouldSendRepeat, armRepeatCooldown, recoverRepeatAlert } from './lib/alert-repeat';
 import type { SendAlertOptions } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
+import { runAbuseWatch } from './lib/abuse-watch';
 import { logEvent, logError } from './lib/log';
 import { scoreWindow } from './lib/fuzzing-detector';
 import { readWindow, COUNTER_TTL_SECONDS } from './lib/fuzzing-counter';
@@ -130,6 +131,10 @@ export interface ScheduledEnv {
 	ALERT_P95_THRESHOLD?: string;
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
+	/** Daily abuse watch (src/lib/abuse-watch.ts): comma-separated declared-client-name fragments. Unset = that signal is off. */
+	ABUSE_WATCH_CLIENT_FRAGMENTS?: string;
+	/** Daily abuse watch: anonymous gated-tool refusals per country per day before alerting. Unset = in-code default. */
+	ABUSE_WATCH_GATED_REFUSAL_THRESHOLD?: string;
 	/** p95 ceiling for the BATCH/enumeration workload class (default 30000ms). Separate from ALERT_P95_THRESHOLD, which governs the interactive class. */
 	ALERT_BATCH_P95_THRESHOLD?: string;
 	/** Lookback for the latency lane ONLY (default 360m). Latency needs a far wider window than error-rate to collect enough samples for a percentile. */
@@ -1474,6 +1479,10 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 		// digest so `unknown` / `error` is seen by a human daily, not only logged.
 		const payload = buildDigestPayload(rows, 1, [await clientIpAuditDigestLine(env)]);
 		await sendAlert(digestWebhookUrl, payload, alertOptions(env));
+
+		// Alert-only abuse signals over the same daily window. Isolated and
+		// non-throwing, so a failure here cannot cost the digest above.
+		await runAbuseWatch(env, digestWebhookUrl, resolveAnalyticsDataset(env.ANALYTICS_DATASET), alertOptions(env));
 
 		logEvent({
 			timestamp: new Date().toISOString(),

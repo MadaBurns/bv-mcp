@@ -29,7 +29,8 @@
  * Double positions (tool_call): double1=durationMs, double2=score,
  *   double3=unitsAttempted, double4=unitsCompleted (append-only).
  * Blob positions (rate_limit): blob1=limitType, blob2=toolName, blob3=country, blob4=tier
- * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier
+ * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier,
+ *   blob5=method, blob6=keyHash, blob7=declaredClient (append-only).
  */
 
 import { LONG_RUNNING_TOOLS } from './config';
@@ -291,7 +292,11 @@ function safeToolList(tools: readonly string[]): string {
  * fail-safe, since every tool is then judged by the STRICTER threshold — rather
  * than emitting `IN ()`, which AE rejects.
  */
-export function queryLatencyByWorkloadClass(minutes: string, dataset?: string, longRunningTools: readonly string[] = [...LONG_RUNNING_TOOLS]): string {
+export function queryLatencyByWorkloadClass(
+	minutes: string,
+	dataset?: string,
+	longRunningTools: readonly string[] = [...LONG_RUNNING_TOOLS],
+): string {
 	minutes = safeInterval(minutes);
 	const inList = safeToolList(longRunningTools);
 	const classExpr = inList ? `if(blob1 IN (${inList}), 'batch', 'interactive')` : `'interactive'`;
@@ -342,6 +347,56 @@ export function queryRateLimitSurge(minutes: string, dataset?: string): string {
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'rate_limit'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
+}
+
+/**
+ * Sessions created in the last N hours whose DECLARED client name (`initialize`
+ * params.clientInfo.name, stored lowercased in session blob7) contains one of the
+ * operator-supplied fragments. A fragment that is not lowercase alphanumeric is
+ * dropped (defense-in-depth: it is interpolated into a LIKE pattern, where `_` and
+ * `%` are wildcards); with none left the query matches nothing.
+ */
+export function queryWatchedClientSessions(hours: string, fragments: readonly string[] = [], dataset?: string): string {
+	hours = safeInterval(hours);
+	// Array.isArray: the fragments reach here from env-derived config, so a non-array is treated as an empty list.
+	const safe = (Array.isArray(fragments) ? fragments : []).filter(
+		(fragment) => typeof fragment === 'string' && /^[a-z0-9]+$/.test(fragment),
+	);
+	const match = safe.length > 0 ? safe.map((fragment) => `blob7 LIKE '%${fragment}%'`).join(' OR ') : '1 = 0';
+	return `SELECT
+  blob7 AS client,
+  blob2 AS country,
+  blob4 AS tier,
+  SUM(_sample_interval) AS sessions
+FROM ${resolveAnalyticsDataset(dataset)}
+WHERE index1 = 'session'
+  AND blob1 = 'created'
+  AND (${match})
+  AND timestamp > NOW() - INTERVAL '${hours}' HOUR
+GROUP BY client, country, tier
+ORDER BY sessions DESC
+LIMIT 20`;
+}
+
+/**
+ * Paid-tool refusals served to ANONYMOUS callers in the last N hours, by country.
+ * The `rate_limit` event has no per-caller key, so country is the finest grouping.
+ */
+export function queryAnonGatedRefusalsByCountry(hours: string, dataset?: string): string {
+	hours = safeInterval(hours);
+	return `SELECT
+  blob3 AS country,
+  SUM(_sample_interval) AS refusals,
+  COUNT(DISTINCT blob2) AS tools
+FROM ${resolveAnalyticsDataset(dataset)}
+WHERE index1 = 'rate_limit'
+  AND blob1 = 'gated_tool'
+  AND blob4 = 'anon'
+  AND timestamp > NOW() - INTERVAL '${hours}' HOUR
+GROUP BY country
+HAVING refusals > 0
+ORDER BY refusals DESC
+LIMIT 20`;
 }
 
 /** Terminal tool outcomes and incomplete-work counters, grouped by fixed reason. */
