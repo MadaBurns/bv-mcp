@@ -102,7 +102,7 @@ gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=false   # real publish
 - Operator setup, per package on npmjs.com (Settings, Trusted publishing): GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow `npm-publish.yml`, environment `production`, direct `npm publish` allowed (configurations created after 2026-09-03 allow only `npm stage publish` unless that is ticked). A new configuration expires if its first publish does not succeed within two days.
 - A version already on npm is skipped, so a re-run after a partial failure is safe.
 - **Never a local token publish** and never a revived `NPM_TOKEN`; that half of the earlier ruling stands. The 2026-10-23 publish of `blackveil-dns` 3.100.1 and `@blackveil/dns-checks` 1.60.2 was a manual operator publish and is not a precedent.
-- Not yet exercised: the workflow has not run against the real registry. Remove this line after the first successful publish.
+- Not yet exercised: the workflow has not published to the real registry. The first dry run on GitHub (v3.117.2, 2026-11-17) passed every step up to the publish command and failed there on a bare relative tarball path, fixed in 3.117.3. Remove this line after the first successful publish.
 
 ### History: the 2026-10-09 KILL ruling (SQ-392)
 

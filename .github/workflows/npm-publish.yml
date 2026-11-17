@@ -182,6 +182,9 @@ jobs:
       # A version already on npm is skipped, which makes a re-run after a partial
       # failure safe. If the lookup itself fails, the publish is attempted and npm
       # refuses a duplicate version.
+      #
+      # The tarball paths start with `./` on purpose: npm reads a bare
+      # `tarballs/name.tgz` as a GitHub `user/repo` shorthand and tries to clone it.
       - name: Publish
         env:
           DRY_RUN: ${{ inputs.dry_run }}
@@ -203,10 +206,10 @@ jobs:
             fi
           }
           if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "dns-checks" ]; then
-            publish_one "@blackveil/dns-checks" "$DNS_CHECKS_VERSION" "tarballs/blackveil-dns-checks-$DNS_CHECKS_VERSION.tgz"
+            publish_one "@blackveil/dns-checks" "$DNS_CHECKS_VERSION" "./tarballs/blackveil-dns-checks-$DNS_CHECKS_VERSION.tgz"
           fi
           if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "blackveil-dns" ]; then
-            publish_one "blackveil-dns" "$ROOT_VERSION" "tarballs/blackveil-dns-$ROOT_VERSION.tgz"
+            publish_one "blackveil-dns" "$ROOT_VERSION" "./tarballs/blackveil-dns-$ROOT_VERSION.tgz"
           fi
 
       - name: Confirm the registry serves the published versions
