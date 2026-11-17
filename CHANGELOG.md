@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- **Daily abuse watch (operator alerting only).** The daily cron now runs two alert-only checks after the tier digest: sessions whose declared MCP client name matches an operator-supplied watch list (`ABUSE_WATCH_CLIENT_FRAGMENTS`, off when unset), and anonymous callers from one country being refused paid tools at least `ABUSE_WATCH_GATED_REFUSAL_THRESHOLD` times in 24 hours (default 50). Neither check blocks, throttles or changes a tier, and no tool, score or response changes.
+
 ## [3.117.3] - 2026-11-17
 
 **Release tooling only**: a fix to the npm publish workflow. No runtime behaviour changes, no tool is added, removed or renamed and no score moves.
