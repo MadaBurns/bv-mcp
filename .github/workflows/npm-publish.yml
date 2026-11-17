@@ -1,0 +1,228 @@
+name: npm publish
+
+# Publishes `@blackveil/dns-checks` and `blackveil-dns` to npm with OIDC trusted
+# publishing. No npm token exists anywhere in this path, and none may be added.
+#
+# Dispatch-only, and only on a release tag:
+#
+#   gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=true
+#
+# The run publishes the checkout of the ref it was dispatched on. There is no
+# "tag" input on purpose: npm records the dispatched commit in the provenance
+# attestation, so building a different ref than the one dispatched would attest
+# the wrong source. A tag that predates this file cannot be published from it.
+#
+# There is no tag-push trigger either. An unattended trigger, an approval gate
+# and a concurrency group together starve every later run (#717, see
+# deploy-prod.yml), and a publish is not something to start by accident.
+#
+# Two jobs, split by trust:
+#   * `pack` installs dependencies and builds, so it runs third-party code. It
+#     holds no OIDC permission and produces the two tarballs.
+#   * `publish` holds `id-token: write` behind the `production` environment. It
+#     checks out nothing and runs no repository code: it only uploads the
+#     tarballs `pack` produced.
+#
+# Operator setup, once per package on npmjs.com (Settings, Trusted publishing):
+# GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow filename
+# `npm-publish.yml`, environment `production`, with direct `npm publish`
+# allowed. A new configuration expires unless its first publish succeeds within
+# two days, so configure it when you are ready to run this.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and run every gate, but publish nothing
+        type: boolean
+        default: true
+      packages:
+        description: Which packages to publish
+        type: choice
+        default: both
+        options:
+          - both
+          - dns-checks
+          - blackveil-dns
+
+permissions:
+  contents: read
+
+# One publish at a time. Never cancel a run that may be mid-upload.
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  pack:
+    name: Build and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      root_version: ${{ steps.versions.outputs.root_version }}
+      dns_checks_version: ${{ steps.versions.outputs.dns_checks_version }}
+    steps:
+      - name: Require a release tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Dispatch this workflow on a release tag (--ref v<X.Y.Z>), not on a $REF_TYPE."
+            exit 1
+          fi
+          if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::The dispatched tag is not a v<X.Y.Z> release tag."
+            exit 1
+          fi
+
+      # Full history and every tag: the dns-checks pack gate resolves the
+      # package version to its own `dns-checks-v<version>` tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - run: npm ci --ignore-scripts
+
+      - name: Build both packages
+        run: npm run build
+
+      - id: versions
+        name: Read versions and check the tag
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          ROOT_VERSION="$(node -p "require('./package.json').version")"
+          DNS_CHECKS_VERSION="$(node -p "require('./packages/dns-checks/package.json').version")"
+          for v in "$ROOT_VERSION" "$DNS_CHECKS_VERSION"; do
+            if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::A package version is not a plain X.Y.Z version."
+              exit 1
+            fi
+          done
+          if [ "v$ROOT_VERSION" != "$REF_NAME" ]; then
+            echo "::error::package.json is $ROOT_VERSION but the dispatched tag is $REF_NAME."
+            exit 1
+          fi
+          printf 'root_version=%s\ndns_checks_version=%s\n' "$ROOT_VERSION" "$DNS_CHECKS_VERSION" >> "$GITHUB_OUTPUT"
+
+      # `npm pack` runs each package's own `prepack` gate: the dns-checks pack
+      # integrity check, and for the root package the release-integrity check
+      # (clean checkout of the tag, version surfaces, a current dist).
+      - name: Pack both packages
+        env:
+          ROOT_VERSION: ${{ steps.versions.outputs.root_version }}
+          DNS_CHECKS_VERSION: ${{ steps.versions.outputs.dns_checks_version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/tarballs"
+          npm pack --workspace=packages/dns-checks --pack-destination "$RUNNER_TEMP/tarballs"
+          npm pack --pack-destination "$RUNNER_TEMP/tarballs"
+          test -f "$RUNNER_TEMP/tarballs/blackveil-dns-checks-$DNS_CHECKS_VERSION.tgz"
+          test -f "$RUNNER_TEMP/tarballs/blackveil-dns-$ROOT_VERSION.tgz"
+          (cd "$RUNNER_TEMP/tarballs" && sha256sum ./*.tgz | tee SHA256SUMS)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/tarballs/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm (OIDC)
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - name: Install an npm that supports trusted publishing
+        run: npm install -g npm@11.21.2
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarballs
+          path: tarballs
+
+      - name: Verify tarball checksums
+        working-directory: tarballs
+        run: sha256sum --check SHA256SUMS
+
+      # dns-checks goes first: the blackveil-dns bundle imports it as an external
+      # dependency, so its version must be installable before the root package is.
+      # A version already on npm is skipped, which makes a re-run after a partial
+      # failure safe. If the lookup itself fails, the publish is attempted and npm
+      # refuses a duplicate version.
+      - name: Publish
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          PACKAGES: ${{ inputs.packages }}
+          ROOT_VERSION: ${{ needs.pack.outputs.root_version }}
+          DNS_CHECKS_VERSION: ${{ needs.pack.outputs.dns_checks_version }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            name="$1"; version="$2"; tarball="$3"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "::notice::$name@$version is already on npm; skipping."
+              return 0
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              npm publish "$tarball" --access public --dry-run
+            else
+              npm publish "$tarball" --access public
+            fi
+          }
+          if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "dns-checks" ]; then
+            publish_one "@blackveil/dns-checks" "$DNS_CHECKS_VERSION" "tarballs/blackveil-dns-checks-$DNS_CHECKS_VERSION.tgz"
+          fi
+          if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "blackveil-dns" ]; then
+            publish_one "blackveil-dns" "$ROOT_VERSION" "tarballs/blackveil-dns-$ROOT_VERSION.tgz"
+          fi
+
+      - name: Confirm the registry serves the published versions
+        if: ${{ !inputs.dry_run }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          ROOT_VERSION: ${{ needs.pack.outputs.root_version }}
+          DNS_CHECKS_VERSION: ${{ needs.pack.outputs.dns_checks_version }}
+        run: |
+          set -euo pipefail
+          confirm() {
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if [ "$(npm view "$1@$2" version 2>/dev/null)" = "$2" ]; then
+                echo "$1@$2 is on npm."
+                return 0
+              fi
+              sleep 15
+            done
+            echo "::error::$1@$2 is not readable from npm after the publish."
+            return 1
+          }
+          if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "dns-checks" ]; then
+            confirm "@blackveil/dns-checks" "$DNS_CHECKS_VERSION"
+          fi
+          if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "blackveil-dns" ]; then
+            confirm "blackveil-dns" "$ROOT_VERSION"
+          fi

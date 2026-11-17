@@ -88,7 +88,26 @@ Two transferable lessons:
 - **MCP Registry is published manually** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*` — this IS the authoritative path, not a fallback. The server entry is **remotes-only**.
 - Verify what's live: query the registry with `?version=latest` (CDN-cached — cache-bust, and check `?version=X.Y.Z` before trusting `latest`). `registry-drift-check.yml` compares live prod vs registry every 12h and opens a `registry-drift` issue on drift.
 
-## npm publishing — KILLED; read this before any `npm publish` (SQ-392)
+## npm publishing — OIDC workflow only (reopened 2026-11-17); read this before any `npm publish`
+
+**Current path (operator ruling 2026-11-17).** The operator directed that npm be updated and chose the OIDC route. `.github/workflows/npm-publish.yml` is the only publish path:
+
+```bash
+gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=true    # rehearsal: packs, runs every gate, publishes nothing
+gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=false   # real publish; waits for the production-environment approval
+```
+
+- It runs only when dispatched **on a release tag** and publishes that tag's own checkout. There is no tag input: npm's provenance attestation names the dispatched commit, so a different ref would attest the wrong source. A tag that predates the workflow file (v3.117.1 and earlier) cannot be published by it.
+- Two jobs. `pack` runs `npm ci` and the build with no OIDC permission and uploads two tarballs; `publish` holds `id-token: write` behind `environment: production`, checks out nothing, and publishes those tarballs, dns-checks first. `test/audits/workflow-permissions.audit.test.ts` pins this split, the dispatch-only trigger, the dry-run default and the absence of any token.
+- Operator setup, per package on npmjs.com (Settings, Trusted publishing): GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow `npm-publish.yml`, environment `production`, direct `npm publish` allowed (configurations created after 2026-09-03 allow only `npm stage publish` unless that is ticked). A new configuration expires if its first publish does not succeed within two days.
+- A version already on npm is skipped, so a re-run after a partial failure is safe.
+- **Never a local token publish** and never a revived `NPM_TOKEN`; that half of the earlier ruling stands. The 2026-10-23 publish of `blackveil-dns` 3.100.1 and `@blackveil/dns-checks` 1.60.2 was a manual operator publish and is not a precedent.
+- Not yet exercised: the workflow has not run against the real registry. Remove this line after the first successful publish.
+
+### History: the 2026-10-09 KILL ruling (SQ-392)
+
+The text below records the earlier ruling. Its requester condition was set aside by the operator on 2026-11-17; its OIDC-only condition, publish order and immutability notes still apply.
+
 
 **Ruling.** npm publishing stays **KILLED**, per the 2026-10-09 twin ruling ("npm publishing — KILL (stays closed per #719)", `docs/superpowers/scratch/twin-parked-items-adjudication-2026-10-09.md:50-52`; that scratch file is gitignored, so it exists only in the maintainer's main checkout) and #719. The SQ-391 prepared publish of `blackveil-dns` 3.100.1 + `@blackveil/dns-checks` 1.60.2 does NOT override it: a prepared command is not an unlock. `README.md` "frozen at 2.13.0" stays true while the KILL holds; do not edit it.
 

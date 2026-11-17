@@ -77,8 +77,8 @@ internal binding): **`bv-mcp-operations`** § Source layout and request flow.
 runtime-agnostic core with no Cloudflare deps; put logic there if it could run
 outside Workers. `src/tools/` holds MCP wrappers + orchestration needing Workers
 features (KV, DO, bindings) and depends on `@blackveil/dns-checks` via npm —
-**keep backward compat**. Both publish together via the manual `npm publish`
-path (currently gated off — #719).
+**keep backward compat**. Both publish to npm via the dispatch-only OIDC
+workflow `npm-publish.yml` (operator-run; **`bv-mcp-release`**).
 
 **Operator-only tool families** (11 `BV_RECON` recon tools; 4 M365
 `INTERNAL_ONLY_TOOLS`): ⚠️ never delete their `TOOL_DEFS` entries — the auth
