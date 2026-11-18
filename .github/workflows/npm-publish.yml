@@ -220,12 +220,17 @@ jobs:
           DNS_CHECKS_VERSION: ${{ needs.pack.outputs.dns_checks_version }}
         run: |
           set -euo pipefail
+          # Up to ten minutes. The first real publish (run 44011277396) was accepted
+          # by npm at once, but blackveil-dns took about four minutes to become
+          # readable, so a 150-second window reported a successful publish as failed.
           confirm() {
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if [ "$(npm view "$1@$2" version 2>/dev/null)" = "$2" ]; then
+            attempt=0
+            while [ "$attempt" -lt 40 ]; do
+              if [ "$(npm view "$1@$2" version --prefer-online 2>/dev/null)" = "$2" ]; then
                 echo "$1@$2 is on npm."
                 return 0
               fi
+              attempt=$((attempt + 1))
               sleep 15
             done
             echo "::error::$1@$2 is not readable from npm after the publish."

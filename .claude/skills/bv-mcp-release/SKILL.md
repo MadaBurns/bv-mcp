@@ -1,11 +1,27 @@
 ---
 name: bv-mcp-release
-description: "Use when bumping the version or cutting a release of the bv-mcp / blackveil-dns repo — version-sync across SERVER_VERSION, package.json, package-lock.json, server.json, CHANGELOG, and the publish.yml tag flow. Symptoms: version mismatch CI failures, the publish workflow's auto-bump push rejected by branch protection, MCP Registry liveness check failing, or unsure which files hold the version."
+description: "Use when bumping the version or cutting a release of the bv-mcp / blackveil-dns repo — version-sync across SERVER_VERSION, package.json, package-lock.json, server.json, CHANGELOG, and the publish.yml tag flow. Symptoms: version mismatch CI failures, the publish workflow's auto-bump push rejected by branch protection, MCP Registry liveness check failing, unsure which files hold the version, or publishing the npm packages (npm-publish.yml, trusted publishing)."
 ---
 
 # bv-mcp Version Bump & Release
 
 A version lives on **4 surfaces** (plus the auto-derived `SERVER_VERSION`): `npm version` sets `package.json` + lock, and its lifecycle hook syncs `server.json` and the CHANGELOG heading. All four must match the tag, and the publish/registry flow has stale-prod foot-guns. Pre-bump locally, then tag — and publish the MCP Registry **only after** the prod deploy.
+
+## The release in order
+
+Each step names the evidence that ends it. The sections below hold the detail.
+
+0. **Read this file from `origin/main`.** A main checkout that is behind loads a stale copy of this skill (2026-11-17: 27 commits behind, missing the tag hand-off and `ship.sh` failure notes). `git fetch origin && git diff --stat HEAD origin/main -- .claude/skills/bv-mcp-release/` must be empty, or read the file with `git show origin/main:`.
+1. **Scope.** `git fetch origin --tags`, then `git log --first-parent --oneline v<last>..origin/main` and `gh pr list --state open`. Done when you can name every commit the release carries and have asked the operator about any green open PR that would change the version. Note whether a carried commit touches a sidecar source path; if so, step 5 applies.
+2. **Bump.** In a worktree from `origin/main`: `npm version <X.Y.Z> --no-git-tag-version`, then write the CHANGELOG entry by hand (see "Pre-bump locally before tagging"). `.release/unreleased/*.md` fragments are source text for that entry; nothing consumes or deletes them at release. Done when `git diff --stat` shows exactly the four version surfaces.
+3. **Merge.** Merge only when all four required checks are `success` on the pushed head, counting BOTH `build-and-test` runs: five required check-runs in total. GitHub reports the PR mergeable while the slower run does not exist yet, so count the runs. Hold every other merge until the ship is done.
+4. **Tag.** Hand the operator the tag and push lines (see "The agent hands over three lines"). Done when `git ls-remote --tags origin v<X.Y.Z>` shows the merge commit.
+5. **Sidecars, only if touched.** From a detached worktree at the tag: `scripts/worktree-setup.sh && npm run deploy:<sidecar>`. Done on "Deploy complete". It must precede the ship, which blocks on sidecar freshness.
+6. **Ship.** `ship.sh <X.Y.Z>`. Done on `ALL PASS`; see "Reading a `ship.sh` failure" for the exits that are not failures.
+7. **Behaviour probe.** One live call that exercises the release's own change, with a control that would have shown the old behaviour. `verify-release.sh` proves versions and tool counts only.
+8. **npm, when the operator asks.** See "npm publishing": dry run on the tag, then the real run.
+
+Tear a finished worktree down from the main checkout (`git -C .worktrees/<name> wt-done`). Removing the directory an agent's shell is sitting in makes its next command fail without running.
 
 ## dns-checks consumer promotion (#1187)
 
@@ -38,7 +54,7 @@ The consumer workflow still needs its own producer-read credential and repositor
 
 ## `@blackveil/dns-checks` version moves in LOCKSTEP with scoring behaviour (#855)
 
-The package version is a **coordination signal, not a registry fact** (npm publish is gated off — #719): bv-web-prod vendors the package as a tarball pinned by that version (`vendor/blackveil-dns-checks-X.Y.Z.tgz`), so a version that no longer identifies the code defeats the pin. Between #794 and 3.71.0 the package sat at 1.27.0 across THREE `SCORING_MODEL_VERSION` bumps, two of which moved scores — "re-vendor 1.27.0" meant different grades on different days.
+The package version is a **coordination signal, not a registry fact** (npm lags the repo: it moves only when the operator dispatches `npm-publish.yml`): bv-web-prod vendors the package as a tarball pinned by that version (`vendor/blackveil-dns-checks-X.Y.Z.tgz`), so a version that no longer identifies the code defeats the pin. Between #794 and 3.71.0 the package sat at 1.27.0 across THREE `SCORING_MODEL_VERSION` bumps, two of which moved scores — "re-vendor 1.27.0" meant different grades on different days.
 
 **Standing rule (settled 2026-08-31, #855 / #856 / #862):**
 
@@ -84,45 +100,40 @@ Two transferable lessons:
 
 ## Current publish reality (verify, don't assume)
 
-- **`publish.yml` carries NO publish jobs (removed 2026-08-23).** History for context: the jobs sat behind `if: false` for ~46 minor versions (skipped = GREEN, npm rotted at `blackveil-dns` 2.13.0 / `@blackveil/dns-checks` 1.3.12); #719 re-enabled them fail-loud, but they then never once succeeded — 3.60–3.62 failed, 3.63/3.64 parked on the `production` environment reviewer. The jobs were deleted rather than re-armed (tombstone comment in the workflow explains). npm publish remains gated off deliberately (#719). **Two claims previously recorded here were MEASURED FALSE on 2026-09-20 - do not restate them:** (a) there is NO self-deadlock - the `production` environment has `prevent_self_review: false` with a sole required reviewer, so the maintainer CAN approve his own deployment and a gated job waits for one click; (b) `NPM_TOKEN` IS set in that environment (created 2026-05-07, never rotated) - the real blocker is that **no workflow, script or package.json consumes it**, so setting or rotating it changes nothing observable. That token last failed `npm whoami` with E401 on the v3.62.0 publish run.
+- **`publish.yml` carries NO publish jobs (removed 2026-08-23).** History for context: the jobs sat behind `if: false` for ~46 minor versions (skipped = GREEN, npm rotted at `blackveil-dns` 2.13.0 / `@blackveil/dns-checks` 1.3.12); #719 re-enabled them fail-loud, but they then never once succeeded — 3.60–3.62 failed, 3.63/3.64 parked on the `production` environment reviewer. The jobs were deleted rather than re-armed (tombstone comment in the workflow explains). npm now publishes through its own workflow, `npm-publish.yml` (see "npm publishing"); `publish.yml` still carries no publish job. **Two claims previously recorded here were MEASURED FALSE on 2026-09-20 - do not restate them:** (a) there is NO self-deadlock - the `production` environment has `prevent_self_review: false` with a sole required reviewer, so the maintainer CAN approve his own deployment and a gated job waits for one click; (b) `NPM_TOKEN` IS set in that environment (created 2026-05-07, never rotated) - the real blocker is that **no workflow, script or package.json consumes it**, so setting or rotating it changes nothing observable. That token last failed `npm whoami` with E401 on the v3.62.0 publish run.
 - **MCP Registry is published manually** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*` — this IS the authoritative path, not a fallback. The server entry is **remotes-only**.
 - Verify what's live: query the registry with `?version=latest` (CDN-cached — cache-bust, and check `?version=X.Y.Z` before trusting `latest`). `registry-drift-check.yml` compares live prod vs registry every 12h and opens a `registry-drift` issue on drift.
 
-## npm publishing — OIDC workflow only (reopened 2026-11-17); read this before any `npm publish`
+## npm publishing
 
-**Current path (operator ruling 2026-11-17).** The operator directed that npm be updated and chose the OIDC route. `.github/workflows/npm-publish.yml` is the only publish path:
+`.github/workflows/npm-publish.yml` is the only publish path (operator ruling 2026-11-17, which set aside the 2026-10-09 KILL ruling's "named external requester" condition and kept its OIDC-only condition). Publish with **trusted publishing**; a local token publish or a revived `NPM_TOKEN` stays out of bounds, and `NPM_KEY` in `.dev.vars` is dead anyway (`npm whoami` E401 on 2026-11-17).
 
 ```bash
 gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=true    # rehearsal: packs, runs every gate, publishes nothing
-gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=false   # real publish; waits for the production-environment approval
+gh workflow run npm-publish.yml --ref v<X.Y.Z> -f dry_run=false   # real publish
 ```
 
-- It runs only when dispatched **on a release tag** and publishes that tag's own checkout. There is no tag input: npm's provenance attestation names the dispatched commit, so a different ref would attest the wrong source. A tag that predates the workflow file (v3.117.1 and earlier) cannot be published by it.
-- Two jobs. `pack` runs `npm ci` and the build with no OIDC permission and uploads two tarballs; `publish` holds `id-token: write` behind `environment: production`, checks out nothing, and publishes those tarballs, dns-checks first. `test/audits/workflow-permissions.audit.test.ts` pins this split, the dispatch-only trigger, the dry-run default and the absence of any token.
-- Operator setup, per package on npmjs.com (Settings, Trusted publishing): GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow `npm-publish.yml`, environment `production`, direct `npm publish` allowed (configurations created after 2026-09-03 allow only `npm stage publish` unless that is ticked). A new configuration expires if its first publish does not succeed within two days.
-- A version already on npm is skipped, so a re-run after a partial failure is safe.
-- **Never a local token publish** and never a revived `NPM_TOKEN`; that half of the earlier ruling stands. The 2026-10-23 publish of `blackveil-dns` 3.100.1 and `@blackveil/dns-checks` 1.60.2 was a manual operator publish and is not a precedent.
-- Not yet exercised: the workflow has not published to the real registry. The first dry run on GitHub (v3.117.2, 2026-11-17) passed every step up to the publish command and failed there on a bare relative tarball path, fixed in 3.117.3. Remove this line after the first successful publish.
+How it behaves:
 
-### History: the 2026-10-09 KILL ruling (SQ-392)
+- **Tag-bound.** It runs only when dispatched on a release tag and publishes that tag's own checkout, because npm's provenance attestation names the dispatched commit. Consequence: a fix to the workflow file does nothing until a new tag contains it, so a workflow bug costs a release. Dry-run every new tag first.
+- **Two jobs.** `pack` runs `npm ci` and the build with no OIDC permission and uploads two tarballs; `publish` holds `id-token: write` behind `environment: production`, checks out and installs nothing, and publishes the tarballs, `@blackveil/dns-checks` first because the `blackveil-dns` bundle imports it. `test/audits/workflow-permissions.audit.test.ts` pins the split, the dispatch-only trigger, the dry-run default and the absence of any token.
+- **Every run waits for approval**, dry runs included. Approve in the Actions UI, or with `gh api -X POST repos/MadaBurns/bv-mcp/actions/runs/<run>/pending_deployments -F "environment_ids[]=<id>" -f state=approved -f comment=...`, taking `<id>` from a GET on the same path. Approve a real publish only on the operator's explicit word.
+- **Runs queue.** They share one concurrency group, so a dry run waiting for approval holds a later real run at `pending` with no jobs.
+- **Re-runs are safe.** A version already on npm is skipped.
 
-The text below records the earlier ruling. Its requester condition was set aside by the operator on 2026-11-17; its OIDC-only condition, publish order and immutability notes still apply.
+Reading the result:
 
+- Proof of a publish is the `+ <name>@<version>` log line and `npm view <name>@<version> version --prefer-online`. The first real run (44011277396, v3.117.3) published both packages and was still marked FAILED: its confirm step gave up after 150 seconds while `blackveil-dns` took about four minutes to become readable. The window is ten minutes from the tag after v3.117.3.
+- `E404` on the PUT means the run has no publish rights: the trusted publisher is missing or one of its fields does not match. npm does not validate the fields on save.
+- A `git ls-remote` error naming a GitHub repository called `tarballs/<file>.tgz` means a tarball was passed as a bare relative path, which npm reads as a GitHub shorthand. The workflow passes `./tarballs/...`.
 
-**Ruling.** npm publishing stays **KILLED**, per the 2026-10-09 twin ruling ("npm publishing — KILL (stays closed per #719)", `docs/superpowers/scratch/twin-parked-items-adjudication-2026-10-09.md:50-52`; that scratch file is gitignored, so it exists only in the maintainer's main checkout) and #719. The SQ-391 prepared publish of `blackveil-dns` 3.100.1 + `@blackveil/dns-checks` 1.60.2 does NOT override it: a prepared command is not an unlock. `README.md` "frozen at 2.13.0" stays true while the KILL holds; do not edit it.
+Trusted publishers (both saved 2026-11-17; repeat only if one is deleted or the workflow is renamed): per package on npmjs.com, Settings, Trusted publishing, GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow `npm-publish.yml`, environment `production`, direct `npm publish` ticked. Saving asks for the operator's security key. An agent may fill and submit the form in the operator's browser when asked, but the operator clicks "Use security key": an automated click sends the browser down a QR-code flow that npm then rejects. A new configuration expires if its first publish does not succeed within two days.
 
-**Unlock needs BOTH, never one:**
+What is published is permanent per version:
 
-1. A **named external requester** (a person or company asking for the npm library/CLI, or a paying customer whose integration needs it). Downloads, "it would be nice" and internal tidiness do not count.
-2. **OIDC trusted publishing only** — a GitHub Actions job with `id-token: write` (and the `production` environment) plus an npm trusted publisher configured on **both** packages (operator-only: setup needs interactive 2FA). **Never a local token publish** and never a revived `NPM_TOKEN`: the stored token is past npm's 90-day limit (E401 on 2026-08-21) and npm ends 2FA-bypass token publishing in January 2027.
-
-**When unlocked — order and version:**
-
-- Publish **`@blackveil/dns-checks` first, then `blackveil-dns`**: the `blackveil-dns` bundle imports it as an external dependency, and the root `dependencies` floor (`^1.60.2`) must already resolve on the registry.
-- Publish a **NEW patch version cut at a commit that already carries the `^1.60.2` floor (i.e. 3.100.2)**. Never publish from the existing `v3.100.1` tag: it pins `@blackveil/dns-checks: ^1.0.4` (the floor was raised after the tag), and the root `prepack` requires HEAD == the version tag, so a 3.100.1 publish would freeze the old floor. Follow the normal bump-and-tag flow above for 3.100.2; do not move or reuse `v3.100.1`.
-- Build first (`npm -w packages/dns-checks run build && npm run build`). The root `prepack` (`check:release-integrity:publish`) now also **fails when the embedded version in `dist/index.js` or `dist/stdio.js` differs from the release version** — `dist` is gitignored build output that `npm pack` ships, and a stale build (`3.99.0` under a `3.100.x` package) used to pass every source check. The same gate guards `publish:registry`, so build before that too.
-- `@blackveil/dns-checks` is immutable per version: its description still says "16 checks" but the package exports 17 check functions (see CHANGELOG `[Unreleased]`). Fixing the text changes tag identity for 1.60.2, so correct it only in the NEXT dns-checks version, never in place.
-- Any npm About text, package description or README wording follows the BUSL positioning — "source-available", never the OSI term. `test/audits/busl-positioning.audit.test.ts` enforces it on the README, CONTRIBUTING, CLAUDE.md and scoring config; apply the same rule to anything you publish.
+- `@blackveil/dns-checks` 2.3.0 went out with a description that still says "16 checks". Count the exported checks before correcting it, and correct it only in the NEXT dns-checks version: changing the text in place changes what an existing version tag identifies.
+- The root `prepack` (`check:release-integrity:publish`) requires HEAD to be the version tag and fails when the version embedded in `dist/index.js` or `dist/stdio.js` differs from the release version, so a stale build cannot ship. The same gate guards `publish:registry`; build before either.
+- Package descriptions, npm About text and README wording follow the BUSL positioning: "source-available". `test/audits/busl-positioning.audit.test.ts` enforces it on the README, CONTRIBUTING, CLAUDE.md and scoring config; apply it to anything published.
 
 ## Registry publish must FOLLOW the prod deploy (ordering)
 
@@ -152,14 +163,10 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 
 🚨 **Never let the ed25519 private key reach stdout.** `--private-key` takes **hex** (not base64, not PEM). If it is echoed it persists in shell history, terminal scrollback and any agent transcript, and must then be discarded and rotated — the public half lives in an apex TXT record, so rotating it is an operator-only zone write. Write the key to a file and pass `--private-key "$(cat mcp.hex)"` so only the substitution is recorded. Keep the local `mcp-publisher` version matching CI's: a version skew moves the token store and invalidates the saved login.
 
-## Manual / local shipping steps (the authoritative path — CI publishes nothing)
+## Manual / local shipping steps (Worker, sidecars and MCP Registry; npm goes through `npm-publish.yml`)
 
 ```bash
 npm -w packages/dns-checks run build && npm run build
-# npm publish is KILLED (#719) - see "npm publishing — KILLED" above before running either line. When unlocked it is OIDC-only (never a local token),
-# and the order is dns-checks FIRST, then the root package, from a NEW patch version (3.100.2), never the v3.100.1 tag:
-npm publish -w packages/dns-checks --access public  # 1st: the root publish does NOT ship the workspace package, and the root bundle imports it
-npm publish --access public                      # 2nd: root pkg (blackveil-dns); prepack gates tag, version surfaces and a current dist
 npm run check:cf-binding-parity  # runbook step 1 (first cf deploy; see bv-mcp-operations): cf build vs wrangler.production.jsonc must be identical
 npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY (via cf deploy --mode production; PRIMARY rollback: npx wrangler rollback <version-id> --name bv-dns-security-mcp -y; secondary: injector + npx wrangler rollback <version-id> --config wrangler.production.jsonc -y)
 npm run deploy:whois             # sidecar: bv-whois (cf deploy from packages/bv-whois/cloudflare.config.ts; its wrangler.jsonc is only the vitest config)
@@ -196,6 +203,7 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 - A single early post-deploy version/scoring mismatch is usually **Cloudflare rollout propagation lag**, not a stale bundle — re-poll a few times before debugging. (A genuine stale bundle is when `packages/dns-checks` wasn't rebuilt before `deploy:prod` — always `npm -w packages/dns-checks run build` first.)
 - A `check:sidecar-freshness` result of **`unverified` is NOT proof the sidecars are current** — it means the gate could not read the deployment list (expired/absent `CLOUDFLARE_API_TOKEN`, offline, wrangler missing; wrangler prints an auth banner on STDOUT while exiting non-zero, which is why stdout is never parsed without a status check). Restore auth and re-run. Do NOT reach for `BV_ALLOW_STALE_SIDECARS=1` — that turns "I could not measure" into "I shipped anyway", which is the exact fail-open shape #945 was filed against.
 - `wrangler d1 execute --remote --file=-` with stdin → not supported; pass a real file path.
+- The advisory `contract` check failing on a bump PR with a log that stops mid-suite and prints no failed assertion → the same stall as `publish.yml`'s `Pre-release checks` (seen on three PRs, 2026-11-16/17). `gh run rerun <run> --failed` went green each time it was awaited. It is not one of the four required checks.
 
 ## Provenance
 
