@@ -13,7 +13,7 @@
 		"deploy": "cf deploy"
 	},
 	"dependencies": {
-		"tldts": "^7.4.18"
+		"tldts": "^7.4.28"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.4.12",
