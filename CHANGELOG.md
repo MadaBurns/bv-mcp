@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- The npm publish workflow waits up to ten minutes for a published version to become readable before reporting a failure. The first real publish succeeded for both packages but was reported as failed, because `blackveil-dns` took about four minutes to appear and the check gave up after 150 seconds. Release tooling only: no runtime behaviour changes and no score moves.
+
 ## [3.118.0] - 2026-11-17
 
 **Operator alerting only**: the daily cron gains two alert-only abuse checks. No tool is added, removed or renamed and no score moves.
