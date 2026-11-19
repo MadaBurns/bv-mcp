@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.118.2] - 2026-11-19
+
+### Changed
+
+- The npm publish workflow now installs the published packages in a clean consumer project and verifies the CLI and stdio MCP server together. It retries temporary registry tarball 404s within a bounded window.
+
 ## [3.118.1] - 2026-11-19
 
 ### Changed
