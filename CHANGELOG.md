@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.118.1] - 2026-11-19
+
+### Changed
+
+- Updated Hono, Marked and tldts, along with Playwright, typescript-eslint and the Cloudflare development tools. The four Worker workspaces retain their local Wrangler installs for deployment.
+
 ### Fixed
 
 - The npm publish workflow waits up to ten minutes for a published version to become readable before reporting a failure. The first real publish succeeded for both packages but was reported as failed, because `blackveil-dns` took about four minutes to appear and the check gave up after 150 seconds. Release tooling only: no runtime behaviour changes and no score moves.
