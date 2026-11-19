@@ -275,7 +275,7 @@ describe('npm-publish.yml (OIDC trusted publishing)', () => {
 		const top = topLevelPermissions(npmPublish);
 		expect(top, 'npm-publish.yml must declare a workflow-level permissions block').not.toBeNull();
 		expect(top).toEqual({ contents: 'read' });
-		expect(jobs.map((j) => j.name).sort()).toEqual(['pack', 'publish']);
+		expect(jobs.map((j) => j.name).sort()).toEqual(['pack', 'publish', 'smoke']);
 		expect(jobs.filter((j) => hasWrite(j.permissions, 'id-token')).map((j) => j.name)).toEqual(['publish']);
 		expect(jobs.filter((j) => hasWrite(j.permissions, 'contents')).map((j) => j.name)).toEqual([]);
 	});
@@ -283,6 +283,9 @@ describe('npm-publish.yml (OIDC trusted publishing)', () => {
 	it('gates the publish job on the production environment', () => {
 		expect(jobBody('publish')).toMatch(/^ {4}environment: production$/m);
 		expect(jobBody('pack')).not.toMatch(/^ {4}environment:/m);
+		expect(jobBody('smoke')).not.toMatch(/^ {4}environment:/m);
+		expect(jobBody('smoke')).toContain('needs: [pack, publish]');
+		expect(jobBody('smoke')).toContain('if: ${{ !inputs.dry_run }}');
 	});
 
 	it('the job holding the OIDC permission checks out and installs nothing from the repository', () => {
