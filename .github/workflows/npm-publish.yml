@@ -16,12 +16,14 @@ name: npm publish
 # and a concurrency group together starve every later run (#717, see
 # deploy-prod.yml), and a publish is not something to start by accident.
 #
-# Two jobs, split by trust:
+# Jobs are split by trust:
 #   * `pack` installs dependencies and builds, so it runs third-party code. It
 #     holds no OIDC permission and produces the two tarballs.
 #   * `publish` holds `id-token: write` behind the `production` environment. It
 #     checks out nothing and runs no repository code: it only uploads the
 #     tarballs `pack` produced.
+#
+#   * `smoke` installs the published packages as a consumer with read-only permissions.
 #
 # Operator setup, once per package on npmjs.com (Settings, Trusted publishing):
 # GitHub Actions, user `MadaBurns`, repository `bv-mcp`, workflow filename
@@ -242,3 +244,26 @@ jobs:
           if [ "$PACKAGES" = "both" ] || [ "$PACKAGES" = "blackveil-dns" ]; then
             confirm "blackveil-dns" "$ROOT_VERSION"
           fi
+
+  smoke:
+    name: Smoke test published npm packages
+    needs: [pack, publish]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install and exercise the registry packages
+        env:
+          ROOT_VERSION: ${{ needs.pack.outputs.root_version }}
+          DNS_CHECKS_VERSION: ${{ needs.pack.outputs.dns_checks_version }}
+          PACKAGES: ${{ inputs.packages }}
+        run: python3 scripts/ci/smoke-published-npm.py
