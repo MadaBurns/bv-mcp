@@ -54,7 +54,9 @@ than leaving it out silently.
 ## Ledger
 
 `docs/economics/cogs-ledger.md`, append-only, newest last. The script creates it on
-first run. When a reading is taken to confirm a specific change, add one line under
+first run. The file is gitignored on purpose (cost figures stay out of the public
+repo), so it lives only in the main checkout: run the script there, not in a linked
+worktree, or the reading is lost with the worktree. When a reading is taken to confirm a specific change, add one line under
 the section naming the PR or deploy it follows; the script cannot know that.
 
 Related: the `bv-mcp-operations` skill for the AE dataset, blob layout and `cf` vs
