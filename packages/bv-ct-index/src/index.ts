@@ -99,7 +99,11 @@ export default {
 				const { killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime, undefined, transitional);
 				const tiers = [1, 2, 3].map((tier) => jobs.filter((job) => job.tier === tier).length);
 				const inputs = jobs.reduce((sum, job) => sum + job.inputs.length, 0);
-				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs }));
+				const tier1Jobs = { t0_normal: 0, t0_recovery: 0, t1_rollup: 0 };
+				for (const job of jobs) {
+					if (job.source) tier1Jobs[job.source]++;
+				}
+				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs, tier1Jobs }));
 				break;
 			}
 			default:

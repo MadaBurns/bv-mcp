@@ -67,6 +67,9 @@ describe('T0 -> T1 every 15 minutes', () => {
 		expect(await currentGeneration(env.CURSORS)).toBe(1);
 		const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
 		expect(lines.some((line) => line.event === 'ct_compaction_transition' && line.cron === TRANSITIONAL_COMPACTION_CRON)).toBe(true);
+		expect(lines.find((line) => line.event === 'ct_compaction_plan')).toMatchObject({
+			tier1Jobs: { t0_normal: 1, t0_recovery: 1, t1_rollup: 0 },
+		});
 		expect(lines.some((line) => line.event === 'ct_cron_unmatched')).toBe(false);
 		for (const job of jobs) expect(await runCompactionJob(env, job, undefined, at(0, 1, 32))).toBe('applied');
 		expect((await catalog()).filter((run) => run.tier === 0).map((run) => run.r2_key)).toEqual([
@@ -117,6 +120,7 @@ describe('T0 -> T1 every 15 minutes', () => {
 		// 01:32: the window [01:00, 01:15) has been over for 10 min, and nothing else is planned.
 		const first = await cronAndDrain(env, at(0, 1, 32));
 		expect(first.jobs.map((job) => [job.tier, job.inputs])).toEqual([[1, [id(at(0, 1, 5))]]]);
+		expect(first.jobs[0]!.source).toBe('t0_normal');
 		expect(first.outcomes).toEqual(['applied']);
 		expect(first.snapshot).toBeNull();
 		// A late T0 run in a window already planned waits for the next :17 tick.
@@ -132,6 +136,8 @@ describe('T0 -> T1 every 15 minutes', () => {
 			[1, 2],
 			[1, 2],
 		]);
+		expect(full.jobs[0]).toMatchObject({ source: 't0_recovery', recoveryInputs: 1 });
+		expect(full.jobs[1]!.source).toBe('t1_rollup');
 		expect(full.jobs[0]!.inputs).toEqual([id(at(0, 1, 50)), late].sort());
 		expect(full.outcomes).toEqual(['applied', 'applied']);
 		expect((await catalog()).map((run) => run.tier)).toEqual([1, 1, 1]);
@@ -278,18 +284,28 @@ describe('compaction output puts', () => {
 		expect(await catalog()).toEqual(before);
 	});
 
-	it('logs each job with its output count and put time once it is done', async () => {
+	it.each([true, false])('logs inputs and applied outputs with a source (labeled message: %s)', async (labeled) => {
 		const env = testEnv();
 		const job = await plannedJob(env);
 		const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		if (!labeled) {
+			delete job.source;
+			delete job.recoveryInputs;
+		}
+		const source = labeled ? 't0_recovery' : 'unknown';
 		const batch = fakeBatch('bv-ct-index-compact', [job]);
 		await runCompactionBatch(batch, env);
 		expect(batch.acked).toEqual(['m0']);
 		const done = log.mock.calls.map(([line]) => String(line)).find((line) => line.includes('"ct_compaction_job_done"'));
 		const t1 = (await catalog()).filter((run) => run.tier === 1);
+		expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+			expect.objectContaining({ event: 'ct_compaction_job', source, inputs: 2 }),
+		);
 		expect(done).toBeDefined();
 		expect(JSON.parse(done!)).toMatchObject({
 			event: 'ct_compaction_job_done',
+			source,
+			inputs: 2,
 			id: job.id,
 			tier: 1,
 			outcome: 'applied',

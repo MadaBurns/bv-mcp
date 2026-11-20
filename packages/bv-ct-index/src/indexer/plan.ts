@@ -381,14 +381,22 @@ export async function planCompactions(
 	const tier = (n: number) => results.filter((run) => Number(run.tier) === n);
 	const plan: Plan = { generation, cuts: cutsFor(tier(3), limits.maxT3Rows / 2), now: Math.floor(nowMs / 1000), limits, jobs: [] };
 	const windowEnd = Math.floor((nowMs - T0_MIN_AGE_MS) / T0_WINDOW_MS) * T0_WINDOW_MS;
-	const windowStart = full || recoverT0 ? -Infinity : windowEnd - T0_WINDOW_MS;
+	const normalStart = windowEnd - T0_WINDOW_MS;
+	const windowStart = full || recoverT0 ? -Infinity : normalStart;
 	// T0 runs span the whole keyspace, so a T1 job takes cuts across all of it: the coarse subset (SQ-491).
 	const t1Cuts = coarseCuts(plan.cuts, limits.maxT1Ranges);
 	for (const runs of groupBy(
 		tier(0).filter((run) => createdIn(run, windowStart, windowEnd)),
 		(run) => run.created_at.slice(0, 13),
 	).values()) {
-		await planChunks(plan, 1, runs, t1Cuts);
+		for (const chunk of boundedChunks(runs, limits)) {
+			const job = await makeJob(generation, 1, chunk, t1Cuts, plan.now);
+			// Preserve mixed chunks. Any older input makes the job recovery work.
+			const recoveryInputs = chunk.filter((run) => Date.parse(run.created_at) < normalStart).length;
+			job.source = recoveryInputs ? 't0_recovery' : 't0_normal';
+			if (recoveryInputs) job.recoveryInputs = recoveryInputs;
+			plan.jobs.push(job);
+		}
 	}
 	if (!full) return plan.jobs;
 	await planRollUp(plan, tier(1), nowMs);
@@ -406,9 +414,9 @@ interface Plan {
 	jobs: CompactionJob[];
 }
 
-/** One job of output `tier` per bounded chunk of `runs`. */
-async function planChunks(plan: Plan, tier: 1 | 2, runs: readonly PlanRun[], cuts: string[]): Promise<void> {
-	for (const chunk of boundedChunks(runs, plan.limits)) plan.jobs.push(await makeJob(plan.generation, tier, chunk, cuts, plan.now));
+/** One T2 job per bounded chunk of `runs`. */
+async function planT2Chunks(plan: Plan, runs: readonly PlanRun[], cuts: string[]): Promise<void> {
+	for (const chunk of boundedChunks(runs, plan.limits)) plan.jobs.push(await makeJob(plan.generation, 2, chunk, cuts, plan.now));
 }
 
 /**
@@ -430,7 +438,11 @@ async function planRollUp(plan: Plan, t1: readonly PlanRun[], nowMs: number): Pr
 	const rollable = t1.filter((run) => createdIn(run, Math.floor(nowMs / DAY_MS) * DAY_MS, Math.floor(nowMs / HOUR_MS) * HOUR_MS));
 	for (const component of components(rollable, plan.cuts)) {
 		for (const chunk of rollUpChunks(component.runs, plan.limits)) {
-			if (overlapping(chunk)) plan.jobs.push(await makeJob(plan.generation, 1, chunk, component.cuts, plan.now));
+			if (overlapping(chunk)) {
+				const job = await makeJob(plan.generation, 1, chunk, component.cuts, plan.now);
+				job.source = 't1_rollup';
+				plan.jobs.push(job);
+			}
 		}
 	}
 }
@@ -440,14 +452,14 @@ async function planT2(plan: Plan, t1: readonly PlanRun[], nowMs: number): Promis
 	const dayEnd = Math.floor(nowMs / DAY_MS) * DAY_MS;
 	const due = t1.filter((run) => Date.parse(run.created_at) < dayEnd);
 	for (const runs of groupBy(due, (run) => run.created_at.slice(0, 10)).values()) {
-		for (const component of components(runs, plan.cuts)) await planChunks(plan, 2, component.runs, component.cuts);
+		for (const component of components(runs, plan.cuts)) await planT2Chunks(plan, component.runs, component.cuts);
 	}
 }
 
 /** T2 runs that straddle a cut are re-cut T2 -> T2; the rest merge into their range's T3 shards. */
 async function planT3(plan: Plan, t2: readonly PlanRun[], t3: readonly PlanRun[]): Promise<void> {
 	const straddling = t2.filter((run) => straddles(run, plan.cuts));
-	for (const component of components(straddling, plan.cuts)) await planChunks(plan, 2, component.runs, component.cuts);
+	for (const component of components(straddling, plan.cuts)) await planT2Chunks(plan, component.runs, component.cuts);
 	const settled = t2.filter((run) => !straddles(run, plan.cuts));
 	for (const component of components([...settled, ...t3], plan.cuts)) {
 		const inputs = t3JobInputs(component.runs, plan.limits);

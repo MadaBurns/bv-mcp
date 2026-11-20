@@ -46,12 +46,16 @@ import {
 } from './catalog';
 
 export interface CompactionJob {
-	/** A digest of every other field (plan.ts), so one plan's retries share output keys and different plans never do. */
+	/** A digest of the compaction parameters, excluding telemetry (plan.ts), so one plan's retries share output keys and different plans never do. */
 	id: string;
 	/** The generation the inputs were planned in; the swap is refused once another generation is current. */
 	generation: number;
 	/** Output tier. */
 	tier: 1 | 2 | 3;
+	/* Optional telemetry for older messages already in the queue. */
+	source?: 't0_normal' | 't0_recovery' | 't1_rollup';
+	/** A recovery job may also contain inputs from the normal window. */
+	recoveryInputs?: number;
 	/** Input run ids, sorted. Every input is consumed whole. */
 	inputs: string[];
 	/** Sorted keys no output run may span: a run closes before the first row whose key is >= a cut. */
@@ -356,11 +360,17 @@ export async function runCompactionBatch(batch: MessageBatch<unknown>, env: Env)
 			console.error(`bv-ct-index compaction: dropping malformed job message ${message.id}`);
 		} else {
 			// Logged before the work, so an invocation that dies on a CPU or memory limit still names its job.
-			console.log(JSON.stringify({ event: 'ct_compaction_job', id: job.id, tier: job.tier, inputs: job.inputs.length }));
+			const fields = {
+				id: job.id,
+				tier: job.tier,
+				inputs: job.inputs.length,
+				...(job.tier === 1 && { source: job.source ?? 'unknown', recoveryInputs: job.recoveryInputs }),
+			};
+			console.log(JSON.stringify({ event: 'ct_compaction_job', ...fields }));
 			const stats: JobStats = { outputs: 0, gets: 0, putMs: 0, ms: 0 };
 			const outcome = await runCompactionJob(env, job, undefined, undefined, stats);
 			// After the work: output count and put time say where a job's wall time goes (SQ-402).
-			console.log(JSON.stringify({ event: 'ct_compaction_job_done', id: job.id, tier: job.tier, outcome, ...stats }));
+			console.log(JSON.stringify({ event: 'ct_compaction_job_done', ...fields, outcome, ...stats }));
 			if (outcome !== 'applied') console.log(`bv-ct-index compaction: job ${job.id} (tier ${job.tier}) ${outcome}`);
 		}
 		message.ack();
