@@ -89,5 +89,7 @@ export {
 export { EVIDENCE_SUFFICIENCY_THRESHOLD, computeScanEvidence, isCheckMeasured, isEvidenceSufficient, buildEvidenceNote } from './evidence';
 export type { ScanEvidence } from './evidence';
 
+export { applySilentDomainDkimApplicability, mxDeclaresNoInboundMail, notApplicableMetadata } from './mail-applicability';
+
 export { classifyDmarc, appendDmarcCleanInfo } from './classifiers/dmarc';
 export type { DmarcFacts } from './classifiers/dmarc';

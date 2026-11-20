@@ -5,8 +5,13 @@
 import { type CheckCategory, type CheckResult, type Finding } from '../../lib/scoring';
 import { queryTxtRecords } from '../../lib/dns';
 import { parseDmarcTags } from '../check-dmarc';
-import { isCompletedCheck } from '../../lib/ungraded-display';
+import { applySilentDomainDkimApplicability, mxDeclaresNoInboundMail } from '@blackveil/dns-checks/scoring';
 import { rebuildUnlessAbstained, notApplicableMetadata } from './result-rebuild';
+
+// The "does this domain accept inbound mail" predicate is owned by the shared
+// package, so the severity branch, the wording branch and every package consumer
+// read one answer. Re-exported here because the scan modules import it from here.
+export { mxDeclaresNoInboundMail };
 
 /**
  * Mail-applicability pass: downgrade or reword mail-auth findings that cannot apply to
@@ -66,9 +71,16 @@ export async function applyMailApplicability(domain: string, checkResults: Check
 	if (hasNoSendPolicy && !declaresNoInboundMail) {
 		results = adjustForNoSendDomain(results);
 	}
-	if (hasNoSendPolicy && declaresNoInboundMail) {
-		results = adjustRevokedDkimForSilentDomain(results);
-	}
+	// Revoked DKIM keys on a domain that neither sends nor receives mail (SQ-535).
+	// The rule lives in the shared package, so a consumer that scores the package's
+	// check results without this server layer reports the same severity. It reads
+	// both conditions (no inbound mail, no-send SPF) from the results itself.
+	// test/scan-post-processing-silent-domain-dkim.spec.ts drives the real check, so
+	// a renamed DKIM title fails that spec instead of silently re-arming the HIGH.
+	// Report-level N/A does not remove DKIM from canonical scoring: non_mail and
+	// explicit profiles with nonzero DKIM weight can gain score; default web_only has
+	// zero DKIM weight. Scoring model 1.42.0 records the policy.
+	results = applySilentDomainDkimApplicability(results);
 
 	// BIMI applicability wording (TEXT ONLY — severity and score untouched).
 	// `adjustBimiForNonMailDomain` above only runs on the non-mail branch, so a
@@ -125,65 +137,6 @@ function isMissingRecordFinding(finding: { title: string; detail: string }): boo
 		title.includes('no dkim') ||
 		/^no\s+\S+\s+record/.test(title)
 	);
-}
-
-/**
- * LEGACY-ONLY fallback: MX finding titles that mean "this domain does not accept
- * inbound email", consulted only when `controlPresent` is absent from the result.
- *
- * The first four are the ACTUAL titles `check-mx` emits on its non-mail terminal
- * paths (`packages/dns-checks/src/checks/check-mx.ts` + `mx-analysis.ts`) — but
- * every one of those paths also sets `controlPresent: false`, so in production
- * this set is never reached. `'No MX records found'` is emitted by NOTHING; it is
- * the phantom title that made the old `hasNoMx` permanently false (#643), kept
- * here so synthetic/older-vintage results are still recognised.
- *
- * Do NOT add new titles here. Cross-module finding identity by string literal has
- * no compile-time or test-time link to its producer and fails silently forever —
- * which is exactly how this defect survived. Key on structure (`controlPresent`).
- */
-const NO_INBOUND_MAIL_MX_TITLES: ReadonlySet<string> = new Set([
-	'Null MX record (RFC 7505)',
-	'Correctly-configured non-mail domain',
-	'Non-mail domain SPF not hard-fail',
-	'No MX and no SPF — domain spoofable',
-	'No MX records found',
-]);
-
-/**
- * The single answer to "did the `mx` check DEFINITIVELY establish that this domain
- * accepts no inbound email" — either no MX records at all, or an RFC 7505 null MX.
- *
- * Gates BOTH halves of non-mail post-processing: the wording branches AND
- * `adjustForNonMailDomain()`, which downgrades missing-record email findings to
- * `info`. Those were split across two predicates until #643 — one structural, one
- * matching a finding title nothing emits — so the scan's prose and its severities
- * could disagree about whether the same domain handled mail. One predicate makes
- * that class of divergence unrepresentable.
- *
- * ## Absence is asserted only from a completed measurement
- *
- * Two independent guards, because "no mail" is a claim we make about the domain,
- * not merely the absence of a signal:
- *
- *  1. `checkStatus` must be measured. A transient resolver failure returns
- *     `checkStatus: 'error'` — we could not observe the mail posture, so we make no
- *     claim about it. (This is invariant #3 in `unmeasured-check-exemption.audit`,
- *     which has already caught this exact shape three times.)
- *  2. `controlPresent`, which `check-mx` sets on every terminal path: `true` only
- *     when real mail-routing MX records were observed, `false` for both the no-MX
- *     and the null-MX declarations, `undefined` when inconclusive.
- *
- * A mail-sending domain (`controlPresent: true`) and an inconclusive lookup both
- * return `false` here, so neither is ever treated as non-mail.
- */
-export function mxDeclaresNoInboundMail(mxResult: CheckResult | undefined): boolean {
-	if (!mxResult) return false;
-	// Never assert "no inbound mail" from a probe that did not complete.
-	if (!isCompletedCheck(mxResult)) return false;
-	if (mxResult.controlPresent === false) return true;
-	if (mxResult.controlPresent === true) return false;
-	return mxResult.findings.some((finding: Finding) => NO_INBOUND_MAIL_MX_TITLES.has(finding.title));
 }
 
 /**
@@ -345,40 +298,6 @@ function escalateDmarcForImpersonation(results: CheckResult[]): CheckResult[] {
 				};
 			}
 			return finding;
-		});
-		return rebuildUnlessAbstained(result, adjusted);
-	});
-}
-
-/**
- * SQ-535: titles `check-dkim` gives a selector whose key cannot verify a signature,
- * meaning an empty `p=` (revoked) or no `p=` at all, plus their aggregate.
- * test/scan-post-processing-silent-domain-dkim.spec.ts drives the real check, so a
- * renamed title fails that spec instead of silently re-arming the HIGH.
- */
-const UNVERIFIABLE_DKIM_KEY_TITLE_PREFIXES = ['DKIM keys revoked', 'Revoked DKIM key:', 'DKIM key record has no public key:'];
-
-/**
- * A domain with a null MX and an SPF policy that authorizes no sender neither
- * receives nor sends mail. Revoking every DKIM key is the correct posture for it,
- * so a "keys revoked" finding is not a risk. Report-level N/A does not remove DKIM
- * from canonical scoring: non_mail and explicit profiles with nonzero DKIM weight
- * can gain score; default web_only has zero DKIM weight. Scoring model 1.42.0
- * records this Worker policy change. A usable key (even a weak one) keeps its rating,
- * because a factorable key can still be used to forge mail.
- */
-function adjustRevokedDkimForSilentDomain(results: CheckResult[]): CheckResult[] {
-	return results.map((result) => {
-		if (result.category !== 'dkim') return result;
-		const adjusted = result.findings.map((finding: Finding) => {
-			const unverifiable = UNVERIFIABLE_DKIM_KEY_TITLE_PREFIXES.some((prefix) => finding.title.startsWith(prefix));
-			if (!unverifiable || (finding.severity !== 'critical' && finding.severity !== 'high')) return finding;
-			return {
-				...finding,
-				severity: 'info' as const,
-				detail: `${finding.detail} (expected — null MX and an SPF policy that authorizes no sender mean this domain neither sends nor receives mail, so revoked DKIM keys are the correct posture)`,
-				...notApplicableMetadata(finding),
-			};
 		});
 		return rebuildUnlessAbstained(result, adjusted);
 	});

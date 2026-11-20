@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- dns-checks 2.4.0: the rule that restates revoked DKIM keys as `info` on a domain that neither sends nor receives mail now lives in the shared package (`applySilentDomainDkimApplicability` on the `scoring` subpath), and `scan_domain` calls it. `scan_domain` output is unchanged: same findings, severities, detail text and scores. A consumer that uses the package without the hosted scanner's server layer can now apply the same rule; until it does, it still reports those findings as high severity. No scoring model change (scoring model stays 2.3.0).
+
 ## [3.118.2] - 2026-11-19
 
 ### Changed
