@@ -2,6 +2,16 @@
 
 All notable changes to `@blackveil/dns-checks` are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.0]
+
+### Added (no check changes; a consumer that starts calling it can move scores)
+
+- `applySilentDomainDkimApplicability(results)` on the `@blackveil/dns-checks/scoring` subpath. For a domain with no inbound mail (no MX or an RFC 7505 null MX) and an SPF policy that authorizes no sender, it restates the DKIM findings "DKIM keys revoked", "Revoked DKIM key: …" and "DKIM key record has no public key: …" from `high` or `critical` to `info`, appends the reason to the detail, and retracts a declared `missingControl`. Revoking every key is the correct posture for a domain that neither sends nor receives mail. A usable key, even a weak one, keeps its rating. A result set that does not establish both conditions is returned unchanged, and a DKIM result that did not complete is returned as the same object.
+- The rule was previously applied only by the hosted scanner's server layer (scoring model 1.42.0), so a consumer of the package alone reported the same domain with a high-severity DKIM finding. The hosted scanner now calls this function, so its output is unchanged.
+- Call it on a scan's check results before `computeProfileAwareScanScore`. It rebuilds the `dkim` result from the adjusted findings, so that category's score and `passed` move with the severities. Under a profile that gives DKIM a nonzero weight (`non_mail` carries a small one) the overall score can rise; under `web_only` DKIM has zero weight and the overall score does not move.
+- `mxDeclaresNoInboundMail(mxResult)` and `notApplicableMetadata(finding)` are exported from the same subpath. They are the predicate and the helper the rule uses, moved from the server layer so both sides share one implementation.
+- No check function changed and no `*_PARITY_FIXTURES` expected score changed. `PARITY_CORPUS_VERSION` is `2.4.0`.
+
 ## [2.3.0]
 
 ### Changed (moves scores up; scoring model 2.3.0)

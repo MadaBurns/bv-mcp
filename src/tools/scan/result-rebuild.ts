@@ -77,14 +77,8 @@ export function rebuildUnlessAbstained(result: CheckResult, adjusted: Finding[])
  * Retract a DECLARED `metadata.missingControl: true` when a finding is downgraded to
  * "not applicable". Spread the result into the downgraded finding.
  *
- * `findingsIndicateMissingControl` honours a declared `true` with NO severity gate, so
- * a finding rewritten to `info` / "not applicable" but still carrying the declaration
- * kept zeroing its category and failing `passed` — the prose said "expected" while the
- * score said "absent". `missingControl: false` is the scoring layer's own "measured,
- * not a missing control" declaration (it outranks the prose regex in both directions).
- * Undeclared findings get no patch: they already fall through to the severity-gated
- * prose inference, which `info` clears.
+ * Owned by the shared package, which applies it in its own applicability rule; the
+ * post-processing modules import it from here. One implementation, so a downgrade
+ * done here and one done in the package retract the declaration the same way.
  */
-export function notApplicableMetadata(finding: Finding): { metadata?: Finding['metadata'] } {
-	return finding.metadata?.missingControl === true ? { metadata: { ...finding.metadata, missingControl: false } } : {};
-}
+export { notApplicableMetadata } from '@blackveil/dns-checks/scoring';
