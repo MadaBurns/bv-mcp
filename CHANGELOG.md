@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.119.0] - 2026-11-24
+
 ### Changed
 
 - dns-checks 2.5.0: `web_content` reports a cross-origin script or stylesheet from a provider that cannot be pinned with an integrity hash (Cloudflare Web Analytics, Cloudflare Turnstile, Google Tag Manager, Google Analytics) as one `info` finding, "Cross-origin resource from a provider that does not support SRI", instead of the `low` "Cross-origin resource without Subresource Integrity". Any other host, including a look-alike, keeps the `low` finding. `web_content` does not score, so no score or grade moves (scoring model unchanged).
