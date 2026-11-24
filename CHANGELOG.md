@@ -10,6 +10,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Changed
 
+- dns-checks 2.5.0: `web_content` reports a cross-origin script or stylesheet from a provider that cannot be pinned with an integrity hash (Cloudflare Web Analytics, Cloudflare Turnstile, Google Tag Manager, Google Analytics) as one `info` finding, "Cross-origin resource from a provider that does not support SRI", instead of the `low` "Cross-origin resource without Subresource Integrity". Any other host, including a look-alike, keeps the `low` finding. `web_content` does not score, so no score or grade moves (scoring model unchanged).
 - dns-checks 2.4.0: the rule that restates revoked DKIM keys as `info` on a domain that neither sends nor receives mail now lives in the shared package (`applySilentDomainDkimApplicability` on the `scoring` subpath), and `scan_domain` calls it. `scan_domain` output is unchanged: same findings, severities, detail text and scores. A consumer that uses the package without the hosted scanner's server layer can now apply the same rule; until it does, it still reports those findings as high severity. No scoring model change (scoring model stays 2.3.0).
 
 ## [3.118.2] - 2026-11-19

@@ -2,6 +2,14 @@
 
 All notable changes to `@blackveil/dns-checks` are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this package adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.5.0]
+
+### Changed (non-scoring; no score moves)
+
+- `web_content` no longer reports a missing integrity hash as fixable when the provider cannot be pinned. Cross-origin resources from `static.cloudflareinsights.com` (Cloudflare Web Analytics), `challenges.cloudflare.com` (Cloudflare Turnstile), `googletagmanager.com` and `google-analytics.com`, or a subdomain of one of those hosts, now produce one `info` finding, "Cross-origin resource from a provider that does not support SRI", instead of the `low` "Cross-origin resource without Subresource Integrity". These providers change the file at the same URL, so a hash would break the page. The new finding names each provider and its reason in `metadata.providers`, and it states the remaining risk.
+- Hosts match exactly or as a subdomain of a listed host, never by substring. A look-alike host, or another host of the same provider such as `cdnjs.cloudflare.com`, keeps the `low` finding.
+- `web_content` has importance 0 in every profile and is excluded from scoring, so no overall score or grade moves. A consumer that matches on the old title will no longer see these hosts under it. No `*_PARITY_FIXTURES` expected score changed. `PARITY_CORPUS_VERSION` is `2.5.0`.
+
 ## [2.4.0]
 
 ### Added (no check changes; a consumer that starts calling it can move scores)
