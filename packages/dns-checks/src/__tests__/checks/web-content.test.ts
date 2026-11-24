@@ -224,6 +224,56 @@ describe('analyzeWebContentPage: Subresource Integrity', () => {
 		expect(bySeverity(findings, 'Malformed integrity attribute')).toBeUndefined();
 		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')).toBeDefined();
 	});
+
+	const UNPINNABLE = 'Cross-origin resource from a provider that does not support SRI';
+
+	it('reports a provider that cannot be pinned as a separate info finding, not as a fixable gap', () => {
+		const findings = analyzeWebContentPage(html(`<script defer src="https://static.cloudflareinsights.com/beacon.min.js"></script>`), DOMAIN);
+		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')).toBeUndefined();
+		const found = bySeverity(findings, UNPINNABLE);
+		expect(found).toMatchObject({ severity: 'info' });
+		expect(found?.metadata?.count).toBe(1);
+		expect(found?.metadata?.providers).toEqual(['Cloudflare Web Analytics']);
+		expect(found?.detail).toContain('static.cloudflareinsights.com/beacon.min.js');
+		expect(found?.detail).toMatch(/cannot be pinned/);
+	});
+
+	it('recognises each listed provider host, including subdomains of a listed apex', () => {
+		const findings = analyzeWebContentPage(
+			html(
+				`<script src="https://www.googletagmanager.com/gtag/js?id=G-1"></script>
+				 <script src="https://www.google-analytics.com/analytics.js"></script>
+				 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>`,
+			),
+			DOMAIN,
+		);
+		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')).toBeUndefined();
+		expect(bySeverity(findings, UNPINNABLE)?.metadata?.count).toBe(3);
+		expect(bySeverity(findings, UNPINNABLE)?.metadata?.providers).toEqual(['Google Tag Manager', 'Google Analytics', 'Cloudflare Turnstile']);
+	});
+
+	it('keeps ordinary cross-origin hosts on the low finding when a page mixes both kinds', () => {
+		const findings = analyzeWebContentPage(
+			html(`<script src="https://static.cloudflareinsights.com/beacon.min.js"></script><script src="https://cdn.other.net/a.js"></script>`),
+			DOMAIN,
+		);
+		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')).toMatchObject({ severity: 'low' });
+		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')?.metadata?.count).toBe(1);
+		expect(bySeverity(findings, UNPINNABLE)?.metadata?.count).toBe(1);
+	});
+
+	it('does not exempt look-alike hosts or other hosts of the same provider', () => {
+		const findings = analyzeWebContentPage(
+			html(
+				`<script src="https://evilcloudflareinsights.com/beacon.min.js"></script>
+				 <script src="https://cloudflareinsights.com.evil.net/beacon.min.js"></script>
+				 <script src="https://cdnjs.cloudflare.com/ajax/libs/x/1.0/x.js"></script>`,
+			),
+			DOMAIN,
+		);
+		expect(bySeverity(findings, UNPINNABLE)).toBeUndefined();
+		expect(bySeverity(findings, 'Cross-origin resource without Subresource Integrity')?.metadata?.count).toBe(3);
+	});
 });
 
 describe('analyzeWebContentPage: outbound http links', () => {

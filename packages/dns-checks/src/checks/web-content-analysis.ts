@@ -284,12 +284,46 @@ function isScriptWithIntegrityButNoCors(subresource: Subresource): boolean {
 	return subresource.kind === 'script' && subresource.integrity !== null && subresource.crossorigin === null;
 }
 
+/**
+ * Providers that serve changing content at a stable URL, so an integrity hash would break the page on
+ * their next update. A missing hash on these is not something the site can fix. Matched on the exact
+ * host or a subdomain of it, never on a substring, so a look-alike host is still flagged.
+ */
+const SRI_UNSUPPORTED_PROVIDERS: readonly { readonly host: string; readonly provider: string; readonly reason: string }[] = [
+	{ host: 'static.cloudflareinsights.com', provider: 'Cloudflare Web Analytics', reason: 'the beacon is updated by Cloudflare at the same URL' },
+	{ host: 'challenges.cloudflare.com', provider: 'Cloudflare Turnstile', reason: 'the loader is a changing endpoint that Cloudflare documents as not pinnable' },
+	{ host: 'googletagmanager.com', provider: 'Google Tag Manager', reason: 'the container script is generated per request' },
+	{ host: 'google-analytics.com', provider: 'Google Analytics', reason: 'the script is updated without a version change' },
+];
+
+function unpinnableProvider(url: string): (typeof SRI_UNSUPPORTED_PROVIDERS)[number] | undefined {
+	const host = URL.parse(url)?.hostname;
+	if (host === undefined) return undefined;
+	return SRI_UNSUPPORTED_PROVIDERS.find((entry) => isSubdomainOf(host, entry.host));
+}
+
+/** One info finding for cross-origin loads whose provider does not support SRI, or none. */
+function unpinnableFinding(ctx: PageContext, subresources: readonly Subresource[]): Finding[] {
+	if (subresources.length === 0) return [];
+	const urls = subresources.map(urlOf);
+	const entries = [...new Set(urls.map((url) => unpinnableProvider(url)).filter((entry) => entry !== undefined))];
+	const reasons = entries.map((entry) => `${entry.provider}: ${entry.reason}`).join('; ');
+	const detail =
+		`${urls.length} reference(s): ${listUrls(urls)}. These cannot be pinned with an integrity hash (${reasons}), so there is nothing to add. ` +
+		'The page still depends on that provider host not being compromised; a strict Content-Security-Policy limits what else such a script can load.';
+	return [webFinding(ctx, 'info', 'Cross-origin resource from a provider that does not support SRI', detail, { count: urls.length, providers: entries.map((entry) => entry.provider) })];
+}
+
 /** Cross-origin loads without SRI, malformed integrity values, and cross-origin scripts whose integrity cannot verify. */
 export function analyzeSubresourceIntegrity(refs: HtmlRefs, ctx: PageContext): Finding[] {
 	const subresources = collectSubresources(refs);
 	const crossOrigin = subresources.filter((subresource) => isCrossOrigin(subresource.url, ctx));
+	const unprotected = crossOrigin.filter(lacksIntegrity);
+	const unpinnable = unprotected.filter((subresource) => unpinnableProvider(subresource.url) !== undefined);
+	const fixable = unprotected.filter((subresource) => unpinnableProvider(subresource.url) === undefined);
 	return [
-		...urlFinding(ctx, crossOrigin.filter(lacksIntegrity).map(urlOf), 'low', 'Cross-origin resource without Subresource Integrity', 'a compromised third-party host could change what runs or styles this page.'),
+		...urlFinding(ctx, fixable.map(urlOf), 'low', 'Cross-origin resource without Subresource Integrity', 'a compromised third-party host could change what runs or styles this page.'),
+		...unpinnableFinding(ctx, unpinnable),
 		...urlFinding(ctx, subresources.filter(hasMalformedIntegrity).map(urlOf), 'medium', 'Malformed integrity attribute', 'the value has no sha256-, sha384- or sha512- hash, so browsers ignore it and the resource is unprotected.'),
 		...urlFinding(ctx, crossOrigin.filter(isScriptWithIntegrityButNoCors).map(urlOf), 'low', 'Cross-origin script has integrity but no crossorigin attribute', 'without crossorigin the browser cannot read the response to verify the hash, so it blocks the script.'),
 	];
