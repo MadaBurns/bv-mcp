@@ -459,6 +459,9 @@ const METHOD_HANDLERS: ReadonlyMap<string, MethodHandler> = new Map<string, Meth
 	['tools/call', handleToolsCallMethod],
 	['resources/list', (options) => simpleSuccess(options, 'resources', 'list', handleResourcesList())],
 	['resources/read', handleResourcesReadMethod],
+	// The `resources` capability is advertised, so a client may list templates. This server has
+	// only fixed-URI resources, so the list is empty rather than "Method not found".
+	['resources/templates/list', (options) => simpleSuccess(options, 'resources', 'templates', { resourceTemplates: [] })],
 	['prompts/list', (options) => simpleSuccess(options, 'prompts', 'list', handlePromptsList())],
 	['prompts/get', handlePromptsGetMethod],
 	['ping', (options) => simpleSuccess(options, 'session', 'ping', {})],

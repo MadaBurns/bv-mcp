@@ -8,6 +8,7 @@ plugins: []
 ### Added
 
 - `tools/list` marks each paid-only tool with `_meta.paidOnly: true`, derived from the same set the paid-tier gate uses, so an agent on the free tier can tell before calling which tools it will be refused. The field is omitted on every other tool. Which tools are listed, the gate itself and its refusal text are unchanged.
+- `resources/templates/list` returns an empty `resourceTemplates` list instead of "Method not found"; the server advertises the `resources` capability and has only fixed-URI resources.
 
 ### Changed
 
