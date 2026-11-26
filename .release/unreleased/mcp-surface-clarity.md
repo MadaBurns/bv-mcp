@@ -1,9 +1,13 @@
 ---
 ref: mcp-surface-clarity
 title: Clearer tool descriptions for picking the right tool and following async jobs
-bump: patch
+bump: minor
 plugins: []
 ---
+
+### Added
+
+- `tools/list` marks each paid-only tool with `_meta.paidOnly: true`, derived from the same set the paid-tier gate uses, so an agent on the free tier can tell before calling which tools it will be refused. The field is omitted on every other tool. Which tools are listed, the gate itself and its refusal text are unchanged.
 
 ### Changed
 
@@ -13,5 +17,5 @@ plugins: []
 - `batch_scan`, `batch_scan_start`, `batch_scan_status` and `batch_scan_findings` name each other, the job states, owner scoping, the 7-day result window and what to put in `idempotency_key`.
 - Every OSINT start tool names both `osint_investigation_status` and `osint_investigation_report`, and the OSINT and bucket-scan start tools say their handle is valid for 24 hours.
 - `check_txt_hygiene`, `check_resolver_consistency` and `check_nsec_walkability` say when to use them and how they differ from their neighbours.
-- The shared `format` parameter says `compact` gives less text. The shared `domain` and `force_refresh` descriptions and the scan suffix ("Part of scan_domain.") are shorter, and the bucket and OSINT pollers no longer repeat the watchlist rule that applies to their start tool, so the `tools/list` response stays inside its size budget (98,234 to 98,063 characters).
+- The shared `format` parameter says `compact` gives less text. The shared `domain` and `force_refresh` descriptions and the scan suffix ("Part of scan_domain.") are shorter, and the bucket and OSINT pollers no longer repeat the watchlist rule that applies to their start tool, so the `tools/list` response stays inside its unchanged size budget (98,234 characters before; 98,479 with the descriptions and the `paidOnly` flags, against a ceiling of 98,500).
 - Only description text changed: tool names, argument names and schemas, output schemas, annotations and results are the same.

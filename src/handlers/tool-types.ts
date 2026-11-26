@@ -38,6 +38,11 @@ export interface WireTool {
 		scanIncluded: boolean;
 		/** Present (true) only for the curated starter set; omitted otherwise (lean, like tier). */
 		recommended?: boolean;
+		/**
+		 * Present (true) only for tools in GATED_PAID_ONLY_TOOLS: an anonymous, free or agent caller is
+		 * refused (401/403 UPGRADE_REQUIRED). Omitted otherwise. Advisory only; the gate is unchanged.
+		 */
+		paidOnly?: boolean;
 	};
 }
 

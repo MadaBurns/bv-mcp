@@ -4,7 +4,7 @@ import type { CheckResult } from '../lib/scoring';
 import { buildNonResolvingCheckResult, isNonResolvingApex } from '../lib/apex-resolution';
 import { buildCheckCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup, withStrongRequestIdempotency } from '../lib/request-dedup';
-import { isAuthRequiredTool, isInternalOnlyTool } from '../lib/config';
+import { isAuthRequiredTool, isGatedPaidOnlyTool, isInternalOnlyTool } from '../lib/config';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { compactLookalikesResult, formatLookalikeCompactSummary } from '../tools/lookalike-compact';
 import { getRejectedRequest } from '../tools/async-start-error-result';
@@ -52,6 +52,9 @@ export function handleToolsList(): { tools: WireTool[] } {
 				...(tool.tier !== undefined && { tier: tool.tier }),
 				scanIncluded: tool.scanIncluded,
 				...(tool.recommended && { recommended: true }),
+				// Derived from the gate's own set (GATED_PAID_ONLY_TOOLS), so the hint cannot drift from
+				// the refusal a free or anonymous caller would get.
+				...(isGatedPaidOnlyTool(tool.name) && { paidOnly: true }),
 			},
 		})),
 	};
