@@ -270,7 +270,8 @@ describe('MCP-Protocol-Version request header', () => {
 		expect(body.error.message).toContain('Unsupported MCP-Protocol-Version header');
 		expect(body.error.message).toContain('2099-01-01');
 		for (const version of SUPPORTED_PROTOCOL_VERSIONS) expect(body.error.message).toContain(version);
-		expect(body.error.data).toEqual({ received: '2099-01-01', supported: [...SUPPORTED_PROTOCOL_VERSIONS] });
+		// No error.data: a `supported` list is the shape of a newer-revision error and would defeat the fallback.
+		expect(body.error.data).toBeUndefined();
 	});
 
 	it('answers a batch with id null, since no single id applies', () => {
@@ -282,9 +283,9 @@ describe('MCP-Protocol-Version request header', () => {
 
 	it('echoes only printable ASCII from the header, capped in length', () => {
 		const error = unsupportedProtocolVersionError(1, `2099\u0007-01-01${'x'.repeat(200)}`);
-		const data = error.error.data as { received: string };
-		expect(data.received.length).toBe(64);
-		expect(data.received.startsWith('2099?-01-01')).toBe(true);
+		const echoed = /header: "([^"]*)"/.exec(error.error.message)?.[1] ?? '';
+		expect(echoed.length).toBe(64);
+		expect(echoed.startsWith('2099?-01-01')).toBe(true);
 	});
 });
 

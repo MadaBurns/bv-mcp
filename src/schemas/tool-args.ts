@@ -58,7 +58,7 @@ export const BatchScanArgs = z
 	.strict();
 
 export const BatchScanStartArgs = BatchScanArgs.extend({
-	idempotency_key: z.string().min(8).max(128).describe('Any stable 8-128 char string you choose; reusing it returns the same job.'),
+	idempotency_key: z.string().min(8).max(128).describe('Any stable 8-128 char string; reuse with the same domains returns the same job.'),
 });
 
 export const BatchScanJobArgs = z

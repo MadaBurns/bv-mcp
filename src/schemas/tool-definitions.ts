@@ -429,7 +429,7 @@ const TOOL_DEFS = {
 	},
 	check_mx_reputation: {
 		description:
-			"Check whether a domain's mail server (MX) IPs are on spam blocklists: for up to 3 MX hosts, queries SpamCop and Barracuda (not Spamhaus ZEN) and verifies reverse DNS (PTR/FCrDNS) for each IP. Use to ask if your mail server IP is blacklisted. check_rbl takes the same domain and queries more RBLs (6), without PTR.",
+			"Check whether a domain's mail server (MX) IPs are on spam blocklists: for up to 3 MX hosts, queries SpamCop and Barracuda (not Spamhaus ZEN) and verifies reverse DNS (PTR/FCrDNS) per host. Use to ask if your mail server IP is blacklisted. check_rbl takes the same domain and queries more RBLs (6), without PTR.",
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'hardening',

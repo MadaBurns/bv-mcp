@@ -153,6 +153,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 - `tier` — scoring tier (`core` / `protective` / `hardening`); absent for non-scoring tools.
 - `scanIncluded` — `true` when the tool runs inside `scan_domain`'s parallel audit.
 - `recommended` — present (`true`) only on the curated **starter set** (`scan_domain`, `explain_finding`, `compare_baseline`); omitted otherwise. A client facing the full surface can lead with `tools.filter(t => t._meta.recommended)` to avoid overwhelming an LLM with all tools flat. Every tool is still listed — this is an additive signal, not a filter.
+- `paidOnly` — present (`true`) only on tools that need a paid tier; omitted otherwise. Derived from the same set the paid-tier gate uses, so a free-tier client can tell before calling which tools will refuse it. Every tool is still listed.
 
 ### Authoritative DNS infrastructure
 

@@ -69,6 +69,8 @@ const MAX_ECHOED_VERSION_HEADER_CHARS = 64;
  * that code. The message starts with the allowlisted `Invalid` prefix, keeps the established
  * "Unsupported MCP-Protocol-Version header" phrase, and names the value received (printable
  * ASCII only, capped) and the supported versions so a client can tell what to send instead.
+ * It carries no `error.data`: a `supported` list there is the shape of the newer spec revision's
+ * unsupported-version error, and a client that matched on shape would stop falling back.
  *
  * @param id - The request id when the body is a single request; echoed only when it is a string or
  *   number (a batch, a notification or a malformed id gets null, per JSON-RPC 2.0 §5).
@@ -84,7 +86,6 @@ export function unsupportedProtocolVersionError(id: unknown, header: string | un
 		typeof id === 'string' || typeof id === 'number' ? id : null,
 		JSON_RPC_ERRORS.INVALID_REQUEST,
 		`Invalid request. Unsupported MCP-Protocol-Version header: "${received}". Supported versions: ${supported.join(', ')}.`,
-		{ received, supported },
 	);
 }
 
