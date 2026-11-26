@@ -15,13 +15,18 @@ type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof json
 
 /**
  * MCP protocol versions this server supports, newest first.
- * `2025-06-18` introduced `structuredContent` / `outputSchema`, both of which bv-mcp ships,
- * so it is the latest advertised version. `2025-03-26` is retained for backward compatibility.
+ * `2025-11-25` adds nothing a tools/resources/prompts server must implement beyond what this
+ * one already does (403 on a bad Origin, tool-argument errors as `isError` results, the optional
+ * `serverInfo.description`); its other additions (tasks, icons, elicitation, sampling tools, SSE
+ * polling) are optional or client-side. `2025-06-18` introduced `structuredContent` /
+ * `outputSchema`, both of which bv-mcp ships. `2025-03-26` is retained for backward compatibility.
+ * Every version-dependent branch compares against {@link STRUCTURED_CONTENT_MIN_VERSION}, so a
+ * newer entry here takes the modern path.
  */
-export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26'] as const;
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const;
 
 /** The newest protocol version this server supports — returned when the client's request can't be honored. */
-export const LATEST_PROTOCOL_VERSION = '2025-06-18';
+export const LATEST_PROTOCOL_VERSION = '2025-11-25';
 
 /**
  * Negotiate the MCP protocol version for an `initialize` response.
