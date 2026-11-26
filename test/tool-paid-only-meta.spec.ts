@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { handleToolsList } from '../src/handlers/tools';
 import { GATED_PAID_ONLY_TOOLS, INTERNAL_ONLY_TOOLS } from '../src/lib/config';
 import { TOOLS } from '../src/schemas/tool-definitions';
+import { SERVER_INSTRUCTIONS } from '../src/mcp/server-instructions';
 
 describe('_meta.paidOnly on tools/list', () => {
 	const { tools } = handleToolsList();
@@ -25,6 +26,12 @@ describe('_meta.paidOnly on tools/list', () => {
 			if (GATED_PAID_ONLY_TOOLS.has(tool.name)) continue;
 			expect('paidOnly' in tool._meta, `${tool.name} is not gated and must not carry paidOnly`).toBe(false);
 		}
+	});
+
+	it('is the key the server instructions tell an agent to look for, next to the tier check', () => {
+		expect(SERVER_INSTRUCTIONS).toContain('_meta.paidOnly');
+		expect(SERVER_INSTRUCTIONS).toContain('get_access_context');
+		expect(tools.some((tool) => tool.name === 'get_access_context')).toBe(true);
 	});
 
 	it('does not change which tools are listed', () => {
