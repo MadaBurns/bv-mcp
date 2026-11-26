@@ -47,6 +47,8 @@ export const CATCHUP_MAX_FETCHES = 600;
 export const CATCHUP_MAX_ROWS = 2;
 /** No new fetch starts after this; with FETCH_TIMEOUT_MS the run ends well inside a cron invocation. */
 export const CATCHUP_PHASE_MS = 30_000;
+/** A row's read re-reads the kill switches at most this often, so a switch thrown mid-run takes effect within it. */
+export const KILL_RECHECK_MS = 5_000;
 const USER_AGENT = 'bv-ct-index (+https://blackveilsecurity.com)';
 
 const SELECT_KILLED = 'SELECT 1 AS killed FROM ops_ledger WHERE killed = 1 LIMIT 1';
@@ -57,7 +59,11 @@ const ADVANCE = `UPDATE log_backfill SET next_index = ?1, state = CASE WHEN ?1 >
 	entries_read = entries_read + ?3, expired_skipped = expired_skipped + ?4, updated_at = ?5,
 	last_error = COALESCE(?9, last_error), last_error_at = CASE WHEN ?9 IS NULL THEN last_error_at ELSE ?5 END
 WHERE log_id = ?6 AND upper_index = ?7 AND next_index = ?8 AND state = 'active'`;
-const RECORD_ERROR = 'UPDATE log_backfill SET last_error = ?1, last_error_at = ?2 WHERE log_id = ?3 AND upper_index = ?4';
+// Both move updated_at, which orders the work list: a row that keeps failing or deferring goes to the back, so it
+// cannot hold the front of the list and starve the rows behind it.
+const RECORD_ERROR =
+	'UPDATE log_backfill SET last_error = ?1, last_error_at = ?2, updated_at = ?2 WHERE log_id = ?3 AND upper_index = ?4';
+const TOUCH = 'UPDATE log_backfill SET updated_at = ?1 WHERE log_id = ?2 AND upper_index = ?3';
 const ADD_TO_LEDGER = `INSERT INTO ops_ledger (day, r2_class_a, r2_class_b, d1_rows, killed) VALUES (?1, 0, ?2, ?3, 0)
 ON CONFLICT (day) DO UPDATE SET r2_class_b = COALESCE(r2_class_b, 0) + excluded.r2_class_b, d1_rows = COALESCE(d1_rows, 0) + excluded.d1_rows`;
 
@@ -78,6 +84,8 @@ export interface CatchupOptions {
 	maxFetches?: number;
 	/** Overrides CATCHUP_PHASE_MS. */
 	phaseMs?: number;
+	/** How often a row's read re-reads the kill switches (default KILL_RECHECK_MS). */
+	killRecheckMs?: number;
 	fetchTimeoutMs?: number;
 	/** Overrides FLUSH_ROWS. */
 	flushRows?: number;
@@ -138,6 +146,10 @@ interface Run {
 	nowSec: number;
 	emitted: Map<string, RunRow>;
 	sendFailed: boolean;
+	/** A kill switch was found set part-way through the run. */
+	killed: boolean;
+	killRecheckMs: number;
+	killCheckedAt: number;
 	fetches: number;
 	sends: number;
 	d1Rows: number;
@@ -379,6 +391,11 @@ async function catchUpRow(run: Run, db: D1Database, work: Work): Promise<void> {
 	let failure: unknown;
 	try {
 		while (work.next < work.ceiling && canFetch(run, work)) {
+			// A switch thrown mid-row stops the read within killRecheckMs; what was already read is still committed below.
+			if (Date.now() - run.killCheckedAt >= run.killRecheckMs && (await isKilled(run, db))) {
+				run.killed = true;
+				break;
+			}
 			await (work.row.kind === 'static' ? readTiles(run, work) : readEntries(run, work));
 			if (held(work) >= run.flushRows) await commit(run, db, work);
 		}
@@ -394,8 +411,11 @@ async function catchUpRow(run: Run, db: D1Database, work: Work): Promise<void> {
 			failure ??= error;
 		}
 	}
-	if (failure instanceof Deferral) run.deferred[work.row.log_id] = failure.message;
-	else if (failure) {
+	if (failure instanceof Deferral) {
+		run.deferred[work.row.log_id] = failure.message;
+		const result = await db.prepare(TOUCH).bind(new Date(run.now).toISOString(), work.row.log_id, work.row.upper_index).run();
+		run.d1Rows += rowsTouched(result.meta);
+	} else if (failure) {
 		const message = describeError(failure);
 		run.errors[work.row.log_id] = message;
 		const result = await db
@@ -420,6 +440,9 @@ function newRun(env: Pick<Env, 'ENTRIES' | 'CERT_DETAILS'>, options: CatchupOpti
 		nowSec: Math.floor(now / 1000),
 		emitted: new Map(),
 		sendFailed: false,
+		killed: false,
+		killRecheckMs: options.killRecheckMs ?? KILL_RECHECK_MS,
+		killCheckedAt: 0,
 		fetches: 0,
 		sends: 0,
 		d1Rows: 0,
@@ -467,6 +490,7 @@ async function isKilled(run: Run, db: D1Database): Promise<boolean> {
 		db.prepare(SELECT_CATCHUP_KILL).bind(CATCHUP_KILL_KEY),
 	]);
 	run.d1Rows += rowsTouched(ledger?.meta) + rowsTouched(own?.meta);
+	run.killCheckedAt = Date.now();
 	return (ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1';
 }
 
@@ -489,8 +513,8 @@ export async function runCatchup(
 	const share = Math.ceil((options.maxFetches ?? budgetFrom(env.CATCHUP_MAX_FETCHES)) / Math.max(1, taken.results.length));
 	let rows = 0;
 	for (const row of taken.results) {
-		// Checked again per row: a switch thrown mid-run stops the rows after the current one.
-		if (rows > 0 && (await isKilled(run, db))) break;
+		// Checked again inside each row's read (catchUpRow); once set, no further row starts.
+		if (run.killed) break;
 		rows++;
 		const work: Work = {
 			row,
@@ -507,7 +531,7 @@ export async function runCatchup(
 		if (run.sendFailed) break;
 	}
 
-	const summary = summarize(run, false, rows);
+	const summary = summarize(run, run.killed, rows);
 	await db.prepare(ADD_TO_LEDGER).bind(new Date(now).toISOString().slice(0, 10), summary.subrequests, summary.d1Rows).run();
 	return summary;
 }

@@ -206,6 +206,45 @@ describe('runCatchup', () => {
 		expect(String((await row(RO.log_id))?.last_error)).toContain('HTTP 503');
 	});
 
+	it('a row that keeps failing goes to the back of the work list, so the rows behind it still run', async () => {
+		const others = [
+			{ log_id: 'bad-a', url: 'https://bad-a.example/' },
+			{ log_id: 'bad-b', url: 'https://bad-b.example/' },
+		];
+		for (const log of others) await seed(log, 'rfc6962', 0, 1_000);
+		await seed(RO, 'rfc6962', 100, 140);
+		// The two failing rows sort ahead of the healthy one, and a run takes two rows.
+		await db.prepare("UPDATE log_backfill SET updated_at = '2026-01-01T00:00:00.000Z' WHERE log_id LIKE 'bad-%'").run();
+		await db.prepare("UPDATE log_backfill SET updated_at = '2026-06-01T00:00:00.000Z' WHERE log_id = ?").bind(RO.log_id).run();
+		const net = fakeNetwork();
+		const base = net.fetch;
+		const flaky = (async (input: RequestInfo | URL) =>
+			String(input instanceof Request ? input.url : input).includes('bad-') ? new Response('down', { status: 503 }) : base(input)) as typeof fetch;
+
+		await run({ fetch: flaky }, fakeQueue());
+		expect((await row(RO.log_id))?.next_index).toBe(100);
+		await run({ fetch: flaky }, fakeQueue());
+		expect(await row(RO.log_id)).toMatchObject({ next_index: 140, state: 'done' });
+	});
+
+	it('a kill switch thrown mid-row stops the read; what was read before it is kept', async () => {
+		await seed(RO, 'rfc6962', 0, 1_000);
+		const net = fakeNetwork();
+		const base = net.fetch;
+		let served = 0;
+		const killing = (async (input: RequestInfo | URL) => {
+			if (++served === 2) await db.prepare('INSERT INTO meta (k, v) VALUES (?, ?)').bind(CATCHUP_KILL_KEY, '1').run();
+			return base(input);
+		}) as typeof fetch;
+		const summary = await run({ fetch: killing }, fakeQueue(), { pageSize: 8, killRecheckMs: 0 });
+
+		expect(summary.killed).toBe(true);
+		const after = await row(RO.log_id);
+		expect(after?.state).toBe('active');
+		expect(Number(after?.next_index)).toBeGreaterThan(0);
+		expect(Number(after?.next_index)).toBeLessThan(1_000);
+	});
+
 	it('the ops_ledger kill switch halts it', async () => {
 		await seed(RO, 'rfc6962', 100, 140);
 		await db.prepare("INSERT INTO ops_ledger (day, killed) VALUES ('2026-11-27', 1)").run();
