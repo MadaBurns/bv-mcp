@@ -159,6 +159,13 @@ export function validateDomain(input: string): ValidationResult {
 		}
 	}
 
+	// A URL, email address or host:port is a common caller mistake: say how to fix it rather than
+	// reporting a label-syntax error. Outcome is unchanged (still rejected), only the text differs.
+	// IPv6 literals (two or more colons) keep falling through to the generic label checks.
+	if (/:\/\/|[/@?#]/.test(asciiDomain) || /^[^:]+:\d*$/.test(asciiDomain)) {
+		return { valid: false, error: 'Pass a bare hostname such as example.com, without scheme, path, port or user part' };
+	}
+
 	// Validate domain label structure (punycode labels)
 	const labels = asciiDomain.split('.');
 	if (labels.length < 2) {

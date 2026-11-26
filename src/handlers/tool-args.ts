@@ -3,7 +3,7 @@
 import { z, ZodError } from 'zod';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { TOOL_SCHEMA_MAP } from '../schemas/tool-args';
-import type { OutputFormat, Profile } from '../schemas/primitives';
+import { EXPLAIN_STATUS_VALUES, type OutputFormat, type Profile } from '../schemas/primitives';
 
 export type { OutputFormat };
 
@@ -82,13 +82,23 @@ function formatUnknownArgs(issue: ZodError['issues'][number]): string | undefine
 	return `Invalid request: unknown argument(s): ${keys.join(', ')}`;
 }
 
+/** A short printable-ASCII slice of a caller-supplied value, safe to echo inside a quoted error message. */
+function echoableValue(value: unknown): string {
+	return String(value)
+		.replace(/[^\x20-\x7e]|["\\<>]/g, '?')
+		.slice(0, 24);
+}
+
 /** Format a ZodError into an error message matching the existing prefix convention. */
-function formatZodError(err: ZodError, toolName?: string): string {
+function formatZodError(err: ZodError, toolName?: string, args?: Record<string, unknown>): string {
 	const issue = err.issues[0];
 	const path = issue.path.join('.');
 
 	// explain_finding: both checkType and status are required — keep old plural message
 	if (toolName === 'explain_finding' && (path === 'checkType' || path === 'status')) {
+		if (path === 'status' && issue.code === 'invalid_value' && args && args.status !== undefined) {
+			return `Invalid status: "${echoableValue(args.status)}". Use one of: ${EXPLAIN_STATUS_VALUES.join(', ')}.`;
+		}
 		if (isMissingField(issue) || issue.code === 'invalid_value') {
 			return 'Missing required parameters: checkType and status';
 		}
@@ -141,7 +151,7 @@ export function validateToolArgs(toolName: string, args: Record<string, unknown>
 		parsed = schema.parse(args) as Record<string, unknown>;
 	} catch (err) {
 		if (err instanceof ZodError) {
-			throw new Error(formatUnknownArgs(err.issues[0]) ?? formatZodError(err, toolName));
+			throw new Error(formatUnknownArgs(err.issues[0]) ?? formatZodError(err, toolName, args));
 		}
 		throw err;
 	}

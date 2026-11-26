@@ -305,6 +305,30 @@ describe('Internal service binding routes', () => {
 			// ADDITIVE: the MCP-framed content is still present (no existing caller breaks).
 			expect(body.content).toBeDefined();
 		});
+
+		it('scan_domain over the internal door keeps the full structured payload (compact trimming is not applied)', async () => {
+			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
+					return Promise.resolve(httpResponse('', 200));
+				}
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+			});
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call?format=structured', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: 'scan_domain', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			const body = (await response.json()) as { structuredContent?: { findings?: Array<{ detail?: unknown }> } };
+			expect(body.structuredContent).not.toHaveProperty('compactDetailOmitted');
+			expect(body.structuredContent?.findings?.every((f) => typeof f.detail === 'string')).toBe(true);
+		});
 	});
 
 	describe('agent-chat caller allowlist (/internal/tools/call)', () => {
