@@ -278,6 +278,184 @@ describe('runCatchup', () => {
 		expect(summary.rows).toBe(0);
 	});
 
+	it('a short page advances the cursor by exactly what was returned, and the page size the log served is used next run', async () => {
+		await seed(RO, 'rfc6962', 0, 1_000);
+		const net = fakeNetwork(8); // the log serves 8 however many are asked for
+		const queue = fakeQueue();
+		await run(net, queue, { pageSize: 32, maxFetches: 4 }); // one window: the short first page ends it
+
+		expect(await row(RO.log_id)).toMatchObject({ next_index: 8, entries_read: 8, state: 'active' });
+		expect(net.calls).toHaveLength(4); // the pages after the short one were asked for and not used
+
+		const next = fakeNetwork(8);
+		await run(next, queue, { maxFetches: 2 }); // no pageSize: the learned size of 8 is asked for
+		expect(next.calls.map((url) => new URL(url).search)).toEqual(['?start=8&end=15', '?start=16&end=23']);
+		expect((await row(RO.log_id))?.next_index).toBe(24);
+	});
+
+	it('an empty page is a deferral: the cursor stays, no error is recorded, and the row goes to the back of the list', async () => {
+		await seed(RO, 'rfc6962', 100, 140);
+		await db.prepare("UPDATE log_backfill SET updated_at = '2026-01-01T00:00:00.000Z' WHERE log_id = ?").bind(RO.log_id).run();
+		const empty = (async () => Response.json({ entries: [] })) as typeof fetch;
+		const summary = await run({ fetch: empty }, fakeQueue());
+
+		expect(await row(RO.log_id)).toMatchObject({
+			next_index: 100,
+			state: 'active',
+			last_error: null,
+			last_error_at: null,
+			updated_at: new Date(NOW).toISOString(),
+		});
+		expect(summary.errors).toEqual({});
+		expect(summary.deferred[RO.log_id]).toContain('no entries served yet');
+	});
+
+	it('HTTP 429 is a deferral, not an error', async () => {
+		await seed(RO, 'rfc6962', 100, 140);
+		await db.prepare("UPDATE log_backfill SET updated_at = '2026-01-01T00:00:00.000Z' WHERE log_id = ?").bind(RO.log_id).run();
+		const limited = (async () => new Response('slow down', { status: 429 })) as typeof fetch;
+		const summary = await run({ fetch: limited }, fakeQueue());
+
+		expect(await row(RO.log_id)).toMatchObject({ next_index: 100, last_error: null, updated_at: new Date(NOW).toISOString() });
+		expect(summary.errors).toEqual({});
+		expect(summary.deferred[RO.log_id]).toContain('HTTP 429');
+	});
+
+	it('a reply with more entries than asked is rejected, and the cursor stops at the last verified entry', async () => {
+		await seed(RO, 'rfc6962', 100, 1_000);
+		const base = fakeNetwork(8);
+		const greedy = (async (input: RequestInfo | URL) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (new URL(url).searchParams.get('start') !== '108') return base.fetch(input);
+			const entries = Array.from({ length: 9 }, () => ({ leaf_input: RFC6962_PRECERT_LEAF_INPUT, extra_data: '' }));
+			return Response.json({ entries });
+		}) as typeof fetch;
+		const queue = fakeQueue();
+		const summary = await run({ fetch: greedy }, queue, { pageSize: 8 });
+
+		expect(await row(RO.log_id)).toMatchObject({ next_index: 108, state: 'active', entries_read: 8 });
+		expect(String((await row(RO.log_id))?.last_error)).toContain('bad entries array');
+		expect(summary.errors[RO.log_id]).toContain('bad entries array');
+		expect(queue.sent.every((batch) => batch.endIndex <= 108)).toBe(true);
+	});
+
+	it('a failed send on a later row leaves that row at its cursor, keeps the earlier row advanced, and stops the run', async () => {
+		await seed(RO, 'rfc6962', 100, 140);
+		await seed(STATIC, 'static', 0, TILE_WIDTH);
+		const net = fakeNetwork();
+		const queue = fakeQueue(async (batch) => {
+			if (batch.logId === STATIC.log_id) throw new Error('queue unavailable');
+		});
+		const summary = await run(net, queue);
+
+		// A row's cursor moves only after all of that row's batches were sent, so the failed row stays where it began.
+		expect(await row(RO.log_id)).toMatchObject({ next_index: 140, state: 'done' });
+		expect(queue.sent.some((batch) => batch.logId === RO.log_id)).toBe(true);
+		expect(await row(STATIC.log_id)).toMatchObject({ next_index: 0, state: 'active', entries_read: 0 });
+		expect(String((await row(STATIC.log_id))?.last_error)).toContain('queue send: queue unavailable');
+		expect(summary.errors[STATIC.log_id]).toContain('queue unavailable');
+		expect(summary.errors[RO.log_id]).toBeUndefined();
+	});
+
+	it('fails closed when the kill switches cannot be read: the run throws and makes no fetch', async () => {
+		await seed(RO, 'rfc6962', 100, 140);
+		await db.prepare('DROP TABLE meta').run();
+		const net = fakeNetwork();
+
+		await expect(run(net, fakeQueue())).rejects.toThrow();
+		expect(net.calls).toEqual([]);
+		expect((await row(RO.log_id))?.next_index).toBe(100);
+	});
+
+	it("only the exact value '1' kills it: 'true' is read as not killed, so the reader runs (fails open on a mistyped switch)", async () => {
+		await seed(RO, 'rfc6962', 100, 140);
+		await db.prepare('INSERT INTO meta (k, v) VALUES (?, ?)').bind(CATCHUP_KILL_KEY, 'true').run();
+		const net = fakeNetwork();
+		const summary = await run(net, fakeQueue());
+
+		expect(summary.killed).toBe(false);
+		expect(net.calls.length).toBeGreaterThan(0);
+		expect((await row(RO.log_id))?.next_index).toBe(140);
+	});
+
+	describe('two active rows', () => {
+		const RO2 = { log_id: 'readonly-two=', url: 'https://readonly.ct.test/2027h2/' };
+		/** Serves RO2 from the same fake as RO. */
+		const both = (net: { fetch: typeof fetch }, calls: string[] = []) =>
+			(async (input: RequestInfo | URL) => {
+				const url = String(input instanceof Request ? input.url : input);
+				calls.push(url);
+				return net.fetch(url.replace(RO2.url, RO.url));
+			}) as typeof fetch;
+
+		it('share the fetch budget equally', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await seed(RO2, 'rfc6962', 0, 1_000);
+			const net = fakeNetwork();
+			const calls: string[] = [];
+			await run({ fetch: both(net, calls) }, fakeQueue(), { maxFetches: 6, pageSize: 8 });
+
+			expect((await row(RO.log_id))?.next_index).toBe(24);
+			expect((await row(RO2.log_id))?.next_index).toBe(24);
+			expect(calls.filter((url) => url.startsWith(RO.url))).toHaveLength(3);
+			expect(calls.filter((url) => url.startsWith(RO2.url))).toHaveLength(3);
+		});
+
+		it('share the entry budget equally', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await seed(RO2, 'rfc6962', 0, 1_000);
+			const net = fakeNetwork();
+			const fetcher = both(net);
+			await run({ fetch: fetcher }, fakeQueue(), { maxEntries: 16, pageSize: 8 });
+
+			expect((await row(RO.log_id))?.next_index).toBe(8);
+			expect((await row(RO2.log_id))?.next_index).toBe(8);
+		});
+	});
+
+	describe('the per-run entry cap', () => {
+		it('stops a run on rfc6962 within one page of the cap, leaves the row active, and resumes from its cursor', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			const net = fakeNetwork();
+			const queue = fakeQueue();
+			const summary = await run(net, queue, { maxEntries: 20, pageSize: 8 });
+
+			expect(net.calls).toHaveLength(3); // 8 + 8 + 8: the third page starts below the cap and ends one page past it
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 24, state: 'active', entries_read: 24 });
+			expect(summary.entries).toBe(24);
+			expect(queue.sent.every((batch) => batch.endIndex <= 24)).toBe(true);
+
+			await run(fakeNetwork(), queue, { maxEntries: 20, pageSize: 8 });
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 48, state: 'active', entries_read: 48 });
+		});
+
+		it('stops a run on a static-ct log within one tile of the cap and resumes from its cursor', async () => {
+			await seed(STATIC, 'static', 0, 3 * TILE_WIDTH);
+			const net = fakeNetwork();
+			const queue = fakeQueue();
+			await run(net, queue, { maxEntries: 300 });
+
+			expect(net.calls).toHaveLength(2);
+			expect(await row(STATIC.log_id)).toMatchObject({ next_index: 2 * TILE_WIDTH, state: 'active' });
+
+			const again = fakeNetwork();
+			await run(again, queue, { maxEntries: 300 });
+			expect(again.calls).toHaveLength(1);
+			expect(await row(STATIC.log_id)).toMatchObject({ next_index: 3 * TILE_WIDTH, state: 'done' });
+		});
+
+		it('reads the CATCHUP_MAX_ENTRIES var, and an invalid value means the default', async () => {
+			await seed(RO, 'rfc6962', 0, 40);
+			const queue = fakeQueue();
+			const env = (value: string) => ({ CURSORS: db, ENTRIES: queue.queue, CATCHUP_MAX_ENTRIES: value });
+			await runCatchup(env('16'), { now: NOW, fetch: fakeNetwork().fetch, pageSize: 8 });
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 16, state: 'active' });
+
+			await runCatchup(env('junk'), { now: NOW, fetch: fakeNetwork().fetch, pageSize: 8 });
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 40, state: 'done' });
+		});
+	});
+
 	it('reads a static-ct log in full tiles, keeps to the ceiling, and counts tiles it skips', async () => {
 		await seed(STATIC, 'static', 100, 3 * TILE_WIDTH);
 		const net = fakeNetwork();

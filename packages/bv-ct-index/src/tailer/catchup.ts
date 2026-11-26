@@ -10,7 +10,8 @@
  *
  * Isolation from the tail: its own cron (CATCHUP_CRON), so its fetches use another invocation's connection slots and
  * subrequest budget; its own table, so the tail's compare-and-set on log_cursors is never contended; a small per-run
- * budget (CATCHUP_MAX_FETCHES, raised with the CATCHUP_MAX_FETCHES var). What it does share is the ENTRIES queue and
+ * budget of fetches (CATCHUP_MAX_FETCHES, or the var of that name) and of entries (CATCHUP_MAX_ENTRIES, or the var of
+ * that name), each split equally across the rows taken; whichever runs out first ends the row's read. What it does share is the ENTRIES queue and
  * its indexer: its rows are ordinary ObservationBatch messages.
  *
  * One run:
@@ -42,8 +43,14 @@ import { parseTbsCertificate } from './x509';
 export const CATCHUP_CRON = '*/2 * * * *';
 /** meta key: v = '1' stops the reader (the ops_ledger kill switch stops it too, and this one does not stop the tail). */
 export const CATCHUP_KILL_KEY = 'catchup_killed';
-/** CT-log fetches per run, split across the rows taken. At 32 entries a page that is about 19k entries a run. */
+/** CT-log fetches per run, split across the rows taken. */
 export const CATCHUP_MAX_FETCHES = 600;
+/**
+ * Entries read per run, split across the rows taken like the fetch budget. A fetch is a page, and a page is as large as
+ * the log serves, so the fetch budget alone bounds queue volume only by the log's page size; this bounds it by a number.
+ * A window never starts a page past it, so a run reads at most one page more than this per row.
+ */
+export const CATCHUP_MAX_ENTRIES = 20_000;
 export const CATCHUP_MAX_ROWS = 2;
 /** No new fetch starts after this; with FETCH_TIMEOUT_MS the run ends well inside a cron invocation. */
 export const CATCHUP_PHASE_MS = 30_000;
@@ -82,6 +89,8 @@ export interface CatchupOptions {
 	fetch?: typeof fetch;
 	/** Overrides CATCHUP_MAX_FETCHES (and the env var). */
 	maxFetches?: number;
+	/** Overrides CATCHUP_MAX_ENTRIES (and the env var). */
+	maxEntries?: number;
 	/** Overrides CATCHUP_PHASE_MS. */
 	phaseMs?: number;
 	/** How often a row's read re-reads the kill switches (default KILL_RECHECK_MS). */
@@ -124,6 +133,8 @@ interface Work {
 	ceiling: number;
 	/** Fetches this row may start before the run's counter reaches this. */
 	fetchCap: number;
+	/** No page starts once the run's entry count reaches this. */
+	entryCap: number;
 	next: number;
 	/** The cursor as last written (the compare-and-set guard). */
 	sentThrough: number;
@@ -199,7 +210,12 @@ function held(work: Work): number {
 }
 
 function canFetch(run: Run, work: Work): boolean {
-	return !run.sendFailed && Date.now() < run.until && run.fetches < work.fetchCap;
+	return !run.sendFailed && Date.now() < run.until && run.fetches < work.fetchCap && run.entries < work.entryCap;
+}
+
+/** Pages of `size` entries a window may start without the run's entries passing the row's cap by more than one page. */
+function pagesWithinEntryCap(run: Run, work: Work, size: number): number {
+	return Math.max(1, Math.ceil((work.entryCap - run.entries) / size));
 }
 
 /** GETs `url` through a header slot; a 429 is a Deferral, any other non-2xx an HttpError, a network failure names the URL. */
@@ -257,7 +273,7 @@ function observeEntry(run: Run, work: Work, readTbs: () => Uint8Array | null): v
 /** The window's [start, end] ranges from the cursor; the last end is below the ceiling. */
 function pageRanges(run: Run, work: Work): Array<[number, number]> {
 	const size = run.pageSize ?? pageSizes.get(work.row.log_id) ?? RFC6962_PAGE;
-	const count = Math.min(WINDOW, work.fetchCap - run.fetches);
+	const count = Math.min(WINDOW, work.fetchCap - run.fetches, pagesWithinEntryCap(run, work, size));
 	const ranges: Array<[number, number]> = [];
 	for (let start = work.next; start < work.ceiling && ranges.length < count; start += size) {
 		ranges.push([start, Math.min(start + size, work.ceiling) - 1]);
@@ -321,7 +337,7 @@ async function getTile(run: Run, work: Work, tile: number): Promise<Array<Uint8A
 /** Up to WINDOW full data tiles from the one holding the cursor; entries before the cursor are skipped. The ceiling is tile-aligned. */
 async function readTiles(run: Run, work: Work): Promise<void> {
 	const first = Math.floor(work.next / TILE_WIDTH);
-	const count = Math.min(WINDOW, work.ceiling / TILE_WIDTH - first, work.fetchCap - run.fetches);
+	const count = Math.min(WINDOW, work.ceiling / TILE_WIDTH - first, work.fetchCap - run.fetches, pagesWithinEntryCap(run, work, TILE_WIDTH));
 	const tiles = Array.from({ length: count }, (_, i) => first + i);
 	const bodies = together(tiles.map((tile) => () => getTile(run, work, tile)));
 	for (const [i, tile] of tiles.entries()) {
@@ -494,13 +510,13 @@ async function isKilled(run: Run, db: D1Database): Promise<boolean> {
 	return (ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1';
 }
 
-function budgetFrom(value: string | undefined): number {
+function budgetFrom(value: string | undefined, fallback: number): number {
 	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : CATCHUP_MAX_FETCHES;
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 export async function runCatchup(
-	env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS' | 'CATCHUP_MAX_FETCHES'>,
+	env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DETAILS' | 'CATCHUP_MAX_FETCHES' | 'CATCHUP_MAX_ENTRIES'>,
 	options: CatchupOptions = {},
 ): Promise<CatchupSummary> {
 	const now = options.now ?? Date.now();
@@ -510,7 +526,9 @@ export async function runCatchup(
 
 	const taken = await db.prepare(SELECT_ROWS).bind(CATCHUP_MAX_ROWS).all<BackfillRow>();
 	run.d1Rows += rowsTouched(taken.meta);
-	const share = Math.ceil((options.maxFetches ?? budgetFrom(env.CATCHUP_MAX_FETCHES)) / Math.max(1, taken.results.length));
+	const rowCount = Math.max(1, taken.results.length);
+	const share = Math.ceil((options.maxFetches ?? budgetFrom(env.CATCHUP_MAX_FETCHES, CATCHUP_MAX_FETCHES)) / rowCount);
+	const entryShare = Math.ceil((options.maxEntries ?? budgetFrom(env.CATCHUP_MAX_ENTRIES, CATCHUP_MAX_ENTRIES)) / rowCount);
 	let rows = 0;
 	for (const row of taken.results) {
 		// Checked again inside each row's read (catchUpRow); once set, no further row starts.
@@ -520,6 +538,7 @@ export async function runCatchup(
 			row,
 			ceiling: row.kind === 'static' ? Math.floor(row.upper_index / TILE_WIDTH) * TILE_WIDTH : row.upper_index,
 			fetchCap: run.fetches + share,
+			entryCap: run.entries + entryShare,
 			next: row.next_index,
 			sentThrough: row.next_index,
 			observations: newObservationSet(),

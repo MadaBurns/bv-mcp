@@ -51,6 +51,8 @@ export interface Env {
 	 * default. Not declared in the wrangler configs, so a deploy never resets a value the operator set.
 	 */
 	CATCHUP_MAX_FETCHES?: string;
+	/** Var: entries per run of the bounded catch-up reader, shared across its rows; unset or invalid means its default. */
+	CATCHUP_MAX_ENTRIES?: string;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 	/**
