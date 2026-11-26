@@ -48,7 +48,9 @@ export const TierSchema = z.enum(['free', 'agent', 'developer', 'enterprise', 'p
 export const DmarcPolicySchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['none', 'quarantine', 'reject']));
 
 /** Explain finding status values. Trims and lowercases input. */
-export const ExplainStatusSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['pass', 'fail', 'warning', 'critical', 'high', 'medium', 'low', 'info']));
+/** Values `explain_finding` accepts for `status`; the schema below and its error text both read this list. */
+export const EXPLAIN_STATUS_VALUES = ['pass', 'fail', 'warning', 'critical', 'high', 'medium', 'low', 'info'] as const;
+export const ExplainStatusSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(EXPLAIN_STATUS_VALUES));
 
 /** Inferred types for external use. */
 export type Profile = z.infer<typeof ProfileSchema>;

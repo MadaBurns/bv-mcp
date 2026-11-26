@@ -11,6 +11,7 @@ import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { ExecuteMcpRequestOptions, ProcessedRequestResult } from './execute';
 import { recordMcpAccessLog } from './access-log';
 import { emitRequestAnalytics, recordMcpToolErrorIfUnknownTool } from './request-telemetry';
+import { buildUnknownToolMessage } from '../lib/tool-suggestion';
 
 /**
  * Reject an UNAUTHENTICATED tools/call for an auth-required tool (identity_secops
@@ -173,7 +174,7 @@ export function buildInternalOnlyToolResponse(
 	// nonexistent one — and neither response reveals a tool count that would hint a
 	// hidden tool exists (public tools/list = TOOLS.length − INTERNAL_ONLY_TOOLS.size).
 	const payload = jsonRpcSuccess(id, {
-		content: [mcpError(`Unknown tool: ${toolName}. Call tools/list to see the available tools.`)],
+		content: [mcpError(buildUnknownToolMessage(toolName))],
 		isError: true,
 	});
 	// Mirror the dispatch unknown-tool bookkeeping: not a JSON-RPC error (result.isError),

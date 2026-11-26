@@ -3,6 +3,7 @@
 // Direct dispatch: the tools with no TOOL_REGISTRY entry, split out of `handlers/tools.ts`'s handleToolsCall.
 
 import { unavailableAccessContextResult } from '../mcp/access-context';
+import { compactStructuredScanResult } from '../tools/scan/compact-structured';
 import { scanDomain, formatScanReport, buildStructuredScanResult, resolveScanCacheKey } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
@@ -37,6 +38,7 @@ import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack
 import { querySignins } from '../tools/m365/query-signins';
 import { queryUal } from '../tools/m365/query-ual';
 import { getCaPolicies } from '../tools/m365/get-ca-policies';
+import { buildUnknownToolMessage } from '../lib/tool-suggestion';
 import { assessCoverage } from '../tools/m365/assess-coverage';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import {
@@ -184,7 +186,9 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 				scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
 				includeWebPosture: true,
 			});
-			return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
+			// Compact is a presentation transform over the complete structured result; full is untouched.
+			const presented = effectiveFormat === 'compact' ? compactStructuredScanResult(structured) : structured;
+			return buildToolResult(formatScanReport(result, effectiveFormat), presented, effectiveFormat);
 		}
 		case 'batch_scan': {
 			const domains = validatedArgs.domains as string[];
@@ -770,6 +774,6 @@ export async function dispatchDirectTool(c: DirectDispatchContext): Promise<McpT
 		}
 		default:
 			logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-			return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see the available tools.`);
+			return buildToolErrorResult(buildUnknownToolMessage(name));
 	}
 }
