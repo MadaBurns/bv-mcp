@@ -366,14 +366,14 @@ const TOOL_DEFS = {
 	},
 	batch_scan: {
 		description:
-			'Bulk-scan up to 10 domains in parallel with a full security audit each; returns score, NIST-aligned letter grade (A+ to F) and finding counts per domain. Use to audit several domains at once; use compare_domains for a side-by-side comparison of 2-5 domains. scoringModelVersion (policy) is independent of dnsChecksPackageVersion (engine); cite scoringConfigHash with scores.',
+			'Bulk-scan up to 10 domains in parallel with a full security audit each; returns score, NIST-aligned letter grade (A+ to F) and finding counts per domain. Use to audit several domains at once; batch_scan_start runs it as an async job; compare_domains compares 2-5 side by side. scoringModelVersion (policy) is independent of dnsChecksPackageVersion (engine); cite scoringConfigHash with scores.',
 		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
 	batch_scan_start: {
 		description:
-			'Start a durable asynchronous scan of 1–10 domains. Returns a stable job ID; replaying the same idempotency key with the same principal, normalized inputs, and scoring versions returns the same job.',
+			'Async form of batch_scan (1-10 domains) for clients with short call timeouts. Returns jobId: poll batch_scan_status with it as job_id, then batch_scan_findings (kept 7 days). idempotency_key: any stable string you choose; replaying it with the same domains returns the same job.',
 		schema: BatchScanStartArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -381,14 +381,16 @@ const TOOL_DEFS = {
 		mutating: true,
 	},
 	batch_scan_status: {
-		description: 'Read the owner-scoped status of an asynchronous batch scan.',
+		description:
+			'Poll a batch_scan_start job by job_id: queued, running, completed or failed, plus any error or unscanned domains. Owner-scoped: other callers get not found.',
 		schema: BatchScanJobArgs,
 		group: 'meta',
 		scanIncluded: false,
 		openWorld: false,
 	},
 	batch_scan_findings: {
-		description: 'Fetch owner-scoped findings for a completed asynchronous batch scan.',
+		description:
+			'Fetch per-domain results of a batch_scan_start job by job_id once status is completed. Owner-scoped; kept until expiresAt (7 days).',
 		schema: BatchScanJobArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -418,7 +420,8 @@ const TOOL_DEFS = {
 		scanIncluded: false,
 	},
 	check_txt_hygiene: {
-		description: 'Audit TXT records for stale entries and SaaS exposure.',
+		description:
+			"Audit a domain's TXT records for stale entries and SaaS exposure (old verifications, clutter, misplaced DMARC). Use for TXT cleanup; check_zone_hygiene covers subdomains and SOA.",
 		schema: BaseDomainArgs,
 		group: 'dns_hygiene',
 		tier: 'hardening',
@@ -426,7 +429,7 @@ const TOOL_DEFS = {
 	},
 	check_mx_reputation: {
 		description:
-			'Check whether the mail server (MX) IP addresses are listed on spam blocklists (Spamhaus, Barracuda, SORBS, and other RBLs). Also verifies reverse DNS for MX hosts. Use when you want to know if your mail server IP is blacklisted, or if your MX is on any blocklist — distinct from check_rbl which checks a specific IP directly.',
+			"Check whether a domain's mail server (MX) IPs are on spam blocklists: for up to 3 MX hosts, queries SpamCop and Barracuda (not Spamhaus ZEN) and verifies reverse DNS (PTR/FCrDNS) for each IP. Use to ask if your mail server IP is blacklisted. check_rbl takes the same domain and queries more RBLs (6), without PTR.",
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'hardening',
@@ -487,13 +490,15 @@ const TOOL_DEFS = {
 		scanIncluded: false,
 	},
 	check_resolver_consistency: {
-		description: 'Check DNS consistency across 4 public resolvers.',
+		description:
+			'Check DNS consistency across 4 public resolvers (Cloudflare, Google, Quad9, OpenDNS) for A/AAAA/MX/TXT/NS or one record_type. Use when answers differ by resolver.',
 		schema: CheckResolverConsistencyArgs,
 		group: 'infrastructure',
 		scanIncluded: false,
 	},
 	explain_finding: {
-		description: 'Explain a finding with impact and remediation.',
+		description:
+			'Explain a finding from scan_domain or a check_* tool: pass its category as checkType, severity as status, detail text as details. Returns explanation, impact, remediation and references.',
 		schema: ExplainFindingArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -579,7 +584,7 @@ const TOOL_DEFS = {
 	},
 	check_rbl: {
 		description:
-			'Check MX server IP reputation against 6 DNS-based Real-time Blocklists (SpamCop, UCEProtect, Mailspike, Barracuda, PSBL). Resolves MX hosts to IPs first.',
+			"Check a domain's mail server IP against 6 DNS blocklists (SpamCop, UCEProtect L1/L2, Mailspike, Barracuda, PSBL): takes a domain, resolves its MX hosts (else A records) to IPv4s. More lists than check_mx_reputation, which adds rDNS checks.",
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -607,7 +612,7 @@ const TOOL_DEFS = {
 	},
 	check_nsec_walkability: {
 		description:
-			'Assess zone walkability risk by analyzing NSEC3PARAM configuration. Detects plain NSEC zones, weak NSEC3 parameters, and opt-out flags.',
+			'Assess zone walkability risk by analyzing NSEC3PARAM configuration. Detects plain NSEC zones, weak NSEC3 parameters, and opt-out flags. Use to ask if zone names can be enumerated; other DNSSEC tools cover status, chain and keys.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -681,7 +686,7 @@ const TOOL_DEFS = {
 	},
 	discover_brand_domains_start: {
 		description:
-			'Start an async brand-domain discovery for the EXACT seed domain provided (the async sibling of discover_brand_domains, which can run ~24s and time out interactive clients). Same args as discover_brand_domains. Returns { auditId, queuedAt, etaSeconds } immediately; poll with discover_brand_domains_status and fetch ranked candidates with discover_brand_domains_findings once complete.',
+			'Start an async brand-domain discovery for the EXACT seed domain provided (the async sibling of discover_brand_domains, which can run ~24s and time out interactive clients). Same args as discover_brand_domains. Returns { auditId, queuedAt, etaSeconds }; pass auditId as operationId to discover_brand_domains_status (poll) and discover_brand_domains_findings (ranked candidates).',
 		schema: DiscoverBrandDomainsStartArgs,
 		group: 'discovery',
 		scanIncluded: false,
@@ -766,7 +771,7 @@ const TOOL_DEFS = {
 	},
 	scan_buckets_start: {
 		description:
-			'Start an async cloud-bucket discovery scan for a target domain. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns a scanId immediately — poll progress with scan_buckets_status and retrieve results with scan_buckets_findings.',
+			'Start an async cloud-bucket discovery scan for a target domain. Operator-deploy only; targets must be on the recon watchlist; degrades to info when unprovisioned. Returns a scanId (valid 24h) — poll progress with scan_buckets_status and retrieve results with scan_buckets_findings.',
 		schema: ScanBucketsStartArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -774,7 +779,7 @@ const TOOL_DEFS = {
 	},
 	scan_buckets_status: {
 		description:
-			'Poll the status of a cloud-bucket discovery scan by scanId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns scan status (running | completed | failed) and progress metadata.',
+			'Poll the status of a cloud-bucket discovery scan by scanId from scan_buckets_start. Operator-deploy only; degrades to info when unprovisioned. Returns scan status (running | completed | failed) and progress metadata.',
 		schema: ScanBucketsStatusArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -782,7 +787,7 @@ const TOOL_DEFS = {
 	},
 	scan_buckets_findings: {
 		description:
-			'Retrieve findings from a completed cloud-bucket discovery scan by scanId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. The scanId is required so reads can be owner-scoped; target and provider filters are optional.',
+			'Retrieve findings from a completed cloud-bucket discovery scan by scanId. Operator-deploy only; degrades to info when unprovisioned. The scanId is required so reads can be owner-scoped; target and provider filters are optional.',
 		schema: ScanBucketsFindingsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -790,7 +795,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_domain_start: {
 		description:
-			'Start an async OSINT investigation for a domain. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+			'Start an async OSINT investigation for a domain. Operator-deploy only; targets must be on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId (valid 24h) — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -798,7 +803,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_infrastructure_start: {
 		description:
-			'Start an async deep-infrastructure OSINT investigation for a query (domain, IP, or org). Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+			'Start an async deep-infrastructure OSINT investigation for a query (domain, IP, or org). Operator-deploy only; targets must be on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId (valid 24h) — poll with osint_investigation_status, then osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -806,7 +811,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_supply_chain_start: {
 		description:
-			'Start an async supply-chain OSINT investigation for a query. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+			'Start an async supply-chain OSINT investigation for a query. Operator-deploy only; targets must be on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId (valid 24h) — poll with osint_investigation_status, then osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -814,7 +819,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_username_start: {
 		description:
-			'Start an async OSINT investigation for a username (cross-platform presence, breach correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+			'Start an async OSINT investigation for a username (cross-platform presence, breach correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId (valid 24h) — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -822,7 +827,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_email_start: {
 		description:
-			'Start an async OSINT investigation for an email address (breach exposure, account correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+			'Start an async OSINT investigation for an email address (breach exposure, account correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId (valid 24h) — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -830,7 +835,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigation_status: {
 		description:
-			'Poll the status of an OSINT investigation by investigationId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
+			'Poll the status of an OSINT investigation by investigationId from an osint_investigate_*_start tool. Operator-deploy only; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -838,7 +843,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigation_report: {
 		description:
-			'Retrieve the final report of a completed OSINT investigation by investigationId. For a deep_infrastructure investigation the report also composes discover_subdomains for the target (a cached CT sample under `ctDiscovery`, never an inventory). Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned or not yet complete.',
+			'Retrieve the final report of a completed OSINT investigation by investigationId. For a deep_infrastructure investigation the report also composes discover_subdomains for the target (a cached CT sample under `ctDiscovery`, never an inventory). Operator-deploy only; degrades to info when unprovisioned or not yet complete.',
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -988,7 +993,7 @@ function toolAnnotations(name: string, def: ToolDef): NonNullable<McpTool['annot
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [string, ToolDef]) => ({
 	name,
-	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
+	description: def.scanIncluded ? `${def.description} Part of scan_domain.` : def.description,
 	inputSchema: toInputSchema(def.schema),
 	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
 	annotations: toolAnnotations(name, def),
