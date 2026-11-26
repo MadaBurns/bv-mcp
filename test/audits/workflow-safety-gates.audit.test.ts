@@ -54,6 +54,7 @@ describe('workflow safety gates', () => {
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('no-tracked-secrets.audit.test.ts');
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('npm-publish-surface.audit.test.ts');
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('busl-positioning.audit.test.ts');
+		expect(packageJson.scripts?.['audit:oss-safety']).toContain('supply-chain-poisoning.audit.test.ts');
 	});
 
 	it('repo safety scanner blocks active workflow malware indicators', async () => {
