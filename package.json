@@ -115,7 +115,7 @@
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.11",
 		"eslint": "10.14.0",
-		"hono": "4.13.18",
+		"hono": "4.13.21",
 		"miniflare": "5.20261101.0-beta",
 		"playwright": "^1.65.0",
 		"tsup": "9.0.0",
