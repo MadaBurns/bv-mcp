@@ -98,10 +98,39 @@ describe('scan_domain structured payload by format', () => {
 		expect(compact.webPosture?.nonScoring).toBe(true);
 		expect(compact.webPosture?.results).toHaveLength(full.webPosture!.results.length);
 		compact.webPosture!.results.forEach((r, i) => {
-			expect(Object.keys(r).sort()).toEqual(['category', 'findings', 'passed', 'score']);
+			// checkStatus/partial ride along only when the check did not complete; nothing else may appear.
+			const allowed = ['category', 'checkStatus', 'findings', 'partial', 'passed', 'score'];
+			expect(Object.keys(r).filter((k) => !allowed.includes(k))).toEqual([]);
+			expect(r).toMatchObject({ category: expect.any(String), passed: expect.any(Boolean), score: expect.any(Number) });
 			expect(r.category).toBe(full.webPosture!.results[i].category);
 			const nonInfo = (full.webPosture!.results[i].findings as Finding[]).filter((f) => f.severity !== 'info');
 			expect(r.findings).toEqual(nonInfo.map((f) => ({ title: f.title, severity: f.severity })));
+		});
+	});
+
+	it('compact keeps the not-measured signal on a web-posture check that did not complete', async () => {
+		const { compactStructuredScanResult } = await import('../src/tools/scan/compact-structured');
+		const { structured: full } = await scan({ format: 'full' });
+		const unmeasured = {
+			category: 'csp_quality',
+			passed: false,
+			score: 0,
+			partial: true,
+			checkStatus: 'timeout',
+			findings: [{ category: 'csp_quality', title: 'CSP_QUALITY not assessed', severity: 'info', detail: 'timed out' }],
+		};
+		const compact = compactStructuredScanResult({
+			...full,
+			webPosture: { nonScoring: true, results: [unmeasured] },
+		} as never);
+		// Without checkStatus/partial this row would read as a measured failure with no stated reason.
+		expect(compact.webPosture?.results[0]).toEqual({
+			category: 'csp_quality',
+			passed: false,
+			score: 0,
+			checkStatus: 'timeout',
+			partial: true,
+			findings: [],
 		});
 	});
 

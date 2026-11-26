@@ -11,7 +11,8 @@
  *
  * What it drops, and what it never drops:
  *  - `webPosture` becomes a per-category summary (category, passed, score, and the title and
- *    severity of each non-info finding); no detail, no metadata.
+ *    severity of each non-info finding, plus checkStatus/partial when the check did not
+ *    complete); no detail, no metadata.
  *  - info findings keep category/title/severity and lose `detail`. They are NEVER removed:
  *    the text report omits info findings in every format, so this payload is their only carrier.
  */
@@ -27,7 +28,15 @@ export type CompactStructuredScanResult = Omit<StructuredScanResult, 'findings' 
 	findings: CompactFinding[];
 	webPosture?: {
 		nonScoring: true;
-		results: Array<{ category: string; passed: boolean; score: number; findings: Array<{ title: string; severity: string }> }>;
+		results: Array<{
+			category: string;
+			passed: boolean;
+			score: number;
+			/** Present only when the check did not complete: a 0 here is "not measured", not a failure. */
+			checkStatus?: string;
+			partial?: boolean;
+			findings: Array<{ title: string; severity: string }>;
+		}>;
 	};
 	compactDetailOmitted: string;
 };
@@ -44,6 +53,9 @@ export function compactStructuredScanResult(structured: StructuredScanResult): C
 					category: r.category,
 					passed: r.passed,
 					score: r.score,
+					// Unmeasured checks score 0 with only an info finding; without these two a reader sees a bare failure.
+					...(r.checkStatus !== undefined && { checkStatus: r.checkStatus }),
+					...(r.partial !== undefined && { partial: r.partial }),
 					findings: r.findings.filter((f) => f.severity !== 'info').map((f) => ({ title: f.title, severity: f.severity })),
 				})),
 			},

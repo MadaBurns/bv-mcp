@@ -40,6 +40,14 @@ describe('explain_finding status errors', () => {
 	});
 });
 
+describe('explain_finding echoed status is escaped', () => {
+	it('replaces angle brackets, quotes and backslashes in the echoed value', async () => {
+		const result = await call('explain_finding', { checkType: 'spf', status: '<b>"x\\' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Invalid status: "?b??x?".');
+	});
+});
+
 describe('domain given as a URL, email or host:port', () => {
 	const HINT = 'Pass a bare hostname such as example.com, without scheme, path, port or user part';
 

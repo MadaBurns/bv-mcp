@@ -1803,6 +1803,22 @@ describe('executeMcpRequest — unknown tool names never reach quota (SQ-552)', 
 		expect(backends.kvPuts.every((key) => key.endsWith(':unknown_tool'))).toBe(true);
 	});
 
+	it('a near-miss name gets a suggestion on the public path, and an internal-only name reads like any nonexistent one', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const { INTERNAL_ONLY_TOOLS } = await import('../src/lib/config');
+
+		expect(textOf(await executeMcpRequest(toolCall('check_spff')))).toBe(
+			'Error: Unknown tool: check_spff. Call tools/list to see the available tools. Did you mean: check_spf?',
+		);
+		for (const hidden of INTERNAL_ONLY_TOOLS) {
+			for (const name of [hidden, `${hidden}x`]) {
+				expect(textOf(await executeMcpRequest(toolCall(name)))).toBe(
+					`Error: Unknown tool: ${name}. Call tools/list to see the available tools.`,
+				);
+			}
+		}
+	});
+
 	it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
 		'prototype-chain name %s gets the same unknown-tool text as a random name, with no quota headers',
 		async (name) => {

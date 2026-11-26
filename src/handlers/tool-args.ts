@@ -85,7 +85,7 @@ function formatUnknownArgs(issue: ZodError['issues'][number]): string | undefine
 /** A short printable-ASCII slice of a caller-supplied value, safe to echo inside a quoted error message. */
 function echoableValue(value: unknown): string {
 	return String(value)
-		.replace(/[^\x20-\x7e]|["\\]/g, '?')
+		.replace(/[^\x20-\x7e]|["\\<>]/g, '?')
 		.slice(0, 24);
 }
 
