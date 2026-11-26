@@ -24,7 +24,7 @@ A tool definition is **single-source-of-truth (SSOT) replicated across ~25 surfa
 5. `packages/dns-checks/src/scoring/profiles.ts` — **all 6** `PROFILE_WEIGHTS` (mail_enabled, enterprise_mail, non_mail, web_only, minimal, **authoritative_dns_infra**).
 6. **Rebuild dns-checks:** `npm -w packages/dns-checks run build`. Worker code + tests import the built `dist/`, not `src/` — without this, typecheck and tests won't see the new category and `createFinding('<cat>')` errors.
 7. `src/schemas/tool-args.ts` — Zod schema + `TOOL_SCHEMA_MAP`.
-8. `src/schemas/tool-definitions.ts` — `TOOL_DEFS` entry (the SSOT). The `scanIncluded: true` flag auto-appends "Part of the scan_domain audit." to the description.
+8. `src/schemas/tool-definitions.ts` — `TOOL_DEFS` entry (the SSOT). The `scanIncluded: true` flag auto-appends "Part of scan_domain." to the description.
 9. `src/handlers/tools.ts` — import + `TOOL_REGISTRY` (cacheKey + execute).
 10. `src/lib/config.ts` — `FREE_TOOL_DAILY_LIMITS` (or add to `INTENTIONALLY_UNLIMITED_TOOLS` — the `tool-quota-coverage` audit requires exactly one).
 11. `src/tools/explain-finding-data.ts` — optional (no audit enforces it): `CATEGORY_TO_CHECKTYPE` is a curated partial map; add a `CATEGORY_FALLBACK_IMPACT` entry for product completeness.

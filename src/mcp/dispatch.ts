@@ -15,13 +15,18 @@ type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof json
 
 /**
  * MCP protocol versions this server supports, newest first.
- * `2025-06-18` introduced `structuredContent` / `outputSchema`, both of which bv-mcp ships,
- * so it is the latest advertised version. `2025-03-26` is retained for backward compatibility.
+ * `2025-11-25` adds nothing a tools/resources/prompts server must implement beyond what this
+ * one already does (403 on a bad Origin, tool-argument errors as `isError` results, the optional
+ * `serverInfo.description`); its other additions (tasks, icons, elicitation, sampling tools, SSE
+ * polling) are optional or client-side. `2025-06-18` introduced `structuredContent` /
+ * `outputSchema`, both of which bv-mcp ships. `2025-03-26` is retained for backward compatibility.
+ * Every version-dependent branch compares against {@link STRUCTURED_CONTENT_MIN_VERSION}, so a
+ * newer entry here takes the modern path.
  */
-export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26'] as const;
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const;
 
 /** The newest protocol version this server supports — returned when the client's request can't be honored. */
-export const LATEST_PROTOCOL_VERSION = '2025-06-18';
+export const LATEST_PROTOCOL_VERSION = '2025-11-25';
 
 /**
  * Negotiate the MCP protocol version for an `initialize` response.
@@ -53,6 +58,35 @@ export function classifyProtocolVersionHeader(header: string | undefined | null)
 	const trimmed = header.trim();
 	if (trimmed === '') return 'absent';
 	return (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(trimmed) ? 'supported' : 'unsupported';
+}
+
+/** Longest header value echoed back in the rejection; a longer one is cut, so the reply stays small. */
+const MAX_ECHOED_VERSION_HEADER_CHARS = 64;
+
+/**
+ * The JSON-RPC error for a rejected `MCP-Protocol-Version` header. The code stays `-32600`
+ * (Invalid Request): a client that negotiates by header falls back to `initialize` on exactly
+ * that code. The message starts with the allowlisted `Invalid` prefix, keeps the established
+ * "Unsupported MCP-Protocol-Version header" phrase, and names the value received (printable
+ * ASCII only, capped) and the supported versions so a client can tell what to send instead.
+ * It carries no `error.data`: a `supported` list there is the shape of the newer spec revision's
+ * unsupported-version error, and a client that matched on shape would stop falling back.
+ *
+ * @param id - The request id when the body is a single request; echoed only when it is a string or
+ *   number (a batch, a notification or a malformed id gets null, per JSON-RPC 2.0 §5).
+ * @param header - The raw header value that was classified `unsupported`.
+ */
+export function unsupportedProtocolVersionError(id: unknown, header: string | undefined | null) {
+	const received = String(header ?? '')
+		.trim()
+		.slice(0, MAX_ECHOED_VERSION_HEADER_CHARS)
+		.replace(/[^\x20-\x7e]/g, '?');
+	const supported = [...SUPPORTED_PROTOCOL_VERSIONS];
+	return jsonRpcError(
+		typeof id === 'string' || typeof id === 'number' ? id : null,
+		JSON_RPC_ERRORS.INVALID_REQUEST,
+		`Invalid request. Unsupported MCP-Protocol-Version header: "${received}". Supported versions: ${supported.join(', ')}.`,
+	);
 }
 
 /**
@@ -459,6 +493,9 @@ const METHOD_HANDLERS: ReadonlyMap<string, MethodHandler> = new Map<string, Meth
 	['tools/call', handleToolsCallMethod],
 	['resources/list', (options) => simpleSuccess(options, 'resources', 'list', handleResourcesList())],
 	['resources/read', handleResourcesReadMethod],
+	// The `resources` capability is advertised, so a client may list templates. This server has
+	// only fixed-URI resources, so the list is empty rather than "Method not found".
+	['resources/templates/list', (options) => simpleSuccess(options, 'resources', 'templates', { resourceTemplates: [] })],
 	['prompts/list', (options) => simpleSuccess(options, 'prompts', 'list', handlePromptsList())],
 	['prompts/get', handlePromptsGetMethod],
 	['ping', (options) => simpleSuccess(options, 'session', 'ping', {})],

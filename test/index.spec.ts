@@ -557,7 +557,7 @@ describe('DNS Security MCP Server', () => {
 			expect(body.result.serverInfo.name).toBe('Blackveil DNS');
 			expect(body.result.serverInfo.description).toBeTruthy();
 			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
-			expect(body.result.protocolVersion).toBe('2025-06-18');
+			expect(body.result.protocolVersion).toBe('2025-11-25');
 			expect(typeof body.result.instructions).toBe('string');
 			expect(body.result.instructions.length).toBeGreaterThan(0);
 			expect(body.result.capabilities.prompts).toEqual({ listChanged: false });
@@ -1148,7 +1148,7 @@ describe('DNS Security MCP Server', () => {
 			const text = await response.text();
 			expect(text).toContain('event: message');
 			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
-			expect(text).toContain('"protocolVersion":"2025-06-18"');
+			expect(text).toContain('"protocolVersion":"2025-11-25"');
 		});
 
 		it('GET /mcp returns SSE stream with valid session', async () => {
@@ -1554,7 +1554,7 @@ describe('DNS Security MCP Server', () => {
 				result: { protocolVersion: string; serverInfo: { name: string } };
 			}>(messageChunk);
 			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
-			expect(payload.result.protocolVersion).toBe('2025-06-18');
+			expect(payload.result.protocolVersion).toBe('2025-11-25');
 			expect(payload.result.serverInfo.name).toBe('Blackveil DNS');
 
 			const deleteRequest = new Request('http://example.com/mcp', {

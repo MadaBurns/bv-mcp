@@ -5,15 +5,15 @@
 // the individual check_* tools for a single control — without prescriptive /
 // injection-style language (which the directory-review audit bans).
 //
-// The steering is DESCRIPTIVE, not prescriptive: it states a fact ("Part of the
-// scan_domain audit.") rather than instructing the model how to behave. The last
+// The steering is DESCRIPTIVE, not prescriptive: it states a fact ("Part of
+// scan_domain.") rather than instructing the model how to behave. The last
 // `it` block re-asserts the prescriptive-phrase gate against the emitted TOOLS so
 // a future edit to the suffix can't silently reintroduce banned language.
 
 import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../src/schemas/tool-definitions';
 
-const SCAN_AUDIT_SUFFIX = ' Part of the scan_domain audit.';
+const SCAN_AUDIT_SUFFIX = ' Part of scan_domain.';
 
 // Copied verbatim from test/audits/tool-annotations.audit.test.ts so this guard
 // tracks the actual gate rather than a paraphrase of it.

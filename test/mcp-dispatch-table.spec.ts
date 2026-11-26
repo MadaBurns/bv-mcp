@@ -39,6 +39,14 @@ describe('dispatchMcpMethod method table', () => {
 		expect('result' in result.payload).toBe(true);
 	});
 
+	it('resources/templates/list returns an empty template list, not method-not-found', async () => {
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const result = await dispatchMcpMethod({ ...base, id: 4, method: 'resources/templates/list' });
+		if (result.kind !== 'success' || !('result' in result.payload)) throw new Error('expected success payload');
+		expect(result.logCategory).toBe('resources');
+		expect(result.payload.result).toEqual({ resourceTemplates: [] });
+	});
+
 	it('ping returns an empty result object', async () => {
 		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
 		const result = await dispatchMcpMethod({ ...base, id: 3, method: 'ping' });

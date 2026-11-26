@@ -213,7 +213,11 @@ Rate limiting specifically: HTTP **429** + JSON-RPC `-32029` in the body
    rejected.
 2. The `MCP-Protocol-Version` **HTTP header** on post-init requests — **STRICT**.
    Unsupported → warn + **HTTP 400**. Absent → accepted. `initialize` exempt.
-   (Verified live 2026-08-04.)
+   (Verified live 2026-08-04.) The error body comes from
+   `unsupportedProtocolVersionError` (`src/mcp/dispatch.ts`): it names the value
+   received and the supported versions and echoes a single request's id. ⚠️ Keep
+   its code at `-32600`: header-negotiating clients fall back to `initialize`
+   on exactly that code.
 
 ⚠️ **A client that suddenly 400s only after `initialize` has a header problem,
 not a bug.** `SUPPORTED_PROTOCOL_VERSIONS` lives in `src/mcp/dispatch.ts`.

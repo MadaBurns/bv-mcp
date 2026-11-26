@@ -78,7 +78,7 @@ import { SERVER_VERSION } from './lib/server-version';
 import { processAsyncBatchMessage } from './tools/batch-scan-async';
 import { executeMcpRequest } from './mcp/execute';
 import { handleAccessContextRequest, isAccessContextToolCall } from './mcp/access-context';
-import { classifyProtocolVersionHeader } from './mcp/dispatch';
+import { classifyProtocolVersionHeader, unsupportedProtocolVersionError } from './mcp/dispatch';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { closeLegacyStream, enqueueLegacyMessage, hasActiveLegacyStream, openLegacySseStream } from './lib/legacy-sse';
 import { resolveClientIpFromHeaders, resolveClientIpFromRequestHeaders } from './lib/client-ip';
@@ -656,7 +656,7 @@ for (const path of authedPaths) {
 			if (contentTypeError)
 				return Response.json(contentTypeError.payload, { status: contentTypeError.status, headers: { 'Cache-Control': 'no-store' } });
 			if (classifyProtocolVersionHeader(c.req.header('mcp-protocol-version')) === 'unsupported') {
-				return Response.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'), {
+				return Response.json(unsupportedProtocolVersionError(accessContextBody.id, c.req.header('mcp-protocol-version')), {
 					status: 400,
 					headers: { 'Cache-Control': 'no-store' },
 				});
@@ -1078,7 +1078,8 @@ app.post('/mcp', async (c) => {
 	// MCP Streamable HTTP requires a 400 for an unsupported protocol-version header.
 	// An absent header remains compatible with older clients and initialize is exempt
 	// because protocol negotiation has not happened yet.
-	const singleMethod = parsedRequest.isBatch ? undefined : (parsedBodies[0] as JsonRpcRequest | undefined)?.method;
+	const singleRequest = parsedRequest.isBatch ? undefined : (parsedBodies[0] as JsonRpcRequest | undefined);
+	const singleMethod = singleRequest?.method;
 	if (singleMethod !== 'initialize' && classifyProtocolVersionHeader(headersLc['mcp-protocol-version']) === 'unsupported') {
 		logEvent({
 			timestamp: new Date().toISOString(),
@@ -1088,7 +1089,8 @@ app.post('/mcp', async (c) => {
 			details: { protocolVersionHeader: headersLc['mcp-protocol-version'], method: singleMethod ?? 'batch' },
 			ipHash,
 		});
-		return sseErrorResponse(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'), 400, accept);
+		// The id of a single request is echoed so the client can match the error to its call.
+		return sseErrorResponse(unsupportedProtocolVersionError(singleRequest?.id, headersLc['mcp-protocol-version']), 400, accept);
 	}
 
 	if (parsedRequest.isBatch) {

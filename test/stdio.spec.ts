@@ -10,7 +10,7 @@ describe('stdio MCP server', () => {
 		};
 
 		// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
-		expect(payload.result.protocolVersion).toBe('2025-06-18');
+		expect(payload.result.protocolVersion).toBe('2025-11-25');
 		expect(typeof payload.result.instructions).toBe('string');
 		expect(payload.result.instructions.length).toBeGreaterThan(0);
 		expect(payload.result.capabilities.prompts).toEqual({ listChanged: false });

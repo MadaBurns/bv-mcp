@@ -22,9 +22,9 @@ import {
 // `tools/list` text is short and identical everywhere; z.toJSONSchema inlines
 // a reused instance (no $ref), and test/audits/tool-list-weight pins the size.
 // A tool whose argument has tool-specific meaning keeps its own description.
-const SHARED_DOMAIN = DomainSchema.describe('Domain, e.g. example.com');
-const SHARED_FORCE_REFRESH = z.boolean().optional().describe('Bypass the cache.');
-const SHARED_FORMAT = FormatSchema.optional().describe('Output verbosity.');
+const SHARED_DOMAIN = DomainSchema.describe('e.g. example.com');
+const SHARED_FORCE_REFRESH = z.boolean().optional().describe('Skip cache.');
+const SHARED_FORMAT = FormatSchema.optional().describe('compact: less text');
 
 /** Request-local authentication metadata, never a target/domain operation. */
 export const GetAccessContextArgs = z.object({}).strict();
@@ -58,7 +58,7 @@ export const BatchScanArgs = z
 	.strict();
 
 export const BatchScanStartArgs = BatchScanArgs.extend({
-	idempotency_key: z.string().min(8).max(128).describe('Caller-stable replay key for this exact batch request.'),
+	idempotency_key: z.string().min(8).max(128).describe('Any stable 8-128 char string; reuse with the same domains returns the same job.'),
 });
 
 export const BatchScanJobArgs = z

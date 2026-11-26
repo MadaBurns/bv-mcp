@@ -9,6 +9,7 @@ import {
 	STRUCTURED_COMMENT_LEGACY_CLIENTS,
 	SUPPORTED_PROTOCOL_VERSIONS,
 	LATEST_PROTOCOL_VERSION,
+	unsupportedProtocolVersionError,
 } from '../src/mcp/dispatch';
 import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
@@ -17,35 +18,37 @@ import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 
 describe('negotiateProtocolVersion', () => {
 	it('exposes the supported versions newest-first with the latest matching the head', () => {
-		expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual(['2025-06-18', '2025-03-26']);
-		expect(LATEST_PROTOCOL_VERSION).toBe('2025-06-18');
+		expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual(['2025-11-25', '2025-06-18', '2025-03-26']);
+		expect(LATEST_PROTOCOL_VERSION).toBe('2025-11-25');
 		expect(SUPPORTED_PROTOCOL_VERSIONS[0]).toBe(LATEST_PROTOCOL_VERSION);
 	});
 
 	it('echoes a supported requested version', () => {
+		expect(negotiateProtocolVersion('2025-11-25')).toBe('2025-11-25');
 		expect(negotiateProtocolVersion('2025-06-18')).toBe('2025-06-18');
 		expect(negotiateProtocolVersion('2025-03-26')).toBe('2025-03-26');
 	});
 
 	it('falls back to the latest version for an unsupported but well-formed version', () => {
-		expect(negotiateProtocolVersion('2024-11-05')).toBe('2025-06-18');
+		expect(negotiateProtocolVersion('2024-11-05')).toBe('2025-11-25');
 	});
 
 	it('falls back to the latest version when the field is omitted', () => {
-		expect(negotiateProtocolVersion(undefined)).toBe('2025-06-18');
+		expect(negotiateProtocolVersion(undefined)).toBe('2025-11-25');
 	});
 
 	it('falls back to the latest version for non-string / garbage input', () => {
-		expect(negotiateProtocolVersion(42 as unknown)).toBe('2025-06-18');
-		expect(negotiateProtocolVersion(null)).toBe('2025-06-18');
-		expect(negotiateProtocolVersion({})).toBe('2025-06-18');
-		expect(negotiateProtocolVersion([])).toBe('2025-06-18');
-		expect(negotiateProtocolVersion('')).toBe('2025-06-18');
+		expect(negotiateProtocolVersion(42 as unknown)).toBe('2025-11-25');
+		expect(negotiateProtocolVersion(null)).toBe('2025-11-25');
+		expect(negotiateProtocolVersion({})).toBe('2025-11-25');
+		expect(negotiateProtocolVersion([])).toBe('2025-11-25');
+		expect(negotiateProtocolVersion('')).toBe('2025-11-25');
 	});
 });
 
 describe('classifyProtocolVersionHeader (#363 item 4 — observe-only, never rejects)', () => {
 	it('classifies a supported header value', () => {
+		expect(classifyProtocolVersionHeader('2025-11-25')).toBe('supported');
 		expect(classifyProtocolVersionHeader('2025-06-18')).toBe('supported');
 		expect(classifyProtocolVersionHeader('2025-03-26')).toBe('supported');
 	});
@@ -70,6 +73,8 @@ describe('classifyProtocolVersionHeader (#363 item 4 — observe-only, never rej
 
 describe('clientSupportsStructuredContent (#363 follow-up — drop redundant comment)', () => {
 	it('returns true only for a known protocol version >= 2025-06-18', () => {
+		// 2025-11-25 takes the modern branch: the legacy STRUCTURED_RESULT comment is dropped.
+		expect(clientSupportsStructuredContent('2025-11-25')).toBe(true);
 		expect(clientSupportsStructuredContent('2025-06-18')).toBe(true);
 		expect(clientSupportsStructuredContent(' 2025-06-18 ')).toBe(true);
 	});
@@ -178,12 +183,16 @@ describe('initialize protocolVersion negotiation (integration)', () => {
 		expect(await initialize({ protocolVersion: '2025-06-18' })).toBe('2025-06-18');
 	});
 
+	it('negotiates 2025-11-25 when the client requests it', async () => {
+		expect(await initialize({ protocolVersion: '2025-11-25' })).toBe('2025-11-25');
+	});
+
 	it('returns the latest version when the client omits protocolVersion', async () => {
-		expect(await initialize({})).toBe('2025-06-18');
+		expect(await initialize({})).toBe('2025-11-25');
 	});
 
 	it('returns the latest version when the client requests an unsupported version', async () => {
-		expect(await initialize({ protocolVersion: '2024-11-05' })).toBe('2025-06-18');
+		expect(await initialize({ protocolVersion: '2024-11-05' })).toBe('2025-11-25');
 	});
 });
 
@@ -228,6 +237,10 @@ describe('MCP-Protocol-Version request header', () => {
 		expect(await toolsList(await initSession(), '2025-06-18')).toBe(200);
 	});
 
+	it('accepts a post-init request carrying the 2025-11-25 header', async () => {
+		expect(await toolsList(await initSession(), '2025-11-25')).toBe(200);
+	});
+
 	it('accepts a post-init request with NO version header (most clients omit it)', async () => {
 		expect(await toolsList(await initSession(), undefined)).toBe(200);
 	});
@@ -235,6 +248,44 @@ describe('MCP-Protocol-Version request header', () => {
 	it('rejects a post-init request with an unsupported / invalid version header', async () => {
 		expect(await toolsList(await initSession(), '2099-01-01')).toBe(400);
 		expect(await toolsList(await initSession(), 'garbage')).toBe(400);
+	});
+
+	it('names the rejected value and the supported versions, echoes the request id, and keeps code -32600', async () => {
+		const sessionId = await initSession();
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2099-01-01' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 'req-7', method: 'tools/list' }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(400);
+		const body = (await response.json()) as { id: unknown; error: { code: number; message: string; data?: unknown } };
+		expect(body.id).toBe('req-7');
+		// -32600 exactly: a header-negotiating client falls back to initialize on this code.
+		expect(body.error.code).toBe(-32600);
+		// Allowlisted client-visible prefix, and the established phrase kept.
+		expect(body.error.message.startsWith('Invalid')).toBe(true);
+		expect(body.error.message).toContain('Unsupported MCP-Protocol-Version header');
+		expect(body.error.message).toContain('2099-01-01');
+		for (const version of SUPPORTED_PROTOCOL_VERSIONS) expect(body.error.message).toContain(version);
+		// No error.data: a `supported` list is the shape of a newer-revision error and would defeat the fallback.
+		expect(body.error.data).toBeUndefined();
+	});
+
+	it('answers a batch with id null, since no single id applies', () => {
+		const error = unsupportedProtocolVersionError(undefined, 'x');
+		expect(error.id).toBeNull();
+		expect(unsupportedProtocolVersionError({ bad: true }, 'x').id).toBeNull();
+		expect(unsupportedProtocolVersionError(3, 'x').id).toBe(3);
+	});
+
+	it('echoes only printable ASCII from the header, capped in length', () => {
+		const error = unsupportedProtocolVersionError(1, `2099\u0007-01-01${'x'.repeat(200)}`);
+		const echoed = /header: "([^"]*)"/.exec(error.error.message)?.[1] ?? '';
+		expect(echoed.length).toBe(64);
+		expect(echoed.startsWith('2099?-01-01')).toBe(true);
 	});
 });
 
