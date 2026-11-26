@@ -9,6 +9,7 @@ import {
 	STRUCTURED_COMMENT_LEGACY_CLIENTS,
 	SUPPORTED_PROTOCOL_VERSIONS,
 	LATEST_PROTOCOL_VERSION,
+	unsupportedProtocolVersionError,
 } from '../src/mcp/dispatch';
 import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
@@ -235,6 +236,43 @@ describe('MCP-Protocol-Version request header', () => {
 	it('rejects a post-init request with an unsupported / invalid version header', async () => {
 		expect(await toolsList(await initSession(), '2099-01-01')).toBe(400);
 		expect(await toolsList(await initSession(), 'garbage')).toBe(400);
+	});
+
+	it('names the rejected value and the supported versions, echoes the request id, and keeps code -32600', async () => {
+		const sessionId = await initSession();
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2099-01-01' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 'req-7', method: 'tools/list' }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(400);
+		const body = (await response.json()) as { id: unknown; error: { code: number; message: string; data?: unknown } };
+		expect(body.id).toBe('req-7');
+		// -32600 exactly: a header-negotiating client falls back to initialize on this code.
+		expect(body.error.code).toBe(-32600);
+		// Allowlisted client-visible prefix, and the established phrase kept.
+		expect(body.error.message.startsWith('Invalid')).toBe(true);
+		expect(body.error.message).toContain('Unsupported MCP-Protocol-Version header');
+		expect(body.error.message).toContain('2099-01-01');
+		for (const version of SUPPORTED_PROTOCOL_VERSIONS) expect(body.error.message).toContain(version);
+		expect(body.error.data).toEqual({ received: '2099-01-01', supported: [...SUPPORTED_PROTOCOL_VERSIONS] });
+	});
+
+	it('answers a batch with id null, since no single id applies', () => {
+		const error = unsupportedProtocolVersionError(undefined, 'x');
+		expect(error.id).toBeNull();
+		expect(unsupportedProtocolVersionError({ bad: true }, 'x').id).toBeNull();
+		expect(unsupportedProtocolVersionError(3, 'x').id).toBe(3);
+	});
+
+	it('echoes only printable ASCII from the header, capped in length', () => {
+		const error = unsupportedProtocolVersionError(1, `2099\u0007-01-01${'x'.repeat(200)}`);
+		const data = error.error.data as { received: string };
+		expect(data.received.length).toBe(64);
+		expect(data.received.startsWith('2099?-01-01')).toBe(true);
 	});
 });
 

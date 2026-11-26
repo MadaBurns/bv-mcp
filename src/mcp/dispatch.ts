@@ -55,6 +55,34 @@ export function classifyProtocolVersionHeader(header: string | undefined | null)
 	return (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(trimmed) ? 'supported' : 'unsupported';
 }
 
+/** Longest header value echoed back in the rejection; a longer one is cut, so the reply stays small. */
+const MAX_ECHOED_VERSION_HEADER_CHARS = 64;
+
+/**
+ * The JSON-RPC error for a rejected `MCP-Protocol-Version` header. The code stays `-32600`
+ * (Invalid Request): a client that negotiates by header falls back to `initialize` on exactly
+ * that code. The message starts with the allowlisted `Invalid` prefix, keeps the established
+ * "Unsupported MCP-Protocol-Version header" phrase, and names the value received (printable
+ * ASCII only, capped) and the supported versions so a client can tell what to send instead.
+ *
+ * @param id - The request id when the body is a single request; echoed only when it is a string or
+ *   number (a batch, a notification or a malformed id gets null, per JSON-RPC 2.0 §5).
+ * @param header - The raw header value that was classified `unsupported`.
+ */
+export function unsupportedProtocolVersionError(id: unknown, header: string | undefined | null) {
+	const received = String(header ?? '')
+		.trim()
+		.slice(0, MAX_ECHOED_VERSION_HEADER_CHARS)
+		.replace(/[^\x20-\x7e]/g, '?');
+	const supported = [...SUPPORTED_PROTOCOL_VERSIONS];
+	return jsonRpcError(
+		typeof id === 'string' || typeof id === 'number' ? id : null,
+		JSON_RPC_ERRORS.INVALID_REQUEST,
+		`Invalid request. Unsupported MCP-Protocol-Version header: "${received}". Supported versions: ${supported.join(', ')}.`,
+		{ received, supported },
+	);
+}
+
 /**
  * The MCP protocol version that introduced the standard `structuredContent` channel
  * (alongside `outputSchema`). A client negotiating this version or later can read the

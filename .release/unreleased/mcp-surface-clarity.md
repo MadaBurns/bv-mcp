@@ -13,6 +13,7 @@ plugins: []
 ### Changed
 
 - The `initialize` instructions keep the starting tools and the read-only disclosure, and now also explain the async pattern (start, poll the status tool with the returned handle, fetch the findings or report), that paid-only tools are marked `_meta.paidOnly` and `get_access_context` reports the caller's tier, that `format: "compact"` gives shorter text, and that results are cached unless `force_refresh` is set.
+- A request rejected for an unsupported `MCP-Protocol-Version` header now gets an error that names the value received and the supported versions, carries both in `error.data`, and echoes the request id when the body is a single request. The HTTP status (400) and JSON-RPC code (`-32600`) are unchanged.
 - `check_mx_reputation` and `check_rbl` now describe what each actually queries. `check_mx_reputation` checks up to 3 MX hosts against SpamCop and Barracuda and verifies reverse DNS; it no longer names Spamhaus or SORBS, neither of which it queries, nor says `check_rbl` takes an IP. `check_rbl` says it takes a domain, resolves the MX hosts (or A records) to IPv4 addresses and queries 6 blocklists.
 - `discover_brand_domains_start` says to pass the `auditId` it returns as `operationId` to `discover_brand_domains_status` and `discover_brand_domains_findings`.
 - `explain_finding` says where its inputs come from (a finding from `scan_domain` or a `check_*` tool) and what it returns.
