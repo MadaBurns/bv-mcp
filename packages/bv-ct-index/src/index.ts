@@ -14,6 +14,7 @@ import { COMPACTION_CRON, TRANSITIONAL_COMPACTION_CRON, runCompactionCron } from
 import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
+import { CATCHUP_CRON, runCatchup } from './tailer/catchup';
 import { runFanout, runShard, type ShardRequest } from './tailer/fanout';
 import type { ObservationBatch } from './types';
 
@@ -45,6 +46,11 @@ export interface Env {
 	 * details"). Turning it off stops new details but does not remove stored ones.
 	 */
 	CERT_DETAILS?: string;
+	/**
+	 * Var: CT-log fetches per run of the bounded catch-up reader (src/tailer/catchup.ts); unset or invalid means its
+	 * default. Not declared in the wrangler configs, so a deploy never resets a value the operator set.
+	 */
+	CATCHUP_MAX_FETCHES?: string;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 	/**
@@ -89,6 +95,12 @@ export default {
 				}
 				const fanout = await runFanout(env, controller.scheduledTime, env.TAIL);
 				console.log(JSON.stringify({ event: 'ct_tailer_fanout', ...fanout }));
+				break;
+			}
+			case CATCHUP_CRON: {
+				// The bounded catch-up reader: its own invocation, table and kill switch, apart from the forward tail.
+				const summary = await runCatchup(env);
+				console.log(JSON.stringify({ event: 'ct_catchup_run', ...summary }));
 				break;
 			}
 			case COMPACTION_CRON:
