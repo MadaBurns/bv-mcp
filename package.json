@@ -117,7 +117,7 @@
 		"eslint": "10.14.0",
 		"hono": "4.13.21",
 		"miniflare": "5.20261101.0-beta",
-		"playwright": "^1.65.0",
+		"playwright": "^1.65.1",
 		"tsup": "9.0.0",
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.72.2",
