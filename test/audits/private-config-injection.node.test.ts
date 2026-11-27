@@ -95,6 +95,21 @@ describe('private Wrangler config injection', () => {
 		).toThrow(/REJECT_QUERY_API_KEY/);
 	});
 
+	it.each([['missing', undefined], ['empty', ''], ['blank', '  ']])('fails closed naming OWNER_ALLOW_IPS when it is %s', (_label, value) => {
+		const cwd = setupInjectFixture();
+		const vars: Record<string, string> = productionVars();
+		if (value === undefined) delete vars.OWNER_ALLOW_IPS;
+		else vars.OWNER_ALLOW_IPS = value;
+		writePrivateOverlay(cwd, { vars });
+		expect(() => runInject(cwd)).toThrow(/OWNER_ALLOW_IPS must be set to a non-empty value/);
+	});
+
+	it('passes the OWNER_ALLOW_IPS requirement when it is set', () => {
+		const cwd = setupInjectFixture();
+		writePrivateOverlay(cwd, { vars: productionVars() });
+		expect(() => runInject(cwd)).not.toThrow();
+	});
+
 	it('fails closed when ALERT_WEBHOOK_URL is present in vars — the re-disclosure / secret-collision state (#1073)', () => {
 		// A binding name cannot be both a var and a secret (wrangler rejects
 		// `secret put` with [code: 10053] while it is), and `wrangler types`
@@ -282,6 +297,7 @@ function productionVars(): Record<string, string> {
 		OAUTH_ISSUER: 'https://dns-mcp.blackveilsecurity.com',
 		REQUIRE_PRODUCTION_BINDINGS: 'true',
 		REJECT_QUERY_API_KEY: 'true',
+		OWNER_ALLOW_IPS: '203.0.113.10',
 	};
 }
 

@@ -30,7 +30,7 @@ import { bindings, defineConfig, exports, triggers } from 'cf/config';
 import type { QueueConsumerTrigger, ScheduledTrigger, WorkerConfig } from 'cf/config';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
-import { REQUIRED_PRODUCTION_VARS, mergeOverlay, parseJsonc, validateOverlayKeys } from '../../scripts/lib/overlay-merge.mjs';
+import { REQUIRED_PRODUCTION_VARS, mergeOverlay, missingNonEmptyProductionVars, parseJsonc, validateOverlayKeys } from '../../scripts/lib/overlay-merge.mjs';
 
 export const PRODUCTION_WORKER_NAME = 'bv-dns-security-mcp';
 export const NON_PRODUCTION_WORKER_NAME = 'bv-dns-security-mcp-dev';
@@ -307,8 +307,13 @@ function loadProductionSource(publicConfig: Wrangler, overlayPath: string): Wran
 	for (const warning of validateOverlayKeys(overlay, publicConfig).warnings) console.warn(warning);
 	const merged = mergeOverlay(publicConfig, overlay);
 	const wrongVars = Object.entries(REQUIRED_PRODUCTION_VARS).filter(([name, expected]) => merged.vars?.[name] !== expected);
-	if (wrongVars.length > 0) {
-		fail(`unsafe production config: ${wrongVars.map(([name, expected]) => `${name} must be ${JSON.stringify(expected)}`).join('; ')}.`);
+	const emptyVars = missingNonEmptyProductionVars(merged.vars);
+	if (wrongVars.length > 0 || emptyVars.length > 0) {
+		const problems = [
+			...wrongVars.map(([name, expected]) => `${name} must be ${JSON.stringify(expected)}`),
+			...emptyVars.map((name) => `${name} must be set to a non-empty value`),
+		];
+		fail(`unsafe production config: ${problems.join('; ')}.`);
 	}
 	return merged;
 }
