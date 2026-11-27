@@ -6,10 +6,10 @@ Important: you do not need to install an npm package to use the hosted MCP servi
 
 npm packages:
 
-- `blackveil-dns` (the root package) is bin-only. In this repository it ships the `blackveil-dns-mcp` stdio bin and the `blackveil` CLI bin; npm can be behind this repository (`npm view blackveil-dns version`), and the published 2.13.0 carries only `blackveil-dns-mcp`. It has no `main` or `exports`, so there is no library import from it.
-- The reusable library (check functions, scoring, schemas) is the separate `@blackveil/dns-checks` package. `npm install @blackveil/dns-checks` resolves to 1.3.12 (published 2026-06-01); `packages/dns-checks` in this repository is far ahead of it (1.60.1 as of 2026-10).
+- `blackveil-dns` (the root package) is bin-only. In this repository it ships the `blackveil-dns-mcp` stdio bin and the `blackveil` CLI bin; npm can be behind this repository: check the registry (`npm view blackveil-dns version bin`) for the published version and the bins it carries. It has no `main` or `exports`, so there is no library import from it.
+- The reusable library (check functions, scoring, schemas) is the separate `@blackveil/dns-checks` package. the published version is whatever the registry reports (`npm view @blackveil/dns-checks version`), and `packages/dns-checks` in this repository may be ahead of it.
 
-Publishing is closed by policy (issue #719, closed as not planned), so the npm packages do not match the current source and will not be refreshed. Build from this repository if you need current behavior. For CI, use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action), which calls the hosted endpoint and needs no npm package.
+The npm packages can lag this repository; compare the registry version with `packages/dns-checks/package.json`, and build from this repository if you need current behavior. For CI, use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action), which calls the hosted endpoint and needs no npm package.
 
 ## Endpoint
 
