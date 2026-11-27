@@ -682,11 +682,7 @@ function buildUpgradeCta(toolName: string, channel: UpgradeChannel, volumeLimit?
 }
 
 /** Build the `data.upgrade` envelope for a paywalled (403) response. */
-export function buildUpgradeData(
-	toolName: string,
-	isVolume429 = false,
-	volumeLimitLabel = 'free-tier',
-): { upgrade: UpgradeData } {
+export function buildUpgradeData(toolName: string, isVolume429 = false, volumeLimitLabel = 'free-tier'): { upgrade: UpgradeData } {
 	const channel = resolveUpgradeChannel(toolName, isVolume429);
 	return {
 		upgrade: {
