@@ -13,6 +13,7 @@
  *   { auditId, status, progress: 'N/M', completed, total, targets: [{ target, status, error? }] }
  */
 
+import { logError } from '../lib/log';
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { createRejectedRequestBuilder } from './async-start-error-result';
@@ -82,9 +83,10 @@ export async function brandAuditStatus(
 			targets = all.results ?? [];
 		}
 	} catch (err) {
+		logError(err instanceof Error ? err : String(err), { category: 'brand_audit_status', details: { stage: 'read' } });
 		return errorResult(
 			'readFailure',
-			`Failed to read brand audit row: ${err instanceof Error ? err.message : String(err)}`,
+			'Failed to read brand audit row.',
 			{ auditId },
 		);
 	}

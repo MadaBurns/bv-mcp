@@ -5,6 +5,7 @@
  * Scans 2–5 domains and produces a side-by-side comparison of their security posture.
  */
 
+import { logError } from '../lib/log';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { scanDomain, buildStructuredScanResult } from './scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
@@ -160,7 +161,8 @@ export async function compareDomains(rawDomains: string[], options: CompareDomai
 				errors[domain] = 'budget_exceeded';
 				partial = true;
 			} else {
-				errors[domain] = err instanceof Error ? err.message : 'Scan failed';
+				logError(err instanceof Error ? err : String(err), { details: { tool: 'compare_domains', domain } });
+				errors[domain] = 'Scan failed';
 			}
 			structuredResults[domain] = null;
 		}
