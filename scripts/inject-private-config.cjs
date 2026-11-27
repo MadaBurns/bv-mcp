@@ -164,12 +164,18 @@ function assessAlertWebhookSecretGate(vars, listSecretNames, allowMissing) {
     };
 }
 
-function validateProductionSecurityConfig(config, requiredVars) {
+function validateProductionSecurityConfig(config, requiredVars, missingNonEmptyVars) {
     const vars = config && typeof config.vars === 'object' && config.vars ? config.vars : {};
     const failures = [];
     for (const [name, expected] of Object.entries(requiredVars)) {
         if (vars[name] !== expected) {
             failures.push(`${name} must be ${JSON.stringify(expected)}`);
+        }
+    }
+
+    if (missingNonEmptyVars) {
+        for (const name of missingNonEmptyVars(vars)) {
+            failures.push(`${name} must be set to a non-empty value`);
         }
     }
 
@@ -194,7 +200,7 @@ function validateProductionSecurityConfig(config, requiredVars) {
  * Merges the public engine build with local private overrides.
  */
 async function inject() {
-    const { parseJsonc, validateOverlayKeys, mergeOverlay, OverlayValidationError, REQUIRED_PRODUCTION_VARS } =
+    const { parseJsonc, validateOverlayKeys, mergeOverlay, OverlayValidationError, REQUIRED_PRODUCTION_VARS, missingNonEmptyProductionVars } =
         await loadOverlayMerge();
     const publicConfig = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'));
     const privateConfigPath = '.dev/wrangler.deploy.jsonc';
@@ -221,7 +227,7 @@ async function inject() {
 
     const mergedConfig = mergeOverlay(publicConfig, privateConfig);
 
-    validateProductionSecurityConfig(mergedConfig, REQUIRED_PRODUCTION_VARS);
+    validateProductionSecurityConfig(mergedConfig, REQUIRED_PRODUCTION_VARS, missingNonEmptyProductionVars);
 
     fs.writeFileSync('wrangler.production.jsonc', JSON.stringify(mergedConfig, null, 2));
     console.log("Successfully generated wrangler.production.jsonc with injected private configuration.");

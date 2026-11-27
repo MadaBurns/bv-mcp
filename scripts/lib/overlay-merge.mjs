@@ -197,6 +197,26 @@ export const REQUIRED_PRODUCTION_VARS = {
 };
 
 /**
+ * Vars that must be present and non-blank in the merged production config, whatever their value.
+ * OWNER_ALLOW_IPS is the owner-tier IP allow-list: with it unset the runtime applies no IP gate, so
+ * any holder of an owner-grade key would resolve to owner tier from any address.
+ */
+export const REQUIRED_NONEMPTY_PRODUCTION_VARS = ['OWNER_ALLOW_IPS'];
+
+/**
+ * Names from REQUIRED_NONEMPTY_PRODUCTION_VARS that are missing, non-string, or blank in `vars`.
+ *
+ * @param {Record<string, unknown> | undefined} vars
+ * @returns {string[]}
+ */
+export function missingNonEmptyProductionVars(vars) {
+    return REQUIRED_NONEMPTY_PRODUCTION_VARS.filter((name) => {
+        const value = vars?.[name];
+        return typeof value !== 'string' || value.trim() === '';
+    });
+}
+
+/**
  * Merges the public engine build with the private overlay. Pure: returns a new object and
  * leaves both inputs untouched. Call validateOverlayKeys first — this merge is an allowlist.
  *
