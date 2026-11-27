@@ -205,6 +205,9 @@ export const REQUIRED_NONEMPTY_PRODUCTION_VARS = ['OWNER_ALLOW_IPS'];
 
 /**
  * Names from REQUIRED_NONEMPTY_PRODUCTION_VARS that are missing, non-string, or blank in `vars`.
+ * Each is a comma-separated list, split the way the runtime splits it (parseOwnerAllowIps in
+ * src/lib/config.ts), so a value of only commas and spaces counts as blank: it would parse to an
+ * empty list at runtime.
  *
  * @param {Record<string, unknown> | undefined} vars
  * @returns {string[]}
@@ -212,7 +215,7 @@ export const REQUIRED_NONEMPTY_PRODUCTION_VARS = ['OWNER_ALLOW_IPS'];
 export function missingNonEmptyProductionVars(vars) {
     return REQUIRED_NONEMPTY_PRODUCTION_VARS.filter((name) => {
         const value = vars?.[name];
-        return typeof value !== 'string' || value.trim() === '';
+        return typeof value !== 'string' || value.split(',').every((entry) => entry.trim() === '');
     });
 }
 
