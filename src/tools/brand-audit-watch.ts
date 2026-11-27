@@ -29,6 +29,7 @@ import { buildCheckResult, createFinding, type CheckResult } from '../lib/scorin
 import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { createRejectedRequestBuilder } from './async-start-error-result';
 import { deriveWatchWebhookSecret } from '../lib/watch-webhook-signing';
+import { isBrandDriftReceiverTarget } from '../lib/brand-drift-receiver';
 import type { BrandAuditWatchInterval, BrandAuditWatchRow } from '../lib/db/brand-audit-schema';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -58,6 +59,13 @@ export interface BrandAuditWatchDeps {
 	now?: () => number;
 	/** Validated server secret for webhook signing. Unset = feature off; register returns no secret. */
 	signingSecret?: string;
+	/**
+	 * True only on the authenticated internal tool door, where the first-party
+	 * service registers watches that deliver to BlackVeil's own Brand Drift
+	 * receiver. Unset everywhere else, so a public caller cannot point a watch
+	 * at that receiver and have the internal webhook key attached to it.
+	 */
+	allowBrandDriftReceiver?: boolean;
 }
 
 const SIGNING_SECRET_NOTE =
@@ -99,8 +107,13 @@ function checkDomainAllowed(domain: string): CheckResult | undefined {
 	return errorResult('invalidInput', `Invalid domain: ${domainValidation.error ?? 'not allowed'}`);
 }
 
-function checkWebhookUrl(webhookUrl: string | undefined): CheckResult | undefined {
+function checkWebhookUrl(webhookUrl: string | undefined, allowBrandDriftReceiver: boolean): CheckResult | undefined {
 	if (!webhookUrl) return undefined;
+	// Delivery to this receiver carries the internal webhook key, so only the
+	// first-party door may target it — whatever query string the caller adds.
+	if (!allowBrandDriftReceiver && isBrandDriftReceiverTarget(webhookUrl)) {
+		return errorResult('invalidInput', 'Invalid webhook_url: this BlackVeil endpoint is reserved and cannot be used as a watch webhook.');
+	}
 	const v = validateOutboundUrl(webhookUrl);
 	if (v.valid) return undefined;
 	return errorResult('invalidInput', `webhook_url failed SSRF validation: ${v.error ?? 'invalid URL'}`);
@@ -111,9 +124,12 @@ function checkWebhookUrl(webhookUrl: string | undefined): CheckResult | undefine
  * check wins, in the original order (domain, interval, domain policy, webhook).
  * Returns `undefined` when the input is acceptable. Never touches D1.
  */
-function validateRegisterInput(args: RegisterBrandAuditWatchArgs): CheckResult | undefined {
+function validateRegisterInput(args: RegisterBrandAuditWatchArgs, allowBrandDriftReceiver: boolean): CheckResult | undefined {
 	return (
-		checkDomainPresent(args) ?? checkIntervalValid(args) ?? checkDomainAllowed(args.domain as string) ?? checkWebhookUrl(args.webhook_url)
+		checkDomainPresent(args) ??
+		checkIntervalValid(args) ??
+		checkDomainAllowed(args.domain as string) ??
+		checkWebhookUrl(args.webhook_url, allowBrandDriftReceiver)
 	);
 }
 
@@ -191,7 +207,7 @@ export async function registerBrandAuditWatch(
 	ownerId: string,
 	deps: BrandAuditWatchDeps,
 ): Promise<CheckResult> {
-	const invalid = validateRegisterInput(args);
+	const invalid = validateRegisterInput(args, deps.allowBrandDriftReceiver === true);
 	if (invalid) return invalid;
 
 	const watchId = (deps.generateId ?? defaultGenerateId)();

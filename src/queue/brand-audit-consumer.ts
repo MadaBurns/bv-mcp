@@ -45,6 +45,7 @@ import type { Tier1Result } from '../lib/brand-tier1-graph';
 import type { Tier2Result } from '../lib/brand-tier2-evidence';
 import { computeClassificationHash, computeDiff } from '../lib/brand-audit-classification-diff';
 import { WATCH_WEBHOOK_SIGNATURE_HEADER, signWatchWebhookBody } from '../lib/watch-webhook-signing';
+import { BLACKVEIL_BRAND_DRIFT_RECEIVER, isBrandDriftReceiverTarget } from '../lib/brand-drift-receiver';
 import {
 	MCP_SECURITY_CRITICAL_SECRET_KEYS,
 	securityCapabilityCollision,
@@ -99,8 +100,7 @@ export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = PLATFORM_CONSUMER_CPU_CAP_MS - BRA
 /** Customer webhooks run after the scan budget; bound them independently. */
 export const BRAND_AUDIT_WEBHOOK_TIMEOUT_MS = 5_000;
 
-/** The sole customer webhook destination allowed to receive BlackVeil's internal capability. */
-export const BLACKVEIL_BRAND_DRIFT_RECEIVER = 'https://www.blackveilsecurity.com/api/webhooks/brand-drift';
+export { BLACKVEIL_BRAND_DRIFT_RECEIVER };
 
 /** Internal service-binding host; only the path/query are meaningful to the bound Worker. */
 const BLACKVEIL_BRAND_DRIFT_SERVICE_URL = 'https://bv-web-internal/api/webhooks/brand-drift';
@@ -734,16 +734,9 @@ async function postToCallerUrl(url: string, body: string, signal: AbortSignal, o
 }
 
 function isBlackVeilBrandDriftReceiver(rawUrl: string): URL | null {
-	try {
-		const url = new URL(rawUrl);
-		const expected = new URL(BLACKVEIL_BRAND_DRIFT_RECEIVER);
-		if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.username || url.password) {
-			return null;
-		}
-		return url;
-	} catch {
-		return null;
-	}
+	const url = isBrandDriftReceiverTarget(rawUrl);
+	if (!url || url.username || url.password) return null;
+	return url;
 }
 
 function strongBrandWebhookCapability(value: string | undefined, peers: ReadonlyArray<string | undefined>): value is string {

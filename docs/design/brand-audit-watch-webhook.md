@@ -69,7 +69,11 @@ header; their auth remains the URL token. The exact BlackVeil receiver
 (`https://www.blackveilsecurity.com/api/webhooks/brand-drift`) is a special
 first-party path: delivery uses the private `BV_WEB` service binding and a
 dedicated `BV_MCP_BRAND_WEBHOOK_KEY` bearer. The bearer is never attached to
-any other origin/path, and redirects are never followed.
+any other origin/path, and redirects are never followed. Because of that
+bearer, only the authenticated internal tool door (how bv-web registers its own
+watches) may register a watch on this receiver: `register_brand_audit_watch`
+refuses its origin+path as `invalidInput` on every other path, whatever query
+string is added (`src/lib/brand-drift-receiver.ts`).
 
 Each of `changes.added`, `changes.removed`, and `changes.modified` is bounded
 at 200 rows, matching the producer pipeline's maximum candidate set. The UTF-8
