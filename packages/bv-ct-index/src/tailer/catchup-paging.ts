@@ -22,7 +22,7 @@ export const CATCHUP_MAX_ENTRIES = 24_000;
 export const CATCHUP_MAX_ROWS = 2;
 /**
  * Requests in flight per row (the var of this name overrides it, clamped to 1..CATCHUP_PAGES_IN_FLIGHT_MAX). 6 is the
- * invocation's limit on connections waiting for headers, and the most the operator asked of one log host; a larger value
+ * invocation's limit on connections waiting for headers, and a deliberately modest load on one log host; a larger value
  * only queues behind HEADER_SLOTS for the header wait, and adds in-flight body reads.
  */
 export const CATCHUP_PAGES_IN_FLIGHT = 6;
@@ -33,7 +33,7 @@ export const CATCHUP_PAGES_IN_FLIGHT_MAX = 8;
  * run has released its lease before the next dispatch.
  */
 export const CATCHUP_PHASE_MS = 100_000;
-/** A request is cut off after this; longer than the tail's 5 s because a log answers get-entries in 1-3 s from a laptop. */
+/** A request is cut off after this; longer than the tail's 5 s because a get-entries page was measured at 1-3 s from outside the Worker. */
 export const CATCHUP_FETCH_TIMEOUT_MS = 15_000;
 /** A row that deferred or failed is left alone this long, counted from the failure (it skips one dispatch). */
 export const CATCHUP_BACKOFF_MS = 180_000;

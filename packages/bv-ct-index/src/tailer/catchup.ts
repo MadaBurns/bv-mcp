@@ -3,7 +3,7 @@
  * The bounded catch-up reader: reads [lower, upper) of a CT log, apart from the forward tail (src/tailer/index.ts).
  *
  * The forward tail follows a log only while the Chrome log list calls it usable or qualified, so a log that turns
- * readonly is dropped with its backlog unread (argon2027h1 and xenon2027h1, 2026-11-13: 303M entries). A row of
+ * readonly is dropped with its backlog unread. A row of
  * `log_backfill` (migrations/0006_log_backfill.sql) names one range of one log with its own url and kind, so this
  * reader needs neither the log list nor the log's state, and it changes nothing the tail follows. Rows are inserted by
  * an operator; the migration seeds none.
@@ -25,7 +25,7 @@
  * Files: this one (the run), catchup-paging.ts (constants, SQL, pure paging/lease/page-size helpers), catchup-types.ts,
  * catchup-dispatch.ts (the cron's side). All are re-exported from here.
  *
- * Limits this is sized against (Cloudflare docs, checked 2026-11-27): scheduled handlers and queue consumers 15 min wall
+ * Limits this is sized against (Cloudflare docs): scheduled handlers and queue consumers 15 min wall
  * time (developers.cloudflare.com/workers/platform/limits/); CPU 30 s default, 300 s here via limits.cpu_ms; 10,000
  * subrequests per invocation on the paid plan (50 free); 6 simultaneous connections waiting for headers, more queue;
  * queue consumer 15 min wall, batch 100, 128 KB message, 5,000 messages/s per queue (queues/platform/limits/).
@@ -440,7 +440,12 @@ async function readEntries(run: Run, work: Work): Promise<void> {
 		work.launchNext = work.next;
 		// A discarded page that failed before this reset had already set halt; it says nothing about the pages read from here.
 		work.halt = false;
-		const laterEntries = later ? await later.promise.then((list) => list, () => [] as unknown[]) : [];
+		const laterEntries = later
+			? await later.promise.then(
+					(list) => list,
+					() => [] as unknown[],
+				)
+			: [];
 		const shorts: Array<[number, number]> = [[start, entries.length]];
 		if (later && laterEntries.length < later.end - later.start + 1) shorts.push([later.start, laterEntries.length]);
 		const taught = laterEntries.length > 0 ? shorts.find(([from, length]) => length > 0 && from % length === 0) : undefined;
@@ -471,15 +476,21 @@ async function getTile(run: Run, work: Work, tile: number): Promise<Array<Uint8A
 /** Up to `pagesInFlight` full data tiles from the one holding the cursor; entries before the cursor are skipped. The ceiling is tile-aligned. */
 async function readTiles(run: Run, work: Work): Promise<void> {
 	const first = Math.floor(work.next / TILE_WIDTH);
-	const count = Math.min(run.pagesInFlight, work.ceiling / TILE_WIDTH - first, work.fetchCap - work.launches, pagesWithinEntryCap(run, work, TILE_WIDTH));
+	const count = Math.min(
+		run.pagesInFlight,
+		work.ceiling / TILE_WIDTH - first,
+		work.fetchCap - work.launches,
+		pagesWithinEntryCap(run, work, TILE_WIDTH),
+	);
 	const tiles = Array.from({ length: count }, (_, i) => first + i);
 	work.launches += tiles.length;
 	const bodies = together(
-		tiles.map((tile) => () =>
-			getTile(run, work, tile).catch((error: unknown) => {
-				work.halt = true;
-				throw error;
-			}),
+		tiles.map(
+			(tile) => () =>
+				getTile(run, work, tile).catch((error: unknown) => {
+					work.halt = true;
+					throw error;
+				}),
 		),
 	);
 	for (const [i, tile] of tiles.entries()) {
@@ -594,7 +605,12 @@ async function catchUpRow(run: Run, db: D1Database, work: Work): Promise<void> {
 	}
 }
 
-function newRun(env: Pick<Env, 'ENTRIES' | 'CERT_DETAILS' | 'CATCHUP_PAGES_IN_FLIGHT'>, db: D1Database, options: CatchupOptions, now: number): Run {
+function newRun(
+	env: Pick<Env, 'ENTRIES' | 'CERT_DETAILS' | 'CATCHUP_PAGES_IN_FLIGHT'>,
+	db: D1Database,
+	options: CatchupOptions,
+	now: number,
+): Run {
 	const timeoutMs = options.fetchTimeoutMs ?? CATCHUP_FETCH_TIMEOUT_MS;
 	return {
 		db,

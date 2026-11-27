@@ -37,9 +37,9 @@ different application with that name is live on this account. The only name for 
 
 `npm run provision:ct-index` **prints** the ordered, idempotent commands and executes nothing. Run them one at a time. In order:
 check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact`, `bv-ct-index-tail` and `bv-ct-index-catchup`, the D1 database
-`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0005: `log_cursors`, then
+`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0006: `log_cursors`, then
 `runs` / `meta` / `ops_ledger`, the `log_cursors` error columns, the `runs_r2_key` index, then the `runs` key filter and
-interval index), then deploy.
+interval index, then the `log_backfill` work list of the catch-up reader), then deploy.
 
 Two rules differ from older sidecar runbooks:
 

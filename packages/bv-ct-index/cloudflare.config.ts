@@ -51,8 +51,8 @@ export default defineConfig({
 			COMPACT: bindings.queue({ name: 'bv-ct-index-compact' }),
 			// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
 			TAIL: bindings.queue({ name: 'bv-ct-index-tail' }),
-				// The bounded catch-up reader's dispatch (src/tailer/catchup.ts): one message per row.
-				CATCHUP: bindings.queue({ name: 'bv-ct-index-catchup' }),
+			// The bounded catch-up reader's dispatch (src/tailer/catchup.ts): one message per row.
+			CATCHUP: bindings.queue({ name: 'bv-ct-index-catchup' }),
 			CT_INDEX_ADMIN_KEY: bindings.secret(),
 		},
 	},
