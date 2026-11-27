@@ -8,6 +8,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- The upgrade prompt on a volume-limit 429 (distinct-domain, daily per-tool and daily global limits) now says the limit was reached and that a higher tier raises it, instead of telling the caller to upgrade to unlock the tool, which was wrong for free tools. The paid-only prompt, the limits and the status codes are unchanged.
+- Production config validation (the private-config injector and the `cf` production loader) now stops when `OWNER_ALLOW_IPS` is missing, blank or made only of commas. Runtime tier resolution is unchanged. Operators: set `OWNER_ALLOW_IPS` in the private overlay before the next production deploy.
+- `check_root_server_set` no longer names an internal binding in its description.
+
+### Fixed
+
+- `brand_audit_batch_start`, `brand_audit_status`, `discover_brand_domains_start`, `batch_scan`, `batch_scan_start` and `compare_domains` returned the thrown error message to the caller on an internal failure. They now return fixed wording and log the detail. An async batch job that fails reports `batch_scan_failed` as its `error`; `batch_budget_exceeded` is kept.
+
+### Security
+
+- `register_brand_audit_watch` refuses BlackVeil's own Brand Drift receiver as a `webhook_url`, whatever query string is added, with an invalid-input error. Only the authenticated internal door, which the first-party service uses to register its own watches, may target it. Watches registered before this change are not re-checked.
+
 ## [3.121.0] - 2026-11-27
 
 ### Changed
