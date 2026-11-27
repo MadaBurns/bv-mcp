@@ -64,6 +64,14 @@ describe('error text allowlist: internal failures', () => {
 		expect(logged(spy)).toBe(true);
 	});
 
+	it('register_brand_audit_watch: persistence failure', async () => {
+		const spy = logSpy();
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily' }, 'pk', { db: makeDb('run') } as never);
+		expectNoLeak(result);
+		expect(logged(spy)).toBe(true);
+	});
+
 	it('brand_audit_status: read failure', async () => {
 		const spy = logSpy();
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');

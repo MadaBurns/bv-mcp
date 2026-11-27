@@ -25,6 +25,7 @@
  * scheduling unbounded recurring cost.
  */
 
+import { logError } from '../lib/log';
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { createRejectedRequestBuilder } from './async-start-error-result';
@@ -133,10 +134,6 @@ function validateRegisterInput(args: RegisterBrandAuditWatchArgs, allowBrandDrif
 	);
 }
 
-function describeError(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Insert the watch row. Returns an error result when the principal is at the
  * cap or D1 throws, `undefined` on success.
@@ -172,7 +169,8 @@ async function persistWatch(
 			{ current: MAX_WATCHES_PER_OWNER, limit: MAX_WATCHES_PER_OWNER },
 		);
 	} catch (err) {
-		return errorResult('persistenceFailure', `Failed to register watch: ${describeError(err)}`);
+		logError(err instanceof Error ? err : String(err), { category: 'brand_audit_watch', details: { stage: 'register' } });
+		return errorResult('persistenceFailure', 'Failed to register watch.');
 	}
 }
 
