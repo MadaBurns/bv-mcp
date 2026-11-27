@@ -6,6 +6,11 @@
 -- sets state = 'done' when next_index reaches it. state 'paused' stops one row without the whole-reader kill switch.
 -- Rows are inserted by an operator, never by a migration. The reader's own kill switch is meta k = 'catchup_killed',
 -- v = '1' (the ops_ledger kill switch stops it too).
+-- page_size is the entries per get-entries page the log serves: set by the reader when it sees a short page, or by the
+-- operator, so every run starts with correctly aligned ranges (NULL: ask for the most the protocol allows, 256).
+-- hold_until is one row's lease and back-off in one column (an ISO timestamp): a run claims the row by setting it a
+-- little past its own end and clears it when done, so an overlapping run skips the row; a run that deferred (HTTP 429,
+-- no entries yet) or failed sets it a few minutes ahead instead, so the row is left alone until then.
 CREATE TABLE log_backfill (
 	log_id TEXT NOT NULL,
 	kind TEXT NOT NULL CHECK (kind IN ('rfc6962', 'static')),
@@ -19,6 +24,8 @@ CREATE TABLE log_backfill (
 	last_error TEXT,
 	last_error_at TEXT,
 	updated_at TEXT,
+	page_size INTEGER CHECK (page_size IS NULL OR (page_size >= 1 AND page_size <= 256)),
+	hold_until TEXT,
 	PRIMARY KEY (log_id, upper_index),
 	CHECK (lower_index >= 0 AND next_index >= lower_index AND upper_index >= next_index)
 );

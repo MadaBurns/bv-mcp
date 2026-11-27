@@ -14,7 +14,7 @@ import { COMPACTION_CRON, TRANSITIONAL_COMPACTION_CRON, runCompactionCron } from
 import { createReader } from './indexer/read';
 import { indexEntries } from './indexer/write';
 import { runTailer } from './tailer';
-import { CATCHUP_CRON, runCatchup } from './tailer/catchup';
+import { CATCHUP_CRON, dispatchCatchup, isCatchupRequest, runCatchup, runCatchupMessage, type CatchupRequest } from './tailer/catchup';
 import { runFanout, runShard, type ShardRequest } from './tailer/fanout';
 import type { ObservationBatch } from './types';
 
@@ -38,7 +38,7 @@ export interface Env {
 	 * Queue `bv-ct-index-tail`: one message per tailer shard (src/tailer/fanout.ts), produced by the minute cron.
 	 * Unbound, the tailer runs over every log in the cron invocation alone.
 	 */
-	TAIL?: Queue<ShardRequest>;
+	TAIL?: Queue<ShardRequest | CatchupRequest>;
 	/**
 	 * Var: 'on' makes the tailer store each certificate's details (serial, key, signature, SAN count) on its name
 	 * rows; anything else stores none. Older versions cannot read a row with details, and compaction carries the
@@ -53,6 +53,8 @@ export interface Env {
 	CATCHUP_MAX_FETCHES?: string;
 	/** Var: entries per run of the bounded catch-up reader, shared across its rows; unset or invalid means its default. */
 	CATCHUP_MAX_ENTRIES?: string;
+	/** Var: get-entries requests in flight per catch-up row, 1 to 8; unset or invalid means its default (6). */
+	CATCHUP_PAGES_IN_FLIGHT?: string;
 	/** Secret: bearer key for the query API. */
 	CT_INDEX_ADMIN_KEY: string;
 	/**
@@ -69,6 +71,13 @@ export interface Env {
 /** One shard per message; never retried (max_retries 0): the next tick re-plans the same logs from their cursors. */
 async function tailShards(batch: MessageBatch<unknown>, env: Env): Promise<void> {
 	for (const message of batch.messages) {
+		if (isCatchupRequest(message.body)) {
+			// A catch-up row, read in this invocation on its own connection slots (src/tailer/catchup.ts).
+			const outcome = await runCatchupMessage(env, message.body);
+			console.log(JSON.stringify({ event: 'ct_catchup_run', ...outcome }));
+			message.ack();
+			continue;
+		}
 		const { shard, summary, skipped } = await runShard(env, message.body);
 		console.log(
 			JSON.stringify(summary ? { event: 'ct_tailer_tick', shard, ...summary } : { event: 'ct_tailer_shard_skipped', shard, skipped }),
@@ -100,7 +109,14 @@ export default {
 				break;
 			}
 			case CATCHUP_CRON: {
-				// The bounded catch-up reader: its own invocation, table and kill switch, apart from the forward tail.
+				// The bounded catch-up reader: its own table and kill switch, apart from the forward tail. With the tail queue
+				// bound, each row is dispatched to its own consumer invocation (its own 6 connection slots); without it, this
+				// invocation reads the first claimable row itself.
+				if (env.TAIL) {
+					const dispatch = await dispatchCatchup(env, env.TAIL, controller.scheduledTime);
+					console.log(JSON.stringify({ event: 'ct_catchup_dispatch', ...dispatch }));
+					break;
+				}
 				const summary = await runCatchup(env);
 				console.log(JSON.stringify({ event: 'ct_catchup_run', ...summary }));
 				break;
