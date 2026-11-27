@@ -179,21 +179,23 @@ describe('registerBrandAuditWatch — persistence outcomes', () => {
 		expect(f.metadata).toMatchObject({ watchLimitExceeded: true, current: 20, limit: 20 });
 	});
 
-	it('an Error thrown by D1 → persistenceFailure with its message', async () => {
+	it('an Error thrown by D1 → persistenceFailure with fixed wording', async () => {
 		const { db } = makeDb(async () => {
 			throw new Error('d1_down');
 		});
 		const f = onlyFinding(await register({ domain: 'apple.com', interval: 'daily' }, db));
 		expect(f.title).toBe('Brand audit watch: persistenceFailure');
-		expect(f.detail).toBe('Failed to register watch: d1_down');
+		expect(f.detail).toBe('Failed to register watch.');
+		expect(JSON.stringify(f)).not.toContain('d1_down');
 	});
 
-	it('a non-Error throw is stringified into persistenceFailure', async () => {
+	it('a non-Error throw also yields fixed persistenceFailure wording', async () => {
 		const { db } = makeDb(async () => {
 			throw 'plain-string-failure';
 		});
 		const f = onlyFinding(await register({ domain: 'apple.com', interval: 'daily' }, db));
-		expect(f.detail).toBe('Failed to register watch: plain-string-failure');
+		expect(f.detail).toBe('Failed to register watch.');
+		expect(JSON.stringify(f)).not.toContain('plain-string-failure');
 	});
 });
 
