@@ -164,7 +164,9 @@ describe('producer kinds stay machine-readable', () => {
 		} as unknown as D1Database;
 		const persist = getRejectedRequest(await brandAuditBatchStart(['example.com'], {}, 'p', { ...deps, db: throwingDb }));
 		expect(persist?.kind).toBe('persistenceFailure');
-		expect(persist?.text).toContain('d1_down');
+		// The thrown detail is logged server-side only; the caller sees fixed wording.
+		expect(persist?.text).toBe('Failed to persist brand audit row.');
+		expect(persist?.text).not.toContain('d1_down');
 
 		const quota = getRejectedRequest(
 			await brandAuditBatchStart(['example.com'], {}, 'p', {
