@@ -66,7 +66,17 @@ export function stepDown(logId: string): void {
 /** A page of the log came back with entries. */
 export function pageServed(logId: string): void {
 	const entry = paging.get(logId);
-	if (!entry || entry.limit >= RFC6962_PAGE) return;
+	if (!entry) return;
+	if (entry.limit >= RFC6962_PAGE) {
+		// Back at the full size and holding: after STEP_UP_AFTER_PAGES good pages the doubled requirement is forgotten, so
+		// an occasional timeout on a healthy log does not ratchet it towards MAX_STEP_UP_AFTER_PAGES for the isolate's life.
+		if (entry.steppedUp && ++entry.good >= STEP_UP_AFTER_PAGES) {
+			entry.steppedUp = false;
+			entry.required = STEP_UP_AFTER_PAGES;
+			entry.good = 0;
+		}
+		return;
+	}
 	if (++entry.good >= entry.required) {
 		entry.limit = RFC6962_PAGE;
 		entry.good = 0;
