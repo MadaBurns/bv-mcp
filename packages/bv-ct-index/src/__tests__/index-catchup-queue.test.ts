@@ -126,10 +126,16 @@ describe(`the ${CATCHUP_CRON} cron`, () => {
 	});
 
 	it('without the CATCHUP binding the fallback runs one row through the reader (a 429 is a deferral on the row)', async () => {
-		vi.stubGlobal('fetch', vi.fn(async () => new Response('slow', { status: 429 })));
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('slow', { status: 429 })),
+		);
 		const out = await lines(() => scheduled(testEnv() as Env));
 		expect(out).toEqual([expect.objectContaining({ event: 'ct_catchup_run', rows: 1 })]);
-		const row = await db.prepare('SELECT hold_until FROM log_backfill WHERE log_id = ?').bind(ROW.log_id).first<{ hold_until: string | null }>();
+		const row = await db
+			.prepare('SELECT hold_until FROM log_backfill WHERE log_id = ?')
+			.bind(ROW.log_id)
+			.first<{ hold_until: string | null }>();
 		expect(row?.hold_until).not.toBeNull(); // backed off
 	});
 });

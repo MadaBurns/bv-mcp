@@ -254,7 +254,9 @@ describe('runCatchup', () => {
 		const net = fakeNetwork();
 		const base = net.fetch;
 		const flaky = (async (input: RequestInfo | URL) =>
-			String(input instanceof Request ? input.url : input).includes('bad-') ? new Response('down', { status: 503 }) : base(input)) as typeof fetch;
+			String(input instanceof Request ? input.url : input).includes('bad-')
+				? new Response('down', { status: 503 })
+				: base(input)) as typeof fetch;
 
 		await run({ fetch: flaky }, fakeQueue()); // bad-a fails and goes to the back
 		await run({ fetch: flaky }, fakeQueue()); // bad-b fails and goes to the back
@@ -328,7 +330,10 @@ describe('runCatchup', () => {
 		const next = fakeNetwork(8);
 		await run(next, queue, { maxFetches: 3 }); // no pageSize: the learned size of 8 is asked for (after the probe, as 8 < 32)
 		const from = Number(after?.next_index);
-		expect(next.calls.map((url) => new URL(url).search).slice(1)).toEqual([`?start=${from}&end=${from + 7}`, `?start=${from + 8}&end=${from + 15}`]);
+		expect(next.calls.map((url) => new URL(url).search).slice(1)).toEqual([
+			`?start=${from}&end=${from + 7}`,
+			`?start=${from + 8}&end=${from + 15}`,
+		]);
 		expect((await row(RO.log_id))?.next_index).toBe(from + 16);
 	});
 
@@ -479,7 +484,10 @@ describe('runCatchup', () => {
 			expect(batches[0]!.map((m) => m.body.logId).sort()).toEqual([RO.log_id, RO2.log_id].sort());
 			expect(batches[0]![0]!.body).toMatchObject({ kind: 'catchup', scheduledTime: NOW, upperIndex: 1_000 });
 
-			await db.prepare("UPDATE log_backfill SET hold_until = ? WHERE log_id = ?").bind(new Date(NOW + 60_000).toISOString(), RO.log_id).run();
+			await db
+				.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?')
+				.bind(new Date(NOW + 60_000).toISOString(), RO.log_id)
+				.run();
 			expect(await dispatch()).toMatchObject({ rows: 1, sent: 1 });
 			expect(batches[1]!.map((m) => m.body.logId)).toEqual([RO2.log_id]);
 			expect(await dispatch(NOW + 61_000)).toMatchObject({ rows: 2 }); // the hold has passed
@@ -679,11 +687,15 @@ describe('runCatchup', () => {
 			await vi.waitFor(async () => expect((await row(RO.log_id))?.hold_until).not.toBeNull());
 
 			const calls: string[] = [];
-			const second = await run({ fetch: (async (input: RequestInfo | URL) => (calls.push(String(input)), net.fetch(input))) as typeof fetch }, fakeQueue(), {
-				maxFetches: 2,
-				pageSize: 8,
-				only: { logId: RO.log_id, upperIndex: 1_000 },
-			});
+			const second = await run(
+				{ fetch: (async (input: RequestInfo | URL) => (calls.push(String(input)), net.fetch(input))) as typeof fetch },
+				fakeQueue(),
+				{
+					maxFetches: 2,
+					pageSize: 8,
+					only: { logId: RO.log_id, upperIndex: 1_000 },
+				},
+			);
 			expect(second).toMatchObject({ rows: 0, held: 1, entries: 0 });
 			expect(calls).toEqual([]);
 
@@ -698,7 +710,10 @@ describe('runCatchup', () => {
 
 		it('a lease that has expired (a run that died) does not hold the row', async () => {
 			await seed(RO, 'rfc6962', 0, 1_000);
-			await db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind(new Date(NOW - 1).toISOString(), RO.log_id).run();
+			await db
+				.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?')
+				.bind(new Date(NOW - 1).toISOString(), RO.log_id)
+				.run();
 			await run(fakeNetwork(), fakeQueue(), { maxFetches: 1, pageSize: 8 });
 			expect((await row(RO.log_id))?.next_index).toBe(8);
 		});
@@ -706,7 +721,10 @@ describe('runCatchup', () => {
 		it('a 429 stops further requests, defers the row for CATCHUP_BACKOFF_MS, and does not hammer', async () => {
 			await seed(RO, 'rfc6962', 0, 100_000);
 			const net = fakeNetwork();
-			const limited = (async (input: RequestInfo | URL) => (net.calls.push(String(input)), new Response('slow down', { status: 429 }))) as typeof fetch;
+			const limited = (async (input: RequestInfo | URL) => (
+				net.calls.push(String(input)),
+				new Response('slow down', { status: 429 })
+			)) as typeof fetch;
 			const summary = await run({ fetch: limited }, fakeQueue(), { pageSize: 8 });
 
 			expect(net.calls.length).toBeLessThanOrEqual(CATCHUP_PAGES_IN_FLIGHT); // the first wave, and no second one
@@ -747,7 +765,16 @@ describe('runCatchup', () => {
 			net.delayMs = 10;
 			const summary = await run(net, fakeQueue(), { maxFetches: 4, pageSize: 8 });
 			const stats = summary.perRow[0]!;
-			expect(stats).toMatchObject({ logId: RO.log_id, entries: 32, fetches: 4, pages: 4, timeouts: 0, rateLimited: 0, httpErrors: 0, deferrals: 0 });
+			expect(stats).toMatchObject({
+				logId: RO.log_id,
+				entries: 32,
+				fetches: 4,
+				pages: 4,
+				timeouts: 0,
+				rateLimited: 0,
+				httpErrors: 0,
+				deferrals: 0,
+			});
 			expect(stats.medianMs).toBeGreaterThanOrEqual(8);
 			expect(stats.maxMs).toBeGreaterThanOrEqual(stats.medianMs!);
 
@@ -759,7 +786,10 @@ describe('runCatchup', () => {
 			expect(failed.perRow[0]).toMatchObject({ timeouts: 2, pages: 0, medianMs: null, maxMs: null });
 
 			await db.prepare('UPDATE log_backfill SET hold_until = NULL').run();
-			const empty = await run({ fetch: (async () => Response.json({ entries: [] })) as typeof fetch }, fakeQueue(), { maxFetches: 1, pageSize: 8 });
+			const empty = await run({ fetch: (async () => Response.json({ entries: [] })) as typeof fetch }, fakeQueue(), {
+				maxFetches: 1,
+				pageSize: 8,
+			});
 			expect(empty.perRow[0]).toMatchObject({ deferrals: 1, rateLimited: 0 });
 		});
 	});
@@ -822,7 +852,10 @@ describe('runCatchup', () => {
 		it('hold_until must be ISO-8601 with T and Z', async () => {
 			await seed(RO, 'rfc6962', 0, 1_000);
 			for (const bad of ['12/1/2026', '2026-12-01 00:00:00', '2026-12-01T00:00:00', 'z']) {
-				await expect(db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind(bad, RO.log_id).run(), bad).rejects.toThrow();
+				await expect(
+					db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind(bad, RO.log_id).run(),
+					bad,
+				).rejects.toThrow();
 			}
 			await db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind('2026-12-01T00:00:00.000Z', RO.log_id).run();
 			await db.prepare('UPDATE log_backfill SET hold_until = NULL WHERE log_id = ?').bind(RO.log_id).run();

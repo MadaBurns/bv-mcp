@@ -29,7 +29,13 @@ interface WranglerConfig {
 	d1_databases?: Array<{ binding?: string; database_name?: string; database_id?: string }>;
 	queues?: {
 		producers?: Array<{ binding?: string; queue?: string }>;
-		consumers?: Array<{ queue?: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number }>;
+		consumers?: Array<{
+			queue?: string;
+			max_batch_size?: number;
+			max_batch_timeout?: number;
+			max_retries?: number;
+			max_concurrency?: number;
+		}>;
 	};
 	secrets?: { required?: string[] };
 }
@@ -204,7 +210,12 @@ describe('infra probe wrangler wiring', () => {
 
 		it('consumes its four queues with the same bounded batch settings as the test config', () => {
 			const consumers = ctIndexConfig.queues?.consumers ?? [];
-			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact', 'bv-ct-index-tail', 'bv-ct-index-catchup']);
+			expect(consumers.map((c) => c.queue)).toEqual([
+				'bv-ct-index-entries',
+				'bv-ct-index-compact',
+				'bv-ct-index-tail',
+				'bv-ct-index-catchup',
+			]);
 			expect([...cfConsumers.keys()]).toEqual(consumers.map((c) => c.queue));
 			for (const consumer of consumers) {
 				const cfConsumer = cfConsumers.get(consumer.queue) ?? '';
@@ -213,7 +224,8 @@ describe('infra probe wrangler wiring', () => {
 				expect(consumerField(cfConsumer, 'maxBatchSize'), consumer.queue).toBe(consumer.max_batch_size);
 				expect(consumerField(cfConsumer, 'maxBatchTimeout'), consumer.queue).toBe(consumer.max_batch_timeout);
 				expect(consumerField(cfConsumer, 'maxRetries'), consumer.queue).toBe(consumer.max_retries);
-				if (consumer.max_concurrency !== undefined) expect(consumerField(cfConsumer, 'maxConcurrency'), consumer.queue).toBe(consumer.max_concurrency);
+				if (consumer.max_concurrency !== undefined)
+					expect(consumerField(cfConsumer, 'maxConcurrency'), consumer.queue).toBe(consumer.max_concurrency);
 				else expect(cfConsumer, consumer.queue).not.toMatch(/maxConcurrency/);
 			}
 			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
