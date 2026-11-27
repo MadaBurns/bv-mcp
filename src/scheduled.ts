@@ -880,7 +880,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
-		// Present-binding degradation (BV_RECON / BV_TLS_PROBE 5xx / timeout). A
+		// Present-binding degradation (BV_RECON / BV_TLS_PROBE / BV_INFRA_PROBE /
+		// BV_WHOIS / BV_CERTSTREAM 5xx / timeout / unreachable). A
 		// mis-rotated key or upstream outage is invisible without this — the
 		// fail-soft bindings null out silently otherwise. Absent bindings never reach
 		// the `degradation` dataset, and `queryBindingDegradation` excludes the
