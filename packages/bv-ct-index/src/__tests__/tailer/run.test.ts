@@ -12,7 +12,22 @@ import catalogSql from '../../../migrations/0002_catalog.sql?raw';
 import cursorErrorsSql from '../../../migrations/0003_cursor_errors.sql?raw';
 import type { Env } from '../../index';
 import { LOG_LIST_URL, TILE_WIDTH, tilePath } from '../../tailer/ct';
-import { HEADER_SLOTS, WINDOW, resetLogListMemo, runTailer, type TailerOptions } from '../../tailer';
+import {
+	HEADER_SLOTS,
+	LAG_REPORT_THRESHOLD,
+	MAX_ENTRIES_PER_VISIT,
+	MAX_ENTRIES_PER_VISIT_BEHIND,
+	MAX_TIMEOUTS_PER_TICK,
+	RFC6962_PAGE,
+	STEPPED_DOWN_PAGE,
+	STEP_UP_AFTER_PAGES,
+	WINDOW,
+	entriesPerVisit,
+	pageSizeOf,
+	resetLogListMemo,
+	runTailer,
+	type TailerOptions,
+} from '../../tailer';
 import type { ObservationBatch } from '../../types';
 import {
 	MULTI_APEX_TILE_LEAF,
@@ -430,10 +445,11 @@ describe('runTailer', () => {
 				{ scheduledTime: 0, now: NOW, fetch: net.fetch, fetchTimeoutMs: 50 },
 			);
 
-			expect(net.calls.filter((url) => url.startsWith(hanging))).toHaveLength(1);
+			// The timeout steps the log down and its visit retries once at the smaller page, which hangs too; then the visit ends.
+			expect(net.calls.filter((url) => url.startsWith(hanging))).toHaveLength(2);
 			expect(await cursor(RFC.log_id)).toMatchObject({
 				next_index: 980,
-				last_error: expect.stringMatching(/timeout.*\(https:\/\/rfc\.ct\.test\/2027h1\/ct\/v1\/get-entries\?start=980&end=999\)$/i),
+				last_error: expect.stringMatching(/timeout.*\(https:\/\/rfc\.ct\.test\/2027h1\/ct\/v1\/get-entries\?start=980&end=991\)$/i),
 			});
 			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH, last_error: null });
 			expect(Object.keys(summary.errors)).toEqual([RFC.log_id]);
@@ -613,6 +629,130 @@ describe('runTailer', () => {
 			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 980 });
 			expect(await cursor(STATIC.log_id)).toMatchObject({ next_index: 5 * TILE_WIDTH });
 			expect(summary.logs).toBe(1);
+		});
+	});
+
+	describe('slow logs', () => {
+		const timeoutError = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+		const pagesAsked = (net: { calls: string[] }) =>
+			net.calls
+				.filter((url) => url.includes('get-entries'))
+				.map((url) => new URL(url).searchParams)
+				.map((query) => [Number(query.get('start')), Number(query.get('end'))] as const);
+
+		it('keeps the pages before a timed-out page, steps the log down to aligned 32-entry pages, and finishes at that size', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 100);
+			const net = fakeNetwork({ pageCap: 256 });
+			const original = net.fetch;
+			let failed = false;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (String(input).includes('get-entries?start=612&end=867') && !failed) {
+					failed = true;
+					net.calls.push(String(input));
+					throw timeoutError();
+				}
+				return original(input, init);
+			}) as typeof fetch;
+			const queue = fakeQueue();
+			const summary = await run(net, queue);
+
+			const pages = pagesAsked(net);
+			expect(pages.slice(0, 4)).toEqual([
+				[100, 355],
+				[356, 611],
+				[612, 867],
+				[868, 999],
+			]);
+			// The retry starts where the contiguous good pages ended, at 32 entries and aligned to 32.
+			expect(pages[4]).toEqual([612, 639]);
+			expect(pages[5]).toEqual([640, 671]);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000, last_error: expect.stringMatching(/timeout/i) });
+			expect(summary.errors[RFC.log_id]).toMatch(/timeout/i);
+			expect(pageSizeOf(RFC.log_id)).toBe(STEPPED_DOWN_PAGE);
+			expect(queue.sent.length).toBeGreaterThan(0);
+		});
+
+		it('keeps the progress of the good pages when the log times out again on the retry', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 100);
+			const net = fakeNetwork({ pageCap: 256 });
+			const original = net.fetch;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (new URL(String(input)).searchParams.get('start') === '612') {
+					net.calls.push(String(input));
+					throw timeoutError();
+				}
+				return original(input, init);
+			}) as typeof fetch;
+			await run(net, fakeQueue());
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 612, last_error: expect.stringMatching(/timeout/i) });
+			expect(pagesAsked(net).filter(([start]) => start === 612)).toHaveLength(MAX_TIMEOUTS_PER_TICK);
+		});
+
+		it('steps back up to full pages only after sustained success', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 0);
+			const net = fakeNetwork({ rfcSize: 40_000, pageCap: 256 });
+			const original = net.fetch;
+			let failed = false;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (String(input).includes('get-entries?start=0&') && !failed) {
+					failed = true;
+					net.calls.push(String(input));
+					throw timeoutError();
+				}
+				return original(input, init);
+			}) as typeof fetch;
+			await run(net, fakeQueue());
+
+			const pages = pagesAsked(net).slice(4); // after the first window, whose first page timed out
+			const sizes = pages.map(([start, end]) => end - start + 1);
+			const firstBig = sizes.findIndex((size) => size === 256);
+			expect(sizes.slice(0, STEP_UP_AFTER_PAGES).every((size) => size <= STEPPED_DOWN_PAGE)).toBe(true);
+			expect(firstBig).toBeGreaterThanOrEqual(STEP_UP_AFTER_PAGES);
+			expect(pageSizeOf(RFC.log_id)).toBe(RFC6962_PAGE);
+		});
+
+		it('treats a short page cut at a 32-entry boundary as the log aligning requests, not a page cap', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 100);
+			// Like TrustAsia hetu: a request is cut at the next multiple of 32 unless it is a whole aligned 256.
+			const net = fakeNetwork({ pageCap: 256 });
+			const original = net.fetch;
+			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				if (!url.includes('get-entries?')) return original(input, init);
+				const query = new URL(url).searchParams;
+				const start = Number(query.get('start'));
+				const end = Math.min(Number(query.get('end')), (Math.floor(start / 32) + 1) * 32 - 1);
+				return original(`${RFC.url}ct/v1/get-entries?start=${start}&end=${end}`, init);
+			}) as typeof fetch;
+			await run(net, fakeQueue());
+
+			// start 100 asks for 100-355 and is cut to 100-127 (28 entries, ends on a 32 boundary): the size must not become 28.
+			expect(pagesAsked(net)[4]).toEqual([128, 159]);
+			const later = pagesAsked(net).slice(4);
+			expect(later.every(([start]) => start % 32 === 0)).toBe(true);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: 1_000 });
+		});
+
+		it('scales the entries a visit may read with the backlog, between the base cap and the ceiling', () => {
+			expect(entriesPerVisit(0)).toBe(MAX_ENTRIES_PER_VISIT);
+			expect(entriesPerVisit(8 * MAX_ENTRIES_PER_VISIT)).toBe(MAX_ENTRIES_PER_VISIT);
+			expect(entriesPerVisit(16 * MAX_ENTRIES_PER_VISIT)).toBe(2 * MAX_ENTRIES_PER_VISIT);
+			expect(entriesPerVisit(437_000_000)).toBe(MAX_ENTRIES_PER_VISIT_BEHIND);
+		});
+
+		it('reports page latency, timeouts, short pages and 429s for a log far behind, and not for one that is near the head', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 0);
+			await seed(STATIC.log_id, 'static', STATIC.monitoring_url, 5 * TILE_WIDTH);
+			const net = fakeNetwork({ rfcSize: LAG_REPORT_THRESHOLD + 5_000, pageCap: 32 });
+			const summary = await run(net, fakeQueue(), NOW);
+			const report = summary.lagging[RFC.log_id]!;
+			expect(report.behind).toBeGreaterThanOrEqual(LAG_REPORT_THRESHOLD);
+			expect(report.pages).toBeGreaterThan(0);
+			expect(report.medianMs).toEqual(expect.any(Number));
+			expect(report.maxMs).toBeGreaterThanOrEqual(report.medianMs!);
+			expect(report.shortPages).toBeGreaterThan(0);
+			expect(report).toMatchObject({ timeouts: 0, rateLimited: 0 });
+			expect(summary.lagging[STATIC.log_id]).toBeUndefined();
 		});
 	});
 

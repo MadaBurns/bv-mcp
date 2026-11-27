@@ -48,7 +48,21 @@ import {
 	type TailedLog,
 } from './ct';
 import { newObservationSet, newRows, observeCert, toBatches, type ObservationSet, type SkipCounts } from './observations';
+import {
+	RFC6962_PAGE,
+	STEPPED_DOWN_PAGE,
+	STEP_UP_AFTER_PAGES,
+	MAX_STEP_UP_AFTER_PAGES,
+	isAligned,
+	learnCap,
+	pageServed,
+	pageSizeOf,
+	resetPaging,
+	stepDown,
+} from './paging';
 import { parseTbsCertificate } from './x509';
+
+export { MAX_STEP_UP_AFTER_PAGES, RFC6962_PAGE, STEPPED_DOWN_PAGE, STEP_UP_AFTER_PAGES, pageSizeOf };
 
 export const LOG_LIST_TTL_MS = 60 * 60 * 1000;
 /** Logs visited at once. More than HEADER_SLOTS, so one log's slow body read does not hold a slot it no longer needs. */
@@ -69,8 +83,17 @@ export const MAX_LOG_FETCHES = 3_000;
 export const MAX_TICK_OBSERVATIONS = 40_000;
 /** Entries one visit may read before its log goes to the back of the queue, so one deep backlog cannot starve the rest. */
 export const MAX_ENTRIES_PER_VISIT = 4_096;
-/** get-entries asks for this many entries; logs return fewer (measured 3 to 246 per page, and 32 on Google's logs). */
-export const RFC6962_PAGE = 256;
+/**
+ * An RFC 6962 log far behind may read more per visit: its backlog divided by BACKLOG_VISITS, between MAX_ENTRIES_PER_VISIT
+ * and this ceiling. A visit is still bounded by the fetch phase, MAX_LOG_FETCHES and the slots, so the ceiling shifts
+ * slots toward the logs furthest behind; it does not raise the tick's total.
+ */
+export const MAX_ENTRIES_PER_VISIT_BEHIND = 32_768;
+export const BACKLOG_VISITS = 8;
+/** Timeouts one log may handle in one tick (the second ends its visits) before the next tick tries again. */
+export const MAX_TIMEOUTS_PER_TICK = 2;
+/** A log at least this many entries behind gets a latency line in the tick summary. */
+export const LAG_REPORT_THRESHOLD = 100_000;
 /**
  * A log's held rows are sent once they reach this many. A held row costs about 400 B of heap (measured in V8), and the
  * fan-out's shards may share one 128 MB isolate, so a shard keeps its rows and its dedup memory to about 12 MB.
@@ -131,6 +154,8 @@ export interface TickSummary {
 	errors: Record<string, string>;
 	/** logId -> why its visit ended early without an error (not served yet, rate limited); not written to D1. */
 	deferred: Record<string, string>;
+	/** logId -> page latency, timeouts, short pages and 429s, for logs at least LAG_REPORT_THRESHOLD behind. */
+	lagging: Record<string, LagReport>;
 }
 
 interface LogState {
@@ -145,6 +170,32 @@ interface LogState {
 	observations: ObservationSet;
 	error: string | null;
 	deferred: string | null;
+	/** Fetch measurements this tick (get-entries pages and data tiles). */
+	stats: FetchStats;
+	/** Timeouts this tick's visits stepped down for. */
+	timeoutsHandled: number;
+	/** Entries the head was ahead of the cursor when this tick read it. */
+	startBehind: number;
+}
+
+interface FetchStats {
+	/** Milliseconds from getting a slot to the end of the body, per successful request. */
+	latencies: number[];
+	timeouts: number;
+	shortPages: number;
+	rateLimited: number;
+}
+
+/** What the summary reports for a log that is far behind. */
+export interface LagReport {
+	behind: number;
+	pages: number;
+	medianMs: number | null;
+	maxMs: number | null;
+	timeouts: number;
+	shortPages: number;
+	rateLimited: number;
+	pageSize: number;
 }
 
 interface Tick {
@@ -182,6 +233,9 @@ class HttpError extends Error {
 	}
 }
 
+/** A fetch or body read that hit the fetch timeout. */
+class FetchTimeout extends Error {}
+
 /** Ends a visit without an error: the log has not served the next entries yet, or asked us to slow down. */
 class Deferral extends Error {}
 
@@ -189,13 +243,16 @@ class Deferral extends Error {}
 class SendFailed extends Error {}
 
 let logListMemo: { fetchedAt: number; logs: TailedLog[] } | undefined;
-/** logId -> the entries per get-entries page a log has been seen to serve, when fewer than RFC6962_PAGE. */
-const pageSizes = new Map<string, number>();
-
 /** Forgets the memoized log list and the learned page sizes (tests). */
 export function resetLogListMemo(): void {
 	logListMemo = undefined;
-	pageSizes.clear();
+	resetPaging();
+}
+
+function median(values: number[]): number | null {
+	if (values.length === 0) return null;
+	const sorted = [...values].sort((a, b) => a - b);
+	return sorted[Math.floor((sorted.length - 1) / 2)]!;
 }
 
 function describe(error: unknown): string {
@@ -223,13 +280,23 @@ function canFetch(tick: Tick): boolean {
  * queued requests cannot run into the next tick. A 429 is a Deferral, any other non-2xx an HttpError; a network
  * failure or timeout names the URL (the bare abort message does not).
  */
-async function get<T>(tick: Tick, url: string, read: (response: Response) => Promise<T>): Promise<T> {
-	const named = (error: unknown) => (error instanceof Deferral ? error : new Error(`${describe(error)} (${url})`));
+async function get<T>(tick: Tick, url: string, read: (response: Response) => Promise<T>, state?: LogState): Promise<T> {
+	let startedAt = 0;
+	const named = (error: unknown) => {
+		if (error instanceof Deferral) return error;
+		const name = (error as { name?: unknown } | null)?.name;
+		if (name === 'TimeoutError' || name === 'AbortError') {
+			if (state) state.stats.timeouts++;
+			return new FetchTimeout(`${describe(error)} (${url})`);
+		}
+		return new Error(`${describe(error)} (${url})`);
+	};
 	let response: Response;
 	try {
 		response = await tick.slot(() => {
 			if (Date.now() >= tick.fetchUntil) throw new Deferral('fetch phase ended before this request had a slot');
 			tick.fetches++;
+			startedAt = Date.now();
 			return tick.fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(tick.fetchTimeoutMs) });
 		});
 	} catch (error) {
@@ -237,11 +304,16 @@ async function get<T>(tick: Tick, url: string, read: (response: Response) => Pro
 	}
 	if (!response.ok) {
 		await response.body?.cancel();
-		if (response.status === 429) throw new Deferral(`rate limited: HTTP 429 from ${url}`);
+		if (response.status === 429) {
+			if (state) state.stats.rateLimited++;
+			throw new Deferral(`rate limited: HTTP 429 from ${url}`);
+		}
 		throw new HttpError(response.status, url);
 	}
 	try {
-		return await read(response);
+		const value = await read(response);
+		state?.stats.latencies.push(Date.now() - startedAt);
+		return value;
 	} catch (error) {
 		throw named(error);
 	}
@@ -288,7 +360,7 @@ function fetchesLeft(tick: Tick): number {
 
 async function getEntries(tick: Tick, state: LogState, start: number, end: number): Promise<unknown[]> {
 	const url = `${state.log.url}ct/v1/get-entries?start=${start}&end=${end}`;
-	const { entries } = await get(tick, url, (response) => response.json<{ entries?: unknown }>());
+	const { entries } = await get(tick, url, (response) => response.json<{ entries?: unknown }>(), state);
 	if (!Array.isArray(entries) || entries.length > end - start + 1) throw new Error(`get-entries ${start}-${end}: bad entries array`);
 	return entries;
 }
@@ -298,8 +370,13 @@ async function getEntries(tick: Tick, state: LogState, start: number, end: numbe
  * whatever each page returned. A short page ends the window: the pages after it start past a gap. When a later
  * page of the window did come back with entries, the short page was the log's own cap rather than a replica that
  * has not caught up, so later windows ask for that many per page.
+ *
+ * A page that times out ends the window the same way: the pages before it stay observed (the cursor moves to the end
+ * of the last good one), the pages after it start past a gap and are dropped, the timeout goes to last_error, and the
+ * log steps down to STEPPED_DOWN_PAGE for the retry (see stepDown).
  */
 async function readEntries(tick: Tick, state: LogState): Promise<void> {
+	const logId = state.log.logId;
 	const ranges = pageRanges(tick, state);
 	const pages = together(
 		ranges.map(
@@ -309,22 +386,41 @@ async function readEntries(tick: Tick, state: LogState): Promise<void> {
 		),
 	);
 	for (const [i, [start, end]] of ranges.entries()) {
-		const entries = await pages[i]!;
+		let entries: unknown[];
+		try {
+			entries = await pages[i]!;
+		} catch (error) {
+			if (!(error instanceof FetchTimeout)) throw error;
+			state.error = describe(error);
+			state.timeoutsHandled++;
+			stepDown(logId);
+			return;
+		}
 		observePage(tick, state, entries, start, end);
+		pageServed(logId);
 		if (entries.length < end - start + 1) {
-			if (await hasEntries(pages[i + 1])) pageSizes.set(state.log.logId, entries.length);
+			state.stats.shortPages++;
+			if (entries.length < STEPPED_DOWN_PAGE && (start + entries.length) % STEPPED_DOWN_PAGE === 0) stepDown(logId);
+			else if (await hasEntries(pages[i + 1])) learnCap(logId, entries.length);
 			return;
 		}
 	}
 }
 
-/** The window's [start, end] ranges from the cursor, at the log's learned page size. */
+/**
+ * The window's [start, end] ranges from the cursor, at the log's page size. Stepped down, the first page ends at the
+ * next multiple of the size and the rest are aligned to it, since logs that cut requests do so at those boundaries.
+ */
 function pageRanges(tick: Tick, state: LogState): Array<[number, number]> {
-	const size = pageSizes.get(state.log.logId) ?? RFC6962_PAGE;
+	const size = pageSizeOf(state.log.logId);
+	const aligned = isAligned(state.log.logId);
 	const count = Math.min(WINDOW, fetchesLeft(tick));
 	const ranges: Array<[number, number]> = [];
-	for (let start = state.next!; start < state.treeSize! && ranges.length < count; start += size) {
-		ranges.push([start, Math.min(start + size, state.treeSize!) - 1]);
+	let start = state.next!;
+	while (start < state.treeSize! && ranges.length < count) {
+		const stop = aligned ? start - (start % size) + size : start + size;
+		ranges.push([start, Math.min(stop, state.treeSize!) - 1]);
+		start = stop;
 	}
 	return ranges;
 }
@@ -356,7 +452,7 @@ async function hasEntries(page: Promise<unknown[]> | undefined): Promise<boolean
 async function getTile(tick: Tick, state: LogState, tile: number): Promise<Array<Uint8Array | null>> {
 	let body: ArrayBuffer;
 	try {
-		body = await get(tick, `${state.log.url}tile/data/${tilePath(tile)}`, (response) => response.arrayBuffer());
+		body = await get(tick, `${state.log.url}tile/data/${tilePath(tile)}`, (response) => response.arrayBuffer(), state);
 	} catch (error) {
 		// The checkpoint covers this tile, so a 404 is a CDN replaying one it cached before the tile was published.
 		if (error instanceof HttpError && error.status === 404) throw new Deferral(`data tile ${tile}: HTTP 404, not served yet`);
@@ -440,7 +536,10 @@ async function flush(tick: Tick, state: LogState): Promise<void> {
 async function readHeadOnce(tick: Tick, state: LogState): Promise<boolean> {
 	if (state.treeSize !== null) return true;
 	state.treeSize = await readHead(tick, state.log);
-	if (state.next !== null) return true;
+	if (state.next !== null) {
+		state.startBehind = Math.max(0, state.treeSize - state.next);
+		return true;
+	}
 	state.next = state.sentThrough = state.treeSize;
 	return false;
 }
@@ -450,16 +549,28 @@ function readableEnd(state: LogState): number {
 	return state.log.kind === 'static' ? Math.floor(state.treeSize! / TILE_WIDTH) * TILE_WIDTH : state.treeSize!;
 }
 
+/** Entries a visit may read: MAX_ENTRIES_PER_VISIT, or for an RFC 6962 log far behind a share of its backlog, up to the ceiling. */
+function visitCap(state: LogState, end: number): number {
+	return state.log.kind === 'static' ? MAX_ENTRIES_PER_VISIT : entriesPerVisit(end - state.next!);
+}
+
+/** The per-visit entry cap of an RFC 6962 log `behind` entries from its head. */
+export function entriesPerVisit(behind: number): number {
+	return Math.min(MAX_ENTRIES_PER_VISIT_BEHIND, Math.max(MAX_ENTRIES_PER_VISIT, Math.floor(behind / BACKLOG_VISITS)));
+}
+
 /** One visit to a log. Returns true when entries remain and the log should be visited again this tick. */
 async function visit(tick: Tick, state: LogState): Promise<boolean> {
 	if (!(await readHeadOnce(tick, state))) return false;
 	const end = readableEnd(state);
-	for (let read = 0; state.next! < end && read < MAX_ENTRIES_PER_VISIT;) {
+	const cap = visitCap(state, end);
+	for (let read = 0; state.next! < end && read < cap;) {
 		if (!canFetch(tick)) return false;
 		const before = state.next!;
 		await (state.log.kind === 'static' ? readTiles(tick, state, end) : readEntries(tick, state));
 		read += state.next! - before;
 		if (held(state) >= tick.flushRows) await flush(tick, state);
+		if (state.timeoutsHandled >= MAX_TIMEOUTS_PER_TICK) return false;
 	}
 	return state.next! < end;
 }
@@ -501,7 +612,22 @@ async function sendPhase(tick: Tick, order: LogState[]): Promise<void> {
 function summarize(tick: Tick, killed: boolean, cursorsWritten: number): TickSummary {
 	const errors: Record<string, string> = {};
 	const deferred: Record<string, string> = {};
+	const lagging: Record<string, LagReport> = {};
 	for (const state of tick.states) {
+		const behind = state.startBehind;
+		if (behind >= LAG_REPORT_THRESHOLD) {
+			const { latencies } = state.stats;
+			lagging[state.log.logId] = {
+				behind,
+				pages: latencies.length,
+				medianMs: median(latencies),
+				maxMs: latencies.length > 0 ? Math.max(...latencies) : null,
+				timeouts: state.stats.timeouts,
+				shortPages: state.stats.shortPages,
+				rateLimited: state.stats.rateLimited,
+				pageSize: pageSizeOf(state.log.logId),
+			};
+		}
 		if (state.error) errors[state.log.logId] = state.error;
 		if (state.deferred) deferred[state.log.logId] = state.deferred;
 	}
@@ -521,6 +647,7 @@ function summarize(tick: Tick, killed: boolean, cursorsWritten: number): TickSum
 		d1Rows: tick.d1Rows,
 		errors,
 		deferred,
+		lagging,
 	};
 }
 
@@ -582,6 +709,9 @@ export async function runTailer(env: Pick<Env, 'CURSORS' | 'ENTRIES' | 'CERT_DET
 			observations: newObservationSet(),
 			error: null,
 			deferred: null,
+			stats: { latencies: [], timeouts: 0, shortPages: 0, rateLimited: 0 },
+			timeoutsHandled: 0,
+			startBehind: 0,
 		};
 	});
 
