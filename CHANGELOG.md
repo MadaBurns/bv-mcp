@@ -18,6 +18,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 - `brand_audit_batch_start`, `brand_audit_status`, `discover_brand_domains_start`, `batch_scan`, `batch_scan_start` and `compare_domains` returned the thrown error message to the caller on an internal failure. They now return fixed wording and log the detail. An async batch job that fails reports `batch_scan_failed` as its `error`; `batch_budget_exceeded` is kept.
 - `register_brand_audit_watch` returned `Failed to register watch: <error text>` when the database write failed. It now returns `Failed to register watch.` and logs the detail.
+- An outage of the infra-probe, WHOIS or certstream sidecar raised no alert, because their callers degrade fail-soft. A tool call whose sidecar request throws or answers HTTP 500 or above now reports a binding-degradation event, which the existing scheduled alert lane counts. 4xx answers, caller aborts and absent bindings report nothing, and tool results are unchanged. Calls through the internal door log a warning only, and the brand-audit pipeline's own sidecar calls are not covered.
 
 ### Security
 
