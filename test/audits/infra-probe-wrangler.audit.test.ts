@@ -194,15 +194,17 @@ describe('infra probe wrangler wiring', () => {
 				{ binding: 'ENTRIES', queue: 'bv-ct-index-entries' },
 				{ binding: 'COMPACT', queue: 'bv-ct-index-compact' },
 				{ binding: 'TAIL', queue: 'bv-ct-index-tail' },
+				{ binding: 'CATCHUP', queue: 'bv-ct-index-catchup' },
 			]);
 			expect(one(/\bENTRIES:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-entries']);
 			expect(one(/\bCOMPACT:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-compact']);
 			expect(one(/\bTAIL:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-tail']);
+			expect(one(/\bCATCHUP:\s*bindings\.queue\(\{\s*name:\s*['"]([^'"]+)['"]/)).toEqual(['bv-ct-index-catchup']);
 		});
 
-		it('consumes its three queues with the same bounded batch settings as the test config', () => {
+		it('consumes its four queues with the same bounded batch settings as the test config', () => {
 			const consumers = ctIndexConfig.queues?.consumers ?? [];
-			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact', 'bv-ct-index-tail']);
+			expect(consumers.map((c) => c.queue)).toEqual(['bv-ct-index-entries', 'bv-ct-index-compact', 'bv-ct-index-tail', 'bv-ct-index-catchup']);
 			expect([...cfConsumers.keys()]).toEqual(consumers.map((c) => c.queue));
 			for (const consumer of consumers) {
 				const cfConsumer = cfConsumers.get(consumer.queue) ?? '';
@@ -211,11 +213,16 @@ describe('infra probe wrangler wiring', () => {
 				expect(consumerField(cfConsumer, 'maxBatchSize'), consumer.queue).toBe(consumer.max_batch_size);
 				expect(consumerField(cfConsumer, 'maxBatchTimeout'), consumer.queue).toBe(consumer.max_batch_timeout);
 				expect(consumerField(cfConsumer, 'maxRetries'), consumer.queue).toBe(consumer.max_retries);
+				if (consumer.max_concurrency !== undefined) expect(consumerField(cfConsumer, 'maxConcurrency'), consumer.queue).toBe(consumer.max_concurrency);
+				else expect(cfConsumer, consumer.queue).not.toMatch(/maxConcurrency/);
 			}
 			// Contract v2 pins the indexer's batch size: each invocation writes exactly one T0 run.
 			expect(consumers[0]?.max_batch_size).toBe(100);
 			// One tailer shard per invocation, never retried: a retry would overlap the next minute's tick.
 			expect(consumers[2]).toMatchObject({ max_batch_size: 1, max_retries: 0 });
+			// Catch-up rows run ~2 min each on their own queue, so the tailer's shards (dropped when 50 s old) never wait behind them;
+			// a dispatch is at most two rows, so two consumers at most.
+			expect(consumers[3]).toMatchObject({ queue: 'bv-ct-index-catchup', max_batch_size: 1, max_retries: 0, max_concurrency: 2 });
 		});
 
 		it('fans the tailer out over a queue, not a service binding (a bound Worker shares the caller connection limit)', () => {

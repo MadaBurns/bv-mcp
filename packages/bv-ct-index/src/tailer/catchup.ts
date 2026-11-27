@@ -11,14 +11,19 @@
  * Shape: one row per invocation. Cloudflare lets an invocation have 6 connections waiting for response headers, and
  * a log serves 32 entries a page in 1-3 s, so one invocation reading two logs would have 3 slots each and fall far
  * short of the pace the work needs. CATCHUP_CRON (every 2 min) therefore only DISPATCHES (dispatchCatchup): one message
- * per claimable row on the tail queue (the existing `bv-ct-index-tail` queue and consumer), and each message runs
- * runCatchup on its row in its own queue-consumer invocation, with its own 6 slots, its own subrequest budget and the
- * whole of the caps below. Without the TAIL binding the cron runs the first claimable row itself (one row a run, the
- * rows taking turns by updated_at); that is slower and is the fallback, not the design.
+ * per claimable row on its OWN queue, `bv-ct-index-catchup` (binding CATCHUP, max_batch_size 1, max_retries 0,
+ * max_concurrency 2), and each message runs runCatchup on its row in its own queue-consumer invocation, with its own 6
+ * slots, its own subrequest budget and the whole of the caps below. It is a queue of its own because a run holds its
+ * consumer invocation for about two minutes, and the forward tail's shard messages (on `bv-ct-index-tail`) are dropped
+ * when 50 s old: they must never wait behind it. Without the CATCHUP binding the cron runs the first claimable row itself
+ * (one row a run, the rows taking turns by updated_at); that is slower and is the fallback, not the design.
  *
- * Isolation from the tail: its own cron, so the dispatch is another invocation; its own table, so the tail's
- * compare-and-set on log_cursors is never contended and nothing is written to log_cursors. What it shares is the tail
- * queue (a different message kind) and the ENTRIES queue and its indexer: its rows are ordinary ObservationBatch messages.
+ * Isolation from the tail: its own cron, queue and table, so the tail's compare-and-set on log_cursors is never contended
+ * and nothing is written to log_cursors. What it shares is the ENTRIES queue and its indexer: its rows are ordinary
+ * ObservationBatch messages.
+ *
+ * Files: this one (the run), catchup-paging.ts (constants, SQL, pure paging/lease/page-size helpers), catchup-types.ts,
+ * catchup-dispatch.ts (the cron's side). All are re-exported from here.
  *
  * Limits this is sized against (Cloudflare docs, checked 2026-11-27): scheduled handlers and queue consumers 15 min wall
  * time (developers.cloudflare.com/workers/platform/limits/); CPU 30 s default, 300 s here via limits.cpu_ms; 10,000
@@ -29,6 +34,8 @@
  * 1. Stop at once if either kill switch is set: ops_ledger.killed = 1 (the global one) or meta 'catchup_killed' = '1'.
  * 2. Claim the row: a compare-and-set on hold_until, which is the row's lease. A row another run holds, or one backing
  *    off after a deferral or error, is skipped, so a run still going when the next dispatch fires does not double the load.
+ *    Every later write the run makes to the row, but the cursor's (which guards on next_index), is guarded on its own
+ *    lease: a run that outlived its lease matches no row, changes nothing and stops quietly.
  * 3. Read get-entries pages (or full static-ct data tiles), CATCHUP_PAGES_IN_FLIGHT at a time, sliding: a finished
  *    page is replaced by the next at once, and pages are consumed in order. Never at or past upper_index. A certificate
  *    already expired (notAfter < now) is counted and dropped before it is queued: it would only be dropped again at
@@ -40,18 +47,32 @@
  *
  * A failed fetch or send is written to the row's last_error and leaves the cursor where the last good send put it. An
  * empty page and an HTTP 429 are deferrals, as in the tail: nothing is recorded but the time. Either way no further page
- * is started once one has failed, and the row is held off for CATCHUP_BACKOFF_MS, so a limited log is not hammered.
+ * is started once one has failed, and the row is held off for CATCHUP_BACKOFF_MS from the failure, so a limited log is
+ * not hammered.
+ *
+ * Page size: a short page's length is saved on the row (page_size) only after it was seen on LEARN_CONSECUTIVE consecutive
+ * pages (4 under 8 entries), and a stored size is probed upward (one request for a full page at an aligned start) on every
+ * run while it is under 32 and on one run in 30 otherwise.
+ *
+ * Kill switches are read at the start and every KILL_RECHECK_MS inside a row. A switch thrown mid-run is therefore seen
+ * after up to KILL_RECHECK_MS plus one fetch timeout (the loop is awaiting the oldest page, at most CATCHUP_FETCH_TIMEOUT_MS
+ * = 15 s), so up to about 20 s; requests already started finish, and none starts once the switch has been read.
  *
  * A static-ct log is read in full tiles only, so its ceiling is upper_index rounded down to a tile; the partial tile
  * above it is not read and the row says so in last_error when it completes.
  *
  * WORST CASE, set by the caps and not by luck (per row-run; a dispatch is CATCHUP_MAX_ROWS = 2 of them):
- *   entries   <= CATCHUP_MAX_ENTRIES (24,000) + one page less one, so <= 24,031 a run, <= 48,062 per dispatch,
- *                <= 24,031 a minute across both rows at the 2-minute cadence (the queue sees at most that many certificates);
+ *   entries   <= CATCHUP_MAX_ENTRIES (24,000) + one page less one: a first page on a cold start asks for RFC6962_PAGE
+ *                (256), so <= 24,255 a row-run, <= 48,510 per dispatch, <= 24,255 a minute across both rows at the
+ *                2-minute cadence (with a stored page size of 32: 24,031, 48,062 and 24,031);
  *   fetches   <= CATCHUP_MAX_FETCHES (800) a row-run, 1,600 per dispatch; with queue sends (one per 120 KB of
  *                observations, a few dozen), kill checks (one D1 batch per 5 s, at most 21) and D1 writes, a row-run stays
  *                under about 1,000 subrequests against the 10,000 limit;
- *   in flight <= CATCHUP_PAGES_IN_FLIGHT (6) requests to one log host, and never more than HEADER_SLOTS (6) waiting for headers.
+ *   in flight <= CATCHUP_PAGES_IN_FLIGHT (6) requests per row, and never more than HEADER_SLOTS (6) waiting for headers
+ *                per invocation. Two rows on the SAME log host (two ranges of one log) therefore mean up to
+ *                2 x CATCHUP_PAGES_IN_FLIGHT requests in flight to that host, one per invocation. A short-page reset
+ *                abandons the pages in flight (they still run to their end) and starts a new pipeline, so for a moment a
+ *                row can have up to twice its limit in flight. Neither is capped here.
  * Pace at the phase of CATCHUP_PHASE_MS (100 s) in a 120 s cycle, 32 entries a page, pages in flight 6:
  *   a log answering in L seconds gives 6 x 100 / L pages a run: L = 1.5 -> ~12,900 entries a run (6,450/min);
  *   L = 3.15 -> ~6,170 a run (3,085/min); at twice those latencies half of each. Both caps sit above the fast case
@@ -63,158 +84,47 @@ import { limiter } from '../indexer/blocks';
 import type { ObservationBatch, RunRow } from '../types';
 import { TILE_WIDTH, parseDataTile, precertTbsFromLeafInput, tilePath } from './ct';
 import { FLUSH_ROWS, HEADER_SLOTS, MAX_EMITTED, RFC6962_PAGE, describeError } from './index';
+import {
+	ADD_TO_LEDGER,
+	ADVANCE,
+	CATCHUP_BACKOFF_MS,
+	CATCHUP_FETCH_TIMEOUT_MS,
+	CATCHUP_KILL_KEY,
+	CATCHUP_MAX_ENTRIES,
+	CATCHUP_MAX_FETCHES,
+	CATCHUP_MAX_ROWS,
+	CATCHUP_PAGES_IN_FLIGHT,
+	CATCHUP_PAGES_IN_FLIGHT_MAX,
+	CATCHUP_PHASE_MS,
+	CATCHUP_STALE_MS,
+	CLAIM,
+	KILL_RECHECK_MS,
+	RECORD_ERROR,
+	RELEASE,
+	SELECT_CATCHUP_KILL,
+	SELECT_KILLED,
+	SELECT_ONE,
+	SELECT_ROWS,
+	SET_PAGE_SIZE,
+	TOUCH,
+	USER_AGENT,
+	budgetFrom,
+	isTimeout,
+	leaseEnd,
+	nextStreak,
+	pageEnd,
+	probeDue,
+	probeRaises,
+	probeStart,
+	type ShortStreak,
+} from './catchup-paging';
 import { newObservationSet, newRows, observeCert, toBatches, type ObservationSet, type SkipCounts } from './observations';
 import { parseTbsCertificate } from './x509';
+import type { BackfillRow, CatchupOptions, CatchupRequest, CatchupSummary, RowStats } from './catchup-types';
 
-/** Own schedule, apart from the tail's `* * * * *`: another invocation, so its own connection slots and subrequests. */
-export const CATCHUP_CRON = '*/2 * * * *';
-/** meta key: v = '1' stops the reader (the ops_ledger kill switch stops it too, and this one does not stop the tail). */
-export const CATCHUP_KILL_KEY = 'catchup_killed';
-/** CT-log fetches per row-run (the var of this name overrides it). */
-export const CATCHUP_MAX_FETCHES = 800;
-/**
- * Entries read per row-run. A fetch is a page, and a page is as large as the log serves, so the fetch budget alone bounds
- * queue volume only by the log's page size; this bounds it by a number. No page starts once the entries read plus the
- * entries in flight reach it, so a run reads at most one page less one more than this.
- */
-export const CATCHUP_MAX_ENTRIES = 24_000;
-/** Rows a dispatch starts: one message each, every row in its own invocation. */
-export const CATCHUP_MAX_ROWS = 2;
-/**
- * Requests in flight per row (the var of this name overrides it, clamped to 1..CATCHUP_PAGES_IN_FLIGHT_MAX). 6 is the
- * invocation's limit on connections waiting for headers, and the most the operator asked of one log host; a larger value
- * only queues behind HEADER_SLOTS for the header wait, and adds in-flight body reads.
- */
-export const CATCHUP_PAGES_IN_FLIGHT = 6;
-export const CATCHUP_PAGES_IN_FLIGHT_MAX = 8;
-/**
- * No new fetch starts after this. The run then waits for pages already started (each ends within
- * CATCHUP_FETCH_TIMEOUT_MS) and commits: 100 + 15 + a commit stays inside the 120 s between dispatches, so a normal
- * run has released its lease before the next dispatch.
- */
-export const CATCHUP_PHASE_MS = 100_000;
-/** A request is cut off after this; longer than the tail's 5 s because a log answers get-entries in 1-3 s from a laptop. */
-export const CATCHUP_FETCH_TIMEOUT_MS = 15_000;
-/** A row that deferred or failed is left alone this long (it skips one dispatch, and is retried at the second). */
-export const CATCHUP_BACKOFF_MS = 180_000;
-/** A lease outlasts the run's phase and one request timeout by this much; a normal run releases it long before. */
-export const CATCHUP_LEASE_GRACE_MS = 60_000;
-/** A dispatch message older than this is dropped unread: the next dispatch has sent a fresh one. */
-export const CATCHUP_STALE_MS = 90_000;
-/** A row's read re-reads the kill switches at most this often, so a switch thrown mid-run takes effect within it. */
-export const KILL_RECHECK_MS = 5_000;
-const USER_AGENT = 'bv-ct-index (+https://blackveilsecurity.com)';
-
-const SELECT_KILLED = 'SELECT 1 AS killed FROM ops_ledger WHERE killed = 1 LIMIT 1';
-const SELECT_CATCHUP_KILL = 'SELECT v FROM meta WHERE k = ?1';
-const CLAIMABLE = `state = 'active' AND next_index < upper_index AND (hold_until IS NULL OR hold_until <= ?1)`;
-const SELECT_ROWS = `SELECT log_id, kind, url, next_index, upper_index, page_size FROM log_backfill
-WHERE ${CLAIMABLE} ORDER BY updated_at ASC, log_id ASC, upper_index ASC LIMIT ?2`;
-const SELECT_ONE = `SELECT log_id, kind, url, next_index, upper_index, page_size FROM log_backfill
-WHERE ${CLAIMABLE} AND log_id = ?2 AND upper_index = ?3`;
-const CLAIM = `UPDATE log_backfill SET hold_until = ?1 WHERE log_id = ?2 AND upper_index = ?3 AND ${CLAIMABLE.replace('?1', '?4')}`;
-const RELEASE = 'UPDATE log_backfill SET hold_until = NULL WHERE log_id = ?1 AND upper_index = ?2 AND hold_until = ?3';
-const SET_PAGE_SIZE =
-	'UPDATE log_backfill SET page_size = ?1 WHERE log_id = ?2 AND upper_index = ?3 AND (page_size IS NULL OR page_size <> ?1)';
-const ADVANCE = `UPDATE log_backfill SET next_index = ?1, state = CASE WHEN ?1 >= ?2 THEN 'done' ELSE state END,
-	entries_read = entries_read + ?3, expired_skipped = expired_skipped + ?4, updated_at = ?5,
-	last_error = COALESCE(?9, last_error), last_error_at = CASE WHEN ?9 IS NULL THEN last_error_at ELSE ?5 END
-WHERE log_id = ?6 AND upper_index = ?7 AND next_index = ?8 AND state = 'active'`;
-// Both move updated_at, which orders the work list: a row that keeps failing or deferring goes to the back, so it
-// cannot hold the front of the list and starve the rows behind it. Both also set hold_until, the back-off.
-const RECORD_ERROR = `UPDATE log_backfill SET last_error = ?1, last_error_at = ?2, updated_at = ?2, hold_until = ?5
-WHERE log_id = ?3 AND upper_index = ?4`;
-const TOUCH = 'UPDATE log_backfill SET updated_at = ?1, hold_until = ?4 WHERE log_id = ?2 AND upper_index = ?3';
-const ADD_TO_LEDGER = `INSERT INTO ops_ledger (day, r2_class_a, r2_class_b, d1_rows, killed) VALUES (?1, 0, ?2, ?3, 0)
-ON CONFLICT (day) DO UPDATE SET r2_class_b = COALESCE(r2_class_b, 0) + excluded.r2_class_b, d1_rows = COALESCE(d1_rows, 0) + excluded.d1_rows`;
-
-interface BackfillRow {
-	log_id: string;
-	kind: 'rfc6962' | 'static';
-	url: string;
-	next_index: number;
-	upper_index: number;
-	page_size: number | null;
-}
-
-/** One dispatch message on the tail queue: run the catch-up reader on this row. */
-export interface CatchupRequest {
-	kind: 'catchup';
-	scheduledTime: number;
-	logId: string;
-	upperIndex: number;
-}
-
-export interface CatchupOptions {
-	/** Clock for the expiry test, timestamps, leases and the ledger day. Defaults to Date.now(). */
-	now?: number;
-	/** Outbound fetch. Defaults to the global fetch; tests inject a fake. */
-	fetch?: typeof fetch;
-	/** Overrides CATCHUP_MAX_FETCHES (and the env var). */
-	maxFetches?: number;
-	/** Overrides CATCHUP_MAX_ENTRIES (and the env var). */
-	maxEntries?: number;
-	/** Overrides CATCHUP_PAGES_IN_FLIGHT (and the env var). */
-	pagesInFlight?: number;
-	/** Overrides CATCHUP_PHASE_MS. */
-	phaseMs?: number;
-	/** How often a row's read re-reads the kill switches (default KILL_RECHECK_MS). */
-	killRecheckMs?: number;
-	fetchTimeoutMs?: number;
-	/** Overrides FLUSH_ROWS. */
-	flushRows?: number;
-	/** Entries asked per get-entries page; defaults to the row's page_size, then to RFC6962_PAGE. */
-	pageSize?: number;
-	/** Reads this row only (a dispatch message); without it, the first claimable row. */
-	only?: { logId: string; upperIndex: number };
-}
-
-/** What one row's read measured, for the run's log line. */
-export interface RowStats {
-	logId: string;
-	entries: number;
-	/** Requests started. */
-	fetches: number;
-	/** Pages that completed, and their latency (request start to body read) in ms. */
-	pages: number;
-	medianMs: number | null;
-	maxMs: number | null;
-	timeouts: number;
-	rateLimited: number;
-	/** Non-2xx replies other than 429. */
-	httpErrors: number;
-	/** Deferrals other than 429: an empty page, a tile not served yet. */
-	deferrals: number;
-}
-
-export interface CatchupSummary {
-	killed: boolean;
-	/** Rows this run read: 0 or 1 (a row another run holds, or one backing off, is not read). */
-	rows: number;
-	/** Rows that reached their ceiling this run. */
-	done: number;
-	entries: number;
-	precerts: number;
-	/** Certificates dropped because notAfter was already past; not queued. */
-	expired: number;
-	badEntries: number;
-	badNames: number;
-	noApex: number;
-	names: number;
-	siblings: number;
-	batches: number;
-	subrequests: number;
-	d1Rows: number;
-	/** Rows whose cursor an overlapping run had already moved. */
-	lost: number;
-	/** Rows another run held, so this one did not read them. */
-	held: number;
-	perRow: RowStats[];
-	/** log_id -> error, for the rows that recorded one. */
-	errors: Record<string, string>;
-	/** log_id -> why its read ended early without an error. */
-	deferred: Record<string, string>;
-}
+export * from './catchup-paging';
+export * from './catchup-dispatch';
+export type * from './catchup-types';
 
 interface Pending {
 	start: number;
@@ -248,6 +158,10 @@ interface Work {
 	launches: number;
 	/** A request failed: nothing further starts. */
 	halt: boolean;
+	/** A write guarded on this run's lease matched no row: another run holds the row now, so this one stops quietly. */
+	leaseLost: boolean;
+	/** The short-page length seen on the latest consecutive short pages. */
+	streak: ShortStreak | null;
 	observations: ObservationSet;
 	entriesSince: number;
 	expiredSince: number;
@@ -259,6 +173,10 @@ interface Work {
 
 interface Run {
 	db: D1Database;
+	/** This run's lease on the row (the hold_until it set when it claimed it). */
+	lease: string;
+	/** Date.now() when the run began; the clock for measuring a back-off from the failure. */
+	startedMs: number;
 	fetch: typeof fetch;
 	queue: Pick<Queue<ObservationBatch>, 'send'>;
 	slot: <T>(task: () => Promise<T>) => Promise<T>;
@@ -322,15 +240,21 @@ function held(work: Work): number {
 }
 
 function canFetch(run: Run, work: Work): boolean {
-	return !run.sendFailed && !work.halt && Date.now() < run.until && work.launches < work.fetchCap && run.entries < work.entryCap;
+	return (
+		!run.sendFailed &&
+		!run.killed &&
+		!work.leaseLost &&
+		!work.halt &&
+		Date.now() < run.until &&
+		work.launches < work.fetchCap &&
+		run.entries < work.entryCap
+	);
 }
 
 /** Pages of `size` entries a tile window may start without the run's entries passing the row's cap by more than one page. */
 function pagesWithinEntryCap(run: Run, work: Work, size: number): number {
 	return Math.max(1, Math.ceil((work.entryCap - run.entries) / size));
 }
-
-const isTimeout = (error: unknown) => (error as { name?: unknown } | null)?.name === 'TimeoutError';
 
 /**
  * GETs `url` through a header slot; a 429 is a RateLimited deferral, any other non-2xx an HttpError, a network failure
@@ -399,11 +323,6 @@ function observeEntry(run: Run, work: Work, readTbs: () => Uint8Array | null): v
 	}
 }
 
-/** The last index of the page that starts at `start`: to the next multiple of `size`, and below the ceiling. */
-function pageEnd(start: number, size: number, ceiling: number): number {
-	return Math.min((Math.floor(start / size) + 1) * size, ceiling) - 1;
-}
-
 async function getEntries(run: Run, work: Work, start: number, end: number): Promise<unknown[]> {
 	const url = `${work.row.url}ct/v1/get-entries?start=${start}&end=${end}`;
 	const { entries } = await get(run, work, url, (response) => response.json<{ entries?: unknown }>());
@@ -438,7 +357,8 @@ function fillPages(run: Run, work: Work): void {
 			},
 			() => {
 				page.settled = true;
-				work.halt = true;
+				// A page of a discarded pipeline (after a short page) failing says nothing about the pages read from here on.
+				if (page.generation === work.generation) work.halt = true;
 			},
 		);
 		work.launches++;
@@ -449,16 +369,39 @@ function fillPages(run: Run, work: Work): void {
 	}
 }
 
-/** Remembers the page size a log serves on the row, so the next run starts aligned. Best effort: it only saves fetches. */
-async function learnPageSize(run: Run, work: Work, size: number): Promise<void> {
+/**
+ * Saves the page size a log serves on the row, so the next run starts aligned, and uses it for the rest of this run. The
+ * write is guarded on this run's lease: matching no row means another run holds the row now, and this one stops quietly.
+ * Best effort otherwise: a D1 failure only costs the next run a re-learn.
+ */
+async function savePageSize(run: Run, work: Work, size: number): Promise<void> {
 	if (size < 1 || size > RFC6962_PAGE || size === work.pageSize) return;
-	work.pageSize = size;
 	try {
-		const result = await run.db.prepare(SET_PAGE_SIZE).bind(size, work.row.log_id, work.row.upper_index).run();
+		const result = await run.db.prepare(SET_PAGE_SIZE).bind(size, work.row.log_id, work.row.upper_index, run.lease).run();
 		run.d1Rows += rowsTouched(result.meta);
+		if ((result.meta?.changes ?? 0) === 0) {
+			work.leaseLost = true;
+			return;
+		}
 	} catch {
 		// the size is still used for the rest of this run
 	}
+	work.pageSize = size;
+}
+
+/**
+ * One request for a full page at an aligned start, to correct a stored page size that is too small (it can only have
+ * come from a transient short page, or from an operator): raised when the log serves more than is stored. Due on every
+ * run while the stored size is under PROBE_BELOW, and on one run in PROBE_EVERY_RUNS otherwise. Not for a fixed `pageSize` option.
+ */
+async function probePageSize(run: Run, work: Work): Promise<void> {
+	const stored = work.row.page_size;
+	if (work.row.kind !== 'rfc6962' || run.pageSize !== undefined || stored === null || !probeDue(stored, run.now)) return;
+	const start = probeStart(work.next, work.ceiling);
+	if (start === null || !canFetch(run, work)) return;
+	work.launches++;
+	const entries = await getEntries(run, work, start, Math.min(start + RFC6962_PAGE, work.ceiling) - 1);
+	if (probeRaises(stored, start, entries.length)) await savePageSize(run, work, entries.length);
 }
 
 /**
@@ -483,20 +426,30 @@ async function readEntries(run: Run, work: Work): Promise<void> {
 	}
 	work.next = start + entries.length;
 	if (entries.length === end - start + 1) {
+		work.streak = null;
 		fillPages(run, work);
 	} else {
 		// A later page that did come back with entries means the short page was the log's own cap, not the end of the log.
 		// The cap is the length of a short page that starts on a multiple of it, from this page or the next: a page cut
 		// at a boundary starts off one and teaches nothing.
+		// The pipeline is reset first, before anything is awaited: the pages that end meanwhile are of a discarded generation
+		// and start nothing, so no request is launched from the old cursor.
 		const later = work.pending[0];
+		work.pending = [];
+		work.generation++;
+		work.launchNext = work.next;
 		const laterEntries = later ? await later.promise.then((list) => list, () => [] as unknown[]) : [];
 		const shorts: Array<[number, number]> = [[start, entries.length]];
 		if (later && laterEntries.length < later.end - later.start + 1) shorts.push([later.start, laterEntries.length]);
 		const taught = laterEntries.length > 0 ? shorts.find(([from, length]) => length > 0 && from % length === 0) : undefined;
-		work.pending = [];
-		work.generation++;
-		work.launchNext = work.next;
-		if (taught) await learnPageSize(run, work, taught[1]);
+		// A short length is saved only once seen on consecutive pages (nextStreak): one transient short page must not stick.
+		if (taught) {
+			const lesson = nextStreak(work.streak, taught[1]);
+			work.streak = lesson.streak;
+			if (lesson.learn) await savePageSize(run, work, taught[1]);
+		} else {
+			work.streak = null;
+		}
 	}
 }
 
@@ -592,55 +545,64 @@ async function commit(run: Run, db: D1Database, work: Work): Promise<void> {
 /** One row's read, to its caps, the ceiling or the first failure. Progress up to the last good page stands. */
 async function catchUpRow(run: Run, db: D1Database, work: Work): Promise<void> {
 	let failure: unknown;
+	let failedAt = 0;
 	try {
+		await probePageSize(run, work);
 		while (work.next < work.ceiling && (work.pending.length > 0 || canFetch(run, work))) {
-			// A switch thrown mid-row stops the read within killRecheckMs; what was already read is still committed below.
-			if (Date.now() - run.killCheckedAt >= run.killRecheckMs && (await isKilled(run, db))) {
-				run.killed = true;
-				break;
-			}
+			// A switch thrown mid-row stops the read within killRecheckMs (plus up to one fetch timeout while the oldest page is
+			// awaited); isKilled sets run.killed in the same tick it reads the switch, so no request starts after that.
+			if (Date.now() - run.killCheckedAt >= run.killRecheckMs && (await isKilled(run, db))) break;
+			if (work.leaseLost) break;
 			await (work.row.kind === 'static' ? readTiles(run, work) : readEntries(run, work));
 			if (held(work) >= run.flushRows) await commit(run, db, work);
 		}
 	} catch (error) {
 		failure = error;
+		failedAt = Date.now();
 	}
 	work.closed = true;
-	if (failure instanceof Lost) return;
+	if (failure instanceof Lost || work.leaseLost) return;
 	if (!(failure instanceof SendFailed)) {
 		try {
 			await commit(run, db, work);
 		} catch (error) {
 			if (error instanceof Lost) return;
 			failure ??= error;
+			failedAt ||= Date.now();
 		}
 	}
 	if (failure instanceof PhaseEnded) failure = undefined;
-	const holdUntil = new Date(run.now + CATCHUP_BACKOFF_MS).toISOString();
+	// The back-off runs from the failure, not from the start of a run that may have lasted two minutes.
+	const holdUntil = new Date(run.now + (failedAt - run.startedMs) + CATCHUP_BACKOFF_MS).toISOString();
+	const at = new Date(run.now).toISOString();
+	const { log_id: logId, upper_index: upper } = work.row;
 	if (failure instanceof Deferral) {
-		if (!(failure instanceof RateLimited)) work.stats.deferrals++;
-		run.deferred[work.row.log_id] = failure.message;
-		const result = await db.prepare(TOUCH).bind(new Date(run.now).toISOString(), work.row.log_id, work.row.upper_index, holdUntil).run();
+		const result = await db.prepare(TOUCH).bind(at, logId, upper, holdUntil, run.lease).run();
 		run.d1Rows += rowsTouched(result.meta);
+		// Matching no row means the lease was lost: another run owns the row and this one says nothing about it.
+		if ((result.meta?.changes ?? 0) === 0) return;
+		if (!(failure instanceof RateLimited)) work.stats.deferrals++;
+		run.deferred[logId] = failure.message;
 	} else if (failure) {
 		const message = describeError(failure);
-		run.errors[work.row.log_id] = message;
-		const result = await db
-			.prepare(RECORD_ERROR)
-			.bind(message, new Date(run.now).toISOString(), work.row.log_id, work.row.upper_index, holdUntil)
-			.run();
+		const result = await db.prepare(RECORD_ERROR).bind(message, at, logId, upper, holdUntil, run.lease).run();
 		run.d1Rows += rowsTouched(result.meta);
+		if ((result.meta?.changes ?? 0) === 0) return;
+		run.errors[logId] = message;
 	}
 }
 
 function newRun(env: Pick<Env, 'ENTRIES' | 'CERT_DETAILS' | 'CATCHUP_PAGES_IN_FLIGHT'>, db: D1Database, options: CatchupOptions, now: number): Run {
+	const timeoutMs = options.fetchTimeoutMs ?? CATCHUP_FETCH_TIMEOUT_MS;
 	return {
 		db,
+		lease: leaseEnd(now, options.phaseMs ?? CATCHUP_PHASE_MS, timeoutMs),
+		startedMs: Date.now(),
 		fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
 		queue: env.ENTRIES,
 		slot: limiter(HEADER_SLOTS),
 		until: Date.now() + (options.phaseMs ?? CATCHUP_PHASE_MS),
-		timeoutMs: options.fetchTimeoutMs ?? CATCHUP_FETCH_TIMEOUT_MS,
+		timeoutMs,
 		flushRows: options.flushRows ?? FLUSH_ROWS,
 		pageSize: options.pageSize,
 		pagesInFlight: Math.min(
@@ -723,12 +685,10 @@ async function isKilled(run: Run, db: D1Database): Promise<boolean> {
 	]);
 	run.d1Rows += rowsTouched(ledger?.meta) + rowsTouched(own?.meta);
 	run.killCheckedAt = Date.now();
-	return (ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1';
-}
-
-function budgetFrom(value: string | undefined, fallback: number): number {
-	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+	const killed = (ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1';
+	// Set in the same tick the switch is read: canFetch and fillPages look at it, so no request starts after this returns.
+	if (killed) run.killed = true;
+	return killed;
 }
 
 /**
@@ -750,7 +710,7 @@ export async function runCatchup(
 		: await db.prepare(SELECT_ROWS).bind(at, CATCHUP_MAX_ROWS).all<BackfillRow>();
 	run.d1Rows += rowsTouched(taken.meta);
 
-	const lease = new Date(now + (options.phaseMs ?? CATCHUP_PHASE_MS) + run.timeoutMs + CATCHUP_LEASE_GRACE_MS).toISOString();
+	const lease = run.lease;
 	let claimed: BackfillRow | undefined;
 	for (const row of taken.results) {
 		const result = await db.prepare(CLAIM).bind(lease, row.log_id, row.upper_index, at).run();
@@ -779,6 +739,8 @@ export async function runCatchup(
 			closed: false,
 			launches: 0,
 			halt: false,
+			leaseLost: false,
+			streak: null,
 			observations: newObservationSet(),
 			entriesSince: 0,
 			expiredSince: 0,
@@ -800,55 +762,6 @@ export async function runCatchup(
 	const summary = summarize(run, run.killed, claimed ? 1 : 0);
 	await db.prepare(ADD_TO_LEDGER).bind(new Date(now).toISOString().slice(0, 10), summary.subrequests, summary.d1Rows).run();
 	return summary;
-}
-
-export interface DispatchSummary {
-	killed: boolean;
-	/** Claimable rows found, and messages sent for them. */
-	rows: number;
-	sent: number;
-	failed: string | null;
-}
-
-/**
- * The cron's work: one message per claimable row (at most CATCHUP_MAX_ROWS) on the tail queue, each run by its own
- * queue-consumer invocation. The claim itself happens in runCatchup, so a message that finds the row taken does nothing.
- */
-export async function dispatchCatchup(
-	env: Pick<Env, 'CURSORS'>,
-	queue: Pick<Queue<CatchupRequest>, 'sendBatch'>,
-	scheduledTime: number,
-	options: { now?: number } = {},
-): Promise<DispatchSummary> {
-	const db = env.CURSORS;
-	const [ledger, own] = await db.batch<{ killed?: number; v?: string }>([
-		db.prepare(SELECT_KILLED),
-		db.prepare(SELECT_CATCHUP_KILL).bind(CATCHUP_KILL_KEY),
-	]);
-	if ((ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1') return { killed: true, rows: 0, sent: 0, failed: null };
-	const at = new Date(options.now ?? Date.now()).toISOString();
-	const taken = await db.prepare(SELECT_ROWS).bind(at, CATCHUP_MAX_ROWS).all<BackfillRow>();
-	const requests = taken.results.map((row) => ({
-		body: { kind: 'catchup' as const, scheduledTime, logId: row.log_id, upperIndex: row.upper_index },
-		contentType: 'json' as const,
-	}));
-	if (requests.length === 0) return { killed: false, rows: 0, sent: 0, failed: null };
-	try {
-		await queue.sendBatch(requests);
-	} catch (error) {
-		return { killed: false, rows: requests.length, sent: 0, failed: describeError(error) };
-	}
-	return { killed: false, rows: requests.length, sent: requests.length, failed: null };
-}
-
-export function isCatchupRequest(body: unknown): body is CatchupRequest {
-	const request = body as Partial<CatchupRequest> | null;
-	return (
-		request?.kind === 'catchup' &&
-		typeof request.scheduledTime === 'number' &&
-		typeof request.logId === 'string' &&
-		typeof request.upperIndex === 'number'
-	);
 }
 
 /** Runs one dispatch message; a message older than CATCHUP_STALE_MS is dropped (the next dispatch sent a fresh one). */

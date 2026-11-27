@@ -55,6 +55,11 @@
 				// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
 				"binding": "TAIL",
 				"queue": "bv-ct-index-tail"
+			},
+			{
+				// The bounded catch-up reader's dispatch (src/tailer/catchup.ts): one message per row.
+				"binding": "CATCHUP",
+				"queue": "bv-ct-index-catchup"
 			}
 		],
 		"consumers": [
@@ -79,6 +84,14 @@
 				"max_batch_size": 1,
 				"max_batch_timeout": 1,
 				"max_retries": 0
+			},
+			{
+				// One catch-up row per invocation (~115 s), on its own queue so the tailer's shards never wait behind it.
+				"queue": "bv-ct-index-catchup",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 0,
+				"max_concurrency": 2
 			}
 		]
 	},

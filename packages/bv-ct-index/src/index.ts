@@ -3,7 +3,7 @@
  * bv-ct-index sidecar Worker entrypoint (US-12).
  *
  * `scheduled`: the tailer (src/tailer/) and the compaction planner. `queue`: the indexer, compaction jobs and tailer
- * shards (one handler for all three queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the
+ * shards and catch-up rows (one handler for all four queues, told apart by `batch.queue`). `fetch`: GET /health, open, and the
  * bearer-authenticated query API (src/api/).
  */
 
@@ -21,6 +21,7 @@ import type { ObservationBatch } from './types';
 export const ENTRIES_QUEUE = 'bv-ct-index-entries';
 export const COMPACT_QUEUE = 'bv-ct-index-compact';
 export const TAIL_QUEUE = 'bv-ct-index-tail';
+export const CATCHUP_QUEUE = 'bv-ct-index-catchup';
 
 export interface Env {
 	/** R2 bucket `bv-ct-index`: the sorted runs (codec.ts). */
@@ -38,7 +39,12 @@ export interface Env {
 	 * Queue `bv-ct-index-tail`: one message per tailer shard (src/tailer/fanout.ts), produced by the minute cron.
 	 * Unbound, the tailer runs over every log in the cron invocation alone.
 	 */
-	TAIL?: Queue<ShardRequest | CatchupRequest>;
+	TAIL?: Queue<ShardRequest>;
+	/**
+	 * Queue `bv-ct-index-catchup`: one message per catch-up row (src/tailer/catchup.ts), produced by its 2-minute cron.
+	 * Unbound, the cron reads the first claimable row itself.
+	 */
+	CATCHUP?: Queue<CatchupRequest>;
 	/**
 	 * Var: 'on' makes the tailer store each certificate's details (serial, key, signature, SAN count) on its name
 	 * rows; anything else stores none. Older versions cannot read a row with details, and compaction carries the
@@ -71,17 +77,32 @@ export interface Env {
 /** One shard per message; never retried (max_retries 0): the next tick re-plans the same logs from their cursors. */
 async function tailShards(batch: MessageBatch<unknown>, env: Env): Promise<void> {
 	for (const message of batch.messages) {
-		if (isCatchupRequest(message.body)) {
-			// A catch-up row, read in this invocation on its own connection slots (src/tailer/catchup.ts).
-			const outcome = await runCatchupMessage(env, message.body);
-			console.log(JSON.stringify({ event: 'ct_catchup_run', ...outcome }));
-			message.ack();
-			continue;
-		}
 		const { shard, summary, skipped } = await runShard(env, message.body);
 		console.log(
 			JSON.stringify(summary ? { event: 'ct_tailer_tick', shard, ...summary } : { event: 'ct_tailer_shard_skipped', shard, skipped }),
 		);
+		message.ack();
+	}
+}
+
+/**
+ * One catch-up row per message (src/tailer/catchup.ts), on its own queue: a run holds its consumer invocation for about
+ * two minutes, so it must not share one with the tailer's shards. max_retries 0, so a throw is logged here (bounded) and
+ * not rethrown: the next dispatch re-reads the row from its cursor.
+ */
+async function catchupRows(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+	for (const message of batch.messages) {
+		try {
+			if (!isCatchupRequest(message.body)) {
+				console.log(JSON.stringify({ event: 'ct_catchup_run', skipped: 'malformed' }));
+			} else {
+				const outcome = await runCatchupMessage(env, message.body);
+				console.log(JSON.stringify({ event: 'ct_catchup_run', ...outcome }));
+			}
+		} catch (error) {
+			const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+			console.log(JSON.stringify({ event: 'ct_catchup_error', error: text.slice(0, 300) }));
+		}
 		message.ack();
 	}
 }
@@ -109,11 +130,11 @@ export default {
 				break;
 			}
 			case CATCHUP_CRON: {
-				// The bounded catch-up reader: its own table and kill switch, apart from the forward tail. With the tail queue
+				// The bounded catch-up reader: its own table and kill switch, apart from the forward tail. With its own queue
 				// bound, each row is dispatched to its own consumer invocation (its own 6 connection slots); without it, this
 				// invocation reads the first claimable row itself.
-				if (env.TAIL) {
-					const dispatch = await dispatchCatchup(env, env.TAIL, controller.scheduledTime);
+				if (env.CATCHUP) {
+					const dispatch = await dispatchCatchup(env, env.CATCHUP, controller.scheduledTime);
 					console.log(JSON.stringify({ event: 'ct_catchup_dispatch', ...dispatch }));
 					break;
 				}
@@ -141,6 +162,7 @@ export default {
 		if (batch.queue === ENTRIES_QUEUE) await indexEntries(batch, env);
 		else if (batch.queue === COMPACT_QUEUE) await runCompactionBatch(batch, env);
 		else if (batch.queue === TAIL_QUEUE) await tailShards(batch, env);
+		else if (batch.queue === CATCHUP_QUEUE) await catchupRows(batch, env);
 		else throw new Error(`bv-ct-index has no consumer for queue ${batch.queue}`);
 	},
 } satisfies ExportedHandler<Env, unknown>;

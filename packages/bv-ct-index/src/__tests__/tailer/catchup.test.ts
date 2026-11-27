@@ -23,6 +23,7 @@ import {
 	CATCHUP_PHASE_MS,
 	CATCHUP_STALE_MS,
 	dispatchCatchup,
+	nextStreak,
 	runCatchup,
 	runCatchupMessage,
 	type CatchupOptions,
@@ -38,7 +39,8 @@ import {
 } from './fixtures';
 
 const db = (env as unknown as Env).CURSORS;
-const NOW = Date.parse('2026-11-27T06:00:00Z');
+// Not on a probe slot (a stored page size of 32 or more is probed on one 2-minute slot in 30; this is minute 4 of the hour).
+const NOW = Date.parse('2026-11-27T06:04:00Z');
 const RO = { log_id: 'readonly-log-id=', url: 'https://readonly.ct.test/2027h1/' };
 const STATIC = { log_id: 'static-log-id=', url: 'https://static.ct.test/2027h1/' };
 
@@ -115,6 +117,11 @@ function fakeQueue(onSend: (batch: ObservationBatch) => Promise<void> = async ()
 		},
 	} as unknown as Queue<ObservationBatch>;
 	return { queue, sent };
+}
+
+/** Milliseconds from NOW to the row's hold_until: the back-off runs from the failure, so a little over CATCHUP_BACKOFF_MS. */
+async function holdAfterNow(logId: string): Promise<number> {
+	return Date.parse(String((await row(logId))?.hold_until)) - NOW;
 }
 
 async function row(logId: string) {
@@ -311,16 +318,18 @@ describe('runCatchup', () => {
 		await seed(RO, 'rfc6962', 0, 1_000);
 		const net = fakeNetwork(8); // the log serves 8 however many are asked for
 		const queue = fakeQueue();
-		await run(net, queue, { pageSize: 32, maxFetches: 4 }); // one window: the short first page ends it
+		// Changed: one short page no longer saves a size (it needs two in a row), so the run is given budget for the second.
+		await run(net, queue, { pageSize: 32, maxFetches: 12 });
 
-		expect(await row(RO.log_id)).toMatchObject({ next_index: 8, entries_read: 8, state: 'active' });
-		expect(net.calls).toHaveLength(4); // the pages after the short one were asked for and not used
-		expect((await row(RO.log_id))?.page_size).toBe(8); // saved on the row for the next run
+		const after = await row(RO.log_id);
+		expect(after).toMatchObject({ entries_read: after?.next_index, state: 'active', page_size: 8 }); // saved on the row
+		expect(Number(after?.next_index)).toBeGreaterThanOrEqual(16);
 
 		const next = fakeNetwork(8);
-		await run(next, queue, { maxFetches: 2 }); // no pageSize: the learned size of 8 is asked for
-		expect(next.calls.map((url) => new URL(url).search)).toEqual(['?start=8&end=15', '?start=16&end=23']);
-		expect((await row(RO.log_id))?.next_index).toBe(24);
+		await run(next, queue, { maxFetches: 3 }); // no pageSize: the learned size of 8 is asked for (after the probe, as 8 < 32)
+		const from = Number(after?.next_index);
+		expect(next.calls.map((url) => new URL(url).search).slice(1)).toEqual([`?start=${from}&end=${from + 7}`, `?start=${from + 8}&end=${from + 15}`]);
+		expect((await row(RO.log_id))?.next_index).toBe(from + 16);
 	});
 
 	it('an empty page is a deferral: the cursor stays, no error is recorded, and the row goes to the back of the list', async () => {
@@ -566,10 +575,86 @@ describe('runCatchup', () => {
 		it('a cold start asks for 256, learns what an unaligned first page teaches nothing of, and saves the size the log serves', async () => {
 			await seed(RO, 'rfc6962', 100, 2_000);
 			const net = fakeNetwork(32);
-			await run(net, fakeQueue(), { maxFetches: 3 });
-			// 100-255 is cut at 127 (28 entries, off a multiple of 32: teaches nothing); the page at 256 serves 32 and does
+			await run(net, fakeQueue(), { maxFetches: 14 });
+			// 100-255 is cut at 127 (28 entries, off a multiple of 32: teaches nothing); the page at 256 serves 32 and does,
+			// and the page at 128 serves 32 again: two consecutive short pages of the same length, so 32 is saved
 			expect((await row(RO.log_id))?.page_size).toBe(32);
-			expect((await row(RO.log_id))?.next_index).toBe(128);
+			expect(Number((await row(RO.log_id))?.next_index)).toBeGreaterThanOrEqual(160);
+		});
+
+		it('one short page is not saved: a transient short page must not stick as the size', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await run(fakeNetwork(8), fakeQueue(), { pageSize: 32, maxFetches: 4 });
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 8, page_size: null });
+		});
+
+		it('a size under 8 is saved only after 4 consecutive short pages', async () => {
+			// two pages in flight, so each short page has a later page as evidence; every short page costs a reset and two fetches
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await run(fakeNetwork(4), fakeQueue(), { pageSize: 32, pagesInFlight: 2, maxFetches: 3 }); // one short page
+			expect((await row(RO.log_id))?.page_size).toBeNull();
+			await run(fakeNetwork(4), fakeQueue(), { pageSize: 32, pagesInFlight: 2, maxFetches: 30 }); // many in a row
+			expect((await row(RO.log_id))?.page_size).toBe(4);
+		});
+
+		it('the streak thresholds: 2 consecutive pages from 8 entries up, 4 below, and a different length starts again', () => {
+			let s = nextStreak(null, 32);
+			expect(s.learn).toBe(false);
+			s = nextStreak(s.streak, 32);
+			expect(s.learn).toBe(true);
+			expect(nextStreak(nextStreak(null, 7).streak, 7).learn).toBe(false);
+			let small = nextStreak(null, 4);
+			for (let i = 0; i < 2; i++) small = nextStreak(small.streak, 4);
+			expect(small.learn).toBe(false); // the third
+			small = nextStreak(small.streak, 4);
+			expect(small.learn).toBe(true); // the fourth
+			expect(nextStreak(nextStreak(null, 32).streak, 31).learn).toBe(false); // a different length restarts at 1
+			expect(nextStreak(null, 1).learn).toBe(false);
+		});
+
+		it('a full page between short pages breaks the streak', async () => {
+			// a log serving 8 a page, asked 8 at a time: every page is full and no short length is ever recorded
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await run(fakeNetwork(8), fakeQueue(), { pageSize: 8, maxFetches: 6 });
+			expect((await row(RO.log_id))?.page_size).toBeNull();
+		});
+
+		it('a stored size that is too small is raised by the probe, on every run while it is under 32', async () => {
+			await seed(RO, 'rfc6962', 0, 10_000);
+			await db.prepare('UPDATE log_backfill SET page_size = 8 WHERE log_id = ?').bind(RO.log_id).run();
+			const net = fakeNetwork(32);
+			await run(net, fakeQueue(), { maxFetches: 3 });
+
+			expect(new URL(net.calls[0]!).search).toBe('?start=0&end=255'); // the probe: one full page at an aligned start
+			expect((await row(RO.log_id))?.page_size).toBe(32);
+			expect(net.calls.slice(1).map((url) => new URL(url).search)).toEqual(['?start=0&end=31', '?start=32&end=63']);
+		});
+
+		it('a stored size of 32 or more is probed on one run in 30, by the clock, and not otherwise', async () => {
+			await seed(RO, 'rfc6962', 0, 10_000);
+			await db.prepare('UPDATE log_backfill SET page_size = 32 WHERE log_id = ?').bind(RO.log_id).run();
+			const onSlot = Date.parse('2026-11-27T06:00:00Z'); // minute 0 of the hour: slot 0 of 30
+			const probed = fakeNetwork(64);
+			await run(probed, fakeQueue(), { maxFetches: 2 }, onSlot);
+			expect(new URL(probed.calls[0]!).search).toBe('?start=0&end=255');
+			expect((await row(RO.log_id))?.page_size).toBe(64);
+
+			const from = Number((await row(RO.log_id))?.next_index);
+			await db.prepare('UPDATE log_backfill SET hold_until = NULL, page_size = 32').run();
+			const off = fakeNetwork(64);
+			await run(off, fakeQueue(), { maxFetches: 2 }, onSlot + 120_000);
+			expect(new URL(off.calls[0]!).search).toBe(`?start=${from}&end=${from + 31}`); // no probe
+		});
+
+		it('a probe that finds the same size, or a size that does not divide its start, changes nothing', async () => {
+			await seed(RO, 'rfc6962', 0, 10_000);
+			await db.prepare('UPDATE log_backfill SET page_size = 8 WHERE log_id = ?').bind(RO.log_id).run();
+			await run(fakeNetwork(8), fakeQueue(), { maxFetches: 2 });
+			expect((await row(RO.log_id))?.page_size).toBe(8);
+
+			await db.prepare('UPDATE log_backfill SET hold_until = NULL WHERE log_id = ?').bind(RO.log_id).run();
+			await run(fakeNetwork(20), fakeQueue(), { maxFetches: 2 }); // 256 % 20 != 0: not a cap this log is aligned to
+			expect((await row(RO.log_id))?.page_size).toBe(8);
 		});
 
 		it('rejects a page_size outside 1..256', async () => {
@@ -626,13 +711,14 @@ describe('runCatchup', () => {
 
 			expect(net.calls.length).toBeLessThanOrEqual(CATCHUP_PAGES_IN_FLIGHT); // the first wave, and no second one
 			expect(summary.perRow[0]).toMatchObject({ rateLimited: net.calls.length, deferrals: 0 });
-			expect((await row(RO.log_id))?.hold_until).toBe(new Date(NOW + CATCHUP_BACKOFF_MS).toISOString());
+			expect(await holdAfterNow(RO.log_id)).toBeGreaterThanOrEqual(CATCHUP_BACKOFF_MS);
+			expect(await holdAfterNow(RO.log_id)).toBeLessThan(CATCHUP_BACKOFF_MS + 5_000);
 
 			const early = fakeNetwork();
 			await run(early, fakeQueue(), {}, NOW + CATCHUP_BACKOFF_MS - 1);
 			expect(early.calls).toEqual([]);
 			const later = fakeNetwork();
-			await run(later, fakeQueue(), { maxFetches: 1, pageSize: 8 }, NOW + CATCHUP_BACKOFF_MS);
+			await run(later, fakeQueue(), { maxFetches: 1, pageSize: 8 }, NOW + CATCHUP_BACKOFF_MS + 5_000);
 			expect(later.calls).toHaveLength(1);
 		});
 
@@ -645,7 +731,7 @@ describe('runCatchup', () => {
 			expect(calls.length).toBeLessThanOrEqual(CATCHUP_PAGES_IN_FLIGHT);
 			expect(summary.perRow[0]).toMatchObject({ httpErrors: calls.length });
 			expect(summary.errors[RO.log_id]).toContain('HTTP 503');
-			expect((await row(RO.log_id))?.hold_until).toBe(new Date(NOW + CATCHUP_BACKOFF_MS).toISOString());
+			expect(await holdAfterNow(RO.log_id)).toBeGreaterThanOrEqual(CATCHUP_BACKOFF_MS);
 		});
 
 		it('the phase ending is not a failure: no error, no back-off, the lease is released', async () => {
@@ -675,6 +761,103 @@ describe('runCatchup', () => {
 			await db.prepare('UPDATE log_backfill SET hold_until = NULL').run();
 			const empty = await run({ fetch: (async () => Response.json({ entries: [] })) as typeof fetch }, fakeQueue(), { maxFetches: 1, pageSize: 8 });
 			expect(empty.perRow[0]).toMatchObject({ deferrals: 1, rateLimited: 0 });
+		});
+	});
+
+	describe('a discarded page, a lost lease and a kill', () => {
+		it('a discarded page that fails after a short-page reset does not halt the run', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			const net = fakeNetwork(8);
+			net.delayMs = 20; // every reply takes 20 ms, so the run is still going when the late 429 arrives
+			const base = net.fetch;
+			let late = 0;
+			// asked 32 at a time from 0 the log serves 8; the page at 64 is in flight (and slow) when the short first page resets
+			// the pipeline, and its 429 then arrives for a page no one is reading any more
+			const flaky = (async (input: RequestInfo | URL) => {
+				const start = new URL(String(input instanceof Request ? input.url : input)).searchParams.get('start');
+				if (start === '64' && late++ === 0) {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+					return new Response('slow down', { status: 429 });
+				}
+				return base(input);
+			}) as typeof fetch;
+			const summary = await run({ fetch: flaky }, fakeQueue(), { pageSize: 32, maxFetches: 40 });
+
+			expect(summary.deferred).toEqual({});
+			expect(summary.errors).toEqual({});
+			expect(Number((await row(RO.log_id))?.next_index)).toBeGreaterThan(24); // the run carried on past the reset
+			expect((await row(RO.log_id))?.hold_until).toBeNull();
+		});
+
+		it('a run that outlived its lease writes nothing to the row and records no error', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			let release: () => void = () => {};
+			const gate = new Promise<void>((resolve) => (release = resolve));
+			const failing = (async () => {
+				await gate;
+				return new Response('down', { status: 503 });
+			}) as typeof fetch;
+			const first = run({ fetch: failing }, fakeQueue(), { maxFetches: 1, pageSize: 8 });
+			await vi.waitFor(async () => expect((await row(RO.log_id))?.hold_until).not.toBeNull());
+			// another run took the row over (this one's lease expired): its lease is what the row holds now
+			const newer = new Date(NOW + 600_000).toISOString();
+			await db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind(newer, RO.log_id).run();
+			release();
+			const summary = await first;
+
+			expect(summary.errors).toEqual({});
+			expect(await row(RO.log_id)).toMatchObject({ hold_until: newer, last_error: null, last_error_at: null });
+		});
+
+		it('measures the back-off from the failure, not from the start of the run', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			const slowDown = (async () => {
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				return new Response('down', { status: 503 });
+			}) as typeof fetch;
+			await run({ fetch: slowDown }, fakeQueue(), { maxFetches: 1, pageSize: 8 });
+			expect(await holdAfterNow(RO.log_id)).toBeGreaterThanOrEqual(CATCHUP_BACKOFF_MS + 50);
+		});
+
+		it('hold_until must be ISO-8601 with T and Z', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			for (const bad of ['12/1/2026', '2026-12-01 00:00:00', '2026-12-01T00:00:00', 'z']) {
+				await expect(db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind(bad, RO.log_id).run(), bad).rejects.toThrow();
+			}
+			await db.prepare('UPDATE log_backfill SET hold_until = ? WHERE log_id = ?').bind('2026-12-01T00:00:00.000Z', RO.log_id).run();
+			await db.prepare('UPDATE log_backfill SET hold_until = NULL WHERE log_id = ?').bind(RO.log_id).run();
+		});
+
+		it('no request starts after the kill switch read returns killed', async () => {
+			await seed(RO, 'rfc6962', 0, 100_000);
+			const net = fakeNetwork();
+			net.delayMs = 5;
+			let callsWhenKilled: number | null = null;
+			const spied = new Proxy(db, {
+				get(target, prop) {
+					if (prop !== 'batch') return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
+					return async (statements: D1PreparedStatement[]) => {
+						const result = await target.batch(statements);
+						if (callsWhenKilled === null && JSON.stringify(result[1]?.results ?? []).includes('"1"')) callsWhenKilled = net.calls.length;
+						return result;
+					};
+				},
+			});
+			// the switch is thrown by the third request; the next re-read (killRecheckMs 0) finds it
+			const base = net.fetch;
+			let served = 0;
+			const fetcher = (async (input: RequestInfo | URL) => {
+				if (++served === 3) await db.prepare('INSERT INTO meta (k, v) VALUES (?, ?)').bind(CATCHUP_KILL_KEY, '1').run();
+				return base(input);
+			}) as typeof fetch;
+			const summary = await runCatchup(
+				{ CURSORS: spied as unknown as D1Database, ENTRIES: fakeQueue().queue },
+				{ now: NOW, fetch: fetcher, pageSize: 8, pagesInFlight: 3, killRecheckMs: 0 },
+			);
+
+			expect(summary.killed).toBe(true);
+			expect(callsWhenKilled).not.toBeNull();
+			expect(net.calls.length).toBe(callsWhenKilled);
 		});
 	});
 

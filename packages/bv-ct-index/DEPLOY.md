@@ -12,7 +12,7 @@ from the environment variable `BV_CT_INDEX_D1_ID` when `cf deploy` evaluates it.
 Run everything from the repo root.
 
 1. `npm run provision:ct-index` prints the ordered, idempotent operator commands. It executes nothing. They are: check that the
-   name `bv-ct-index` is free, create the R2 bucket, the two queues and the D1 database, apply every migration in `migrations/`,
+   name `bv-ct-index` is free, create the R2 bucket, the four queues (entries, compact, tail, catchup) and the D1 database, apply every migration in `migrations/`,
    set the `CT_INDEX_ADMIN_KEY` secret, then deploy. Run them one at a time. On the FIRST deploy of the Worker, `wrangler secret put`
    fails because the Worker does not exist yet: pass the secret to the deploy with `--secrets-file` instead
    (`docs/bv-ct-index-runbook.md`, step 3). `secret put` works for later rotations.

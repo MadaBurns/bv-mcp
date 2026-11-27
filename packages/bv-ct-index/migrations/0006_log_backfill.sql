@@ -10,7 +10,9 @@
 -- operator, so every run starts with correctly aligned ranges (NULL: ask for the most the protocol allows, 256).
 -- hold_until is one row's lease and back-off in one column (an ISO timestamp): a run claims the row by setting it a
 -- little past its own end and clears it when done, so an overlapping run skips the row; a run that deferred (HTTP 429,
--- no entries yet) or failed sets it a few minutes ahead instead, so the row is left alone until then.
+-- no entries yet) or failed sets it a few minutes ahead instead, so the row is left alone until then. The reader compares
+-- it as text against an ISO-8601 time, so an operator-set value must be ISO-8601 in UTC (2026-12-01T00:00:00.000Z); the
+-- CHECK rejects anything else (a value like '12/1/2026' would sort after every ISO time and hold the row for good).
 CREATE TABLE log_backfill (
 	log_id TEXT NOT NULL,
 	kind TEXT NOT NULL CHECK (kind IN ('rfc6962', 'static')),
@@ -25,7 +27,7 @@ CREATE TABLE log_backfill (
 	last_error_at TEXT,
 	updated_at TEXT,
 	page_size INTEGER CHECK (page_size IS NULL OR (page_size >= 1 AND page_size <= 256)),
-	hold_until TEXT,
+	hold_until TEXT CHECK (hold_until IS NULL OR hold_until GLOB '????-??-??T??:??:??*Z'),
 	PRIMARY KEY (log_id, upper_index),
 	CHECK (lower_index >= 0 AND next_index >= lower_index AND upper_index >= next_index)
 );
