@@ -438,6 +438,8 @@ async function readEntries(run: Run, work: Work): Promise<void> {
 		work.pending = [];
 		work.generation++;
 		work.launchNext = work.next;
+		// A discarded page that failed before this reset had already set halt; it says nothing about the pages read from here.
+		work.halt = false;
 		const laterEntries = later ? await later.promise.then((list) => list, () => [] as unknown[]) : [];
 		const shorts: Array<[number, number]> = [[start, entries.length]];
 		if (later && laterEntries.length < later.end - later.start + 1) shorts.push([later.start, laterEntries.length]);

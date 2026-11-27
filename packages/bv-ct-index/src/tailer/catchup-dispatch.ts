@@ -31,8 +31,15 @@ export async function dispatchCatchup(
 	]);
 	if ((ledger?.results.length ?? 0) > 0 || own?.results[0]?.v === '1') return { killed: true, rows: 0, sent: 0, failed: null };
 	const at = new Date(options.now ?? Date.now()).toISOString();
-	const taken = await db.prepare(SELECT_ROWS).bind(at, CATCHUP_MAX_ROWS).all<BackfillRow>();
-	const requests = taken.results.map((row) => ({
+	// A failed read (the table missing because the migration has not been applied, say) is reported, not thrown: the
+	// dispatch runs on a cron and must not fail every tick.
+	let rows: BackfillRow[];
+	try {
+		rows = (await db.prepare(SELECT_ROWS).bind(at, CATCHUP_MAX_ROWS).all<BackfillRow>()).results;
+	} catch (error) {
+		return { killed: false, rows: 0, sent: 0, failed: describeError(error) };
+	}
+	const requests = rows.map((row) => ({
 		body: { kind: 'catchup' as const, scheduledTime, logId: row.log_id, upperIndex: row.upper_index },
 		contentType: 'json' as const,
 	}));
