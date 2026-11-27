@@ -95,7 +95,12 @@ describe('private Wrangler config injection', () => {
 		).toThrow(/REJECT_QUERY_API_KEY/);
 	});
 
-	it.each([['missing', undefined], ['empty', ''], ['blank', '  '], ['only commas', ' , ,']])('fails closed naming OWNER_ALLOW_IPS when it is %s', (_label, value) => {
+	it.each([
+		['missing', undefined],
+		['empty', ''],
+		['blank', '  '],
+		['only commas', ' , ,'],
+	])('fails closed naming OWNER_ALLOW_IPS when it is %s', (_label, value) => {
 		const cwd = setupInjectFixture();
 		const vars: Record<string, string> = productionVars();
 		if (value === undefined) delete vars.OWNER_ALLOW_IPS;
