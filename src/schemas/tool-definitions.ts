@@ -671,7 +671,7 @@ const TOOL_DEFS = {
 	},
 	check_root_server_set: {
 		description:
-			'Query a rotating sample of 3 root servers per call and compare the priming NS set, glue, SOA serials, and cross-root consistency against the embedded official root hints. Uses BV_INFRA_PROBE when available; without it, returns the embedded hints as reference data only.',
+			'Query a rotating sample of 3 root servers per call and compare the priming NS set, glue, SOA serials, and cross-root consistency against the embedded official root hints. Uses the live infra probe when available; without it, returns the embedded hints as reference data only.',
 		schema: RootServerSetArgs,
 		group: 'infrastructure',
 		tier: 'core',
