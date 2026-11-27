@@ -875,6 +875,9 @@ internalRoutes.post('/tools/call', async (c) => {
 		// stores nothing. Bound to the same worker as the public path.
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
+		// The first-party service registers watches that deliver to BlackVeil's
+		// own Brand Drift receiver; only this authenticated door may do so.
+		allowBrandDriftReceiver: true,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,

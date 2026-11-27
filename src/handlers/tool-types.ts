@@ -162,6 +162,12 @@ export interface ToolRuntimeOptions {
 	brandAuditDb?: D1Database;
 	/** Validated optional secret deriving per-watch webhook signing keys (register_brand_audit_watch). */
 	watchWebhookSigningSecret?: string;
+	/**
+	 * Set true ONLY by the authenticated internal tool door (`src/internal.ts`):
+	 * lets register_brand_audit_watch accept BlackVeil's own Brand Drift receiver
+	 * as a webhook. The public /mcp path never sets it, so it refuses that URL.
+	 */
+	allowBrandDriftReceiver?: boolean;
 	/** Cloudflare Queue producer for the brand-audit batch path. Undefined if unprovisioned. */
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** Queue and KV durability bindings for asynchronous batch scans. */

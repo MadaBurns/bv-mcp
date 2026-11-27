@@ -89,6 +89,51 @@ describe('registerBrandAuditWatch — validation (no D1 access)', () => {
 	});
 });
 
+describe('registerBrandAuditWatch — BlackVeil Brand Drift receiver is reserved', () => {
+	const RESERVED = 'Invalid webhook_url: this BlackVeil endpoint is reserved and cannot be used as a watch webhook.';
+
+	it.each([
+		['bare receiver', 'https://www.blackveilsecurity.com/api/webhooks/brand-drift'],
+		['caller-chosen token', 'https://www.blackveilsecurity.com/api/webhooks/brand-drift?t=attacker-chosen-token'],
+		['extra query parameters', 'https://www.blackveilsecurity.com/api/webhooks/brand-drift?t=x&tenant=victim&y=1'],
+		['empty query', 'https://www.blackveilsecurity.com/api/webhooks/brand-drift?'],
+		['fragment', 'https://www.blackveilsecurity.com/api/webhooks/brand-drift?t=x#frag'],
+		['upper-case host', 'https://WWW.BlackVeilSecurity.COM/api/webhooks/brand-drift?t=x'],
+		['explicit default port', 'https://www.blackveilsecurity.com:443/api/webhooks/brand-drift?t=x'],
+		['dot-segment path', 'https://www.blackveilsecurity.com/api/x/../webhooks/brand-drift?t=x'],
+	])('%s → refused as invalid input, no INSERT', async (_label, webhookUrl) => {
+		const { db, prepare } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const f = onlyFinding(await register({ domain: 'apple.com', interval: 'daily', webhook_url: webhookUrl }, db));
+		expect(f.title).toBe('Brand audit watch: invalidInput');
+		expect(f.detail).toBe(RESERVED);
+		expect(f.metadata?.invalidInput).toBe(true);
+		expect(prepare).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['ordinary external receiver', 'https://hooks.example.com/brand-drift?t=abc'],
+		['same host, different path', 'https://www.blackveilsecurity.com/api/webhooks/other'],
+		['same path, different host', 'https://hooks.example.com/api/webhooks/brand-drift?t=abc'],
+	])('%s → still registers', async (_label, webhookUrl) => {
+		const { db, binds } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const f = onlyFinding(await register({ domain: 'apple.com', interval: 'daily', webhook_url: webhookUrl }, db));
+		expect(f.title).toBe('Brand audit watch registered: apple.com (daily)');
+		expect(binds[0][4]).toBe(webhookUrl);
+	});
+
+	it('the first-party door (allowBrandDriftReceiver) may still register the receiver', async () => {
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { db, binds } = makeDb(async () => ({ meta: { changes: 1 } }));
+		const webhookUrl = 'https://www.blackveilsecurity.com/api/webhooks/brand-drift?t=first-party-token';
+		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily', webhook_url: webhookUrl }, 'owner-1', {
+			...deps(db),
+			allowBrandDriftReceiver: true,
+		});
+		expect(onlyFinding(result).title).toBe('Brand audit watch registered: apple.com (daily)');
+		expect(binds[0][4]).toBe(webhookUrl);
+	});
+});
+
 describe('registerBrandAuditWatch — persistence outcomes', () => {
 	it('success: one INSERT with the sanitized domain, summary finding, hasWebhook flag', async () => {
 		const { db, prepare, binds } = makeDb(async () => ({ meta: { changes: 1 } }));
