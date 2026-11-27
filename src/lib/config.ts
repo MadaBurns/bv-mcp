@@ -672,14 +672,21 @@ export interface UpgradeData {
  * Edit this copy or route it through an env-configured string if the operator wants
  * different wording.
  */
-function buildUpgradeCta(toolName: string, channel: UpgradeChannel): string {
+function buildUpgradeCta(toolName: string, channel: UpgradeChannel, volumeLimit?: string): string {
+	// A volume 429 means the caller hit a free daily quota on a tool they can already reach:
+	// there is nothing to "unlock", so name the limit and say a higher tier raises it.
+	if (volumeLimit !== undefined) return `Daily ${volumeLimit} limit reached. A higher tier raises it.`;
 	return channel === 'self_serve'
 		? `Upgrade to the developer tier to unlock ${toolName}.`
 		: `Contact us to enable ${toolName} on a vetted plan.`;
 }
 
 /** Build the `data.upgrade` envelope for a paywalled (403) response. */
-export function buildUpgradeData(toolName: string, isVolume429 = false): { upgrade: UpgradeData } {
+export function buildUpgradeData(
+	toolName: string,
+	isVolume429 = false,
+	volumeLimitLabel = 'free-tier',
+): { upgrade: UpgradeData } {
 	const channel = resolveUpgradeChannel(toolName, isVolume429);
 	return {
 		upgrade: {
@@ -687,7 +694,7 @@ export function buildUpgradeData(toolName: string, isVolume429 = false): { upgra
 			url: channel === 'self_serve' ? UPGRADE_SELF_SERVE_URL : UPGRADE_SALES_URL,
 			tool: toolName,
 			tier_required: 'developer',
-			cta: buildUpgradeCta(toolName, channel),
+			cta: buildUpgradeCta(toolName, channel, isVolume429 ? volumeLimitLabel : undefined),
 		},
 	};
 }

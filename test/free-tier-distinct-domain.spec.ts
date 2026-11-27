@@ -140,9 +140,15 @@ describe('executeMcpRequest — free-tier distinct-domain daily cap', () => {
 		expect(overflowResult.kind).toBe('response');
 		if (overflowResult.kind !== 'response') throw new Error('expected response');
 		expect(overflowResult.httpStatus).toBe(429);
-		const payload = overflowResult.payload as { error: { code: number; message: string } };
+		const payload = overflowResult.payload as {
+			error: { code: number; message: string; data?: { upgrade?: { cta?: string } } };
+		};
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toMatch(/distinct domains/i);
+		// A free tool hit a daily cap: the CTA names the limit and must not claim the tool needs unlocking.
+		const cta = payload.error.data?.upgrade?.cta ?? '';
+		expect(cta).toMatch(/daily domain limit/i);
+		expect(cta).not.toMatch(/unlock/i);
 		expect(overflowResult.useErrorEnvelope).toBe(true);
 	});
 
