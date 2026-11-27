@@ -26,6 +26,7 @@
  *     `'failed'` so the polling tool stops claiming progress
  */
 
+import { logError } from '../lib/log';
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { createRejectedRequestBuilder } from './async-start-error-result';
@@ -110,9 +111,10 @@ export async function discoverBrandDomainsStart(
 			.bind(auditId, target, 'queued', now)
 			.run();
 	} catch (err) {
+		logError(err instanceof Error ? err : String(err), { category: 'discover_brand_domains_start', details: { stage: 'persist' } });
 		return buildErrorResult(
 			'persistenceFailure',
-			`Failed to persist discovery row: ${err instanceof Error ? err.message : String(err)}`,
+			'Failed to persist discovery row.',
 			{ auditId },
 		);
 	}
@@ -143,9 +145,10 @@ export async function discoverBrandDomainsStart(
 		} catch {
 			// Best-effort — the enqueueFailure finding still surfaces the truth.
 		}
+		logError(err instanceof Error ? err : String(err), { category: 'discover_brand_domains_start', details: { stage: 'enqueue' } });
 		return buildErrorResult(
 			'enqueueFailure',
-			`Failed to enqueue discovery job: ${err instanceof Error ? err.message : String(err)}`,
+			'Failed to enqueue discovery job.',
 			{ auditId, target },
 		);
 	}

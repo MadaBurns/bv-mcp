@@ -7,6 +7,7 @@
  * request budget.
  */
 
+import { logError } from '../lib/log';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { scanDomain, buildStructuredScanResult } from './scan-domain';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-version';
@@ -229,8 +230,9 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 				}
 				results[task.idx] = markUnexpectedNoEvidence(buildStructuredScanResult(scanResult, { scoringConfigHash }));
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : 'Scan failed';
-				results[task.idx] = emptyResult(task.domain, msg, scoringConfigHash);
+				const budget = err instanceof Error && err.message === 'batch_budget_exceeded';
+				if (!budget) logError(err instanceof Error ? err : String(err), { details: { tool: 'batch_scan', domain: task.domain } });
+				results[task.idx] = emptyResult(task.domain, budget ? 'batch_budget_exceeded' : 'Scan failed', scoringConfigHash);
 			} finally {
 				if (timeoutId !== undefined) clearTimeout(timeoutId);
 			}

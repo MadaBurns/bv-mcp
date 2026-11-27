@@ -28,6 +28,7 @@
  *     no consumer will pick up.
  */
 
+import { logError } from '../lib/log';
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditFormat } from '../lib/db/brand-audit-schema';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
@@ -180,9 +181,10 @@ export async function brandAuditBatchStart(
 				.run();
 		}
 	} catch (err) {
+		logError(err instanceof Error ? err : String(err), { category: 'brand_audit_batch_start', details: { stage: 'persist' } });
 		return buildErrorResult(
 			'persistenceFailure',
-			`Failed to persist brand audit row: ${err instanceof Error ? err.message : String(err)}`,
+			'Failed to persist brand audit row.',
 			{ auditId },
 		);
 	}
@@ -241,9 +243,10 @@ export async function brandAuditBatchStart(
 			);
 			enqueued.push(target);
 		} catch (err) {
+			logError(err instanceof Error ? err : String(err), { category: 'brand_audit_batch_start', details: { stage: 'enqueue', target } });
 			failedToEnqueue.push({
 				target,
-				error: err instanceof Error ? err.message : String(err),
+				error: 'Failed to enqueue target.',
 			});
 		}
 	}
