@@ -63,6 +63,12 @@ export function stepDown(logId: string): void {
 	entry.good = 0;
 }
 
+/** A failed or empty page breaks consecutive success at either size without changing the learned limits. */
+export function pageInterrupted(logId: string): void {
+	const entry = paging.get(logId);
+	if (entry) entry.good = 0;
+}
+
 /** A page of the log came back with entries. */
 export function pageServed(logId: string): void {
 	const entry = paging.get(logId);

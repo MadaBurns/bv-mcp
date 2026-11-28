@@ -7,7 +7,7 @@
  * 2. Load the Chrome CT log list (memoized for at most an hour) and the per-log cursors.
  * 3. Fetch phase: LANES lanes visit the logs in an order that rotates every tick. A visit reads the log's
  *    head, then RFC 6962 get-entries pages or full static-ct data tiles from the cursor, WINDOW of them at
- *    once, at most MAX_ENTRIES_PER_VISIT entries before the log goes to the back of the queue. Every fetch
+ *    once. The RFC 6962 visit cap scales with backlog before the log goes to the back of the queue. Every fetch
  *    waits for one of HEADER_SLOTS slots until its response headers arrive (the platform's own limit), and its
  *    timeout starts when it gets the slot. Only precert entries are parsed; x509 entries are skipped (contract
  *    v2). A log seen for the first time starts at its current tree size (forward-only). No new fetch starts
@@ -55,6 +55,7 @@ import {
 	MAX_STEP_UP_AFTER_PAGES,
 	isAligned,
 	learnCap,
+	pageInterrupted,
 	pageServed,
 	pageSizeOf,
 	resetPaging,
@@ -375,9 +376,9 @@ async function getEntries(tick: Tick, state: LogState, start: number, end: numbe
  * of the last good one), the pages after it start past a gap and are dropped, the timeout goes to last_error, and the
  * log steps down to STEPPED_DOWN_PAGE for the retry (see stepDown).
  */
-async function readEntries(tick: Tick, state: LogState): Promise<void> {
+async function readEntries(tick: Tick, state: LogState, visitEnd: number): Promise<void> {
 	const logId = state.log.logId;
-	const ranges = pageRanges(tick, state);
+	const ranges = pageRanges(tick, state, visitEnd);
 	const pages = together(
 		ranges.map(
 			([start, end]) =>
@@ -389,14 +390,17 @@ async function readEntries(tick: Tick, state: LogState): Promise<void> {
 		let entries: unknown[];
 		try {
 			entries = await pages[i]!;
+			observePage(tick, state, entries, start, end);
 		} catch (error) {
-			if (!(error instanceof FetchTimeout)) throw error;
+			if (!(error instanceof FetchTimeout)) {
+				pageInterrupted(logId);
+				throw error;
+			}
 			state.error = describe(error);
 			state.timeoutsHandled++;
 			stepDown(logId);
 			return;
 		}
-		observePage(tick, state, entries, start, end);
 		pageServed(logId);
 		if (entries.length < end - start + 1) {
 			state.stats.shortPages++;
@@ -411,15 +415,15 @@ async function readEntries(tick: Tick, state: LogState): Promise<void> {
  * The window's [start, end] ranges from the cursor, at the log's page size. Stepped down, the first page ends at the
  * next multiple of the size and the rest are aligned to it, since logs that cut requests do so at those boundaries.
  */
-function pageRanges(tick: Tick, state: LogState): Array<[number, number]> {
+function pageRanges(tick: Tick, state: LogState, visitEnd: number): Array<[number, number]> {
 	const size = pageSizeOf(state.log.logId);
 	const aligned = isAligned(state.log.logId);
 	const count = Math.min(WINDOW, fetchesLeft(tick));
 	const ranges: Array<[number, number]> = [];
 	let start = state.next!;
-	while (start < state.treeSize! && ranges.length < count) {
+	while (start < visitEnd && ranges.length < count) {
 		const stop = aligned ? start - (start % size) + size : start + size;
-		ranges.push([start, Math.min(stop, state.treeSize!) - 1]);
+		ranges.push([start, Math.min(stop, visitEnd) - 1]);
 		start = stop;
 	}
 	return ranges;
@@ -563,12 +567,10 @@ export function entriesPerVisit(behind: number): number {
 async function visit(tick: Tick, state: LogState): Promise<boolean> {
 	if (!(await readHeadOnce(tick, state))) return false;
 	const end = readableEnd(state);
-	const cap = visitCap(state, end);
-	for (let read = 0; state.next! < end && read < cap;) {
+	const visitEnd = Math.min(end, state.next! + visitCap(state, end));
+	while (state.next! < visitEnd) {
 		if (!canFetch(tick)) return false;
-		const before = state.next!;
-		await (state.log.kind === 'static' ? readTiles(tick, state, end) : readEntries(tick, state));
-		read += state.next! - before;
+		await (state.log.kind === 'static' ? readTiles(tick, state, end) : readEntries(tick, state, visitEnd));
 		if (held(state) >= tick.flushRows) await flush(tick, state);
 		if (state.timeoutsHandled >= MAX_TIMEOUTS_PER_TICK) return false;
 	}

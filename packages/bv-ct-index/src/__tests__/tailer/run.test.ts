@@ -101,6 +101,19 @@ function fakeNetwork(overrides: Partial<Network> = {}): Network & { fetch: typeo
 	return Object.assign(net, { fetch: fetcher as typeof fetch });
 }
 
+/** Wraps the fake network: `answer` may replace the response for a URL. */
+const intercept = (net: ReturnType<typeof fakeNetwork>, answer: (url: string) => Response | undefined) => {
+	const original = net.fetch;
+	net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = String(input);
+		const replaced = answer(url);
+		if (!replaced) return original(input, init);
+		net.calls.push(url);
+		return replaced;
+	}) as typeof fetch;
+	return net;
+};
+
 interface FakeQueue {
 	queue: Queue<ObservationBatch>;
 	sent: ObservationBatch[];
@@ -310,19 +323,6 @@ describe('runTailer', () => {
 	// SQ-355: the prod error shapes of 2026-10-17. A log that has not served the next entries yet, or that rate
 	// limits, defers: the visit ends, progress stands, no last_error, and the next tick picks up from the cursor.
 	describe('deferrals (SQ-355)', () => {
-		/** Wraps the fake network: `answer` may replace the response for a URL. */
-		const intercept = (net: ReturnType<typeof fakeNetwork>, answer: (url: string) => Response | undefined) => {
-			const original = net.fetch;
-			net.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-				const url = String(input);
-				const replaced = answer(url);
-				if (!replaced) return original(input, init);
-				net.calls.push(url);
-				return replaced;
-			}) as typeof fetch;
-			return net;
-		};
-
 		it('defers a single-entry range at the tree tip that comes back empty (Sectigo Tiger2027h2 31011-31011), then reads it next tick', async () => {
 			await seed(RFC.log_id, 'rfc6962', RFC.url, 999);
 			const lagging = intercept(fakeNetwork(), (url) =>
@@ -711,6 +711,33 @@ describe('runTailer', () => {
 			expect(pageSizeOf(RFC.log_id)).toBe(RFC6962_PAGE);
 		});
 
+		it.each([
+			['HTTP 429', () => new Response(null, { status: 429 })],
+			['HTTP 503', () => new Response(null, { status: 503 })],
+			['an empty page', () => Response.json({ entries: [] })],
+			['a malformed page', () => Response.json({})],
+		] as const)('requires a fresh streak of successful pages after %s', async (_label, failure) => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 0);
+			const head = STEP_UP_AFTER_PAGES * STEPPED_DOWN_PAGE;
+			const interruptedAt = head - STEPPED_DOWN_PAGE;
+			const net = intercept(fakeNetwork({ rfcSize: head, pageCap: RFC6962_PAGE }), (url) => {
+				if (url.endsWith('get-entries?start=0&end=255')) throw timeoutError();
+				if (url.endsWith(`get-entries?start=${interruptedAt}&end=${head - 1}`)) return failure();
+			});
+
+			await run(net, fakeQueue());
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: interruptedAt });
+
+			const recovered = fakeNetwork({ rfcSize: head, pageCap: RFC6962_PAGE });
+			await run(recovered, fakeQueue());
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: head });
+			expect(pageSizeOf(RFC.log_id)).toBe(STEPPED_DOWN_PAGE);
+
+			recovered.rfcSize += (STEP_UP_AFTER_PAGES - 1) * STEPPED_DOWN_PAGE;
+			await run(recovered, fakeQueue());
+			expect(pageSizeOf(RFC.log_id)).toBe(RFC6962_PAGE);
+		});
+
 		it('treats a short page cut at a 32-entry boundary as the log aligning requests, not a page cap', async () => {
 			await seed(RFC.log_id, 'rfc6962', RFC.url, 100);
 			// Like TrustAsia hetu: a request is cut at the next multiple of 32 unless it is a whole aligned 256.
@@ -738,6 +765,22 @@ describe('runTailer', () => {
 			expect(entriesPerVisit(8 * MAX_ENTRIES_PER_VISIT)).toBe(MAX_ENTRIES_PER_VISIT);
 			expect(entriesPerVisit(16 * MAX_ENTRIES_PER_VISIT)).toBe(2 * MAX_ENTRIES_PER_VISIT);
 			expect(entriesPerVisit(437_000_000)).toBe(MAX_ENTRIES_PER_VISIT_BEHIND);
+		});
+
+		it('clips the last RFC page to its visit allowance and resumes with full pages at the next index', async () => {
+			await seed(RFC.log_id, 'rfc6962', RFC.url, 0);
+			const cap = MAX_ENTRIES_PER_VISIT + 1;
+			const net = intercept(fakeNetwork({ rfcSize: 8 * cap, pageCap: RFC6962_PAGE }), (url) => {
+				const start = new URL(url).searchParams.get('start');
+				if (start !== null && Number(start) >= cap) return new Response(null, { status: 429 });
+			});
+			const result = await run(net, fakeQueue());
+
+			const pages = pagesAsked(net);
+			expect(pages).toContainEqual([cap - 1, cap - 1]);
+			expect(pages).toContainEqual([cap, cap + RFC6962_PAGE - 1]);
+			expect(result.entries).toBe(cap);
+			expect(await cursor(RFC.log_id)).toMatchObject({ next_index: cap });
 		});
 
 		it('reports page latency, timeouts, short pages and 429s for a log far behind, and not for one that is near the head', async () => {
