@@ -84,6 +84,23 @@ describe('SQ-564 async batch scan — read-path deadline for abandoned jobs', ()
 		expect(kv.values.get(key)).toBe(before);
 	});
 
+	it('withholds legacy exception text on status and findings reads', async () => {
+		const kv = memoryKv();
+		const { jobId, key } = await seedJob(kv, 'completed', 1_000);
+		const stored = JSON.parse(kv.values.get(key)!);
+		stored.error = 'synthetic queue diagnostic';
+		stored.result = { results: [
+			{ domain: 'a.example.com', error: 'synthetic scan diagnostic' },
+			{ domain: 'b.example.com', error: 'batch_budget_exceeded' },
+		] };
+		kv.values.set(key, JSON.stringify(stored));
+
+		const job = await getAsyncBatchJobForRead(jobId, 'principal-a', kv);
+		expect(job?.error).toBe('batch_scan_failed');
+		expect(job?.result?.results.map((row) => row.error)).toEqual(['Scan failed', 'batch_budget_exceeded']);
+		expect(kv.values.get(key)).toBe(JSON.stringify(stored));
+	});
+
 	it('still reports failed when persisting the terminal state throws', async () => {
 		const kv = memoryKv();
 		const { jobId } = await seedJob(kv, 'running', 1_000);

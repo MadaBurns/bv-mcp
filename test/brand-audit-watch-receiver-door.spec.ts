@@ -19,6 +19,9 @@ const EXTERNAL_URL = 'https://hooks.example.com/brand-drift?t=abc';
 type DoorEnv = typeof env & {
 	BV_API_KEY?: string;
 	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_TOOL_DELEGATION_KEY?: string;
+	OAUTH_ISSUER?: string;
+	REQUIRE_INTERNAL_AUTH?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	RATE_LIMIT?: KVNamespace;
 	QUOTA_COORDINATOR?: unknown;
@@ -92,11 +95,11 @@ async function registerViaPublicMcp(webhookUrl: string, doorEnv: DoorEnv): Promi
 	return { isError: body.result.isError === true, text: toolText(body.result) };
 }
 
-async function registerViaInternalDoor(webhookUrl: string, doorEnv: DoorEnv): Promise<Response> {
+async function registerViaInternalDoor(webhookUrl: string, doorEnv: DoorEnv, headers: Record<string, string> = {}): Promise<Response> {
 	return fetchWorker(
 		new Request('https://example.com/internal/tools/call', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${WEB_KEY}` },
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${WEB_KEY}`, ...headers },
 			body: JSON.stringify({
 				name: 'register_brand_audit_watch',
 				arguments: { domain: 'example.com', interval: 'weekly', webhook_url: webhookUrl },
@@ -131,6 +134,27 @@ describe('Brand Drift receiver as a watch webhook — per door', () => {
 		expect(result.text).toContain('Brand audit watch registered');
 		expect(inserts).toHaveLength(1);
 		expect(inserts[0]).toContain(EXTERNAL_URL);
+	});
+
+	it('refuses the reserved receiver in network-only mode', async () => {
+		const { db, inserts } = recordingDb();
+		const response = await registerViaInternalDoor(RECEIVER_URL, { ...doorEnv(db), REQUIRE_INTERNAL_AUTH: 'false' });
+		expect(toolText(await response.json())).toContain('Invalid webhook_url: this BlackVeil endpoint is reserved');
+		expect(inserts).toHaveLength(0);
+	});
+
+	it('accepts the delegated tenant credential for the reserved receiver', async () => {
+		const { db, inserts } = recordingDb();
+		const tenantKey = 'synthetic-tenant-delegation-credential';
+		const response = await registerViaInternalDoor(
+			RECEIVER_URL,
+			{ ...doorEnv(db), BV_MCP_TOOL_DELEGATION_KEY: tenantKey, OAUTH_ISSUER: 'https://example.com' },
+			{ Authorization: `Bearer ${tenantKey}`, 'X-Tenant': 'tenant_123', 'X-Auth-Tier': 'developer' },
+		);
+		expect(response.status).toBe(200);
+		expect(toolText(await response.json())).toContain('Brand audit watch registered');
+		expect(inserts).toHaveLength(1);
+		expect(inserts[0]).toContain(RECEIVER_URL);
 	});
 
 	it('internal tool door: the first-party service can still register a watch on its own receiver', async () => {

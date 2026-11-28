@@ -169,7 +169,16 @@ export async function getAsyncBatchJobForRead(
 	now: () => number = Date.now,
 ): Promise<AsyncBatchJob | null> {
 	const job = await getAsyncBatchJob(jobId, principalId, kv);
-	if (!job || !isStaleAsyncBatchJob(job, now())) return job;
+	if (!job) return null;
+	if (!isStaleAsyncBatchJob(job, now())) {
+		// Earlier consumers stored thrown messages on both the job and individual results.
+		// Filter the decoded KV object on read, leaving the stored diagnostics available.
+		if (job.error && job.error !== 'queue_unavailable' && job.error !== ASYNC_BATCH_ABANDONED_ERROR) job.error = 'batch_scan_failed';
+		for (const row of job.result?.results ?? []) {
+			if (row.error && row.error !== 'batch_budget_exceeded') row.error = 'Scan failed';
+		}
+		return job;
+	}
 	const failed: AsyncBatchJob = { ...job, status: 'failed', error: ASYNC_BATCH_ABANDONED_ERROR };
 	await persistAbandonedJob(failed, kv);
 	return failed;

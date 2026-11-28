@@ -10,13 +10,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Changed
 
-- The upgrade prompt on a volume-limit 429 (distinct-domain, daily per-tool and daily global limits) now says the limit was reached and that a higher tier raises it, instead of telling the caller to upgrade to unlock the tool, which was wrong for free tools. The paid-only prompt, the limits and the status codes are unchanged.
+- The upgrade prompt on a volume-limit 429 (distinct-domain, daily per-tool and daily per-IP limits) now says the limit was reached and that a higher tier raises it, instead of telling the caller to upgrade to unlock the tool, which was wrong for free tools. The paid-only prompt, the limits and the status codes are unchanged.
 - Production config validation (the private-config injector and the `cf` production loader) now stops when `OWNER_ALLOW_IPS` is missing, blank or made only of commas. Runtime tier resolution is unchanged. Operators: set `OWNER_ALLOW_IPS` in the private overlay before the next production deploy.
 - `check_root_server_set` no longer names an internal binding in its description.
 
 ### Fixed
 
-- `brand_audit_batch_start`, `brand_audit_status`, `discover_brand_domains_start`, `batch_scan`, `batch_scan_start` and `compare_domains` returned the thrown error message to the caller on an internal failure. They now return fixed wording and log the detail. An async batch job that fails reports `batch_scan_failed` as its `error`; `batch_budget_exceeded` is kept.
+- `brand_audit_batch_start`, `brand_audit_status`, `discover_brand_domains_start`, `batch_scan`, `batch_scan_start` and `compare_domains` returned the thrown error message to the caller on an internal failure. They now return fixed wording and log the detail. Async batch scan failures report `batch_scan_failed`, including when reading a job saved by an older worker. A domain skipped after the scan budget expires still reports `batch_budget_exceeded`.
+- Brand audit status, report and discovery results return public failure messages for stored target errors, including records written by older workers.
 - `register_brand_audit_watch` returned `Failed to register watch: <error text>` when the database write failed. It now returns `Failed to register watch.` and logs the detail.
 - An outage of the infra-probe, WHOIS or certstream sidecar raised no alert, because their callers degrade fail-soft. A tool call whose sidecar request throws or answers HTTP 500 or above now reports a binding-degradation event, which the existing scheduled alert lane counts. 4xx answers, caller aborts and absent bindings report nothing, and tool results are unchanged. Calls through the internal door log a warning only, and the brand-audit pipeline's own sidecar calls are not covered.
 

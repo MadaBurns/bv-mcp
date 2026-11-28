@@ -70,8 +70,8 @@ header; their auth remains the URL token. The exact BlackVeil receiver
 first-party path: delivery uses the private `BV_WEB` service binding and a
 dedicated `BV_MCP_BRAND_WEBHOOK_KEY` bearer. The bearer is never attached to
 any other origin/path, and redirects are never followed. Because of that
-bearer, only the authenticated internal tool door (how bv-web registers its own
-watches) may register a watch on this receiver: `register_brand_audit_watch`
+bearer, only bv-web and its delegated tenant tool credential may register a watch
+on this receiver through the internal tool door: `register_brand_audit_watch`
 refuses its origin+path as `invalidInput` on every other path, whatever query
 string is added (`src/lib/brand-drift-receiver.ts`).
 

@@ -2144,38 +2144,22 @@ interface ComposedSignal {
 }
 
 /**
- * Compose an inner-timeout signal with the caller's optional cancellation signal.
- * Uses `AbortSignal.any` when present (workerd / modern Node); otherwise falls
- * back to plain inner-timeout (the orchestrator's `deadlineMs` pre-check is the
- * primary cancellation path in older runtimes).
+ * Distinguish a source's own timeout from cancellation by the caller, even
+ * when the caller cancels because its larger operation ran out of time.
  */
 function composeAbortSignal(timeoutMs: number, outer?: AbortSignal): ComposedSignal {
 	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-	if (outer) {
-		const anyFn = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-		if (typeof anyFn === 'function') {
-			const merged = anyFn([controller.signal, outer]);
-			return { signal: merged, cleanup: () => clearTimeout(timeoutId) };
-		}
-		// Fallback: if outer fires first, forward to our controller.
-		const onAbort = () => controller.abort();
-		if (outer.aborted) {
-			controller.abort();
-		} else {
-			outer.addEventListener('abort', onAbort, { once: true });
-		}
-		return {
-			signal: controller.signal,
-			cleanup: () => {
-				clearTimeout(timeoutId);
-				outer.removeEventListener('abort', onAbort);
-			},
-		};
-	}
-
-	return { signal: controller.signal, cleanup: () => clearTimeout(timeoutId) };
+	const timeoutId = setTimeout(() => controller.abort(new DOMException('CT source timed out', 'TimeoutError')), timeoutMs);
+	const cancel = () => controller.abort();
+	if (outer?.aborted) cancel();
+	else outer?.addEventListener('abort', cancel, { once: true });
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			clearTimeout(timeoutId);
+			outer?.removeEventListener('abort', cancel);
+		},
+	};
 }
 
 /**

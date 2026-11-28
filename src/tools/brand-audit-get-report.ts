@@ -31,6 +31,7 @@ import { buildCheckResult, createFinding, type CheckResult } from '../lib/scorin
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS, targetRunningSince } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
+import { publicBrandAuditTargetError } from '../lib/brand-audit-target-error';
 import { createRejectedRequestBuilder } from './async-start-error-result';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -159,7 +160,7 @@ function buildDerivedAggregateResult(
 			target: row.target,
 			status: row.status,
 			measured: false,
-			error: row.error ?? null,
+			error: publicBrandAuditTargetError(row.error),
 			hasPdf: Boolean(row.pdf_r2_key),
 		};
 		if (row.status === 'failed') return entry;
@@ -353,7 +354,7 @@ export async function brandAuditGetReport(
 					result: parsed,
 					error: isStuck
 						? `read-path: target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min; consumer cap did not flip status`
-						: targetRow.error,
+						: publicBrandAuditTargetError(targetRow.error),
 					pdfUrl,
 					pdfPending,
 					...(registrarComplement !== undefined ? { registrarComplement } : {}),

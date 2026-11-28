@@ -65,7 +65,7 @@ describe('discoverBrandDomainsFindings result_json parsing', () => {
 		const meta = summaryMetadata(result);
 		expect(meta.status).toBe('failed');
 		expect(meta.result).toBeNull();
-		expect(meta.error).toBe('discovery timed out');
+		expect(meta.error).toBe('Audit target exceeded its deadline.');
 	});
 
 	it('returns result null instead of throwing when result_json is malformed', async () => {

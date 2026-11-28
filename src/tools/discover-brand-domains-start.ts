@@ -29,6 +29,7 @@
 import { logError } from '../lib/log';
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
+import { publicBrandAuditTargetError } from '../lib/brand-audit-target-error';
 import { createRejectedRequestBuilder } from './async-start-error-result';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -249,7 +250,7 @@ async function discoveryTargetResult(db: D1Database, operationId: string): Promi
 			target: targetRow.target,
 			status: targetRow.status,
 			result: parsed,
-			error: targetRow.error,
+			error: publicBrandAuditTargetError(targetRow.error),
 		}),
 	]);
 }

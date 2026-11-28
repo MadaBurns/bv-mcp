@@ -785,15 +785,16 @@ internalRoutes.post('/tools/call', async (c) => {
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
 	}
 	const normalizedToolName = normalizeToolName(body.name);
-	if (c.get('internalPrincipal') === 'tenant-tool' && !TENANT_DELEGATED_TOOLS.has(normalizedToolName)) {
+	const principal = c.get('internalPrincipal');
+	if (principal === 'tenant-tool' && !TENANT_DELEGATED_TOOLS.has(normalizedToolName)) {
 		return c.json({ error: 'tenant_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
-	if (c.get('internalPrincipal') === 'watch-cleanup' && !WATCH_CLEANUP_TOOLS.has(normalizedToolName)) {
+	if (principal === 'watch-cleanup' && !WATCH_CLEANUP_TOOLS.has(normalizedToolName)) {
 		return c.json({ error: 'watch_cleanup_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
 
 	const identity = await resolveToolDoorIdentity(
-		c.get('internalPrincipal'),
+		principal,
 		c.req.header('x-tenant'),
 		c.req.header('x-auth-tier'),
 		c.req.header(AGENT_CALLER_HEADER),
@@ -802,7 +803,7 @@ internalRoutes.post('/tools/call', async (c) => {
 	if (!identity.ok) return c.json({ error: identity.error }, identity.status, { 'Cache-Control': 'no-store' });
 	const brandOwnerReconciliation = await reconcileTrustedTenantBrandOwner({
 		db: c.env.BRAND_AUDIT_DB,
-		internalPrincipal: c.get('internalPrincipal'),
+		internalPrincipal: principal,
 		tenantHeader: c.req.header('x-tenant'),
 		canonicalOwnerId: identity.identity.principalId,
 		toolName: normalizedToolName,
@@ -814,7 +815,7 @@ internalRoutes.post('/tools/call', async (c) => {
 
 	// The mobile credential is a scan-only capability. Authorization is derived
 	// from the matched bearer, never from the caller-controlled X-BV-Caller header.
-	if (c.get('internalPrincipal') === 'mobile' && normalizedToolName !== 'scan_domain') {
+	if (principal === 'mobile' && normalizedToolName !== 'scan_domain') {
 		return c.json({ error: 'mobile_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
 
@@ -829,7 +830,7 @@ internalRoutes.post('/tools/call', async (c) => {
 	// Shared per-tool policy gates (internal-only / auth-required / paid-only /
 	// contract-flag) — the same chokepoint the public /mcp path consults.
 	const policyDenial = internalToolPolicyDenial({
-		principal: c.get('internalPrincipal'),
+		principal,
 		tool: normalizedToolName,
 		tier: identity.identity.authTier,
 		contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
@@ -877,7 +878,7 @@ internalRoutes.post('/tools/call', async (c) => {
 		watchWebhookSigningSecret: resolveWatchWebhookSigningSecret(c.env),
 		// The first-party service registers watches that deliver to BlackVeil's
 		// own Brand Drift receiver; only this authenticated door may do so.
-		allowBrandDriftReceiver: true,
+		allowBrandDriftReceiver: principal === 'web' || principal === 'tenant-tool',
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,

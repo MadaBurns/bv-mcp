@@ -55,7 +55,7 @@ export async function fetchCertIssuerFromCertstream(
 	timeoutMs = CERT_META_LOOKUP_TIMEOUT_MS,
 ): Promise<string | null> {
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	const timer = setTimeout(() => controller.abort(new DOMException('Certificate metadata lookup timed out', 'TimeoutError')), timeoutMs);
 	try {
 		const response = await certstream.fetch(`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`, {
 			headers: certstreamHeaders(authToken),

@@ -193,7 +193,7 @@ describe('sidecar binding-degradation wiring (infra-probe / whois / certstream v
 					JSON.stringify({
 						version: '1.0',
 						publication: '2024-01-01T00:00:00Z',
-						services: [[['com'], ['https://rdap.verisign.com/com/v1/']]],
+						services: [[['com'], ['https://rdap.example.com/com/v1/']]],
 					}),
 					{ status: 200, headers: { 'Content-Type': 'application/json' } },
 				);
@@ -229,18 +229,18 @@ describe('sidecar binding-degradation wiring (infra-probe / whois / certstream v
 				throw new TypeError('whois shim unreachable');
 			}),
 		};
-		const emit = await call('rdap_lookup', { domain: 'whois-degraded.com' }, { whoisBinding });
+		const emit = await call('rdap_lookup', { domain: 'whois.example.com' }, { whoisBinding });
 		expect(whoisBinding.fetch).toHaveBeenCalled();
-		expect(emit).toHaveBeenCalledWith({ degradationType: 'binding_unavailable', component: 'whois', domain: 'whois-degraded.com' });
+		expect(emit).toHaveBeenCalledWith({ degradationType: 'binding_unavailable', component: 'whois', domain: 'whois.example.com' });
 	});
 
 	it('certstream: a present-but-5xx BV_CERTSTREAM emits binding_5xx (component=certstream)', async () => {
 		upstreamDown();
 		const certstream = { fetch: vi.fn(async () => new Response('down', { status: 502 })) };
-		const emit = await call('discover_subdomains', { domain: 'certstream-degraded.com' }, { certstream, certstreamAuthToken: 'tok' });
+		const emit = await call('discover_subdomains', { domain: 'certstream.example.com' }, { certstream, certstreamAuthToken: 'tok' });
 		expect(certstream.fetch).toHaveBeenCalled();
 		expect(emit).toHaveBeenCalledWith(
-			expect.objectContaining({ degradationType: 'binding_5xx', component: 'certstream', domain: 'certstream-degraded.com' }),
+			expect.objectContaining({ degradationType: 'binding_5xx', component: 'certstream', domain: 'certstream.example.com' }),
 		);
 	});
 
@@ -259,6 +259,39 @@ describe('withBindingDegradationTelemetry', () => {
 		const binding = { fetch: vi.fn(impl) as unknown as typeof fetch };
 		return { wrapped: withBindingDegradationTelemetry(binding, 'whois', sink)!, sink };
 	}
+
+	it.each(['discovery', 'certificate metadata', 'caller cancellation'])('classifies an actual certstream wait during %s', async (mode) => {
+		const { withBindingDegradationTelemetry } = await import('../src/lib/binding-degradation');
+		const { fetchCertIssuerFromCertstream } = await import('../src/tools/scan/cdn-heuristics');
+		const { CT_SOURCE_TIMEOUT_MS, discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const sink = vi.fn();
+		const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+			const abort = () => reject(new DOMException('aborted', 'AbortError'));
+			if (init?.signal?.aborted) abort();
+			else init?.signal?.addEventListener('abort', abort, { once: true });
+		}));
+		const binding = withBindingDegradationTelemetry({ fetch: fetch as typeof globalThis.fetch }, 'certstream', sink)!;
+		vi.useFakeTimers();
+		try {
+			const outer = new AbortController();
+			const pending = mode === 'certificate metadata'
+				? fetchCertIssuerFromCertstream('example.com', binding, undefined, CT_SOURCE_TIMEOUT_MS)
+				: discoverSubdomains('example.com', binding, undefined, {
+					forceRefresh: true, signal: outer.signal, deadlineMs: Date.now() + CT_SOURCE_TIMEOUT_MS,
+				});
+			if (mode === 'caller cancellation') {
+				vi.setSystemTime(Date.now() + CT_SOURCE_TIMEOUT_MS);
+				outer.abort(new DOMException('Caller deadline elapsed', 'TimeoutError'));
+			}
+			await vi.advanceTimersByTimeAsync(CT_SOURCE_TIMEOUT_MS);
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(fetch).toHaveBeenCalledOnce();
+		if (mode === 'caller cancellation') expect(sink).not.toHaveBeenCalled();
+		else expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_timeout', component: 'certstream' });
+	});
 
 	it('records a timeout as binding_timeout and passes the rejection through', async () => {
 		const { wrapped, sink } = await wrap(async () => {

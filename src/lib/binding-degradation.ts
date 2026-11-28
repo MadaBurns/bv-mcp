@@ -80,7 +80,11 @@ export function withBindingDegradationTelemetry(
 				response = await binding.fetch(input, init);
 			} catch (err) {
 				const errorName = typeof (err as { name?: unknown })?.name === 'string' ? (err as { name: string }).name : '';
-				if (errorName !== 'AbortError') {
+				const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+				if (signal?.aborted) {
+					// Some bindings reject with AbortError even for an explicit local timeout.
+					if (signal.reason?.name === 'TimeoutError') record('binding_timeout', { errorName: 'TimeoutError' });
+				} else if (errorName !== 'AbortError') {
 					record(errorName === 'TimeoutError' ? 'binding_timeout' : 'binding_unavailable', errorName ? { errorName } : {});
 				}
 				throw err;

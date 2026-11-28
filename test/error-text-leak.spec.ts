@@ -45,7 +45,7 @@ describe('error text allowlist: internal failures', () => {
 	it('brand_audit_batch_start: persistence failure', async () => {
 		const spy = logSpy();
 		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
-		const result = await brandAuditBatchStart(['apple.com'], {}, 'pk', {
+		const result = await brandAuditBatchStart(['example.com'], {}, 'pk', {
 			db: makeDb('run'),
 			queue: { send: vi.fn() },
 		} as never);
@@ -56,7 +56,7 @@ describe('error text allowlist: internal failures', () => {
 	it('brand_audit_batch_start: enqueue failure', async () => {
 		const spy = logSpy();
 		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
-		const result = await brandAuditBatchStart(['apple.com'], {}, 'pk', {
+		const result = await brandAuditBatchStart(['example.com'], {}, 'pk', {
 			db: makeDb('none'),
 			queue: { send: vi.fn().mockRejectedValue(new Error(MARKER)) },
 		} as never);
@@ -67,7 +67,7 @@ describe('error text allowlist: internal failures', () => {
 	it('register_brand_audit_watch: persistence failure', async () => {
 		const spy = logSpy();
 		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
-		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily' }, 'pk', { db: makeDb('run') } as never);
+		const result = await registerBrandAuditWatch({ domain: 'example.com', interval: 'daily' }, 'pk', { db: makeDb('run') } as never);
 		expectNoLeak(result);
 		expect(logged(spy)).toBe(true);
 	});
@@ -83,12 +83,12 @@ describe('error text allowlist: internal failures', () => {
 	it('discover_brand_domains_start: persistence and enqueue failures', async () => {
 		const spy = logSpy();
 		const { discoverBrandDomainsStart } = await import('../src/tools/discover-brand-domains-start');
-		const persist = await discoverBrandDomainsStart('brand-example.net', {}, 'pk', {
+		const persist = await discoverBrandDomainsStart('example.com', {}, 'pk', {
 			db: makeDb('run'),
 			queue: { send: vi.fn() },
 		} as never);
 		expectNoLeak(persist);
-		const enqueue = await discoverBrandDomainsStart('brand-example.net', {}, 'pk', {
+		const enqueue = await discoverBrandDomainsStart('example.com', {}, 'pk', {
 			db: makeDb('none'),
 			queue: { send: vi.fn().mockRejectedValue(new Error(MARKER)) },
 		} as never);

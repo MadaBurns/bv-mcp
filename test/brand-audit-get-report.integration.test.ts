@@ -238,7 +238,7 @@ describe('brandAuditGetReport', () => {
 				targetStatusCounts: { completed: 2, failed: 1 },
 				rollup: { totalCandidates: 2, consolidated: 2 },
 			});
-			expect(aggregate.targets.find((t) => t.target === 'b.com')).toMatchObject({ status: 'failed', measured: false, error: 'boom' });
+			expect(aggregate.targets.find((t) => t.target === 'b.com')).toMatchObject({ status: 'failed', measured: false, error: 'Audit target processing failed.' });
 			expect(aggregate.targets.find((t) => t.target === 'c.com')).toMatchObject({ measured: false });
 			expect(result.partial).toBe(true);
 		});

@@ -57,8 +57,9 @@ their own commands, each running from the repo root:
 
     npm run deploy:whois
     npm run deploy:infra-probe
+    npm run deploy:ct-index
 
-Since #1082 both run `check:deploy-freshness` (checkout not behind
+All three run `check:deploy-freshness` (checkout not behind
 `origin/main`) and `check:release-integrity:sidecar` (clean working tree only;
 unlike `deploy:prod`'s `check:release-integrity`, no exact-tag requirement)
 before their own deploy call
@@ -75,7 +76,7 @@ vitest config only (an audit asserts parity with the cf config); roll bv-whois b
 with `npx wrangler rollback --name bv-whois`, and the drift gate reads it via an
 explicit `--name bv-whois`. cf finds wrangler only at
 `packages/bv-whois/node_modules/wrangler`, so that package pins a wrangler the root
-does not hold. Neither sidecar deploy runs `check:sidecar-freshness`: that gate exists to block the
+does not hold. None of the three sidecar deploys runs `check:sidecar-freshness`: that gate exists to block the
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 
