@@ -170,7 +170,7 @@ describe('brandAuditStatus', () => {
 					status: 'failed',
 					created_at: 1_750_000_000_000,
 					completed_at: 1_750_000_090_000,
-					error: 'failed',
+					error: 'synthetic detail from an earlier worker',
 					pdf_r2_key: null,
 					result_json: '{"category":"brand_discovery","findings":[]}',
 				},
@@ -182,7 +182,7 @@ describe('brandAuditStatus', () => {
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.targetStatusCounts).toMatchObject({ completed: 0, failed: 1 });
 		expect(summary?.metadata?.targets).toEqual([
-			expect.objectContaining({ target: 'example.com', status: 'failed' }),
+			expect.objectContaining({ target: 'example.com', status: 'failed', error: 'Audit target processing failed.' }),
 		]);
 	});
 

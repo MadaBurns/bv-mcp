@@ -13,7 +13,7 @@ Production load and capacity testing has a separate [capacity-testing runbook](.
 Prerequisites:
 
 1. `npm ci` on Node 22+.
-2. `npx wrangler login` against the production Cloudflare account.
+2. `npx wrangler login` against the production Cloudflare account, and `cf auth login` for the `cf` CLI (device flow; it does not reuse the wrangler token).
 3. Reconstruct `.dev/wrangler.deploy.jsonc` (gitignored, machine-local). It is the
    private overlay merged over the public `wrangler.jsonc` by
    `scripts/inject-private-config.cjs`, and must supply every private binding kind
@@ -50,15 +50,16 @@ Verify (MANDATORY after every deploy):
 
 The reported serverInfo version must match `package.json`.
 
-### 1a. Deploying the sidecar Workers (bv-whois, bv-infra-probe)
+### 1a. Deploying the sidecar Workers (bv-whois, bv-infra-probe, bv-ct-index)
 
-`deploy:prod` deploys the MCP Worker ONLY. The two sidecar Workers ship via
+`deploy:prod` deploys the MCP Worker ONLY. The three sidecar Workers ship via
 their own commands, each running from the repo root:
 
     npm run deploy:whois
     npm run deploy:infra-probe
+    npm run deploy:ct-index
 
-Since #1082 both run `check:deploy-freshness` (checkout not behind
+All three run `check:deploy-freshness` (checkout not behind
 `origin/main`) and `check:release-integrity:sidecar` (clean working tree only;
 unlike `deploy:prod`'s `check:release-integrity`, no exact-tag requirement)
 before their own deploy call
@@ -75,7 +76,7 @@ vitest config only (an audit asserts parity with the cf config); roll bv-whois b
 with `npx wrangler rollback --name bv-whois`, and the drift gate reads it via an
 explicit `--name bv-whois`. cf finds wrangler only at
 `packages/bv-whois/node_modules/wrangler`, so that package pins a wrangler the root
-does not hold. Neither sidecar deploy runs `check:sidecar-freshness`: that gate exists to block the
+does not hold. None of the three sidecar deploys runs `check:sidecar-freshness`: that gate exists to block the
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 
@@ -93,7 +94,7 @@ on use — treat either as a signal to fix the checkout, not a habit.
 Workers keeps prior versions. Fastest path:
 
     npx wrangler deployments list          # find the last-good version id
-    npx wrangler rollback                  # interactive; or pass the version id
+    npx wrangler rollback <version-id> --name bv-dns-security-mcp -y   # non-interactive
 
 Caveats:
 

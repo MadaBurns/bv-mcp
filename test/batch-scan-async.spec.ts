@@ -86,7 +86,7 @@ describe('asynchronous batch scans', () => {
 		);
 		expect(verdict).toMatchObject({ action: 'retry' });
 		expect((verdict as { delaySeconds: number }).delaySeconds).toBeGreaterThan(0);
-		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'queued', error: 'transient upstream failure' });
+		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'queued', error: 'batch_scan_failed' });
 	});
 
 	it('writes a terminal failed status when the scan throws on the last attempt, and acks a later duplicate', async () => {
@@ -101,7 +101,7 @@ describe('asynchronous batch scans', () => {
 		const message = { version: 1 as const, jobId: job.jobId, principalId: 'principal-a' };
 
 		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: ASYNC_BATCH_MAX_ATTEMPTS })).toEqual({ action: 'ack' });
-		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'failed', error: 'persistent upstream failure' });
+		expect(await getAsyncBatchJob(job.jobId, 'principal-a', kv)).toMatchObject({ status: 'failed', error: 'batch_scan_failed' });
 
 		// A duplicate delivery of a terminal failed job changes nothing and does not rerun the scan.
 		expect(await processAsyncBatchMessage(message, { kv, runBatchScan, attempts: 1 })).toEqual({ action: 'ack' });

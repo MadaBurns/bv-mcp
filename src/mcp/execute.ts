@@ -858,7 +858,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. Free tier is limited to ${FREE_DISTINCT_DOMAIN_DAILY_LIMIT} distinct domains per day. Authenticate for a higher limit.`,
-						buildUpgradeData(toolName || 'scan_domain', true),
+						buildUpgradeData(toolName || 'scan_domain', true, 'domain'),
 					),
 					headers: ddcHeaders,
 					httpStatus: 429,

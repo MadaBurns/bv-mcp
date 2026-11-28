@@ -86,7 +86,10 @@
 		// All three are fail-closed production gates; keep them as-is.
 		"OAUTH_ISSUER": "https://dns-mcp.blackveilsecurity.com",
 		"REJECT_QUERY_API_KEY": "true",
-		"REQUIRE_PRODUCTION_BINDINGS": "true"
+		"REQUIRE_PRODUCTION_BINDINGS": "true",
+		// Also required, but any non-empty value: comma-separated IPs allowed to resolve to owner tier.
+		// Left unset, owner-grade keys get owner tier from any address, so the injector refuses to deploy.
+		"OWNER_ALLOW_IPS": "203.0.113.10"
 		// ALERT_WEBHOOK_URL is deliberately NOT a var here (#1073) — it is a capability
 		// secret. Set it with:
 		//   npx wrangler secret put ALERT_WEBHOOK_URL --name bv-dns-security-mcp

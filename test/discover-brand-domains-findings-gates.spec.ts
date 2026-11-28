@@ -98,7 +98,7 @@ describe('discoverBrandDomainsFindings — gates', () => {
 			target: 'example.com',
 			status: 'failed',
 			result: null,
-			error: 'boom',
+			error: 'Audit target processing failed.',
 		});
 	});
 });

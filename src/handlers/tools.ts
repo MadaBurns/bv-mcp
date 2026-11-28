@@ -22,6 +22,7 @@ import { unavailableAccessContextResult } from '../mcp/access-context';
 import { MUTATING_DEDUP_TOOLS, nxdomainGateCategory, toolRequiresDomain } from './tool-sets';
 import { TOOL_REGISTRY, buildDnsOptions } from './tool-registry';
 import { buildToolErrorResult, dispatchDirectTool } from './direct-dispatch';
+import { withSidecarDegradationTelemetry } from '../lib/binding-degradation';
 
 // The registry, tool sets, runtime types and direct-dispatch arms live in sibling modules; every name this file exported before is re-exported here.
 export {
@@ -158,8 +159,9 @@ export async function handleToolsCall(
 		arguments?: Record<string, unknown>;
 	},
 	scanCacheKV?: KVNamespace,
-	runtimeOptions?: ToolRuntimeOptions,
+	callerRuntimeOptions?: ToolRuntimeOptions,
 ): Promise<McpToolResult> {
+	let domain: string | undefined;
 	const { name, args } = resolveToolAlias(params.name, params.arguments ?? {});
 	if (name === 'get_access_context') {
 		// Non-HTTP callers do not possess a verified request receipt. Return before
@@ -168,6 +170,10 @@ export async function handleToolsCall(
 			? unavailableAccessContextResult('unavailable')
 			: buildToolErrorResult('Invalid access context request: arguments must be empty.');
 	}
+	// Wrapped only after the access-context early return, which must not read runtime options.
+	// A present BV_INFRA_PROBE / BV_WHOIS / BV_CERTSTREAM that fails reaches the
+	// binding-degradation alert, as recon and tls-probe already do from their clients.
+	const runtimeOptions = callerRuntimeOptions && withSidecarDegradationTelemetry(callerRuntimeOptions, () => domain);
 	const startTime = Date.now();
 	// Resolve priorTool synchronously (O(1) in-memory Map read+write) before the
 	// tool executes so the "immediately before this call" semantic is exact.
@@ -177,7 +183,6 @@ export async function handleToolsCall(
 	const runtimeOptionsWithPrior = runtimeOptions ? { ...runtimeOptions, priorTool } : { priorTool };
 	/** Lazy log context builder — evaluates durationMs at call time. */
 	const ctx = () => buildLogContext(name, startTime, domain, runtimeOptionsWithPrior);
-	let domain: string | undefined;
 	let logResult = 'unknown';
 	let logDetails: unknown;
 	try {

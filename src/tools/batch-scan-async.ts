@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { logError } from '../lib/log';
 import { DNS_CHECKS_PACKAGE_VERSION } from '../lib/dns-checks-version';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-version';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
@@ -168,7 +169,16 @@ export async function getAsyncBatchJobForRead(
 	now: () => number = Date.now,
 ): Promise<AsyncBatchJob | null> {
 	const job = await getAsyncBatchJob(jobId, principalId, kv);
-	if (!job || !isStaleAsyncBatchJob(job, now())) return job;
+	if (!job) return null;
+	if (!isStaleAsyncBatchJob(job, now())) {
+		// Earlier consumers stored thrown messages on both the job and individual results.
+		// Filter the decoded KV object on read, leaving the stored diagnostics available.
+		if (job.error && job.error !== 'queue_unavailable' && job.error !== ASYNC_BATCH_ABANDONED_ERROR) job.error = 'batch_scan_failed';
+		for (const row of job.result?.results ?? []) {
+			if (row.error && row.error !== 'batch_budget_exceeded') row.error = 'Scan failed';
+		}
+		return job;
+	}
 	const failed: AsyncBatchJob = { ...job, status: 'failed', error: ASYNC_BATCH_ABANDONED_ERROR };
 	await persistAbandonedJob(failed, kv);
 	return failed;
@@ -271,7 +281,8 @@ async function recordScanFailure(
 	const exhausted = attempts >= ASYNC_BATCH_MAX_ATTEMPTS;
 	job.status = exhausted ? 'failed' : 'queued';
 	job.updatedAt = nowMs;
-	job.error = error instanceof Error ? error.message.slice(0, 300) : 'batch_scan_failed';
+	logError(error instanceof Error ? error : String(error), { details: { tool: 'batch_scan_async', jobId: job.jobId } });
+	job.error = 'batch_scan_failed';
 	await kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });
 	return exhausted ? ACK : retryAfter(SCAN_FAILURE_RETRY_DELAY_SECONDS);
 }

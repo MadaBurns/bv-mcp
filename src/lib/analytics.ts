@@ -135,9 +135,10 @@ export interface AnalyticsClient {
 			 * Degradation members:
 			 *  - `kv_fallback` — a KV write threw (emitted from session.ts).
 			 *  - `binding_unavailable` / `binding_5xx` / `binding_timeout` — a PRESENT
-			 *    operator-only service binding (BV_RECON / BV_TLS_PROBE) failed at call
-			 *    time. Absent-on-self-host is deliberately NOT emitted (expected, not
-			 *    alertable). `component` carries which binding (`recon` | `tls_probe`).
+			 *    operator-only service binding (BV_RECON / BV_TLS_PROBE / BV_INFRA_PROBE /
+			 *    BV_WHOIS / BV_CERTSTREAM) failed at call time. Absent-on-self-host is
+			 *    deliberately NOT emitted (expected, not alertable). `component` carries
+			 *    which binding (`recon` | `tls_probe` | `infra_probe` | `whois` | `certstream`).
 			 *  - `binding_route_absent` — recon answered 404 on `/osint/check` (the route
 			 *    is not served upstream, SQ-502). Emitted so the condition stays queryable,
 			 *    but `queryBindingDegradation` excludes it (standing, not an outage).

@@ -701,7 +701,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 					webhook_url: args.webhook_url as string | undefined,
 				},
 				principalId,
-				{ db, signingSecret: ro?.watchWebhookSigningSecret },
+				{ db, signingSecret: ro?.watchWebhookSigningSecret, allowBrandDriftReceiver: ro?.allowBrandDriftReceiver === true },
 			);
 		},
 		cacheTtlSeconds: 0,
