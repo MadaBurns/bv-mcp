@@ -33,10 +33,15 @@ export default defineConfig({
 			// Tailer every minute; compaction planner every 15 min (T0 -> T1 each tick, every tier at :17; src/indexer/plan.ts).
 			triggers.scheduled({ schedule: '* * * * *' }),
 			triggers.scheduled({ schedule: '2,17,32,47 * * * *' }),
+			// Bounded catch-up reader every 2 min, its own invocation apart from the tailer (src/tailer/catchup.ts CATCHUP_CRON).
+			triggers.scheduled({ schedule: '*/2 * * * *' }),
 			triggers.queue({ name: 'bv-ct-index-entries', maxBatchSize: 100, maxBatchTimeout: 30, maxRetries: 3 }),
 			triggers.queue({ name: 'bv-ct-index-compact', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 3 }),
 			// One tailer shard per invocation; never retried, as the next minute's tick re-plans the same logs.
 			triggers.queue({ name: 'bv-ct-index-tail', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 0 }),
+			// One catch-up row per invocation, ~115 s each (src/tailer/catchup.ts); its own queue so the tailer's shards, dropped
+			// when 50 s old, never wait behind it. At most two rows are dispatched, so at most two run at once.
+			triggers.queue({ name: 'bv-ct-index-catchup', maxBatchSize: 1, maxBatchTimeout: 1, maxRetries: 0, maxConcurrency: 2 }),
 		],
 		env: {
 			INDEX: bindings.r2({ name: 'bv-ct-index' }),
@@ -46,6 +51,8 @@ export default defineConfig({
 			COMPACT: bindings.queue({ name: 'bv-ct-index-compact' }),
 			// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
 			TAIL: bindings.queue({ name: 'bv-ct-index-tail' }),
+			// The bounded catch-up reader's dispatch (src/tailer/catchup.ts): one message per row.
+			CATCHUP: bindings.queue({ name: 'bv-ct-index-catchup' }),
 			CT_INDEX_ADMIN_KEY: bindings.secret(),
 		},
 	},

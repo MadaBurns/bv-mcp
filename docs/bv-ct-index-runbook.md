@@ -36,10 +36,10 @@ different application with that name is live on this account. The only name for 
 ## 2. Provision (fresh account only)
 
 `npm run provision:ct-index` **prints** the ordered, idempotent commands and executes nothing. Run them one at a time. In order:
-check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact` and `bv-ct-index-tail`, the D1 database
-`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0005: `log_cursors`, then
+check the name, create the R2 bucket `bv-ct-index`, the queues `bv-ct-index-entries`, `bv-ct-index-compact`, `bv-ct-index-tail` and `bv-ct-index-catchup`, the D1 database
+`bv-ct-index-cursors`, apply every file in `packages/bv-ct-index/migrations/` (currently 0001 to 0006: `log_cursors`, then
 `runs` / `meta` / `ops_ledger`, the `log_cursors` error columns, the `runs_r2_key` index, then the `runs` key filter and
-interval index), then deploy.
+interval index, then the `log_backfill` work list of the catch-up reader), then deploy.
 
 Two rules differ from older sidecar runbooks:
 
@@ -326,7 +326,11 @@ The fix, in the tailer since 2026-10-23:
 
 ```bash
 npx wrangler queues create bv-ct-index-tail
+npx wrangler queues create bv-ct-index-catchup
 ```
+
+`bv-ct-index-catchup` carries the bounded catch-up reader's dispatch (one message per `log_backfill` row, each run for about
+two minutes; `src/tailer/catchup.ts`). Create it BEFORE deploying a version that binds it, or the deploy fails.
 
 Watch after the deploy (read-only):
 
@@ -647,7 +651,7 @@ requires a one-to-one match with a wrangler config **on disk in bv-web-prod** an
 "bv-ct-index": {
 	"owner": "bv-mcp",
 	"evidence": "declared in bv-mcp packages/bv-ct-index (cloudflare.config.ts); bv-mcp service-binds it as BV_CERTSTREAM once the repoint lands; sibling of bv-whois and bv-infra-probe",
-	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries, bv-ct-index-compact and bv-ct-index-tail; the index is forward-only and cannot be rebuilt from the logs."
+	"disposal": "NEVER DELETE after the repoint: it is discover_subdomains' primary CT source and a missing deployment blocks bv-mcp's next deploy (check:sidecar-freshness). It owns R2 bucket bv-ct-index, D1 bv-ct-index-cursors and queues bv-ct-index-entries, bv-ct-index-compact, bv-ct-index-tail and bv-ct-index-catchup; the index is forward-only and cannot be rebuilt from the logs."
 }
 ```
 

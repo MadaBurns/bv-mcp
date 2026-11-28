@@ -19,10 +19,12 @@
 		"cpu_ms": 300000
 	},
 	"triggers": {
-		// Tailer every minute; compaction planner every 15 min (T0 -> T1 each tick, every tier at :17; src/indexer/plan.ts).
+		// Tailer every minute; compaction planner every 15 min (T0 -> T1 each tick, every tier at :17; src/indexer/plan.ts);
+		// bounded catch-up reader every 2 min, its own invocation apart from the tailer (src/tailer/catchup.ts CATCHUP_CRON).
 		"crons": [
 			"* * * * *",
-			"2,17,32,47 * * * *"
+			"2,17,32,47 * * * *",
+			"*/2 * * * *"
 		]
 	},
 	"r2_buckets": [
@@ -53,6 +55,11 @@
 				// The tailer's shards (src/tailer/fanout.ts): each consumer invocation is its own top-level invocation.
 				"binding": "TAIL",
 				"queue": "bv-ct-index-tail"
+			},
+			{
+				// The bounded catch-up reader's dispatch (src/tailer/catchup.ts): one message per row.
+				"binding": "CATCHUP",
+				"queue": "bv-ct-index-catchup"
 			}
 		],
 		"consumers": [
@@ -77,6 +84,14 @@
 				"max_batch_size": 1,
 				"max_batch_timeout": 1,
 				"max_retries": 0
+			},
+			{
+				// One catch-up row per invocation (~115 s), on its own queue so the tailer's shards never wait behind it.
+				"queue": "bv-ct-index-catchup",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 0,
+				"max_concurrency": 2
 			}
 		]
 	},
