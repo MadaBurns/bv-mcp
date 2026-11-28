@@ -58,6 +58,9 @@ export const NODE_POOL_AUDIT_TESTS = [
 	// walks tracked wrangler*.jsonc with real node:fs. In the Workers pool the
 	// child_process import is a hard SIGSEGV, not a catchable error.
 	'test/audits/sidecar-deploy-drift-check.node.test.ts',
+	// Sweeps every tracked file and lockfile for a worm-injected loader via
+	// `git ls-files` + real node:fs (the PolinRider repository-poisoning campaign).
+	'test/audits/supply-chain-poisoning.audit.test.ts',
 	'test/audits/vitest-workerd-stderr-filter.node.test.ts',
 ];
 
