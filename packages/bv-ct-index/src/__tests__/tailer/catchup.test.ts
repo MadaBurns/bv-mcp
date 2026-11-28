@@ -328,10 +328,12 @@ describe('runCatchup', () => {
 		expect(Number(after?.next_index)).toBeGreaterThanOrEqual(16);
 
 		const next = fakeNetwork(8);
-		await run(next, queue, { maxFetches: 3 }); // no pageSize: the learned size of 8 is asked for (after the probe, as 8 < 32)
+		await run(next, queue, { maxFetches: 3 });
 		const from = Number(after?.next_index);
-		expect(next.calls.map((url) => new URL(url).search).slice(1)).toEqual([
+		const probeAt = Math.ceil((from + 8) / 256) * 256;
+		expect(next.calls.map((url) => new URL(url).search)).toEqual([
 			`?start=${from}&end=${from + 7}`,
+			`?start=${probeAt}&end=${probeAt + 255}`,
 			`?start=${from + 8}&end=${from + 15}`,
 		]);
 		expect((await row(RO.log_id))?.next_index).toBe(from + 16);
@@ -633,9 +635,39 @@ describe('runCatchup', () => {
 			const net = fakeNetwork(32);
 			await run(net, fakeQueue(), { maxFetches: 3 });
 
-			expect(new URL(net.calls[0]!).search).toBe('?start=0&end=255'); // the probe: one full page at an aligned start
+			expect(net.calls.map((url) => new URL(url).search)).toEqual(['?start=0&end=7', '?start=256&end=511', '?start=8&end=31']);
 			expect((await row(RO.log_id))?.page_size).toBe(32);
-			expect(net.calls.slice(1).map((url) => new URL(url).search)).toEqual(['?start=0&end=31', '?start=32&end=63']);
+		});
+
+		it('spends a one-fetch budget on the cursor when the stored size is due for a probe', async () => {
+			await seed(RO, 'rfc6962', 0, 1_000);
+			await db.prepare('UPDATE log_backfill SET page_size = 8').run();
+			const net = fakeNetwork(8);
+			await run(net, fakeQueue(), { maxFetches: 1 });
+			await run(net, fakeQueue(), { maxFetches: 1 }, NOW + 120_000);
+
+			expect(net.calls.map((url) => new URL(url).search)).toEqual(['?start=0&end=7', '?start=8&end=15']);
+			expect(await row(RO.log_id)).toMatchObject({ next_index: 16, page_size: 8 });
+		});
+
+		it.each([429, 503])('retains cursor progress and backs off when the larger probe returns HTTP %i', async (status) => {
+			await seed(RO, 'rfc6962', 0, 10_000);
+			await db.prepare('UPDATE log_backfill SET page_size = 8').run();
+			const net = fakeNetwork(8);
+			const fetcher = (async (input: RequestInfo | URL) => {
+				const query = new URL(input instanceof Request ? input.url : String(input)).searchParams;
+				if (Number(query.get('end')) - Number(query.get('start')) + 1 > 8) return new Response(null, { status });
+				return net.fetch(input);
+			}) as typeof fetch;
+
+			for (let i = 0; i < 2; i++) {
+				const now = NOW + i * (CATCHUP_BACKOFF_MS + 5_000);
+				const summary = await run({ fetch: fetcher }, fakeQueue(), { maxFetches: 4 }, now);
+				expect(summary.perRow[0]).toMatchObject({ entries: 8, fetches: 2, rateLimited: status === 429 ? 1 : 0 });
+				const saved = await row(RO.log_id);
+				expect(saved).toMatchObject({ next_index: (i + 1) * 8, page_size: 8 });
+				expect(Date.parse(String(saved?.hold_until))).toBeGreaterThanOrEqual(now + CATCHUP_BACKOFF_MS);
+			}
 		});
 
 		it('a stored size of 32 or more is probed on one run in 30, by the clock, and not otherwise', async () => {
@@ -644,7 +676,7 @@ describe('runCatchup', () => {
 			const onSlot = Date.parse('2026-11-27T06:00:00Z'); // minute 0 of the hour: slot 0 of 30
 			const probed = fakeNetwork(64);
 			await run(probed, fakeQueue(), { maxFetches: 2 }, onSlot);
-			expect(new URL(probed.calls[0]!).search).toBe('?start=0&end=255');
+			expect(probed.calls.map((url) => new URL(url).search)).toEqual(['?start=0&end=31', '?start=256&end=511']);
 			expect((await row(RO.log_id))?.page_size).toBe(64);
 
 			const from = Number((await row(RO.log_id))?.next_index);
@@ -861,36 +893,29 @@ describe('runCatchup', () => {
 			await db.prepare('UPDATE log_backfill SET hold_until = NULL WHERE log_id = ?').bind(RO.log_id).run();
 		});
 
-		it('no request starts after the kill switch read returns killed', async () => {
+		it('drops requests still waiting for a header slot when the reader observes a kill', async () => {
 			await seed(RO, 'rfc6962', 0, 100_000);
-			const net = fakeNetwork();
-			net.delayMs = 5;
-			let callsWhenKilled: number | null = null;
-			const spied = new Proxy(db, {
-				get(target, prop) {
-					if (prop !== 'batch') return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
-					return async (statements: D1PreparedStatement[]) => {
-						const result = await target.batch(statements);
-						if (callsWhenKilled === null && JSON.stringify(result[1]?.results ?? []).includes('"1"')) callsWhenKilled = net.calls.length;
-						return result;
-					};
-				},
-			});
-			// the switch is thrown by the third request; the next re-read (killRecheckMs 0) finds it
-			const base = net.fetch;
-			let served = 0;
-			const fetcher = (async (input: RequestInfo | URL) => {
-				if (++served === 3) await db.prepare('INSERT INTO meta (k, v) VALUES (?, ?)').bind(CATCHUP_KILL_KEY, '1').run();
-				return base(input);
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => (release = resolve));
+			let started = 0;
+			const fetcher = (async () => {
+				if (++started === 1) {
+					await db.prepare('INSERT INTO meta (k, v) VALUES (?, ?)').bind(CATCHUP_KILL_KEY, '1').run();
+				} else {
+					await gate;
+				}
+				return Response.json({ entries: Array.from({ length: 8 }, () => ({ leaf_input: RFC6962_X509_LEAF_INPUT })) });
 			}) as typeof fetch;
-			const summary = await runCatchup(
-				{ CURSORS: spied as unknown as D1Database, ENTRIES: fakeQueue().queue },
-				{ now: NOW, fetch: fetcher, pageSize: 8, pagesInFlight: 3, killRecheckMs: 0 },
-			);
 
-			expect(summary.killed).toBe(true);
-			expect(callsWhenKilled).not.toBeNull();
-			expect(net.calls.length).toBe(callsWhenKilled);
+			try {
+				const summary = await run({ fetch: fetcher }, fakeQueue(), { pageSize: 8, pagesInFlight: HEADER_SLOTS + 2, killRecheckMs: 0 });
+				expect(summary).toMatchObject({ killed: true, entries: 8 });
+				expect(started).toBe(HEADER_SLOTS + 1); // the first response freed one slot before the switch was read
+			} finally {
+				release();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0)); // let all queued slot callbacks run
+			expect(started).toBe(HEADER_SLOTS + 1);
 		});
 	});
 

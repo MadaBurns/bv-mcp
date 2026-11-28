@@ -52,7 +52,7 @@
  *
  * Page size: a short page's length is saved on the row (page_size) only after it was seen on LEARN_CONSECUTIVE consecutive
  * pages (4 under 8 entries), and a stored size is probed upward (one request for a full page at an aligned start) on every
- * run while it is under 32 and on one run in 30 otherwise.
+ * run while it is under 32 and on one run in 30 otherwise. The cursor page takes priority over this optional probe.
  *
  * Kill switches are read at the start and every KILL_RECHECK_MS inside a row. A switch thrown mid-run is therefore seen
  * after up to KILL_RECHECK_MS plus one fetch timeout (the loop is awaiting the oldest page, at most CATCHUP_FETCH_TIMEOUT_MS
@@ -239,16 +239,12 @@ function held(work: Work): number {
 	return work.observations.names.size + work.observations.siblings.size;
 }
 
+function readStopped(run: Run, work: Work): boolean {
+	return run.sendFailed || run.killed || work.closed || work.halt || work.leaseLost || Date.now() >= run.until;
+}
+
 function canFetch(run: Run, work: Work): boolean {
-	return (
-		!run.sendFailed &&
-		!run.killed &&
-		!work.leaseLost &&
-		!work.halt &&
-		Date.now() < run.until &&
-		work.launches < work.fetchCap &&
-		run.entries < work.entryCap
-	);
+	return !readStopped(run, work) && work.launches < work.fetchCap && run.entries < work.entryCap;
 }
 
 /** Pages of `size` entries a tile window may start without the run's entries passing the row's cap by more than one page. */
@@ -263,11 +259,12 @@ function pagesWithinEntryCap(run: Run, work: Work, size: number): number {
 async function get<T>(run: Run, work: Work, url: string, read: (response: Response) => Promise<T>): Promise<T> {
 	const named = (error: unknown) =>
 		error instanceof Deferral || error instanceof PhaseEnded ? error : new Error(`${describeError(error)} (${url})`);
+	const generation = work.generation;
 	let response: Response;
 	let started = 0;
 	try {
 		response = await run.slot(() => {
-			if (Date.now() >= run.until) throw new PhaseEnded('read phase ended before this request had a slot');
+			if (readStopped(run, work) || generation !== work.generation) throw new PhaseEnded('read stopped before this request had a slot');
 			run.fetches++;
 			work.stats.fetches++;
 			started = Date.now();
@@ -342,7 +339,6 @@ function fillPages(run: Run, work: Work): void {
 		running < run.pagesInFlight &&
 		work.pending.length < 2 * run.pagesInFlight &&
 		work.launchNext < work.ceiling &&
-		!work.closed &&
 		canFetch(run, work) &&
 		run.entries + queued < work.entryCap
 	) {
@@ -397,11 +393,34 @@ async function savePageSize(run: Run, work: Work, size: number): Promise<void> {
 async function probePageSize(run: Run, work: Work): Promise<void> {
 	const stored = work.row.page_size;
 	if (work.row.kind !== 'rfc6962' || run.pageSize !== undefined || stored === null || !probeDue(stored, run.now)) return;
+	if (work.fetchCap < 2 || work.next >= work.ceiling || !canFetch(run, work)) return;
+
+	// First read the cursor at the known size. Even a permanently failing probe must leave a page to commit on each run.
+	const cursor = work.next;
+	const end = pageEnd(cursor, work.pageSize, work.ceiling);
+	work.launches++;
+	const cursorEntries = await getEntries(run, work, cursor, end);
+	consumeEntries(run, work, cursor, end, cursorEntries);
+	work.launchNext = work.next;
+
 	const start = probeStart(work.next, work.ceiling);
 	if (start === null || !canFetch(run, work)) return;
+	if (Date.now() - run.killCheckedAt >= run.killRecheckMs && (await isKilled(run, run.db))) return;
 	work.launches++;
 	const entries = await getEntries(run, work, start, Math.min(start + RFC6962_PAGE, work.ceiling) - 1);
 	if (probeRaises(stored, start, entries.length)) await savePageSize(run, work, entries.length);
+}
+
+function consumeEntries(run: Run, work: Work, start: number, end: number, entries: unknown[]): void {
+	if (entries.length === 0) throw new Deferral(`get-entries ${start}-${end}: no entries served yet`);
+	for (const entry of entries) {
+		observeEntry(run, work, () => {
+			const leafInput = (entry as { leaf_input?: unknown } | null)?.leaf_input;
+			if (typeof leafInput !== 'string') throw new TypeError('entry has no leaf_input');
+			return precertTbsFromLeafInput(leafInput);
+		});
+	}
+	work.next = start + entries.length;
 }
 
 /**
@@ -416,15 +435,7 @@ async function readEntries(run: Run, work: Work): Promise<void> {
 	// Stays counted in `pending` while awaited, so the pages started meanwhile are measured against the entry cap correctly.
 	const entries = await head.promise;
 	work.pending.shift();
-	if (entries.length === 0) throw new Deferral(`get-entries ${start}-${end}: no entries served yet`);
-	for (const entry of entries) {
-		observeEntry(run, work, () => {
-			const leafInput = (entry as { leaf_input?: unknown } | null)?.leaf_input;
-			if (typeof leafInput !== 'string') throw new TypeError('entry has no leaf_input');
-			return precertTbsFromLeafInput(leafInput);
-		});
-	}
-	work.next = start + entries.length;
+	consumeEntries(run, work, start, end, entries);
 	if (entries.length === end - start + 1) {
 		work.streak = null;
 		fillPages(run, work);
