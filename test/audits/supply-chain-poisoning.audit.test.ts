@@ -15,8 +15,7 @@
  * WHERE IT RUNS. In the node pool (needs git + fs), registered in
  * scripts/vitest-node-suites.mjs so `npm test` collects it (the required
  * `build-and-test` check), and listed in `audit:oss-safety` (the required
- * `File hygiene check`). A poisoned branch therefore cannot merge, and this
- * repo publishes to npm and deploys only from merged code.
+ * `File hygiene check`). Both checks report matches before merge.
  *
  * WHAT IS DURABLE. The published wallets and server addresses rotate — treat
  * that list as a tripwire for the known waves only. The STRUCTURAL rules (hidden
@@ -38,15 +37,15 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { posix } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = process.cwd();
 const SELF = 'test/audits/supply-chain-poisoning.audit.test.ts';
 
 /** Non-markdown paths allowed to name a campaign indicator. Each needs a reason. */
-const INDICATOR_ALLOWLIST: readonly string[] = [];
+const INDICATOR_ALLOWLIST: readonly string[] = [SELF]; // Contains the marker definitions and their positive controls.
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -154,17 +153,19 @@ function* hexWindows(lower: string): Generator<string> {
 	}
 }
 
-function indicatorFindings(text: string): string[] {
+const campaignHashes = { wallets: WALLET_HASHES, servers: IP_HASHES };
+
+function indicatorFindings(text: string, hashes: typeof campaignHashes): string[] {
 	const findings: string[] = [];
 	const lower = text.toLowerCase();
 	for (const marker of TEXT_MARKERS) {
 		if (lower.includes(marker)) findings.push(`known indicator: ${marker}`);
 	}
 	for (const window of hexWindows(lower)) {
-		if (WALLET_HASHES.has(sha256(window))) findings.push('known campaign wallet address');
+		if (hashes.wallets.has(sha256(window))) findings.push('known campaign wallet address');
 	}
 	for (const token of text.match(/(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)/g) ?? []) {
-		if (IP_HASHES.has(sha256(token))) findings.push('known campaign server address');
+		if (hashes.servers.has(sha256(token))) findings.push('known campaign server address');
 	}
 	for (const token of text.match(/\bT[1-9A-HJ-NP-Za-km-z]{33}\b/g) ?? []) {
 		if (TRON_HASHES.has(sha256(token))) findings.push('known campaign TRON address');
@@ -173,7 +174,7 @@ function indicatorFindings(text: string): string[] {
 }
 
 /** Every reason `path` with these bytes looks poisoned. Empty = clean. */
-function findPoisoning(path: string, bytes: Buffer, allowlist = INDICATOR_ALLOWLIST): string[] {
+function findPoisoning(path: string, bytes: Buffer, hashes = campaignHashes): string[] {
 	const findings: string[] = [];
 	if (FAKE_FONT_EXT.test(path)) findings.push('fake-font payload extension');
 	if (FONT_PATH.test(path)) {
@@ -211,39 +212,50 @@ function findPoisoning(path: string, bytes: Buffer, allowlist = INDICATOR_ALLOWL
 	if (EDITOR_CONFIG_PATH.test(path) && /folderopen/i.test(text)) {
 		findings.push('editor task that runs when the folder is opened');
 	}
-	if (!MARKDOWN_PATH.test(path) && !allowlist.includes(path)) {
-		findings.push(...indicatorFindings(text));
+	if (!MARKDOWN_PATH.test(path) && !INDICATOR_ALLOWLIST.includes(path)) {
+		findings.push(...indicatorFindings(text, hashes));
 	}
 	return [...new Set(findings)];
 }
 
 /**
  * Lockfile entries that would install from somewhere other than the npm
- * registry or a workspace directory. Walks
- * the whole document, so the v1 `dependencies` tree is covered as well as the
- * v2/v3 `packages` map.
+ * registry or a declared workspace. npm v1 nests installations under dependencies.
+ * Later versions also list packages by install path.
  */
-function findForeignResolutions(lockfileJson: string): string[] {
-	const offenders: string[] = [];
-	const visit = (node: unknown, name: string): void => {
-		if (node === null || typeof node !== 'object') return;
-		const entry = node as Record<string, unknown>;
-		const resolved = entry.resolved;
-		if (typeof resolved === 'string') {
-			const isRegistry = resolved.startsWith('https://registry.npmjs.org/');
-			// A workspace link: flagged `link: true`, a plain relative directory, no
-			// scheme, no traversal. Without `link` npm reads `a/b` as GitHub shorthand.
-			const isWorkspace = entry.link === true && /^[A-Za-z0-9@._-]+(\/[A-Za-z0-9@._-]+)*$/.test(resolved) && !resolved.includes('..');
-			if (!isRegistry && !isWorkspace) offenders.push(`${name} -> ${resolved}`);
-		}
-		for (const [key, child] of Object.entries(entry)) visit(child, key);
+function findForeignResolutions(lockfileJson: string, workspaces: ReadonlySet<string>): string[] {
+	type InstalledPackage = { resolved?: string; link?: boolean; dependencies?: Record<string, InstalledPackage> };
+	const lock = JSON.parse(lockfileJson) as {
+		packages?: Record<string, InstalledPackage>;
+		dependencies?: Record<string, InstalledPackage>;
 	};
-	visit(JSON.parse(lockfileJson), '(root)');
+	const offenders: string[] = [];
+
+	function checkEntry(name: string, entry: InstalledPackage): void {
+		if (typeof entry.resolved !== 'string') return;
+		const allowed = entry.link === true ? workspaces.has(entry.resolved) : entry.resolved.startsWith('https://registry.npmjs.org/');
+		if (!allowed) offenders.push(`${name} -> ${entry.resolved}`);
+	}
+
+	function checkDependencies(dependencies: Record<string, InstalledPackage>): void {
+		for (const [name, entry] of Object.entries(dependencies)) {
+			checkEntry(name, entry);
+			if (entry.dependencies) checkDependencies(entry.dependencies);
+		}
+	}
+
+	for (const [name, entry] of Object.entries(lock.packages ?? {})) checkEntry(name, entry);
+	checkDependencies(lock.dependencies ?? {});
 	return offenders;
 }
 
-const trackedFiles = (...pathspec: string[]): string[] =>
-	execFileSync('git', ['ls-files', '-z', ...pathspec], {
+function readTrackedFile(file: string): Buffer {
+	const path = posix.join(REPO_ROOT, file);
+	return lstatSync(path).isSymbolicLink() ? readlinkSync(path, { encoding: 'buffer' }) : readFileSync(path);
+}
+
+const trackedFiles = (): string[] =>
+	execFileSync('git', ['ls-files', '-z'], {
 		cwd: REPO_ROOT,
 		encoding: 'utf8',
 		maxBuffer: 64 * 1024 * 1024,
@@ -252,10 +264,10 @@ const trackedFiles = (...pathspec: string[]): string[] =>
 		.filter(Boolean);
 
 describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
-	// Indicators assembled from parts so this file never holds one in the clear.
-	const wallet = ['a322e5f3d311d308', '0e6f0121063e9adc', '2490ef1a'].join('');
-	const server = [95, 135, 181, 84].join('.');
-	const scan = (path: string, text: string): string[] => findPoisoning(path, Buffer.from(text));
+	const wallet = 'abcd'.repeat(10);
+	const server = '192.0.2.10';
+	const fixtureHashes = { wallets: new Set([sha256(wallet)]), servers: new Set([sha256(server)]) };
+	const scan = (path: string, text: string): string[] => findPoisoning(path, Buffer.from(text), fixtureHashes);
 	const HIDDEN = 'code hidden after 150+ whitespace characters';
 	const WALLET = 'known campaign wallet address';
 	const SERVER = 'known campaign server address';
@@ -267,7 +279,7 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 		expect(scan('vite.config.ts', 'export default { plugins: [] };\n')).toEqual([]);
 		expect(scan('docs/table.md', `| a |${' '.repeat(300)}| b |\n`)).toEqual([]);
 		expect(scan('src/commit.ts', `const sha = '${'ab12'.repeat(10)}';\n`)).toEqual([]);
-		expect(scan('src/addr.ts', "const dns = ['1.1.1.1', '8.8.8.8'];\n")).toEqual([]);
+		expect(scan('src/addr.ts', "const dns = ['198.51.100.20', '203.0.113.30'];\n")).toEqual([]);
 		expect(scan('a.spec.ts', `const iv = '${'\\x00\\xd0\\xcf\\x11'.repeat(4)}';`)).toEqual([]);
 		expect(findPoisoning('public/fonts/a.woff2', Buffer.from('wOF2\0\0\0\0'))).toEqual([]);
 		expect(findPoisoning('public/fonts/fa-solid-900.woff2', Buffer.from('wOF2\0\0'))).toEqual([]);
@@ -278,7 +290,8 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 		const note = `The loader calls ethereum-rpc.publicnode.com and ${server}.`;
 		expect(scan('docs/incident.md', note)).toEqual([]);
 		expect(scan('seed/blog.sql', note)).toHaveLength(2);
-		expect(findPoisoning('seed/blog.sql', Buffer.from(note), ['seed/blog.sql'])).toEqual([]);
+		expect(scan(SELF, note)).toEqual([]);
+		expect(scan(SELF, ' '.repeat(151) + 'x')).toContain(HIDDEN);
 	});
 
 	it('flags code hidden after whitespace: trailing, on its own line, or behind no-break spaces', () => {
@@ -313,7 +326,7 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 	it('flags a campaign server address: plain, defanged, or followed by a dot', () => {
 		expect(scan('a.py', `HOST = "${server}"`)).toContain(SERVER);
 		expect(scan('notes.txt', server.replaceAll('.', '[.]'))).toContain(SERVER);
-		expect(scan('a.js', `fetch("http://${server}.nip.io/x")`)).toContain(SERVER);
+		expect(scan('a.js', `fetch("http://${server}.example.test/x")`)).toContain(SERVER);
 	});
 
 	it('flags loader markers, payload paths and hijacked packages', () => {
@@ -336,14 +349,17 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 
 	it('flags a lockfile entry resolved outside the registry and workspaces', () => {
 		const lock = (entry: object): string => JSON.stringify({ packages: { 'node_modules/x': entry } });
-		const ok = (entry: object): void => expect(findForeignResolutions(lock(entry))).toEqual([]);
-		const bad = (json: string): void => expect(findForeignResolutions(json)).toHaveLength(1);
+		const workspaces = new Set(['packages/dns-checks']);
+		const ok = (entry: object): void => expect(findForeignResolutions(lock(entry), workspaces)).toEqual([]);
+		const bad = (json: string): void => expect(findForeignResolutions(json, workspaces)).toHaveLength(1);
 		ok({ resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz' });
 		ok({ resolved: 'packages/dns-checks', link: true });
+		ok({ dependencies: { resolved: '^1.0.0' } });
 		bad(lock({ resolved: 'file:vendor/x-1.0.0.tgz' }));
 		bad(lock({ resolved: 'https://example.com/x.tgz' }));
 		bad(lock({ resolved: 'git+ssh://git@github.com/a/b.git#abc' }));
 		bad(lock({ resolved: '../outside', link: true }));
+		bad(lock({ resolved: 'other/directory', link: true }));
 		// No `link: true`: npm reads this as the GitHub repository evilorg/evilrepo.
 		bad(lock({ resolved: 'evilorg/evilrepo' }));
 		// lockfileVersion 1 keeps entries under `dependencies`, not `packages`.
@@ -357,12 +373,12 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 });
 
 describe('no tracked file is poisoned', () => {
-	const files = trackedFiles().filter((file) => file !== SELF);
+	const files = trackedFiles();
 
 	it('sweeps the whole tracked tree, including the build configs a loader targets', () => {
 		// Floor catches a cwd/spawn collapse only; measured 1,928 on 2026-11-26.
 		expect(files.length).toBeGreaterThan(1_000);
-		for (const path of ['tsup.config.ts', 'eslint.config.mjs', 'package.json', 'src/index.ts', 'packages/dns-checks/package.json']) {
+		for (const path of [SELF, 'tsup.config.ts', 'eslint.config.mjs', 'package.json', 'src/index.ts', 'packages/dns-checks/package.json']) {
 			expect(files, `${path} must be in the swept set`).toContain(path);
 		}
 	});
@@ -370,29 +386,28 @@ describe('no tracked file is poisoned', () => {
 	it('finds no loader shape or campaign indicator', () => {
 		const offenders: string[] = [];
 		for (const file of files) {
-			let bytes: Buffer;
-			try {
-				bytes = readFileSync(join(REPO_ROOT, file));
-			} catch (error) {
-				// Tracked but absent from the working tree (sparse checkout, mid-rebase)
-				// is not this audit's business. Anything else it could not read is.
-				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-					offenders.push(`${file}: tracked but unreadable, so unscanned`);
-				}
-				continue;
-			}
-			for (const finding of findPoisoning(file, bytes)) offenders.push(`${file}: ${finding}`);
+			for (const finding of findPoisoning(file, readTrackedFile(file))) offenders.push(`${file}: ${finding}`);
 		}
 		expect(offenders, `Possible repository poisoning — do NOT build or deploy; inspect each file:\n${offenders.join('\n')}`).toEqual([]);
 		// Reads every tracked file; an explicit budget so a loaded runner cannot time it out.
 	}, 120_000);
 
 	it('every lockfile installs only from the registry or workspaces', () => {
-		const lockfiles = trackedFiles('package-lock.json', '**/package-lock.json');
+		const lockfiles = files.filter((file) => ['package-lock.json', 'npm-shrinkwrap.json'].includes(posix.basename(file)));
 		expect(lockfiles).toContain('package-lock.json');
-		const offenders = lockfiles.flatMap((lockfile) =>
-			findForeignResolutions(readFileSync(join(REPO_ROOT, lockfile), 'utf8')).map((hit) => `${lockfile}: ${hit}`),
-		);
+		const manifests = files.filter((file) => posix.basename(file) === 'package.json');
+		const offenders = lockfiles.flatMap((lockfile) => {
+			const dir = posix.dirname(lockfile);
+			const manifestFile = posix.join(dir, 'package.json');
+			const manifest = manifests.includes(manifestFile) ? JSON.parse(readTrackedFile(manifestFile).toString('utf8')) : {};
+			const patterns: string[] = Array.isArray(manifest.workspaces) ? manifest.workspaces : (manifest.workspaces?.packages ?? []);
+			const workspaces = new Set(
+				manifests
+					.map((file) => posix.relative(dir, posix.dirname(file)))
+					.filter((path) => path && path !== '..' && !path.startsWith('../') && patterns.some((pattern) => posix.matchesGlob(path, pattern))),
+			);
+			return findForeignResolutions(readTrackedFile(lockfile).toString('utf8'), workspaces).map((hit) => `${lockfile}: ${hit}`);
+		});
 		expect(offenders, `Unexpected install source:\n${offenders.join('\n')}`).toEqual([]);
 	});
 });
