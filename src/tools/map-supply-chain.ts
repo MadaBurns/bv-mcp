@@ -199,12 +199,16 @@ function sourceToRole(source: string): string {
  *   ns4.ntc.net.pk    → ntc.net.pk  (not net.pk)
  *   ns1               → ns1         (degenerate; returned as-is)
  *
- * With no registrable name (an IP address, a bare suffix, a single label) the
- * last two labels are returned, as before.
+ * IP literals have no registrable parent. Preserve the whole address so
+ * unrelated NS or MX targets cannot collapse into one row (#1434). For a
+ * bare suffix or a single label, keep the existing fallback.
  */
 export function getEffectiveParentDomain(host: string): string {
 	const registrable = getIcannRegistrableDomain(host);
 	if (registrable) return registrable;
+	const target = host.replace(/\.$/, '');
+	if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(target) && URL.canParse(`http://${target}`)) return target;
+	if (target.includes(':') && /^[\da-f:.]+$/i.test(target) && URL.canParse(`http://[${target}]`)) return target;
 	const parts = host.split('.');
 	if (parts.length < 2) return host;
 	return parts.slice(-2).join('.');
