@@ -37,7 +37,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { posix } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -249,9 +250,12 @@ function findForeignResolutions(lockfileJson: string, workspaces: ReadonlySet<st
 	return offenders;
 }
 
-function readTrackedFile(file: string): Buffer {
-	const path = posix.join(REPO_ROOT, file);
-	return lstatSync(path).isSymbolicLink() ? readlinkSync(path, { encoding: 'buffer' }) : readFileSync(path);
+function readTrackedFile(file: string, root = REPO_ROOT): Buffer {
+	const path = posix.join(root, file);
+	const stat = lstatSync(path, { throwIfNoEntry: false });
+	// CI test shards remove the WASM-only spec after checkout. Its indexed bytes still need scanning.
+	if (!stat) return execFileSync('git', ['cat-file', 'blob', `:${file}`], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
+	return stat.isSymbolicLink() ? readlinkSync(path, { encoding: 'buffer' }) : readFileSync(path);
 }
 
 const trackedFiles = (): string[] =>
@@ -345,6 +349,23 @@ describe('the scanner discriminates (known-bad vs known-good fixtures)', () => {
 		expect(scan('bv.code-workspace', '{"tasks":{"runOn":"folderOpen"}}')).toContain(task);
 		expect(scan('public/fonts/a.woff2', 'eval(payload)')).toEqual(['font extension without font bytes']);
 		expect(scan('public/fonts/fa-solid-300.llf', 'x')).toEqual(['fake-font payload extension']);
+	});
+
+	it('reads the indexed blob when a test shard omits a tracked file from its checkout', () => {
+		const root = mkdtempSync(posix.join(tmpdir(), 'bv-indexed-file-'));
+		const file = 'shard-fixture.txt';
+		const path = posix.join(root, file);
+		try {
+			execFileSync('git', ['init', '--quiet'], { cwd: root });
+			writeFileSync(path, 'indexed bytes');
+			execFileSync('git', ['add', '--', file], { cwd: root });
+			writeFileSync(path, 'working bytes');
+			expect(readTrackedFile(file, root).toString()).toBe('working bytes');
+			unlinkSync(path);
+			expect(readTrackedFile(file, root).toString()).toBe('indexed bytes');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it('flags a lockfile entry resolved outside the registry and workspaces', () => {
