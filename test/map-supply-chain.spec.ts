@@ -1274,14 +1274,34 @@ describe('mapSupplyChain — catalog batch v3.3.27 (G1/G2/G3)', () => {
 			// Private suffixes stay off: a cloud host keeps its company's name.
 			['inbound-smtp.us-east-1.amazonaws.com', 'amazonaws.com'],
 			['mx.example.github.io', 'github.io'],
-			// No registrable name to find: the old two-label answer is kept.
-			['203.0.113.5', '113.5'],
+			// IP literals retain the whole address.
+			['203.0.113.5', '203.0.113.5'],
+			['192.0.2.10.', '192.0.2.10'],
+			['2001:db8::192.0.2.10', '2001:db8::192.0.2.10'],
+			// Keep the existing fallback for bare suffixes and single labels.
 			['5.254', '5.254'],
 			['net.pk', 'net.pk'],
 			['ns1', 'ns1'],
 		])('keeps %s → %s', async (host, parent) => {
 			const { getEffectiveParentDomain } = await import('../src/tools/map-supply-chain');
 			expect(getEffectiveParentDomain(host)).toBe(parent);
+		});
+
+		it('keeps literal NS and MX targets separate even when their last two octets match (#1434)', async () => {
+			mockDnsResponses({
+			nsHosts: ['192.0.2.10', '10.0.2.10', 'ns1.example.com'],
+				mxRecords: [{ pref: 10, host: '2001:db8::192.0.2.10' }],
+			});
+			const r = await run();
+			expect(r.dependencies).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ provider: '192.0.2.10', sources: ['ns'] }),
+				expect.objectContaining({ provider: '10.0.2.10', sources: ['ns'] }),
+					expect.objectContaining({ provider: 'example.com (self-hosted NS)', sources: ['ns'] }),
+					expect.objectContaining({ provider: '2001:db8::192.0.2.10', sources: ['mx'] }),
+				]),
+			);
+			expect(r.dependencies.some((d) => d.provider === '2.10')).toBe(false);
 		});
 
 		it('does not report one provider named after a shared suffix for unrelated operators under it (#1423)', async () => {
